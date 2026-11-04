@@ -10,10 +10,11 @@ const PROPHETX_LINE = { ...LINE, bookId: 66, price: -115, sourceFormat: 1, sourc
 const BFA_LINE = { ...LINE, bookId: 59, price: -110, sourceFormat: 1, sourcePrice: -110 };
 const READS = { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T21:00:10Z", polymarket_us: "2026-10-16T21:00:05Z", prophetx: "2026-10-16T21:00:20Z", bfa: "2026-10-16T21:00:30Z" };
 
-test("every pregame Kalshi or Novig line gets the button, moneylines included; live lines and other books never", () => {
+test("every pregame Kalshi or Novig line gets the button, moneylines included; a live line only at Kalshi; other books never", () => {
   const ids = { eventId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0 };
   assert.equal(place.canPlace({ ...ids, bookId: 105, live: null }), true);
-  assert.equal(place.canPlace({ ...ids, bookId: 105, live: { period: 2 } }), false);
+  assert.equal(place.canPlace({ ...ids, bookId: 105, live: { period: 2 } }), true);
+  for (const bookId of [89, 111, 66, 59]) assert.equal(place.canPlace({ ...ids, bookId, live: { period: 2 } }), false, `book ${bookId} live`);
   assert.equal(place.canPlace({ ...ids, bookId: 100, live: null }), false);
   assert.equal(place.canPlace({ ...ids, eventId: null, bookId: 105 }), false);
   assert.equal(place.canPlace({ ...ids, betTypeId: 1, bookId: 105, live: null }), true);
@@ -138,4 +139,19 @@ test("Novig's read is the oldest of the app, Place and (when read) bot reads, nu
   assert.equal(place.readAtsOf({ kalshi: sources.kalshi, novig: sources.novig }).novig, null);
   assert.deepEqual(place.readAtsOf({}), { kalshi: null, novig: null, polymarket_us: null, prophetx: null, bfa: null });
   assert.deepEqual(place.readAtsOf(undefined), { kalshi: null, novig: null, polymarket_us: null, prophetx: null, bfa: null }, "no bets payload yet");
+});
+
+test("a live Kalshi request says so and carries when the Unabated tab last saw the fair ready; none without that time", () => {
+  const liveLine = { ...LINE, live: { producedUtc: "2026-10-16T21:00:00.000" } };
+  const readAt = Date.parse("2026-10-16T21:00:40Z");
+  const request = place.placeRequestOf({ line: liveLine, stakeInput: "150", readAts: READS, clickId: "abc12345", liveFairReadAtMs: readAt });
+  assert.equal(request.path, "/place_kalshi.json");
+  assert.deepEqual([request.body.live, request.body.liveFairReadAt], [true, "2026-10-16T21:00:40.000Z"]);
+  assert.match(place.placeRequestOf({ line: liveLine, stakeInput: "150", readAts: READS, clickId: "abc12345", liveFairReadAtMs: null }).error,
+    /in-game fair is not ready/);
+  assert.match(place.placeRequestOf({ line: { ...NOVIG_LINE, live: liveLine.live }, stakeInput: "50", readAts: READS, clickId: "abc12345", liveFairReadAtMs: readAt }).error,
+    /Novig does not place live yet/);
+  // A pregame request carries neither field.
+  const pregame = place.placeRequestOf({ line: LINE, stakeInput: "150", readAts: READS, clickId: "abc12345" });
+  assert.deepEqual(["live" in pregame.body, "liveFairReadAt" in pregame.body], [false, false]);
 });

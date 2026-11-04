@@ -93,7 +93,7 @@ def test_a_click_sends_one_ioc_buy_at_the_live_ask_and_reads_what_filled(store):
     kalshi = ScriptedKalshi()
     desk = desk_with(store, kalshi)
     result = desk.place(request())
-    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5}]
+    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5, "live": False}]
     [(_, path, body)] = kalshi.posts()
     assert path == "/portfolio/events/orders"
     # floor(100 / 0.587157) = 170 contracts, YES bid at the 57c ask, nothing rests.
@@ -484,3 +484,40 @@ def test_a_transfer_that_does_not_complete_in_time_sends_no_order_and_the_click_
 
 def desk_never_recorded(store):
     return not store.manual_orders_maybe_filled_since(EVENT_ID, NOW - timedelta(days=1), venue="kalshi")
+
+
+LIVE_QUOTE = {**QUOTE, "eventStart": "2026-10-16T19:30:00.000Z", "live": True}
+
+
+def test_validate_live_fields():
+    assert request()["live"] is False and request()["live_fair_read_at"] is None
+    assert validate_place_request({**BODY, "live": "yes"}).startswith("live must be")
+    assert validate_place_request({**BODY, "live": True}).startswith("liveFairReadAt")
+    live = request(live=True, liveFairReadAt="2026-10-16T20:59:50Z")
+    assert live["live"] is True and live["live_fair_read_at"] == datetime(2026, 10, 16, 20, 59, 50, tzinfo=timezone.utc)
+
+
+def test_live_place_on_the_live_board_sends_one_order_and_asks_for_the_live_line(store):
+    kalshi = ScriptedKalshi()
+    desk = desk_with(store, kalshi, quote=LIVE_QUOTE)
+    result = desk.place(request(live=True, liveFairReadAt="2026-10-16T20:59:50Z"))
+    assert result["status"] == "filled"
+    assert len(kalshi.posts()) == 1
+    assert desk.quotes[0]["live"] is True
+
+
+def test_live_place_refuses_a_stale_fair_and_a_line_off_the_live_board(store):
+    kalshi = ScriptedKalshi()
+    stale = desk_with(store, kalshi, quote=LIVE_QUOTE).place(request(live=True, liveFairReadAt="2026-10-16T20:58:00Z"))
+    assert stale["status"] == "refused" and "last seen ready 120 s ago" in stale["message"]
+    off_board = desk_with(store, kalshi, quote={**LIVE_QUOTE, "live": False}).place(
+        request(live=True, liveFairReadAt="2026-10-16T20:59:50Z", clickId="c1a2b3c4-0002"))
+    assert off_board["status"] == "refused" and "not on Unabated's live board" in off_board["message"]
+    assert kalshi.posts() == []
+
+
+def test_a_pregame_click_on_a_started_game_is_still_refused(store):
+    kalshi = ScriptedKalshi()
+    result = desk_with(store, kalshi, quote=LIVE_QUOTE).place(request())
+    assert result["status"] == "refused" and "the game has started" in result["message"]
+    assert kalshi.posts() == []

@@ -66,6 +66,14 @@ PRICE_TOLERANCE = 0.001
 MIN_PRICE = 0.01
 MAX_PRICE = 0.99
 RUNNER_QUOTE_PATH = "/kalshi_quote.json"
+# A live Place (a Ticket priced off Unabated's in-game fair at a break): the
+# panel says when the Unabated tab last told it that fair was still ready.
+# The panel itself stops trusting a hidden tab after 75 s (live.js
+# LIVE_STALE_HIDDEN_MS; a hidden tab's timers run about once a minute, but
+# the fair expiring fires a grid event that posts at once); the extra
+# seconds cover the click's round trip. The venue's live price is still
+# checked against the Ticket's to 0.1c.
+LIVE_FAIR_READ_MAX_AGE_SEC = 90
 RUNNER_TIMEOUT_SEC = 10
 FILLS_PATH = "/portfolio/fills"
 FILLS_PAGE_LIMIT = 200
@@ -122,10 +130,51 @@ def validate_place_request(body: object) -> dict | str:
     bfa_read_at = optional_read_at(body, "bfaReadAt")
     if isinstance(bfa_read_at, str):
         return bfa_read_at
+    live = validate_live_fields(body)
+    if isinstance(live, str):
+        return live
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "kalshi_read_at": kalshi_read_at,
             "novig_read_at": novig_read_at, "polymarket_read_at": polymarket_read_at,
-            "prophetx_read_at": prophetx_read_at, "bfa_read_at": bfa_read_at}
+            "prophetx_read_at": prophetx_read_at, "bfa_read_at": bfa_read_at, **live}
+
+
+def validate_live_fields(body: dict) -> dict | str:
+    """{live, live_fair_read_at} of a Place body, or what was wrong. live
+    (optional, default false): the Ticket is priced off Unabated's in-game
+    fair at a break. liveFairReadAt (ISO, required when live): when the panel
+    last saw that fair still ready on the Unabated tab."""
+    live = body.get("live", False)
+    if not isinstance(live, bool):
+        return f"live must be true or false, got {live!r}"
+    if not live:
+        return {"live": False, "live_fair_read_at": None}
+    read_at = _iso_time(body.get("liveFairReadAt"))
+    if read_at is None:
+        return f"liveFairReadAt must be the ISO time the panel last saw the in-game fair ready, got {body.get('liveFairReadAt')!r}"
+    return {"live": True, "live_fair_read_at": read_at}
+
+
+def start_refusal(request: dict, quote: dict, now: datetime) -> str | None:
+    """Why the game's clock forbids this click, in words, or None. Pregame:
+    the game must not have started. Live: the runner must have found the line
+    on Unabated's live board, and the panel must have seen the break's fair
+    ready within LIVE_FAIR_READ_MAX_AGE_SEC (the VM cannot see the Unabated
+    tab, so this is the panel's word, checked for age)."""
+    if request["live"]:
+        if quote.get("live") is not True:
+            return "the line is not on Unabated's live board, so it cannot be placed live."
+        age = (now - request["live_fair_read_at"]).total_seconds()
+        if age > LIVE_FAIR_READ_MAX_AGE_SEC:
+            return (f"the in-game fair was last seen ready {age:.0f} s ago (over {LIVE_FAIR_READ_MAX_AGE_SEC} s): "
+                    "the break may be over. Click the price again at the next break.")
+        return None
+    start = _iso_time(quote.get("eventStart"))
+    if start is None:
+        return "the game's start time is unknown."
+    if start <= now:
+        return "the game has started."
+    return None
 
 
 def optional_read_at(body: dict, field: str) -> datetime | None | str:
@@ -187,6 +236,8 @@ def read_runner_quote(runner_url: str, request: dict, quote_path: str = RUNNER_Q
     query = {key: request[key] for key in ("eventId", "periodTypeId", "betTypeId", "sideIndex")}
     if request["points"] is not None:
         query["points"] = f"{request['points']:g}"
+    if request.get("live"):
+        query["live"] = "1"
     return _read_runner_json(runner_url, quote_path, query, timeout_sec)
 
 
@@ -297,7 +348,7 @@ class ManualKalshiDesk:
         client_order_id = f"{MANUAL_ORDER_ID_PREFIX}{request['click_id']}"
         quote = self._quote_reader({"eventId": request["eventId"], "periodTypeId": request["periodTypeId"],
                                     "betTypeId": request["betTypeId"], "sideIndex": request["sideIndex"],
-                                    "points": request["points"]})
+                                    "points": request["points"], "live": request["live"]})
         refusal = self._refusal(request, quote)
         if refusal:
             return {"status": STATUS_REFUSED, "message": f"Not placed: {refusal}"}
@@ -317,8 +368,8 @@ class ManualKalshiDesk:
         })
         if not inserted:
             return {"status": STATUS_REFUSED, "message": "Not placed: this click was already sent."}
-        log.info("manual order %s: %s %s x%d @ %s (Ticket %s)", client_order_id, quote["ticker"], quote["side"],
-                 count, quote["ask"], request["ticket_all_in"])
+        log.info("manual order %s: %s %s x%d @ %s (Ticket %s%s)", client_order_id, quote["ticker"], quote["side"],
+                 count, quote["ask"], request["ticket_all_in"], ", live" if request["live"] else "")
         result = self._send(client_order_id, quote, count)
         if top_up.note:
             result["message"] = f"{result['message']} ({top_up.note[0].upper()}{top_up.note[1:]}.)"
@@ -328,11 +379,9 @@ class ManualKalshiDesk:
         """Why this click must not become an order, in words, or None."""
         if not quote.get("ok"):
             return f"{quote.get('detail') or quote.get('reason') or 'no Kalshi contract for this line'}."
-        start = _iso_time(quote.get("eventStart"))
-        if start is None:
-            return "the game's start time is unknown."
-        if start <= self._now():
-            return "the game has started."
+        clock = start_refusal(request, quote, self._now())
+        if clock:
+            return clock
         if quote.get("kalshiBaseUrl") != self._client.base_url:
             return (f"the runner read Kalshi at {quote.get('kalshiBaseUrl')!r} but this desk trades "
                     f"{self._client.base_url}.")

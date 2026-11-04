@@ -599,7 +599,7 @@ function createRunner(deps) {
   }
 
   const scanner = scannerLib.createScanner({
-    fetchImpl: deps.fetchImpl, now, timers, maxRefreshMs: TAKER_SNAPSHOT_REFRESH_MS,
+    fetchImpl: deps.fetchImpl, now, timers, maxRefreshMs: TAKER_SNAPSHOT_REFRESH_MS, keepLive: true,
     onChange: (status, state, lineHistory) => {
       if (status.error && (!scannerStatus || scannerStatus.error !== status.error)) logWarning(`scanner: ${status.error}`);
       if (status.phase === "live" && (!scannerStatus || scannerStatus.phase !== "live")) {
@@ -1825,6 +1825,20 @@ function createRunner(deps) {
     throw new Error(`Novig markets: more than ${NOVIG_MARKETS_MAX_PAGES} pages`);
   }
 
+  // The board a Place quote finds its line on: the pregame board, or for a
+  // live Place (spec.live) the live board of the league whose last snapshot
+  // has the game in play (scanner keepLive; its rows never reach the Edges
+  // list or the bot). {board} or {board: null, reason, detail}.
+  function quoteBoardOf(spec) {
+    if (!spec.live) {
+      return feedState ? { board: feedState } : { board: null, reason: "no_board", detail: "the board has not loaded yet" };
+    }
+    const leagueId = scanner.liveLeagueOfEvent(spec.eventId);
+    const live = leagueId == null ? null : scanner.getLiveBoard(leagueId);
+    if (!live) return { board: null, reason: "not_live", detail: `game ${spec.eventId} is not on Unabated's live board` };
+    return { board: live.state };
+  }
+
   // The Ticket's Place button (bets_service/manual_orders.py asks, Cal
   // clicked): the board's one Kalshi line with these fields, the contract it
   // buys, what buying it costs now and whether Kalshi's market is the line's.
@@ -1835,8 +1849,8 @@ function createRunner(deps) {
   //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
   async function kalshiQuoteNow(params) {
     const spec = kalshiLineSpecOf(params);
-    const board = feedState;
-    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const { board, reason, detail } = quoteBoardOf(spec);
+    if (!board) return { ok: false, reason, detail };
     const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
@@ -1844,7 +1858,7 @@ function createRunner(deps) {
       return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Kalshi lines for game ${spec.eventId} at that market, side and number` };
     }
     const row = feedLib.describeLine(found[0], board);
-    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName, live: spec.live };
     const contract = await kalshiPlaceContractOf(row, board);
     if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
     const position = { ...fields, ticker: contract.ticker, side: contract.side, derivedTicker: contract.derived === true };
@@ -2634,9 +2648,11 @@ function kalshiLineSpecOf(params) {
   const pointsText = params.get("points");
   const points = pointsText === null || pointsText === "" ? null : Number(pointsText);
   if (points !== null && !Number.isFinite(points)) throw httpError(400, `points must be a number, got ${JSON.stringify(pointsText)}`);
+  const liveText = params.get("live");
+  if (liveText !== null && liveText !== "0" && liveText !== "1") throw httpError(400, `live must be 0 or 1, got ${JSON.stringify(liveText)}`);
   return {
     eventId: whole("eventId"), periodTypeId: whole("periodTypeId"), betTypeId: whole("betTypeId", [1, 2, 3]),
-    sideIndex: whole("sideIndex", [0, 1]), points,
+    sideIndex: whole("sideIndex", [0, 1]), points, live: liveText === "1",
   };
 }
 

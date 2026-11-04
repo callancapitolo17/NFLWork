@@ -1048,6 +1048,43 @@ test("kalshi_quote: the quote's eventStart is Kalshi's when earlier, so Place re
   assert.deepEqual({ eventStart: fallback.eventStart, kalshiStart: fallback.kalshiStart }, { eventStart: WSU_UNABATED_START, kalshiStart: null });
 });
 
+// The same game in play: Unabated's file moves its row from pregame to live.
+function liveVenueFetch() {
+  const json = JSON.parse(takerVenueSlice());
+  const pregame = json.odds["lg2:pt1:pregame"];
+  const index = pregame.findIndex((row) => row.key === "pt1:pregame:bt2:e123742");
+  const [row] = pregame.splice(index, 1);
+  json.odds["lg2:pt1:live"] = [{ ...row, key: "pt1:live:bt2:e123742", live: true }];
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("kalshi_quote live=1: a game in play is found on the live board, marked live; the pregame board and the Edges list never see it", async () => {
+  const { runner } = await quoteRunner({}, { fetchImpl: liveVenueFetch() });
+  const liveQuote = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  const pregameQuote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  const pregameLines = Object.values(runner.scanner.getState().lines).filter((line) => line.eventId === 123742 && line.betTypeId === 2);
+  runner.stop();
+  assert.deepEqual({ ok: liveQuote.ok, live: liveQuote.live, ticker: liveQuote.ticker, side: liveQuote.side, ask: liveQuote.ask },
+    { ok: true, live: true, ticker: TAKER_TICKER, side: "yes", ask: 0.57 });
+  assert.deepEqual({ ok: pregameQuote.ok, reason: pregameQuote.reason }, { ok: false, reason: "no_line" });
+  assert.equal(pregameLines.length, 0, "the live spread row never reaches the pregame board");
+});
+
+test("kalshi_quote live=1: a game not in play is not_live, and live must be 0 or 1", async () => {
+  const { runner } = await quoteRunner();
+  const quote = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  await assert.rejects(() => runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "yes" })), /live must be 0 or 1/);
+  const pregame = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "0" }));
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, reason: quote.reason }, { ok: false, reason: "not_live" });
+  assert.match(quote.detail, /game 123742 is not on Unabated's live board/);
+  assert.deepEqual({ ok: pregame.ok, live: pregame.live }, { ok: true, live: false });
+});
+
 test("kalshi_quote: a closed market, a number the board lacks and bad params are refused", async () => {
   const { runner } = await quoteRunner({ WSU36: { status: "closed" } });
   const closed = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));

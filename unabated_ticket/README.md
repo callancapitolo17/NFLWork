@@ -3493,6 +3493,34 @@ SELECT placed_at, label, ticker, contract_side, ticket_all_in, all_in_price, sta
 FROM manual_orders ORDER BY placed_at DESC;
 ```
 
+#### Live Place on Kalshi at a break (0.39.0, 2026-11-04)
+
+A live Kalshi Ticket (a price clicked in the Live block, priced off
+Unabated's in-game fair) gets Place too, panel only (the phone has no live
+edges). The other four venues still refuse a live Ticket until each one's
+live market has been read (`place.js` `VENUES[..].live`).
+
+- **Only while there is a number.** The button shows only when the Ticket
+  can be sized (`liveTicketBlock` empty: the fair is still ready, still the
+  one it was captured at, and the open bets could be sized against). The
+  box is the live sized stake.
+- **The panel's word, checked for age.** The VM cannot see the Unabated tab,
+  so the request says `live: true` and `liveFairReadAt`, when the tab last
+  said this exact fair (its `producedUtc`) was ready
+  (`live.liveFairReadAtMs`; null, so no request, once the panel itself
+  stops trusting the tab: 10 s visible, 75 s hidden). The desk refuses one
+  over 90 s old (`LIVE_FAIR_READ_MAX_AGE_SEC`: the hidden-tab window plus
+  the round trip; the fair expiring fires a grid event that posts at once).
+- **The live board.** The runner's scanner (`keepLive`) also parses each
+  snapshot's in-game rows (`feed.parseSnapshot(.., {phase: "live"})`) into
+  a separate board per league, never merged into the pregame board, so the
+  Edges list, the phone and the bot never see a live line. `GET
+  /kalshi_quote.json?..&live=1` finds the line there (`not_live` when the
+  game is on no live board) and answers `live: true`; the desk accepts a
+  started game only for such a quote.
+- Every other rule is unchanged: the live all-in at most 0.1c worse than the
+  Ticket's, the other side held, an unseen earlier Place, the cash pot.
+
 ### Place on Novig from the Ticket (`extension/place.js`, `bets_service/novig_place.py`)
 
 Plan: `novig_place_plan.md` in the project folder (Cal, 2026-10-16). The same

@@ -106,7 +106,8 @@
   // A sequenceNumber below this cannot be an epoch-ms change time (2021-01-06,
   // Unabated's own epoch); anything older is a counter, not a clock.
   const SEQUENCE_AS_EPOCH_MS_MIN = Date.UTC(2021, 0, 6);
-  const GAME_ROW_KEY = /^pt(\d+):pregame:bt([123]):e(\d+)$/;
+  const GAME_ROW_KEY = /^pt(\d+):(pregame|live):bt([123]):e(\d+)$/;
+  const PHASES = ["pregame", "live"];
   const LEAGUE_KEY = /^lg(\d+):pt(\d+):(pregame|live)$/;
   // Venue ids on alternate-line rungs (#118 step 2; measured on the live NFL
   // and CFB files 2026-09-15). Every Kalshi rung's sourceKey is the contract
@@ -402,15 +403,17 @@
     };
   }
 
-  function ingestSnapshotRow(state, row, leagueId, periodTypeId, counts, snapshotAtMs) {
+  function ingestSnapshotRow(state, row, leagueId, periodTypeId, counts, phase, snapshotAtMs) {
     const rowKey = typeof row.key === "string" ? GAME_ROW_KEY.exec(row.key) : null;
-    // Only pregame moneyline/spread/total game rows; team totals (bt4), props and
-    // live rows share the structure but are not what the scanner lists.
-    if (!rowKey || row.live === true) {
+    // Only moneyline/spread/total game rows of the phase asked for; team
+    // totals (bt4) and props share the structure but are not listed. The
+    // pregame and live boards are separate states: a live line must never
+    // reach the Edges list or the bot.
+    if (!rowKey || rowKey[2] !== phase || (row.live === true) !== (phase === "live")) {
       counts.skippedRows += 1;
       return;
     }
-    const betTypeId = Number(rowKey[2]);
+    const betTypeId = Number(rowKey[3]);
     const eventId = row.eventId;
     if (eventId == null) {
       counts.skippedRows += 1;
@@ -463,7 +466,10 @@
 
   // Parse one league's odds.json. Returns a state for that league only; merge
   // several with mergeStates. Books carry the flags the scanner filters on.
-  function parseSnapshot(json, { leagueId }) {
+  // phase "pregame" (the default: the board every list and the bot read) or
+  // "live" (the in-game rows only, the board a live Place finds its line on).
+  function parseSnapshot(json, { leagueId, phase = "pregame" }) {
+    if (!PHASES.includes(phase)) throw new Error(`snapshot: expected phase pregame or live, got ${phase}`);
     if (!json || typeof json !== "object" || !json.odds || typeof json.odds !== "object") {
       throw new Error("snapshot: expected an object with an `odds` map");
     }
@@ -498,8 +504,8 @@
       const parsed = parseLeagueKey(leagueKey);
       if (!parsed || parsed.leagueId !== leagueId) continue;
       leagueKeysSeen += 1;
-      if (parsed.phase !== "pregame" || !Array.isArray(rows)) continue;
-      for (const row of rows) ingestSnapshotRow(state, row, leagueId, parsed.periodTypeId, counts, snapshotAtMs);
+      if (parsed.phase !== phase || !Array.isArray(rows)) continue;
+      for (const row of rows) ingestSnapshotRow(state, row, leagueId, parsed.periodTypeId, counts, phase, snapshotAtMs);
     }
     // No lg<id> key while other leagues' keys exist is the wrong file or a
     // schema change; an empty `odds` map (Serie B off-season, 2026-09-10) or

@@ -176,6 +176,24 @@
     };
   }
 
+  // When the Unabated tab last said this game's fair (the one produced at
+  // `producedUtc`) was ready: the newest such payload's `at`, ms, or null when
+  // no payload the panel still trusts says so (past LIVE_STALE_MS from a
+  // visible tab, LIVE_STALE_HIDDEN_MS from a hidden one, the numbers may be
+  // gone). A live Place sends it; the bets service refuses it when old.
+  function liveFairReadAtMs(payloads, eventId, now, producedUtc) {
+    let newest = null;
+    for (const payload of payloads || []) {
+      if (!isFresh(payload, now)) continue;
+      const staleAfterMs = payload.visible === false ? LIVE_STALE_HIDDEN_MS : LIVE_STALE_MS;
+      if (now - payload.at > staleAfterMs) continue;
+      const ready = (payload.games || []).some((game) => game.eventId === eventId && game.fairStatus === FAIR_READY
+        && game.producedUtc === producedUtc);
+      if (ready && (newest == null || payload.at > newest)) newest = payload.at;
+    }
+    return newest;
+  }
+
   // {raw, game, payload} for every posted line of a game whose fair is
   // ready, in the payloads not yet past LIVE_DROP_MS.
   function readyLiveRows(payloads, now) {
@@ -245,7 +263,7 @@
 
   const api = {
     LIVE_STALE_MS, LIVE_STALE_HIDDEN_MS, LIVE_DROP_MS, STORAGE_PREFIX, PERIOD_ENDED,
-    storageKeyOf, checkpointLabel, settledPeriods, liveView, selectLiveEdges, liveFairState, hasReadyFair, liveAlertKey,
+    storageKeyOf, checkpointLabel, settledPeriods, liveView, selectLiveEdges, liveFairState, hasReadyFair, liveFairReadAtMs, liveAlertKey,
   };
 
   if (typeof module !== "undefined" && module.exports) {
