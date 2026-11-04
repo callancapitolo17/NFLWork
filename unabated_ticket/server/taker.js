@@ -83,10 +83,10 @@ const pricecheck = require("../extension/pricecheck.js");
 
 const KALSHI_BOOK_ID = 105;
 const NOVIG_BOOK_ID = 89;
-// What Kalshi's Kelly divides by (Cal, 2026-10-28: $5,000, was $2,000); the money at risk is the
+// What Kalshi's Kelly divides by (Cal, 2026-11-04: $7,500; $5,000 from 2026-10-28, $2,000 before); the money at risk is the
 // order desk's ceiling, 60% of it (taker_orders.MAX_OPEN_COST). taker_orders.KELLY_BANKROLL must match.
-const KELLY_BANKROLL = 5000;
-// Novig's Kelly bankroll (Cal, 2026-10-16: $2,000, Kalshi's then), its own parameter, apart from the Novig desk's $500 cap.
+const KELLY_BANKROLL = 7500;
+// Novig's Kelly bankroll (Cal, 2026-10-16: $2,000, Kalshi's then), its own parameter, apart from the Novig desk's $850 cap.
 const NOVIG_KELLY_BANKROLL = 2000;
 const BOT_KELLY = 0.25;
 const MIN_LIVE_EDGE = 0.03;

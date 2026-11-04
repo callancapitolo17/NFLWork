@@ -256,7 +256,7 @@ every 30 s, runner or no runner.
 POST /taker/novig_order.json places a bot order on Novig (money) on the bot's
 own trading key, which trades only in the bot's Novig subaccount, and INSERTs /
 UPDATEs taker.duckdb::novig_taker_orders (novig_taker_desk.py: stop files,
-holdings freshness, its own $500 ceiling, one IOC buy); its thread reads final
+holdings freshness, its own $850 ceiling, one IOC buy); its thread reads final
 fills and frees settled markets every 30 s. The bot's (and the Novig Place
 button's) subaccount is read as its own source, novig_bot / novig_place
 (sources/novig_subaccount.py).

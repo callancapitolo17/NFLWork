@@ -1320,11 +1320,12 @@ test("taker: a service without the bot key answers 503, the decision reads off",
   runner.stop();
 });
 
-// Cal's open Kalshi bet on the slice's WSU -35.5 market, as /bets.json lists it.
+// Cal's open Kalshi bet on the slice's WSU -35.5 market, as /bets.json lists it (sized to cover the
+// $7,500-bankroll target, so the bot adds nothing).
 const WSU_HELD = {
   id: `kalshi:${TAKER_TICKER}:yes`, source: "kalshi_api", venue: "kalshi", league: "cfb", status: "open", sourceFetchedAt: "2026-09-15T18:59:00Z",
   awayTeam: "Duquesne", homeTeam: "Washington St.", awayKey: null, homeKey: null, betType: "spread", period: "FG", side: "home", points: -35.5,
-  price: -143, stake: 100, toWin: 70, contracts: 100, placedAt: "2026-09-15T18:00:00Z", closedAt: null, eventStart: "2026-09-19T19:30:00.000Z",
+  price: -143, stake: 150, toWin: 105, contracts: 150, placedAt: "2026-09-15T18:00:00Z", closedAt: null, eventStart: "2026-09-19T19:30:00.000Z",
   eventDate: "2026-09-19", isParlayLeg: false, parlayId: null, unmatchable: null, approx: [], rotation: null,
   venueIds: { marketTicker: TAKER_TICKER, eventTicker: "KXNCAAFSPREAD-26SEP19DUQWSU" }, raw: {},
 };
