@@ -115,7 +115,7 @@ button, select, input { font: inherit; color: inherit; }
 .soon { color: var(--warn-fg); font-weight: 600; }
 .soon.urgent { color: var(--against-fg); }
 
-.edge-rail { text-align: right; display: grid; align-content: start; gap: 2px; min-width: 84px; max-width: 132px; }
+.edge-rail { text-align: right; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; min-width: 84px; max-width: 132px; }
 .edge-pct { font: 700 19px var(--figure); letter-spacing: -.02em; }
 .edge-pct.tier-hot { color: var(--edge-strong); }
 .edge-pct.tier-warm { color: var(--edge-mid); }
@@ -157,7 +157,8 @@ button, select, input { font: inherit; color: inherit; }
 .others-list .better { color: var(--warn-fg); }
 .others-list .yours { font-weight: 700; }
 .others-list .worse { color: var(--muted); }
-.edge-rail .tag { justify-self: end; margin: 1px 0; }
+/* The rail is capped at 132px, so its tags wrap: an unwrapped "fair moved against you" widened the track past the card and clipped every figure in it. */
+.edge-rail .tag { justify-self: end; margin: 1px 0; white-space: normal; }
 .move-detail { display: block; font: 400 11.5px system-ui, sans-serif; color: var(--muted); overflow-wrap: anywhere; }
 
 /* The bets already on this game. */

@@ -234,3 +234,11 @@ test("cutOffBodyText: a body cut off mid-download reads as that, not as a reply 
   assert.equal(phoneView.cutOffBodyText(new SyntaxError("Unexpected end of JSON input"), 10000),
     "download cut off: the reply arrived incomplete (connection dropped?)");
 });
+
+test("cardMoreText: the card's other Edges lines and their books, never a book count that reads against the price check", () => {
+  const novig = { book: { id: 1, name: "Novig" } };
+  const kalshi = { book: { id: 2, name: "Kalshi" } };
+  assert.equal(phoneView.cardMoreText({ others: [novig] }), "+1 more line at Novig · tap to see");
+  assert.equal(phoneView.cardMoreText({ others: [novig, novig] }), "+2 more lines at Novig · tap to see");
+  assert.equal(phoneView.cardMoreText({ others: [novig, kalshi, novig] }), "+3 more lines at 2 books · tap to see");
+});

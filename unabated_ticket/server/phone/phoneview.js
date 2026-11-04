@@ -481,6 +481,17 @@
     return null;
   }
 
+  // A card's footer: how many more lines its expander holds and at which
+  // books, so it never reads against the price-check tag ("best of 15
+  // books" counts every book at the number; this counts the card's own
+  // other Edges lines). `card` is an /edges.json grouped item.
+  function cardMoreText(card) {
+    const others = card.others || [];
+    const books = [...new Set(others.map((row) => row.book.name))];
+    const where = books.length === 1 ? books[0] : `${books.length} books`;
+    return `+${others.length} more line${others.length === 1 ? "" : "s"} at ${where} \u00b7 tap to see`;
+  }
+
   const api = {
     EDGES_POLL_MS, BETS_POLL_MS, EDGES_STALE_MS,
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
@@ -488,7 +499,7 @@
     scannerText, booksText, banners, freshnessText, betItemView, betsTabView, applyDismissals,
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
-    fmtDollars, fmtAmerican,
+    fmtDollars, fmtAmerican, cardMoreText,
   };
 
   if (inNode) {
