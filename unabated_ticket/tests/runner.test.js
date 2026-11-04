@@ -1984,6 +1984,37 @@ test("polymarket_quote: a game Polymarket US lists with its teams swapped, at an
   assert.match(noMarket.detail, /no football_team_full_game_spread market on cfb-duq-wst-2026-09-19 reads as home -35.5/);
 });
 
+test("polymarket_quote: a college name nothing resolves matches by its other team and start, and is saved to the crosswalk", async () => {
+  const run = async (events) => {
+    const { runner, service } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: polymarketFetch(events), polymarketGatewayUrl: POLY_GATEWAY });
+    const quote = await runner.polymarketQuote(new URLSearchParams(POLY_LINE_PARAMS));
+    runner.stop();
+    return { quote, learned: service.posts.filter((post) => post.route === "/crosswalk.json").flatMap((post) => post.body.rows) };
+  };
+  const event = polymarketEvent();
+  const unknownAway = { ...event.teams[0], safeName: "Zzyzx University" };
+  const { quote, learned } = await run([{ ...event, teams: [unknownAway, event.teams[1]] }]);
+  assert.deepEqual([quote.ok, quote.slug, quote.side], [true, POLY_SLUG, "no"]);
+  assert.equal(learned.length, 1);
+  assert.deepEqual([learned[0].venue, learned[0].league, learned[0].venueTeamKey, learned[0].venueTeamName],
+    ["polymarket_us", "cfb", "Zzyzx University", "Zzyzx University"]);
+  assert.match(learned[0].unabatedTeamId, /^\d+$/);
+  assert.match(learned[0].unabatedTeamName, /Duquesne/, "the away team is the one taught");
+
+  const otherTeam = await run([{ ...event, teams: [{ ...unknownAway, safeName: "Washington State" }, { ...event.teams[1], safeName: "Zzyzx Tech" }] }]);
+  assert.deepEqual([otherTeam.quote.ok, otherTeam.learned.length], [false, 0], "a name resolving to another team is never a match");
+
+  const twoUnknowns = await run([{ ...event, teams: [unknownAway, { ...event.teams[1], safeName: "Zzyzx Tech" }] }]);
+  assert.deepEqual([twoUnknowns.quote.ok, twoUnknowns.learned.length], [false, 0], "neither team resolving is no match");
+  const twice = await run([{ ...event, teams: [unknownAway, event.teams[1]] }, { ...event, slug: "b", teams: [{ ...unknownAway, safeName: "Zzyzx College" }, event.teams[1]] }]);
+  assert.deepEqual([twice.quote.ok, twice.learned.length], [false, 0]);
+  assert.match(twice.quote.detail, /0 of Polymarket US's 2 .* \(2 by one team and start\)/);
+  const wrongSlot = await run([{ ...event, teams: [event.teams[1], unknownAway] }]);
+  assert.deepEqual([wrongSlot.quote.ok, wrongSlot.learned.length], [false, 0], "the known team must sit in its own slot");
+  const exactWins = await run([event, { ...event, slug: "b", teams: [unknownAway, event.teams[1]] }]);
+  assert.deepEqual([exactWins.quote.ok, exactWins.learned.length], [true, 0], "an exact match is used and teaches nothing");
+});
+
 test("polymarket_quote: a closed market or an empty bid side is refused, and the gateway failing is a reason, not a throw", async () => {
   const closed = polymarketFetch(undefined, { marketData: { state: "MARKET_STATE_SUSPENDED", bids: [], offers: [] } });
   const { runner } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: closed, polymarketGatewayUrl: POLY_GATEWAY });
