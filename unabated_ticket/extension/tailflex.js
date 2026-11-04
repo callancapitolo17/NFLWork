@@ -543,16 +543,31 @@
   function rankScoreOf(row, bankroll) {
     if (!(typeof bankroll === "number" && bankroll > 0)) throw new Error(`rankScoreOf: expected a positive bankroll, got ${bankroll}`);
     if (typeof row.stake !== "number" || typeof row.shrunkEdgePct !== "number") return null;
-    const netOdds = kelly.americanToDecimal(row.price) - 1;
-    const believedEdge = row.shrunkEdgePct / 100;
-    return row.stake * believedEdge - (row.stake * row.stake * netOdds) / (2 * bankroll);
+    return stakeGrowthOf(row.stake, row.shrunkEdgePct / 100, row.price, bankroll);
+  }
+
+  // The same growth for a live row, on Unabated's raw in-game edge: a live
+  // row has no shrunk edge (no alt-gap measurement in play), so its card's
+  // best line is the raw edge's growth (Cal, 2026-11-04). null when the row
+  // has no stake.
+  function liveRankScoreOf(row, bankroll) {
+    if (!(typeof bankroll === "number" && bankroll > 0)) throw new Error(`liveRankScoreOf: expected a positive bankroll, got ${bankroll}`);
+    if (typeof row.stake !== "number" || typeof row.edgePct !== "number") return null;
+    return stakeGrowthOf(row.stake, row.edgePct / 100, row.price, bankroll);
+  }
+
+  // stake x edge - stake^2 x b / (2 x bankroll): the second-order growth of
+  // the stake at that edge and price.
+  function stakeGrowthOf(stake, edge, americanPrice, bankroll) {
+    const netOdds = kelly.americanToDecimal(americanPrice) - 1;
+    return stake * edge - (stake * stake * netOdds) / (2 * bankroll);
   }
 
   const api = {
     C_FALLBACK, TAU_FALLBACK, TAU_POOL_WINDOW_MS, MIN_RUNGS, TRIM_TOP_SHARE, MIN_DIST_SD, IMPLIED_SUM_MIN, IMPLIED_SUM_MAX,
     dnorm, pnorm, qnorm, impliedProbOf, devigProbitTwoWay, marketKeyOf,
     cOfRungs, tauSamplesOfRungs, tauOfSamples, tauByMarketOf, createTauPool, measureTailFlex, withPooledTau,
-    cOf, isMeasured, tauOf, isTauMeasured, edgeUncertainty, shrinkFactor, shrinkOfRow, rankScoreOf,
+    cOf, isMeasured, tauOf, isTauMeasured, edgeUncertainty, shrinkFactor, shrinkOfRow, rankScoreOf, liveRankScoreOf,
   };
 
   if (typeof module !== "undefined" && module.exports) {
