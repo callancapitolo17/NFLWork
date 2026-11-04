@@ -1479,7 +1479,10 @@
   function liveRowsAt(minEdgePct) {
     const now = Date.now();
     const options = { ...edgeSelectionOptions(effectiveFilter()), minEdgePct, now };
-    const selected = live.selectLiveEdges(livePayloads(), options).map((row) => ({ ...row, stake: stakeFor(row) }));
+    const selected = live.selectLiveEdges(livePayloads(), options).map((row) => {
+      const sized = { ...row, stake: stakeFor(row) };
+      return { ...sized, rankScore: tailflex.liveRankScoreOf(sized, state.settings.bankroll) };
+    });
     return withLiveBetFlags(selected, now);
   }
 
@@ -1535,7 +1538,16 @@
     const text = document.createElement("span");
     text.append(label, ` · ${liveHeadText(liveState, rows)}`);
     view.edgesLiveHead.replaceChildren(dot, text);
-    view.edgesLiveList.replaceChildren(...rows.slice(0, MAX_EDGE_ROWS).map((row) => renderEdgeRow({ ...row, liveStale: liveState.stale })));
+    const stamped = rows.map((row) => ({ ...row, liveStale: liveState.stale }));
+    const items = state.edgeSettings.groupByMarket ? liveGroupsOf(stamped) : stamped;
+    view.edgesLiveList.replaceChildren(...items.slice(0, MAX_EDGE_ROWS).map((item) => (state.edgeSettings.groupByMarket ? renderGroupCard(item) : renderEdgeRow(item))));
+  }
+
+  // Live cards, one per (game, market, side) as pregame, the best line the
+  // raw in-game edge's growth (tailflex.liveRankScoreOf). The key carries
+  // "live:" so a card opened at a break never opens the game's pregame card.
+  function liveGroupsOf(rows) {
+    return groupsOf(rows).map((group) => ({ ...group, key: `live:${group.key}` }));
   }
 
   // Cards: the best line of each (game, market, side) is always the highest
@@ -1782,12 +1794,21 @@
     edge.textContent = fmtPct(row.edgePct / 100);
     const stake = document.createElement("span");
     stake.className = "gl-stake";
-    stake.textContent = row.stake == null ? "—" : fmtDollars(row.stake);
+    stake.textContent = groupLineStakeText(row);
     if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on this stake's growth at ${fmtPct(row.shrunkEdgePct / 100)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${fmtPct(row.edgePct / 100)}); the stake is on Unabated's edge`;
-    rail.append(edge, ...moveParts(row, row.bet), stake);
+    rail.append(edge, ...(row.live ? [] : moveParts(row, row.bet)), stake);
 
     li.append(main, rail);
     return li;
+  }
+
+  // A pregame line shows its standalone stake; a live line the number its
+  // rail would act on ("add $125.95", or "—" when its open bets could not be
+  // sized against or the tab stopped reading), never the standalone one.
+  function groupLineStakeText(row) {
+    if (!row.live) return row.stake == null ? "—" : fmtDollars(row.stake);
+    if (row.liveStale) return "—";
+    return edgeRows.stakeRail(row).text;
   }
 
   // A card is a row built from the market's best line, with the other books
@@ -1797,7 +1818,7 @@
     const best = group.best;
     const tier = edgeTier(best.edgePct);
     const li = document.createElement("li");
-    li.className = `edge-row tier-${tier}${best.isBlurred ? " blurred" : ""}`
+    li.className = `edge-row tier-${tier}${best.isBlurred ? " blurred" : ""}${best.liveStale ? " stale" : ""}`
       + `${group.rows.some((row) => row.key === lastClickedKey) ? " last-clicked" : ""}`;
     li.dataset.group = group.key;
     li.dataset.key = best.key;
@@ -1978,7 +1999,14 @@
   }
 
   view.edgesLiveList.addEventListener("click", async (event) => {
-    const li = event.target.closest("li.edge-row");
+    const more = event.target.closest("button.group-more");
+    if (more) {
+      if (expandedGroups.has(more.dataset.group)) expandedGroups.delete(more.dataset.group);
+      else expandedGroups.add(more.dataset.group);
+      renderLive();
+      return;
+    }
+    const li = event.target.closest("li.edge-row, li.group-line");
     if (!li) return;
     const row = currentLiveRows().find((r) => r.key === li.dataset.key);
     if (!row) return;

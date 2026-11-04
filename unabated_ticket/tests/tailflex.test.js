@@ -419,3 +419,25 @@ test("createTauPool: the latest reading per key, evicted after the window, persi
   assert.equal(tailflex.tauOf(base, { leagueId: NFL, periodTypeId: FULL_GAME, betTypeId: SPREAD }), tailflex.TAU_FALLBACK);
   assert.equal(base.tauSamples.length, 0);
 });
+
+test("liveRankScoreOf: a live card's best line is the raw in-game edge's growth, so a bigger edge at a long price can lose the card", () => {
+  const edgeRows = require("../extension/edgerows.js");
+  const bankroll = 10000;
+  const liveRow = (key, price, edgePct) => {
+    const row = { key, live: { checkpoint: "end of Q1" }, eventId: 77, leagueId: NFL, periodTypeId: FULL_GAME, betTypeId: SPREAD, sideIndex: 0, book: { id: EXCHANGE_BOOK }, price, edgePct, eventStartMs: NOW };
+    const sized = { ...row, stake: kelly.kellyStakeFromEdge({ bookPrice: price, edgePct, bankroll, multiplier: QUARTER_KELLY }).stake };
+    return { ...sized, rankScore: tailflex.liveRankScoreOf(sized, bankroll) };
+  };
+  // Main +5% at -110 vs an alt +8% at +300: growth ~ e^2 / b puts the main ahead (0.00275 vs 0.00213).
+  const main = liveRow("live:main", -110, 5);
+  const alt = liveRow("live:alt", 300, 8);
+  const growth = (row) => row.stake * (row.edgePct / 100) - (row.stake * row.stake * (kelly.americanToDecimal(row.price) - 1)) / (2 * bankroll);
+  assert.ok(Math.abs(main.rankScore - growth(main)) < 1e-9, `${main.rankScore}`);
+  assert.ok(main.rankScore > alt.rankScore, `main ${main.rankScore} alt ${alt.rankScore}`);
+  const cards = edgeRows.groupEdgeRows([alt, main], "edge");
+  assert.equal(cards.length, 1);
+  assert.deepEqual(cards[0].rows.map((row) => row.key), ["live:main", "live:alt"]);
+  // No stake: nothing to rank. No bankroll: a bug.
+  assert.equal(tailflex.liveRankScoreOf({ ...main, stake: null }, bankroll), null);
+  assert.throws(() => tailflex.liveRankScoreOf(main, 0), /positive bankroll/);
+});

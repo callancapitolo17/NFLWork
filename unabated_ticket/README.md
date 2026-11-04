@@ -1013,6 +1013,17 @@ they land, not on the next throttled tick. Every post carries `visible` and
 the tab's `instanceId`; a pregame tab of the same league never blanks a
 live tab's game while that tab is still posting (`content.js`).
 
+**Live cards (0.38.0, 2026-11-04)**: with *Group by market* on, the Live
+block groups like pregame, one card per game, period, market and side with
+the other books and rungs behind its expander. A live row has no shrunk
+edge, so a card's best line is the growth of its stake on Unabated's raw
+in-game edge (`tailflex.liveRankScoreOf`: stake × edge − stake² × b / (2 ×
+bankroll)); a +8% alt at +300 loses the card to a +5.8% main at −110. A
+line inside a live card shows the number its own rail would act on (`add
+$X`, or `—` when it cannot be sized or the tab stopped reading), never the
+standalone stake. Live cards keep a `live:` key, so opening one never opens
+the game's pregame card.
+
 The Edges filters apply as they do to pregame (Books, Bets, Periods, min
 edge, min suggested bet, min liquidity to win, alt lines and their distance);
 there are no live-only settings. Stakes are conditional Kelly against every
