@@ -3457,7 +3457,13 @@ signs (one balance read at start) and the service reads `polymarket_us`; else
    30 min of the board's start; the one whose two teams resolve, through
    `teams.js` and the team crosswalk exactly as Cal's Polymarket US bets are
    matched, to the board game's away and home in that order (a full page of
-   100 events refuses as possibly cut); then among its markets the one market and side whose own
+   100 events refuses as possibly cut). When none does (a college name no
+   rule knows: Polymarket US's "Queens University" is Unabated's "Queens NC",
+   2026-11-04), the one event where one team resolves to the board's team in
+   its own slot and the other resolves to no team at all is the game, and the
+   runner saves that name to the crosswalk (`POST /crosswalk.json`,
+   insert-only) so the team's bets match too; a name that resolves to a
+   different team never matches, and two such events refuse. Then among its markets the one market and side whose own
    structured sides read as the line's side and number (YES is the `long`
    side; a spread side's description is its own signed number; a total's YES
    is Over; the bets source's grammar, so the bet reads back as the line it
