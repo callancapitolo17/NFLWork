@@ -317,18 +317,22 @@ class TakerStore:
         where, params = _window_clause("o.placed_at", window_start, window_end)
         row = self._con.execute(
             f"SELECT count(*), count(*) FILTER (WHERE o.{filled_column} > 0), "
-            f"coalesce(sum(o.{requested_column}) FILTER (WHERE o.{filled_column} IS NOT NULL), 0), "
+            f"coalesce(sum(o.{requested_column}) FILTER (WHERE o.{filled_column} IS NOT NULL OR o.status = 'rejected'), 0), "
             f"coalesce(sum(o.{filled_column}), 0), coalesce(sum(o.cost_filled), 0), "
             f"sum(o.cost_filled * d.live_edge) FILTER (WHERE o.cost_filled > 0 AND d.live_edge IS NOT NULL), "
-            f"sum(o.cost_filled) FILTER (WHERE o.cost_filled > 0 AND d.live_edge IS NOT NULL) "
+            f"sum(o.cost_filled) FILTER (WHERE o.cost_filled > 0 AND d.live_edge IS NOT NULL), "
+            f"count(*) FILTER (WHERE o.status = 'rejected'), count(*) FILTER (WHERE o.status = 'unknown') "
             f"FROM {table} o LEFT JOIN ("
             f"  SELECT json_extract_string(decision, '{decision_id_path}') AS order_id, any_value(live_edge) AS live_edge "
             f"  FROM taker_decisions WHERE reason = 'bet' AND json_extract_string(decision, '{decision_id_path}') IS NOT NULL GROUP BY 1"
             f") d ON d.order_id = o.{id_column} WHERE {where}", params).fetchone()
-        orders, filled_orders, requested_read, filled, cost, edge_dollars, edge_cost = row
+        orders, filled_orders, requested_read, filled, cost, edge_dollars, edge_cost, rejected, unconfirmed = row
         return {
             "orders": orders, "filledOrders": filled_orders,
-            # Fill rate over the orders whose fills have been read (a NULL fill is not yet known, never 0).
+            # The venue refused it outright (nothing filled) / no definite answer or fills read yet (full cost held).
+            "rejectedOrders": rejected, "unconfirmedOrders": unconfirmed,
+            # Fill rate over the orders whose fills are known: a rejection filled 0; a NULL fill
+            # on any other order is not yet known, never 0.
             "fillRate": float(filled) / float(requested_read) if requested_read else None,
             "staked": float(cost),
             "avgEdgeAtFill": float(edge_dollars) / float(edge_cost) if edge_cost else None,

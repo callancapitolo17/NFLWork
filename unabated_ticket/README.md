@@ -2829,7 +2829,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   ceiling, $4,500 / $850), cash in its subaccount (`/balances.json`), open
   orders and Kelly bankroll. **Activity** has its own range (Today, 7D, 30D,
   All, Custom; it includes today, since these are orders, not results): orders
-  sent, filled, fill rate (over orders whose fills are read), staked and the
+  sent, filled, rejected by the venue, unconfirmed (no definite answer or
+  fills not read yet, full cost held), fill rate (over orders whose fills
+  are read, a rejection counting as unfilled), staked and the
   cost-weighted live edge at fill, one row per bot (a Kalshi contract pays $1,
   a Novig one 1c). **Results** are the bots' settled bets in the header range
   (Bot origin, never the MLB bots' combos), the Overview math. **Why it didn't

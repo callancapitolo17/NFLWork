@@ -88,6 +88,21 @@ def test_activity_counts_orders_and_lines_in_the_window(store):
     assert novig["reasons"] == [{"reason": "not_best", "orderStatus": None, "lines": 1}]
 
 
+def test_rejected_orders_count_as_unfilled_and_unconfirmed_are_named(store):
+    rejected_id, lost_id = "ubot-" + "d" * 32, "ubot-" + "e" * 32
+    for client_order_id in (rejected_id, lost_id):
+        store.insert_order({"client_order_id": client_order_id, "placed_at": NOW - timedelta(minutes=1), "row_key": "k5",
+                            "event_id": 9, "ticker": "KX-5", "contract_side": "yes", "ask_price": 0.5,
+                            "all_in_price": 0.52, "count_requested": 6, "event_start": NOW + timedelta(hours=5),
+                            "open_cost": 3.12, "subaccount": 1})
+    store.update_order(rejected_id, {"status": "rejected", "open_cost": 0.0, "settled_at": NOW, "error": "HTTP 400"})
+    store.update_order(lost_id, {"status": "unknown", "error": "no answer"})
+    kalshi = store.bot_activity(NOW - timedelta(days=1), NOW)["kalshi"]
+    assert (kalshi["orders"], kalshi["rejectedOrders"], kalshi["unconfirmedOrders"]) == (3, 1, 1)
+    # 4 of 10 filled plus 0 of the 6 refused; the order with no answer is left out.
+    assert kalshi["fillRate"] == pytest.approx(4 / 16)
+
+
 def test_all_time_takes_old_decisions_with_no_venue_as_kalshi(store):
     kalshi = store.bot_activity(None, None)["kalshi"]
     assert kalshi["orders"] == 2
