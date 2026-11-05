@@ -12,7 +12,10 @@
 //      the board's start (bets.js's own game rule), filtered to the line's
 //      market type; the one whose two teams resolve (teams.js + the team crosswalk, exactly as Cal's
 //      Polymarket US bets are matched to the board) to the board game's away
-//      and home, in that order;
+//      and home, in that order; failing that, the one event where one team
+//      resolves to the board's team in its own slot and the other resolves to
+//      no team at all (oneTeamMatches: a college name nothing knows yet), whose
+//      name the runner then saves to the crosswalk;
 //   2. the market: among that event's markets of the type, the one market and
 //      contract side whose own structured sides read as the row's side and
 //      number (the bets source's grammar, sources/polymarket_us.py:
@@ -113,6 +116,48 @@ function matchingEvents(events, row, keysOf, boardKeys) {
     if (keys.awayKey === boardKeys.away && keys.homeKey === boardKeys.home) found.push({ event, teams });
   }
   return found;
+}
+
+// The events that are the row's game by ONE team, for a college name no rule
+// or crosswalk row resolves yet (Cal 2026-11-04, option B: Polymarket US's
+// "Queens University" is Unabated's "Queens NC"): a start within
+// START_TOLERANCE_MS, one side resolving to the board's team in its own slot,
+// and the other side resolving to NO team — a name that resolves to a
+// different team is a different game, never a match. A team plays one game
+// in that window, so a second fitting event refuses at the caller. Each match
+// carries the crosswalk row its unresolved side teaches.
+//   keysOf, boardKeys  as matchingEvents
+function oneTeamMatches(events, row, keysOf, boardKeys) {
+  const startMs = Date.parse(row.eventStart);
+  const found = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    const teams = eventTeamsOf(event, row.league);
+    if (!teams) continue;
+    const eventStartMs = Date.parse(event.startTime);
+    if (!Number.isFinite(eventStartMs) || !Number.isFinite(startMs) || Math.abs(eventStartMs - startMs) > START_TOLERANCE_MS) continue;
+    const keys = keysOf({ venue: VENUE, league: row.league, awayTeam: teams.awayTeam, homeTeam: teams.homeTeam });
+    const awayAgrees = keys.awayKey === boardKeys.away && !keys.homeKey;
+    const homeAgrees = keys.homeKey === boardKeys.home && !keys.awayKey;
+    if (!awayAgrees && !homeAgrees) continue;
+    const unresolvedSide = awayAgrees ? "home" : "away";
+    found.push({ event, teams, learnedRow: crosswalkRowOf(row, event, teams, unresolvedSide) });
+  }
+  return found;
+}
+
+// The team_crosswalk row (bets service POST /crosswalk.json) naming the
+// unresolved Polymarket US team as the board's team on that side. Keyed on
+// the name, as the Polymarket US bets source names its teams (bets.js
+// venueTeamOf: no venue team object, so the name is the key).
+function crosswalkRowOf(row, event, teams, side) {
+  const venueTeamName = side === "away" ? teams.awayTeam : teams.homeTeam;
+  const unabatedTeamId = side === "away" ? row.awayTeamId : row.homeTeamId;
+  const unabatedTeamName = side === "away" ? row.awayTeam : row.homeTeam;
+  return {
+    venue: VENUE, league: row.league, venueTeamKey: venueTeamName, venueTeamName,
+    unabatedTeamId: String(unabatedTeamId), unabatedTeamName: typeof unabatedTeamName === "string" ? unabatedTeamName : null,
+    learnedFrom: `Polymarket US Place quote: ${event.slug} on board event ${row.eventId} by its other team and start`,
+  };
 }
 
 function signedNumber(text) {
@@ -233,6 +278,6 @@ function allInOf(ask) {
 }
 
 module.exports = {
-  BOOK_NAME, VENUE, START_TOLERANCE_MS, EVENTS_PAGE_LIMIT, TAKER_FEE_THETA, MARKET_STATE_OPEN,
+  BOOK_NAME, VENUE, START_TOLERANCE_MS, EVENTS_PAGE_LIMIT, TAKER_FEE_THETA, MARKET_STATE_OPEN, oneTeamMatches,
   isPolymarketUsBook, marketTypeOf, eventTeamsOf, matchingEvents, sideAndPointsOf, rowSideOf, contractOf, quoteOf, allInOf,
 };

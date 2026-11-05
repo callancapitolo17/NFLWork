@@ -780,16 +780,23 @@ function createRunner(deps) {
     }
     if (!learned.length) return;
     try {
-      const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/crosswalk.json`, "POST", { rows: learned });
-      if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json reply has no crosswalk array");
-      logInfo(`crosswalk: learned ${reply.learned} row(s), ${(reply.conflicts || []).length} refused by the service, ${reply.crosswalk.length} held`);
-      held = { ...held, crosswalk: reply.crosswalk, records: betsLib.rekeyRecords(betsLib.applyPins(held.records, held.pins), reply.crosswalk) };
+      await postCrosswalkRows(learned);
       crosswalkLastError = null;
     } catch (error) {
       crosswalkRetryAt = now() + SERVICE_WRITE_RETRY_MS;
       if (crosswalkLastError !== error.message) logWarning(`crosswalk: service write failed: ${error.message}`);
       crosswalkLastError = error.message;
     }
+  }
+
+  // POST crosswalk rows (insert-only at the service: a held key is never
+  // rewritten) and re-key the held bets through the whole table it replies
+  // with. Throws on a failed write.
+  async function postCrosswalkRows(rows) {
+    const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/crosswalk.json`, "POST", { rows });
+    if (!reply || !Array.isArray(reply.crosswalk)) throw new Error("crosswalk.json reply has no crosswalk array");
+    logInfo(`crosswalk: learned ${reply.learned} row(s), ${(reply.conflicts || []).length} refused by the service, ${reply.crosswalk.length} held`);
+    held = { ...held, crosswalk: reply.crosswalk, records: betsLib.rekeyRecords(betsLib.applyPins(held.records, held.pins), reply.crosswalk) };
   }
 
   // Each new open bet's fair when it was placed, read off the line history
@@ -1453,11 +1460,19 @@ function createRunner(deps) {
     }
     const keysOf = (record) => betsLib.resolveTeamKeys([record], held.crosswalk)[0];
     const boardKeys = { away: teams.keyOf(row.league, row.awayTeamId), home: teams.keyOf(row.league, row.homeTeamId) };
-    const games = polymarket.matchingEvents(events, row, keysOf, boardKeys);
+    const exact = polymarket.matchingEvents(events, row, keysOf, boardKeys);
+    // No event names both teams: a college name nothing resolves yet may still
+    // be the game by its other team (polymarket.oneTeamMatches).
+    const games = exact.length ? exact : polymarket.oneTeamMatches(events, row, keysOf, boardKeys);
     if (games.length !== 1) {
-      return { ok: false, ...fields, reason: "no_market", detail: `${games.length} of Polymarket US's ${events.length} ${type.type} events are ${row.eventName} at its start` };
+      const byOneTeam = exact.length ? "" : ` (${games.length} by one team and start)`;
+      return { ok: false, ...fields, reason: "no_market", detail: `${exact.length} of Polymarket US's ${events.length} ${type.type} events are ${row.eventName} at its start${byOneTeam}` };
     }
-    const { event, teams: eventTeams } = games[0];
+    const { event, teams: eventTeams, learnedRow } = games[0];
+    if (learnedRow) {
+      logInfo(`polymarket quote ${row.eventId}: matched ${event.slug} by one team; "${learnedRow.venueTeamName}" is Unabated team ${learnedRow.unabatedTeamId}`);
+      postCrosswalkRows([learnedRow]).catch((error) => logWarning(`crosswalk: polymarket name not saved: ${error.message}`));
+    }
     const contract = polymarket.contractOf(row, event, eventTeams, type.type);
     if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
     const eventStartMs = Math.min(startMs, Date.parse(event.startTime));
