@@ -2932,7 +2932,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   0.35.0, Cal 2026-10-31): the same `/balances.json`, fetched with every bets
   poll (30 s), laid out by `extension/balancesview.js` (shared by both pages)
   as one line of what each book can bet now: Kalshi, Novig, Place (Novig's
-  Place sub-account) and Poly. No in-bets, no total, no bot wallets (those stay
+  Place sub-account), Poly and ProphetX (0.40.2, Cal 2026-11-05; the
+  service's existing `get_balance` read after each ProphetX poll, so no extra
+  ProphetX request). No in-bets, no total, no bot wallets (those stay
   on the tracker's Balances tab). A failed or 5-min-old read is amber with its
   age as the tooltip; a never-read book shows "—".
 - **Open bets** (Open page) are split into **Upcoming** and, when any
