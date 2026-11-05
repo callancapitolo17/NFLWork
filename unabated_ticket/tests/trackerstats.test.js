@@ -454,3 +454,51 @@ test("tickets label the venue-named league, a mixed combo, and keep Unknown when
   const byId = Object.fromEntries(tickets.map((t) => [t.id, t.league]));
   assert.deepEqual(byId, { prop: "NFL", combo: "Mixed", rbl: "Unknown" });
 });
+
+test("pacificDayStartMs: midnight Pacific in both PDT and PST", () => {
+  assert.equal(new Date(stats.pacificDayStartMs("2026-10-20")).toISOString(), "2026-10-20T07:00:00.000Z");
+  assert.equal(new Date(stats.pacificDayStartMs("2026-11-04")).toISOString(), "2026-11-04T08:00:00.000Z");
+  // The DST change day (Nov 1 2026): midnight is still PDT.
+  assert.equal(new Date(stats.pacificDayStartMs("2026-11-01")).toISOString(), "2026-11-01T07:00:00.000Z");
+});
+
+test("botActivityWindow: Today, 7D, All and a clamped, swapped Custom", () => {
+  const today = "2026-11-04";
+  const todayWin = stats.botActivityWindow("Today", today);
+  assert.deepEqual([todayWin.first, todayWin.last], [today, today]);
+  assert.equal(todayWin.query, "?start=" + encodeURIComponent("2026-11-04T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-05T08:00:00.000Z"));
+  assert.equal(stats.botActivityWindow("7D", today).first, "2026-10-29");
+  assert.deepEqual(stats.botActivityWindow("All", today), { first: null, last: null, query: "" });
+  const custom = stats.botActivityWindow("Custom", today, { first: "2026-12-01", last: "2020-01-01" });
+  assert.deepEqual([custom.first, custom.last], ["2026-10-14", today]);
+  assert.throws(() => stats.botActivityWindow("YTD", today), /unknown bot activity range/);
+});
+
+test("botReasonRows: names reasons, splits a bet by the desk's answer, merges labels", () => {
+  const rows = stats.botReasonRows([
+    { reason: "edge_short", orderStatus: null, lines: 40 },
+    { reason: "bet", orderStatus: "filled", lines: 3 },
+    { reason: "bet", orderStatus: "partial", lines: 2 },
+    { reason: "bet", orderStatus: "ceiling", lines: 4 },
+    { reason: "cap", orderStatus: null, lines: 1 },
+  ]);
+  assert.deepEqual(rows, [
+    { label: "Edge too small", lines: 40, tone: "plain" },
+    { label: "Bet", lines: 5, tone: "bet" },
+    { label: "At the money cap", lines: 4, tone: "warn" },
+    { label: "Edge over 20% (looks wrong)", lines: 1, tone: "plain" },
+  ]);
+});
+
+test("botTicketsByVenue: bot bets only, never the MLB bots' Kalshi combos", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "kalshi:A:yes:s1", venue: "kalshi", raw: { subaccount: 1 } }),
+    straight({ id: "kalshi:B:yes", venue: "kalshi", raw: {} }),
+    straight({ id: "kalshi:C:yes:s1", venue: "kalshi", raw: { subaccount: 1, series: "KXMVECROSSCATEGORY" } }),
+    straight({ id: "novig:1:bot", venue: "novig", source: "novig_bot" }),
+    straight({ id: "novig:2", venue: "novig" }),
+  ], []);
+  const byVenue = stats.botTicketsByVenue(tickets);
+  assert.deepEqual(byVenue.kalshi.map((t) => t.id), ["kalshi:A:yes:s1"]);
+  assert.deepEqual(byVenue.novig.map((t) => t.id), ["novig:1:bot"]);
+});

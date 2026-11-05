@@ -186,6 +186,12 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     creditLimit, fetchedAt, error}}}, the live per-venue
                                     account balance read after each poll (balances.py;
                                     memory only, a failed read keeps the last numbers)
+           GET /bot.json?start=&end=  the Bet Tracker's Bot tab (bot_report.py): each
+                                    bot's status (off / stopped / running), open cost
+                                    vs its ceiling, its orders and decision reasons in
+                                    [start, end) (ISO instants, each optional) and its
+                                    newest orders, read from taker.duckdb; plus the
+                                    runner's last taker pass (GET /taker.json on it)
            GET /edges.json          the server runner's Edges list (config.RUNNER_URL,
                                     server/edges_payload.js documents it), passed through
                                     as it came; 502 {error, runnerUrl} when the runner
@@ -276,7 +282,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from unabated_ticket.bets_service import bfa_place, bfa_teaser, config
+from unabated_ticket.bets_service import bfa_place, bfa_teaser, bot_report, config
 from unabated_ticket.bets_service.balances import BalanceBook, balances_payload, read_balance_once
 from unabated_ticket.bets_service.log_setup import setup_logging
 from unabated_ticket.bets_service.manual_orders import ManualKalshiDesk, read_runner_quote, read_runner_team_keys
@@ -1319,6 +1325,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/balances.json":
                 self._send_json(200, balances_payload(balance_book or BalanceBook()))
                 return
+            if url.path == "/bot.json":
+                self._send_bot_report(url.query)
+                return
             if url.path == "/tau_samples.json":
                 now = _now()
                 self._send_json(200, {"generatedAt": _iso(now),
@@ -1340,6 +1349,21 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._send_static(STATIC_FILES[url.path])
                 return
             self._send_json(404, {"error": f"no route for {url.path}"})
+
+        # GET /bot.json: the Bet Tracker's Bot tab (bot_report.py), read only.
+        def _send_bot_report(self, query: str) -> None:
+            window = bot_report.parse_window(parse_qs(query))
+            if isinstance(window, str):
+                self._send_json(400, {"error": window})
+                return
+            kalshi_desk = bot_report.desk_status(taker_desk is not None, taker_desk_off_reason,
+                                                 (config.TAKER_STOP_PATH,))
+            novig_desk = bot_report.desk_status(novig_taker_desk is not None, novig_taker_desk_off_reason,
+                                                (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH))
+            runner = bot_report.runner_pass(
+                lambda: fetch_runner_json(edges_runner_url, "/taker.json", edges_timeout_sec))
+            self._send_json(200, bot_report.bot_payload(taker_store, kalshi_desk, novig_desk, runner, *window,
+                                                        _iso(_now())))
 
         def _send_static(self, path: Path) -> None:
             try:
