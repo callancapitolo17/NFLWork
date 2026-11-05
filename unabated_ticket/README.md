@@ -3790,6 +3790,23 @@ SELECT placed_at, label, ticker AS bfa_game_id, ticket_all_in, ask_price, stake,
 FROM manual_orders WHERE venue = 'bfa' ORDER BY placed_at DESC;
 ```
 
+### Open at Underdog on the phone Ticket (`server/phone/phoneview.js`, 2026-11-05)
+
+Underdog (book name `Underdog Prediction Market`) has no API Cal can use: its
+exchange UDX offers a participant API only on approval, against discretionary
+money, volume and technical minimums, and its terms ban any other scripted
+access. So nothing places there. A phone Ticket on an Underdog line instead
+shows the pick to tap and Underdog's multiplier for the price
+(`Chicago Bears -2.5 at 1.91x`, `Cincinnati Bengals ML at 1.57x`; Unabated's
+own decimal when it carries one, else the American price as decimal odds) and
+an **Open at Underdog** link to that league's Underdog page, where every game's
+spread, total and moneyline sit on one screen (Underdog has no per-game link):
+`https://app.underdogsports.com/pick-em/higher-lower/all/<NFL|CFB|NBA|CBB|MLB|NHL>`,
+every soccer league at `FIFA`, any other league at `featured`. Cal taps the
+price and types the stake shown above it. The link goes when the line leaves
+the Edges list. Phone page only; the panel and the bets service are unchanged,
+and Underdog bets are not read into `/bets.json`.
+
 ### A Place reads its venue before it answers (`bets_service/service.py`, 2026-10-29)
 
 Each of the Ticket's Place routes, once its order may hold contracts (`filled`,
