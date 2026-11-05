@@ -26,16 +26,22 @@ websocket/base.py + markets.py, and a live read-only recon on the VM,
   * The SDK names a heartbeat frame; none came in 60 s live, so silence is
     no sign of a dead line. The stream pings every PING_SEC and drops a
     connection that answers nothing (no pong, no frame) for SILENT_RECONNECT_SEC.
-  * No published limits on subscriptions or frames: one requestId per market
-    keeps an unsubscribe to that market, and the live pass is capped at
-    MAX_BACKGROUND_MARKETS.
+  * One connection holds at most 10 subscriptions: the 11th answers
+    "max subscriptions per connection reached" (live, 2026-11-05 23:36Z,
+    the first deploy, which subscribed one market per requestId). A
+    subscription names a list of slugs, so the markets are packed into at
+    most MAX_SUBSCRIPTIONS (9) groups of SLUGS_PER_SUBSCRIPTION. Changing a
+    group's markets means unsubscribing it and subscribing the new list under
+    a new requestId, which answers every market's whole book again. No limit
+    on slugs per subscription is published.
 
 A book is served while the connection is up and answering, and its market's
 last whole book came on this connection within BOOK_MAX_AGE_SEC. A still
-market gets no frames, so each subscription is renewed (unsubscribe, then
-subscribe under a new requestId, which answers a fresh whole book) once its
-last book is RESUBSCRIBE_SEC old. Anything else answers an `error` naming
-why, never an old book. The Place button's markets go ahead of the rest.
+market gets no frames, so each group is renewed (unsubscribe, subscribe the
+same list under a new requestId) once it was sent RESUBSCRIBE_SEC ago.
+Anything else answers an `error` naming why, never an old book. The Place
+button's markets are placed in a group ahead of the rest, and the live
+pass's are capped below the groups' room so Place always finds a place.
 
 Side effects: one outbound websocket to Polymarket US on the configured key
 (reads only: no verb here can place, cancel or move money). Nothing on disk;
@@ -68,18 +74,24 @@ REPEAT_FAILURE_LOG_SEC = 10 * 60
 RESUBSCRIBE_SEC = 120
 # ...and its book is not served once older than this (a renewal that went unanswered).
 BOOK_MAX_AGE_SEC = 180
-# A subscribe with no book this long after it was sent is sent again.
+# A group with no book this long after it was sent is sent again; a market
+# in an answered group with no book of its own this long reads as an error.
 ANSWER_WAIT_SEC = 10
 # A market Polymarket US refused is asked for again no sooner than this.
 REFUSED_RETRY_SEC = 60
 # A market nobody asked about for this long is unsubscribed (games end).
 WATCH_IDLE_SEC = 10 * 60
-# Subscribes sent in one pump step, so a first pass of many markets is spread out.
-MAX_SUBSCRIBES_PER_STEP = 20
+# Polymarket US's cap on one connection's subscriptions. One is kept free, so
+# a resubscribe never needs an 11th if Polymarket US frees the old one late.
+SUBSCRIPTIONS_PER_CONNECTION = 10
+MAX_SUBSCRIPTIONS = SUBSCRIPTIONS_PER_CONNECTION - 1
+# The markets one subscription names.
+SLUGS_PER_SUBSCRIPTION = 50
 # The most a caller may wait for a new market's first book (the runner's own timeouts sit above it).
 MAX_WAIT_SEC = 3.0
-# The runner's live price pass may hold at most this many markets; past it a
-# background market answers an error, so Place's market always has room.
+# The runner's live price pass may hold at most this many markets (of the
+# groups' 450); past it a background market answers an error, so Place's
+# market always has room.
 MAX_BACKGROUND_MARKETS = 400
 
 
@@ -140,11 +152,12 @@ class PolymarketBookStream:
         self._last_logged_failure: tuple[str, float] | None = None
 
     def _reset_connection_state(self) -> None:
-        # slug -> requestId of its live subscription on this connection, and when it was sent.
-        self._request_of: dict[str, str] = {}
-        self._sent_at: dict[str, float] = {}
-        # requestId -> slug, for this connection's subscriptions (an answer names its requestId).
-        self._slug_of_request: dict[str, str] = {}
+        # group index -> its live subscription on this connection: {requestId, slugs, sentAt, answeredAt}.
+        self._groups: dict[int, dict] = {}
+        # requestId -> group index, for this connection's live subscriptions.
+        self._group_of_request: dict[str, int] = {}
+        # slug -> group index it is (or is to be) subscribed in.
+        self._group_of_slug: dict[str, int] = {}
         # slug -> (marketData, received at), this connection's books only.
         self._books: dict[str, tuple[dict, float]] = {}
 
@@ -198,7 +211,8 @@ class PolymarketBookStream:
             "connectedForSec": None if self._connected_at is None else round(now - self._connected_at),
             "lastFrameAgeMs": None if self._last_frame_at is None else int((now - self._last_frame_at) * 1000),
             "error": self._last_error,
-            "subscribedMarkets": len(self._request_of),
+            "subscriptions": len(self._groups),
+            "subscribedMarkets": sum(len(group["slugs"]) for group in self._groups.values()),
             "booksHeld": len(self._books),
             "wantedMarkets": len(self._wanted),
         }
@@ -210,13 +224,22 @@ class PolymarketBookStream:
         if refused is not None:
             return {"error": f"Polymarket US refused the stream subscription to {slug}: {refused[1]}"}
         held = self._books.get(slug)
-        if held is None:
-            return {"pending": True, "error": f"waiting for Polymarket US's stream book of {slug}"}
-        market_data, received_at = held
-        age_sec = self._clock() - received_at
-        if age_sec > BOOK_MAX_AGE_SEC:
-            return {"error": f"the stream's book of {slug} is {round(age_sec)} s old (its renewal went unanswered)"}
-        return {"marketData": market_data, "ageMs": int(age_sec * 1000)}
+        if held is not None:
+            market_data, received_at = held
+            age_sec = self._clock() - received_at
+            if age_sec > BOOK_MAX_AGE_SEC:
+                return {"error": f"the stream's book of {slug} is {round(age_sec)} s old (its renewal went unanswered)"}
+            return {"marketData": market_data, "ageMs": int(age_sec * 1000)}
+        group = self._groups.get(self._group_of_slug.get(slug, -1))
+        if group is not None and slug in group["slugs"] and group["answeredAt"] is not None \
+                and self._clock() - group["answeredAt"] > ANSWER_WAIT_SEC:
+            return {"error": f"Polymarket US's stream answered its subscription with no book of {slug}"}
+        if slug in self._wanted and slug not in self._group_of_slug and self._groups_full():
+            return {"error": f"the stream's {MAX_SUBSCRIPTIONS} subscriptions of {SLUGS_PER_SUBSCRIPTION} markets are full"}
+        return {"pending": True, "error": f"waiting for Polymarket US's stream book of {slug}"}
+
+    def _groups_full(self) -> bool:
+        return len(self._group_of_slug) >= MAX_SUBSCRIPTIONS * SLUGS_PER_SUBSCRIPTION
 
     # ---- the stream thread ----
 
@@ -301,55 +324,70 @@ class PolymarketBookStream:
         return f"pm-{self._request_seq}"
 
     def _outgoing_frames(self) -> list[dict]:
-        """Unsubscribes of idle markets and of renewals, then subscribes:
-        Place's first, the live pass's last, oldest need first, at most
-        MAX_SUBSCRIBES_PER_STEP a step."""
-        frames: list[dict] = []
+        """Drop idle and refused markets from their groups, put new markets in
+        a group with room (Place's first, the live pass's last), then for every
+        group whose markets changed, whose subscribe went unanswered or whose
+        renewal is due: unsubscribe its old requestId and subscribe its list
+        under a new one."""
         with self._cond:
             now = self._clock()
             for slug, (refused_at, _reason) in list(self._refused.items()):
                 if now - refused_at > REFUSED_RETRY_SEC:
                     del self._refused[slug]
-            frames.extend(self._unsubscribe_idle(now))
-            due = []
-            for slug in self._wanted:
-                if slug in self._refused:
-                    continue
-                request_id = self._request_of.get(slug)
-                if request_id is None:
-                    due.append(slug)
-                    continue
-                held = self._books.get(slug)
-                if held is None and now - self._sent_at[slug] > ANSWER_WAIT_SEC:
-                    due.append(slug)
-                elif held is not None and now - held[1] > RESUBSCRIBE_SEC and now - self._sent_at[slug] > ANSWER_WAIT_SEC:
-                    due.append(slug)
-            due.sort(key=lambda slug: (slug not in self._priority, slug in self._background, slug))
-            for slug in due[:MAX_SUBSCRIBES_PER_STEP]:
-                old_request_id = self._request_of.get(slug)
-                if old_request_id is not None:
-                    frames.append({"unsubscribe": {"requestId": old_request_id}})
-                    self._slug_of_request.pop(old_request_id, None)
-                request_id = self._next_request_id()
-                self._request_of[slug] = request_id
-                self._slug_of_request[request_id] = slug
-                self._sent_at[slug] = now
-                frames.append({"subscribe": {"requestId": request_id, "subscriptionType": MARKET_DATA_SUBSCRIPTION,
-                                             "marketSlugs": [slug]}})
-        return frames
+            self._forget_idle(now)
+            for slug in [slug for slug in self._group_of_slug if slug in self._refused]:
+                del self._group_of_slug[slug]
+                self._books.pop(slug, None)
+            self._assign_new_markets()
+            return self._group_frames(now)
 
-    def _unsubscribe_idle(self, now: float) -> list[dict]:
-        frames = []
-        for slug in sorted(slug for slug, asked_at in self._wanted.items() if now - asked_at > WATCH_IDLE_SEC):
-            request_id = self._request_of.pop(slug, None)
-            if request_id is not None:
-                frames.append({"unsubscribe": {"requestId": request_id}})
-                self._slug_of_request.pop(request_id, None)
-            self._sent_at.pop(slug, None)
-            self._books.pop(slug, None)
+    def _forget_idle(self, now: float) -> None:
+        for slug in [slug for slug, asked_at in self._wanted.items() if now - asked_at > WATCH_IDLE_SEC]:
             del self._wanted[slug]
             self._priority.discard(slug)
             self._background.discard(slug)
+            self._group_of_slug.pop(slug, None)
+            self._books.pop(slug, None)
+
+    def _assign_new_markets(self) -> None:
+        new = [slug for slug in self._wanted if slug not in self._group_of_slug and slug not in self._refused]
+        new.sort(key=lambda slug: (slug not in self._priority, slug in self._background, slug))
+        sizes = {index: 0 for index in range(MAX_SUBSCRIPTIONS)}
+        for index in self._group_of_slug.values():
+            sizes[index] += 1
+        for slug in new:
+            room = [index for index in range(MAX_SUBSCRIPTIONS) if sizes[index] < SLUGS_PER_SUBSCRIPTION]
+            if not room:
+                return
+            # The emptiest group, so one new market resends as few books as it can.
+            index = min(room, key=lambda candidate: (sizes[candidate], candidate))
+            self._group_of_slug[slug] = index
+            sizes[index] += 1
+
+    def _group_frames(self, now: float) -> list[dict]:
+        frames: list[dict] = []
+        wanted_slugs: dict[int, list[str]] = {}
+        for slug, index in self._group_of_slug.items():
+            wanted_slugs.setdefault(index, []).append(slug)
+        for index in range(MAX_SUBSCRIPTIONS):
+            slugs = sorted(wanted_slugs.get(index, []))
+            group = self._groups.get(index)
+            if group is not None:
+                unchanged = group["slugs"] == slugs
+                unanswered = group["answeredAt"] is None and now - group["sentAt"] > ANSWER_WAIT_SEC
+                renewal_due = now - group["sentAt"] > RESUBSCRIBE_SEC
+                if unchanged and not unanswered and not renewal_due:
+                    continue
+                frames.append({"unsubscribe": {"requestId": group["requestId"]}})
+                del self._group_of_request[group["requestId"]]
+                del self._groups[index]
+            if not slugs:
+                continue
+            request_id = self._next_request_id()
+            self._groups[index] = {"requestId": request_id, "slugs": slugs, "sentAt": now, "answeredAt": None}
+            self._group_of_request[request_id] = index
+            frames.append({"subscribe": {"requestId": request_id, "subscriptionType": MARKET_DATA_SUBSCRIPTION,
+                                         "marketSlugs": slugs}})
         return frames
 
     # ---- frames from Polymarket US (called with the lock held) ----
@@ -367,32 +405,32 @@ class PolymarketBookStream:
             # Anything else (a lite price, a trade, an unsubscribe answer) carries no whole book.
             return
         request_id = message.get("requestId")
-        slug = self._slug_of_request.get(request_id) if isinstance(request_id, str) else None
-        if slug is None:
-            # An old requestId's last frame after a renewal or unsubscribe: the new one answers on its own.
+        index = self._group_of_request.get(request_id) if isinstance(request_id, str) else None
+        if index is None:
+            # An old requestId's last frame after its group was resubscribed: the new one answers on its own.
             return
-        if not isinstance(market_data, dict) or market_data.get("marketSlug") != slug:
-            # Never served, and asked again only after REFUSED_RETRY_SEC: a server that keeps
-            # answering another market must not be resubscribed every loop.
-            log.warning("polymarket stream: %s: a book frame not for it (%s); asking again in %d s",
-                        slug, json.dumps(market_data, default=str)[:300], REFUSED_RETRY_SEC)
-            self._slug_of_request.pop(request_id, None)
-            self._request_of.pop(slug, None)
-            self._sent_at.pop(slug, None)
-            self._books.pop(slug, None)
-            self._refused[slug] = (self._clock(), "its subscription answered another market's book")
+        group = self._groups[index]
+        group["answeredAt"] = group["answeredAt"] or self._clock()
+        slug = market_data.get("marketSlug") if isinstance(market_data, dict) else None
+        if slug not in group["slugs"]:
+            log.warning("polymarket stream: a book frame for %s, which subscription %s does not name (%s)",
+                        slug, request_id, json.dumps(market_data, default=str)[:300])
             return
         self._books[slug] = (market_data, self._clock())
 
     def _handle_error(self, message: dict) -> None:
+        """A refused group: its markets are refused for REFUSED_RETRY_SEC (the
+        reason names the group's size, so a cap on slugs per subscription shows)."""
         reason = str(message.get("error"))[:300]
         request_id = message.get("requestId")
-        slug = self._slug_of_request.pop(request_id, None) if isinstance(request_id, str) else None
-        if slug is None:
+        index = self._group_of_request.pop(request_id, None) if isinstance(request_id, str) else None
+        if index is None:
             log.warning("polymarket stream: Polymarket US answered an error: %s (requestId %s)", reason, request_id)
             return
-        self._request_of.pop(slug, None)
-        self._sent_at.pop(slug, None)
-        self._books.pop(slug, None)
-        self._refused[slug] = (self._clock(), reason)
-        log.error("polymarket stream: subscription to %s refused: %s", slug, reason)
+        group = self._groups.pop(index)
+        now = self._clock()
+        for slug in group["slugs"]:
+            self._refused[slug] = (now, reason)
+            self._group_of_slug.pop(slug, None)
+            self._books.pop(slug, None)
+        log.error("polymarket stream: subscription %s of %d market(s) refused: %s", request_id, len(group["slugs"]), reason)

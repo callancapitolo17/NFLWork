@@ -3610,20 +3610,25 @@ VM ("Not placed: HTTP 429 from .../book"). Now the bets service keeps ONE
 websocket, `wss://api.polymarket.us/v1/ws/markets`, signed with the
 `POLYMARKET_US_*` key like a REST GET, **reads only**; it runs whenever the key
 is set. The runner asks `POST /polymarket_books.json` (loopback only) for the
-slugs it needs: each is subscribed on first ask under its own requestId
-(`SUBSCRIPTION_TYPE_MARKET_DATA`; Place's first, the live pass's last and at
-most 400), the subscribe answers the whole book at once, and every change
-pushes the whole book again (a live recon on the VM, 2026-11-05, matched the
-SDK: the REST `/book`'s `marketData` shape, several subscriptions on one
-connection). A still market sends nothing, so its subscription is renewed for
-a fresh book every 2 min and a book over 3 min old is not served; the stream
+slugs it needs: each is subscribed on first ask (`SUBSCRIPTION_TYPE_MARKET_DATA`;
+Place's first, the live pass's last and at most 400), the subscribe answers
+the whole book at once, and every change pushes the whole book again (a live
+recon on the VM, 2026-11-05, matched the SDK: the REST `/book`'s `marketData`
+shape). Polymarket US caps a connection at **10 subscriptions** ("max
+subscriptions per connection reached", the first deploy, which subscribed one
+market each), so markets are packed into at most 9 subscriptions of 50 slugs
+(one slot kept free for a resubscribe);
+a new market joins the emptiest one, which is resubscribed with it (its other
+books keep serving meanwhile). A still market sends nothing, so each
+subscription is renewed for fresh books every 2 min and a book over 3 min old
+is not served; the stream
 pings every 15 s and reconnects after 45 s with no frame or pong (no heartbeat
 came in the recon). A market nobody asked about for 10 min is unsubscribed; a
 refused one is asked again a minute later. The live pass never reads a book
 off the gateway (no stream book: the line stays `unchecked`), and reads at
 most 3 fresh event lists a pass there (each reused 5 min), so the gateway is
 left to Place. `/health` carries `polymarketStream` (connected, last frame
-age, subscribed, held and wanted markets, last error).
+age, subscriptions, subscribed, held and wanted markets, last error).
 
 ### ProphetX source and Place (`bets_service/sources/prophetx.py`, `prophetx_place.py`, `server/prophetx.js`, 2026-10-31)
 
