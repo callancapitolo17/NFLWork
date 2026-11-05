@@ -2894,7 +2894,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   ceiling, $4,500 / $850), cash in its subaccount (`/balances.json`), open
   orders and Kelly bankroll. **Activity** has its own range (Today, 7D, 30D,
   All, Custom; it includes today, since these are orders, not results): orders
-  sent, filled, fill rate (over orders whose fills are read), staked and the
+  sent, filled, rejected by the venue, unconfirmed (no definite answer or
+  fills not read yet, full cost held), fill rate (over orders whose fills
+  are read, a rejection counting as unfilled), staked and the
   cost-weighted live edge at fill, one row per bot (a Kalshi contract pays $1,
   a Novig one 1c). **Results** are the bots' settled bets in the header range
   (Bot origin, never the MLB bots' combos), the Overview math. **Why it didn't
@@ -4203,6 +4205,12 @@ in red.
   is not in `bets.js` `GAME_SERIES` (and its Python twin in
   `bets_service/sources/kalshi_ticker.py`); the raw ticker is in the list.
   Add the series with its league, bet type and period, with a fixture test.
+  NBA and college basketball (`KXNBA*`, `KXNCAAMB*`: game, spread, total,
+  1H spread, 1H total) were added 2026-11-05.
+- **Tracker: Timing shows "Live or unknown"**: the bet has no game start
+  of its own (Kalshi football tickers carry a date only; BetOnline, BFA
+  settled and Wagerzon none) and no closing fair, whose saved start the
+  tracker otherwise uses (2026-11-05).
 - **Bets: unmatched "team not recognised (Name)"**: the venue's spelling
   resolves to no team, or to more than one, in the league's index. The
   index is not hand-written: every league snapshot the scanner parses

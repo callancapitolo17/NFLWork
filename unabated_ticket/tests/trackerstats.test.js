@@ -455,6 +455,20 @@ test("tickets label the venue-named league, a mixed combo, and keep Unknown when
   assert.deepEqual(byId, { prop: "NFL", combo: "Mixed", rbl: "Unknown" });
 });
 
+test("a bet with no start of its own takes the start saved with its closing fair, so Timing can bucket it", () => {
+  const tickets = stats.buildTickets([
+    straight({ id: "kalshi-date-only", eventStart: null }),
+    straight({ id: "no-close", eventStart: null }),
+    straight({ id: "own-start", eventStart: "2026-10-04T16:30:00Z" }),
+  ], [], [closeRow("kalshi-date-only", -130), closeRow("own-start", -130)]);
+  const byId = Object.fromEntries(tickets.map((t) => [t.id, t]));
+  assert.equal(byId["kalshi-date-only"].eventStart, "2026-10-04T17:00:00Z");
+  assert.equal(byId["kalshi-date-only"].timing, "1 to 6h before"); // placed 15:00, start 17:00
+  assert.equal(byId["no-close"].eventStart, null);
+  assert.equal(byId["no-close"].timing, "Live or unknown");
+  assert.equal(byId["own-start"].eventStart, "2026-10-04T16:30:00Z"); // the venue's own start wins
+});
+
 test("pacificDayStartMs: midnight Pacific in both PDT and PST", () => {
   assert.equal(new Date(stats.pacificDayStartMs("2026-10-20")).toISOString(), "2026-10-20T07:00:00.000Z");
   assert.equal(new Date(stats.pacificDayStartMs("2026-11-04")).toISOString(), "2026-11-04T08:00:00.000Z");
