@@ -52,7 +52,8 @@ test("a live offer reprices the line, its edge and its liquidity; nothing restin
   const state = stateWith([[NOVIG, 1, -115, MERRIMACK_UNDER]]);
   const line = state.lines[`m3:ms${NOVIG}:si1`];
   const live = livePrices.liveLineOf(line, { allIn: 0.605, depthDollars: 111.85, readAtMs: NOW - 5000 });
-  assert.ok(Math.abs(live.price - (-100 * 0.605) / 0.395) < 1e-9);
+  // -153.16 shown whole, as Unabated shows every price; the exact price is sourcePrice.
+  assert.equal(live.price, -153);
   assert.equal(live.sourceFormat, 4);
   assert.equal(live.sourcePrice, 0.605);
   // 59.84% fair against a 60.5c offer: a 1.1% loss, not an 11.87% edge.
@@ -125,4 +126,12 @@ test("a ghost exchange price no longer beats another book in best of N", () => {
   const lineView = livePrices.createLineView(servedReads({ [`m3:ms${NOVIG}:si1`]: { points: 47.5, empty: true, readAtMs: NOW } }), NOW);
   const live = pricecheck.comparePrice(pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null, lineView }), spec);
   assert.equal(live.better.length, 0);
+});
+
+test("a live price is a whole American number (Cal, 2026-11-05: +132.558... on the phone Ticket)", () => {
+  const state = stateWith([[NOVIG, 1, -115, MERRIMACK_UNDER]]);
+  const line = state.lines[`m3:ms${NOVIG}:si1`];
+  const live = livePrices.liveLineOf(line, { allIn: 0.43, depthDollars: 98, readAtMs: NOW });
+  assert.equal(live.price, 133);
+  assert.equal(live.sourcePrice, 0.43);
 });
