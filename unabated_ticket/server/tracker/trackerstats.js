@@ -863,12 +863,104 @@
     return keyed.map((entry) => entry.row);
   }
 
+  // ---- Bot tab (tracker.js renderBot; /bot.json from bets_service/bot_report.py) ----
+
+  // The Kalshi bot went live 2026-10-14; a custom Activity range starts no earlier.
+  const BOT_FIRST_DAY = "2026-10-14";
+  const BOT_ACTIVITY_RANGES = ["Today", "7D", "30D", "All", "Custom"];
+
+  /** Epoch ms of 00:00 Pacific on `dayKey` (PDT is UTC-7, PST UTC-8; US midnight is never skipped by DST). */
+  function pacificDayStartMs(dayKey) {
+    for (const offsetHours of [7, 8]) {
+      const candidate = dayKeyToUtc(dayKey) + offsetHours * HOUR_MS;
+      if (pacificDay(candidate) === dayKey && pacificDay(candidate - 1) !== dayKey) return candidate;
+    }
+    throw new Error("no Pacific midnight found for " + dayKey);
+  }
+
+  /**
+   * The Bot tab's Activity window: {first, last} Pacific days (null for All)
+   * and the /bot.json query for it, [start of first, start of the day after last).
+   * Unlike the header range it includes today: these are orders, not results.
+   * Custom days are clamped to [BOT_FIRST_DAY, today] and swapped when backwards.
+   */
+  function botActivityWindow(range, today, custom) {
+    if (range === "All") return { first: null, last: null, query: "" };
+    let first;
+    let last = today;
+    if (range === "Today") first = today;
+    else if (RANGE_DAYS[range]) first = addDays(today, 1 - RANGE_DAYS[range]);
+    else if (range === "Custom") {
+      const clamp = (day) => (day < BOT_FIRST_DAY ? BOT_FIRST_DAY : day > today ? today : day);
+      first = clamp(custom && isDayKey(custom.first) ? custom.first : today);
+      last = clamp(custom && isDayKey(custom.last) ? custom.last : today);
+      if (first > last) [first, last] = [last, first];
+    } else {
+      throw new Error("unknown bot activity range " + range + "; expected " + BOT_ACTIVITY_RANGES.join(", "));
+    }
+    const start = new Date(pacificDayStartMs(first)).toISOString();
+    const end = new Date(pacificDayStartMs(addDays(last, 1))).toISOString();
+    return { first, last, query: "?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end) };
+  }
+
+  // taker.js REASONS, in Cal's words.
+  const BOT_REASON_NAMES = {
+    stale_feed: "Unabated feed stale", no_ticker: "No Kalshi contract", no_outcome: "No Novig outcome",
+    no_book: "Nothing to buy", price_moved: "Price moved", edge_short: "Edge too small", not_best: "Another book better",
+    cap: "Edge over 20% (looks wrong)", size_declined: "Held bets refused the size", size_zero: "Stake under 1 contract",
+    market_mismatch: "Market didn't match the line",
+  };
+  // A bet decision's desk answer that means an order went to the venue.
+  const BOT_ORDER_SENT = new Set(["sending", "sent", "unknown", "resting", "filled", "partial", "unfilled", "rejected"]);
+  const BOT_DESK_REFUSALS = {
+    ceiling: "At the money cap", stopped: "Stop file on", off: "Desk off", pot_short: "Kalshi pot short",
+    geo_blocked: "Novig location lapsed", unseen_fill: "Waiting on an earlier fill", started: "Game started",
+    stale_decision: "Decision too old", stale_holdings: "Held bets too old", env_mismatch: "Wrong Kalshi", duplicate: "Duplicate",
+    error: "No answer from the desk", size_declined: "Held bets refused the size",
+  };
+  // Refusals Cal may want to act on: the cap, a stop, a desk that cannot trade.
+  const BOT_WARN_STATUSES = new Set(["ceiling", "stopped", "off", "pot_short", "geo_blocked", "error"]);
+
+  /**
+   * /bot.json `activity.reasons` ({reason, orderStatus, lines}) as display rows
+   * {label, lines, tone: "bet" | "warn" | "plain"}, merged by label, most lines first.
+   */
+  function botReasonRows(reasons) {
+    const byLabel = new Map();
+    for (const { reason, orderStatus, lines } of reasons || []) {
+      let label;
+      let tone = "plain";
+      if (reason !== "bet") label = BOT_REASON_NAMES[reason] || reason;
+      else if (orderStatus === null || orderStatus === undefined) label = "Bet, not sent";
+      else if (BOT_ORDER_SENT.has(orderStatus)) { label = "Bet"; tone = "bet"; }
+      else {
+        label = BOT_DESK_REFUSALS[orderStatus] || "Desk refused (" + orderStatus + ")";
+        if (BOT_WARN_STATUSES.has(orderStatus)) tone = "warn";
+      }
+      const row = byLabel.get(label) || { label, lines: 0, tone };
+      row.lines += lines;
+      byLabel.set(label, row);
+    }
+    return [...byLabel.values()].sort((a, b) => b.lines - a.lines);
+  }
+
+  /** Settled-or-open tickets the automated takers placed (never the MLB bots' Kalshi combos), by venue key. */
+  function botTicketsByVenue(tickets) {
+    const out = { kalshi: [], novig: [] };
+    for (const ticket of tickets) {
+      if (ticket.origin !== ORIGINS.bot || ticket.kind === KIND_NAMES.kalshiCombo) continue;
+      if (out[ticket.venueKey]) out[ticket.venueKey].push(ticket);
+    }
+    return out;
+  }
+
   const api = {
     PACIFIC_TZ, GROUPS, ORIGINS, WEEKDAYS, NO_FAIR, CLOSE_MAX_GAP_MS, FAIR_SOURCES,
     pacificDay, addDays, dayKeyToUtc, weekdayOf, isDayKey, rangeBounds,
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
     venueName, originOf, leagueOf, splitOpenByStart, splitOpenForLive, sortRows,
+    BOT_ACTIVITY_RANGES, pacificDayStartMs, botActivityWindow, botReasonRows, botTicketsByVenue,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;
