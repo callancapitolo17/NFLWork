@@ -1,17 +1,17 @@
 """READ-ONLY recon of Polymarket US's markets websocket (2026-11-05).
 
-Run inside the bets container (it has POLYMARKET_US_KEY_ID / _SECRET_KEY and
-websocket-client):  git show origin/claude/project-thread-d1vreh:unabated_ticket/bets_service/polymarket_stream_recon.py | docker compose exec -T bets python -
+Run inside the bets container (its config holds POLYMARKET_US_KEY_ID /
+_SECRET_KEY, and it has websocket-client):  git show origin/claude/project-thread-d1vreh:unabated_ticket/bets_service/polymarket_stream_recon.py | docker compose exec -T bets python -
 Opens ONE websocket to wss://api.polymarket.us/v1/ws/markets signed like the
 REST calls, subscribes order books for a few market slugs, prints what comes
 back for ~60 s, then closes. Sends no orders, writes nothing, prints no key.
 """
 import base64
 import json
-import os
 import time
 
 import websocket
+from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.polymarket_orders import signer_of_secret_key
 
 URL = "wss://api.polymarket.us/v1/ws/markets"
@@ -21,8 +21,11 @@ SLUG_LATER = "tsc-cfb-pennst-wash-2026-11-07-total-38pt5"
 RUN_SEC = 60
 FRAMES_PRINTED_PER_KIND = 3
 
-key_id = os.environ["POLYMARKET_US_KEY_ID"]
-signer = signer_of_secret_key(os.environ["POLYMARKET_US_SECRET_KEY"])
+# The key comes from the bets service's own .env files, the way the service reads it.
+key_id = config.POLYMARKET_US_KEY_ID
+if not key_id or not config.POLYMARKET_US_SECRET_KEY:
+    raise SystemExit("no POLYMARKET_US_KEY_ID / POLYMARKET_US_SECRET_KEY in the bets service config")
+signer = signer_of_secret_key(config.POLYMARKET_US_SECRET_KEY)
 stamp = str(int(time.time() * 1000))
 signature = base64.b64encode(signer.sign(f"{stamp}GET{PATH}".encode())).decode()
 headers = [f"X-PM-Access-Key: {key_id}", f"X-PM-Timestamp: {stamp}", f"X-PM-Signature: {signature}"]
