@@ -97,7 +97,9 @@
 //       service>/novig_books.json with background: true (subscribed behind
 //       the bot's and Place's markets, no wait), and Polymarket US's GET
 //       /v1/events (reused 5 min per game) and /v1/markets/<slug>/book (at
-//       most LIVE_POLYMARKET_READS_PER_PASS a pass). Reads only; served at
+//       most LIVE_POLYMARKET_READS_PER_PASS a pass), and POST <bets service>/prophetx_live.json
+//       naming every game with a ProphetX Edges line (answered at once from the
+//       service's own reads on its PROPHETX_LIVE_* key pair). Reads only; served at
 //       /live_prices.json and laid over /edges.json (extension/liveprices.js).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
@@ -149,7 +151,8 @@
 //                    is read by the bets service on its login. Places nothing.
 //   GET /live_prices.json  the live price overlay's reads (extension/liveprices.js
 //                    createLineView's input): {generatedAt, maxAgeMs, bookIds (the
-//                    board's Kalshi, Novig and Polymarket US book ids), reads:
+//                    board's Kalshi, Novig, Polymarket US and, once the bets service
+//                    reads it, ProphetX book ids), reads:
 //                    {lineKey: {venue, points, allIn, depthDollars, readAtMs} |
 //                    {venue, points, empty: true, readAtMs}}, lastPass}. /edges.json
 //                    already lists through it; the panel reads it via the bets service.
@@ -247,6 +250,10 @@ const LIVE_KALSHI_READS_PER_PASS = 120;
 const LIVE_POLYMARKET_READS_PER_PASS = 60;
 // A live all-in price is kept to 6 decimals (Polymarket US's fee math rounds there).
 const LIVE_PRICE_DECIMALS = 1e6;
+// The venue name the overlay's ProphetX reads carry, and the most games one
+// POST /prophetx_live.json names (prophetx_live.py MAX_GAMES_PER_ASK).
+const VENUE_PROPHETX = "prophetx";
+const PROPHETX_LIVE_GAMES_PER_ASK = 300;
 // Time for the bets service to answer, on top of that wait.
 const NOVIG_STREAM_ANSWER_MS = 3000;
 const NOVIG_STREAM_READ_TIMEOUT_MS = NOVIG_STREAM_WAIT_MS + NOVIG_STREAM_ANSWER_MS;
@@ -540,6 +547,8 @@ function createRunner(deps) {
   const kalshiMarketChecks = new Map();
   const polymarketEventLists = new Map();
   let liveBusy = false;
+  // Whether the bets service reads ProphetX's live prices (false while it answers 503: no live key pair).
+  let prophetxLiveOn = false;
   let liveLastPass = { startedAt: null, finishedAt: null, rows: 0, byVenue: {}, error: null };
   // How long the event loop stalled since the last Novig quote (logged with it):
   // a quote slow on a stalled loop is the runner's own work, not Novig.
@@ -1249,7 +1258,7 @@ function createRunner(deps) {
   // ---- the live price overlay (extension/liveprices.js) ---------------------
   //
   // Unabated's copies of the exchanges' prices lag, sometimes for hours, so
-  // every Edges line at Kalshi, Novig and Polymarket US is read off the
+  // every Edges line at Kalshi, Novig, Polymarket US and ProphetX is read off the
   // exchange's own book here and the reads are laid over the board for the
   // Edges list (/edges.json here, /live_prices.json for the panel). The
   // taker decides on its own reads as before (Cal, 2026-11-02: the bot stays
@@ -1264,11 +1273,17 @@ function createRunner(deps) {
     if (bookId === taker.KALSHI_BOOK_ID) return taker.VENUE_KALSHI;
     if (bookId === taker.NOVIG_BOOK_ID) return taker.VENUE_NOVIG;
     if (polymarket.isPolymarketUsBook(board.books[bookId])) return polymarket.VENUE;
+    if (bookId === prophetx.PROPHETX_BOOK_ID) return VENUE_PROPHETX;
     return null;
   }
 
-  function liveBookIdsOf(board) {
-    return Object.values(board.books).map((book) => book.id).filter((id) => liveVenueOf(board, id) !== null).sort((a, b) => a - b);
+  // The board books the pass reads. `served`: only those whose reads are laid
+  // over the board, so ProphetX is left out (its lines untagged, at
+  // Unabated's price) until the bets service answers on the live key pair.
+  function liveBookIdsOf(board, served = false) {
+    return Object.values(board.books).map((book) => book.id)
+      .filter((id) => liveVenueOf(board, id) !== null && !(served && id === prophetx.PROPHETX_BOOK_ID && !prophetxLiveOn))
+      .sort((a, b) => a - b);
   }
 
   // The lines the Edges list could show at the read venues: the list's own
@@ -1377,14 +1392,16 @@ function createRunner(deps) {
       const due = rows.filter((row) => startedAt - readAtOf(row) > LIVE_REREAD_MS)
         .sort((a, b) => readAtOf(a) - readAtOf(b));
       const ofVenue = (venue) => due.filter((row) => liveVenueOf(board, row.book.id) === venue);
-      const [kalshiCounts, novigCounts, polymarketCounts] = await Promise.all([
+      const [kalshiCounts, novigCounts, polymarketCounts, prophetxCounts] = await Promise.all([
         liveKalshiReads(board, ofVenue(taker.VENUE_KALSHI).slice(0, LIVE_KALSHI_READS_PER_PASS)),
         liveNovigReads(board, ofVenue(taker.VENUE_NOVIG)),
         livePolymarketReads(ofVenue(polymarket.VENUE).slice(0, LIVE_POLYMARKET_READS_PER_PASS)),
+        // Every ProphetX row, due or not: the bets service answers its last reads at once and reads on its own pace.
+        liveProphetxReads(board, rows.filter((row) => liveVenueOf(board, row.book.id) === VENUE_PROPHETX)),
       ]);
       liveLastPass = {
         startedAt, finishedAt: now(), rows: rows.length, due: due.length, error: null,
-        byVenue: { kalshi: kalshiCounts, novig: novigCounts, polymarket_us: polymarketCounts },
+        byVenue: { kalshi: kalshiCounts, novig: novigCounts, polymarket_us: polymarketCounts, prophetx: prophetxCounts },
       };
     } catch (error) {
       logWarning(`live price pass failed: ${error.stack || error.message}`);
@@ -1508,6 +1525,70 @@ function createRunner(deps) {
     return counts;
   }
 
+  // ProphetX's reads off the bets service (POST /prophetx_live.json,
+  // prophetx_live.py, its own key pair): each game the rows are on is named
+  // with the ProphetX strike ids Unabated carries for it, and each row is
+  // matched to the one ProphetX side that reads as its line (the line's own
+  // strike id, when Unabated names one, must be that side's). The service
+  // never waits: a game it has not read yet leaves its rows unchecked.
+  async function liveProphetxReads(board, rows) {
+    const counts = newLiveCounts(rows.length);
+    if (!rows.length) return counts;
+    const rowsByGame = new Map();
+    for (const row of rows) {
+      if (!rowsByGame.has(row.eventId)) rowsByGame.set(row.eventId, []);
+      rowsByGame.get(row.eventId).push(row);
+    }
+    const games = Array.from(rowsByGame, ([eventId, gameRows]) => ({
+      gameKey: String(eventId), eventStart: gameRows[0].eventStart, line: taker.novigLineOf(gameRows[0]),
+      strikeIds: prophetx.strikeIdsOf(board.lines[gameRows[0].key] || {}, linesOfEvent(board, eventId)).strikeIds,
+    })).slice(0, PROPHETX_LIVE_GAMES_PER_ASK);
+    let reply;
+    try {
+      reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/prophetx_live.json`, "POST", { games }, SERVICE_TIMEOUT_MS);
+      prophetxLiveOn = true;
+    } catch (error) {
+      if (error.status === 503) prophetxLiveOn = false;
+      counts.unchecked = rows.length;
+      counts.lastError = `ProphetX's live prices unread: ${error.message}`;
+      return counts;
+    }
+    const gameReads = reply && reply.games && typeof reply.games === "object" ? reply.games : {};
+    for (const row of rows) {
+      const read = gameReads[String(row.eventId)];
+      const matched = prophetxLiveSideOf(board, row, read);
+      if (matched.reason) {
+        noteUnchecked(counts, `${row.key}: ${matched.reason}`);
+        continue;
+      }
+      const { side, readAtMs } = matched;
+      const quote = side.price == null ? null : { allIn: pricecheck.impliedProb(side.price), depthDollars: side.depth };
+      noteRead(counts, row, VENUE_PROPHETX, quote, readAtMs);
+    }
+    return counts;
+  }
+
+  // The one side of a ProphetX game read that is the row's line, with the
+  // read's time, or {reason} why the row stays unchecked.
+  function prophetxLiveSideOf(board, row, read) {
+    if (!read) return { reason: "ProphetX game not read yet" };
+    if (read.error) return { reason: read.error };
+    const readAtMs = Date.parse(read.readAt);
+    if (!Number.isFinite(readAtMs) || !Array.isArray(read.lines)) return { reason: "ProphetX read has no time or lines" };
+    const want = taker.novigLineOf(row);
+    if (read.totalsOnly && want.betType !== "total") return { reason: "ProphetX lists the teams the other way round: totals only" };
+    const points = want.betType === "moneyline" ? null : want.points;
+    const found = read.lines.filter((side) => side.betType === want.betType && side.period === want.period
+      && side.side === want.side && (side.points ?? null) === points);
+    if (found.length !== 1) return { reason: `${found.length} ProphetX sides read as ${want.side} ${points ?? ""} ${want.period}` };
+    const ownStrike = (board.lines[row.key] || {}).sourceData;
+    if (prophetx.isProphetxStrikeId(ownStrike) && ownStrike !== found[0].strikeId) {
+      return { reason: `Unabated's ProphetX strike ${ownStrike} is not the one that reads as this line (${found[0].strikeId})` };
+    }
+    if (found[0].price != null && pricecheck.impliedProb(found[0].price) == null) return { reason: `ProphetX price ${found[0].price} is no American price` };
+    return { side: found[0], readAtMs };
+  }
+
   // The /live_prices.json body (liveprices.createLineView's input): the read
   // venues' book ids on the board and every line's last read, for the panel.
   function livePricesPayloadNow() {
@@ -1520,7 +1601,7 @@ function createRunner(deps) {
     }
     return {
       generatedAt: new Date(now()).toISOString(), maxAgeMs: livePrices.LIVE_READ_MAX_AGE_MS,
-      bookIds: board ? liveBookIdsOf(board) : [], reads, lastPass: liveStatus(),
+      bookIds: board ? liveBookIdsOf(board, true) : [], reads, lastPass: liveStatus(),
     };
   }
 

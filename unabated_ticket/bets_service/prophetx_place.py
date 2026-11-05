@@ -212,6 +212,39 @@ def matching_lines(lines: list[dict], wanted: dict) -> list[dict]:
     return [line for line in lines if all(line[key] == wanted[key] for key in ("betType", "period", "side", "points"))]
 
 
+def event_of_line(client: ProphetXClient, team_keys_of: TeamKeysReader, quote: dict, line: dict) -> dict | str:
+    """ProphetX's one listed game the board line is on, or why there is none:
+    by the ProphetX strike ids Unabated carries for the game (quote's
+    strikeIds), else by league, start (within START_TOLERANCE of the quote's
+    eventStart) and both teams. Shared by Place and the live price reader
+    (prophetx_live.py). Raises TeamKeysUnread, OSError, ProphetXError.
+      quote  {strikeIds, eventStart}; line {league, awayTeamId, homeTeamId, awayTeam, homeTeam}"""
+    strike_ids = [strike for strike in (quote.get("strikeIds") or []) if isinstance(strike, str) and strike]
+    if strike_ids:
+        event_ids = {strike.get("event_id") for strike in client.strikes(strike_ids[:MAX_STRIKES_PER_READ])}
+        event_ids.discard(None)
+        if len(event_ids) != 1:
+            return f"Unabated's ProphetX strikes for this game name {len(event_ids)} ProphetX games."
+        listed = client.sport_events([event_ids.pop()])
+        if len(listed) != 1:
+            return "ProphetX no longer lists this game (started or ended)."
+        return listed[0]
+    board_start = _iso_time(quote.get("eventStart"))
+    if board_start is None:
+        return "the board has no start for this game."
+    found = []
+    for event in client.sport_events():
+        start = _prophetx_time(event.get("scheduled"))
+        if league_of(event) != line.get("league") or start is None or abs(start - board_start) > START_TOLERANCE:
+            continue
+        if teams_mismatch(event, line, team_keys_of) is None:
+            found.append(event)
+    if len(found) != 1:
+        return (f"{len(found)} of ProphetX's listed games are {line.get('awayTeam')} @ {line.get('homeTeam')} "
+                "at the board's start.")
+    return found[0]
+
+
 class ManualProphetXDesk:
     """Sends Cal's ProphetX Place-button orders on his main account, one per click."""
 
@@ -315,31 +348,7 @@ class ManualProphetXDesk:
                 "otherStrikeId": target["otherStrikeId"], "prophetxEventId": event["event_id"]}
 
     def _event_of(self, quote: dict, line: dict) -> dict | str:
-        """ProphetX's one listed game the board line is on, or why there is none."""
-        strike_ids = [strike for strike in (quote.get("strikeIds") or []) if isinstance(strike, str) and strike]
-        if strike_ids:
-            event_ids = {strike.get("event_id") for strike in self._client.strikes(strike_ids[:MAX_STRIKES_PER_READ])}
-            event_ids.discard(None)
-            if len(event_ids) != 1:
-                return f"Unabated's ProphetX strikes for this game name {len(event_ids)} ProphetX games."
-            listed = self._client.sport_events([event_ids.pop()])
-            if len(listed) != 1:
-                return "ProphetX no longer lists this game (started or ended)."
-            return listed[0]
-        board_start = _iso_time(quote.get("eventStart"))
-        if board_start is None:
-            return "the board has no start for this game."
-        found = []
-        for event in self._client.sport_events():
-            start = _prophetx_time(event.get("scheduled"))
-            if league_of(event) != line.get("league") or start is None or abs(start - board_start) > START_TOLERANCE:
-                continue
-            if teams_mismatch(event, line, self._team_keys_reader) is None:
-                found.append(event)
-        if len(found) != 1:
-            return (f"{len(found)} of ProphetX's listed games are {line.get('awayTeam')} @ {line.get('homeTeam')} "
-                    "at the board's start.")
-        return found[0]
+        return event_of_line(self._client, self._team_keys_reader, quote, line)
 
     # ---- refusals ------------------------------------------------------------------
 

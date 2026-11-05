@@ -757,7 +757,7 @@ instead, so the row is still found. The expand-and-match path is verified
 against the scripted grid only (see Tests); the real screen's Alts row was
 not reachable from the harness, so the first real click is the check.
 
-### Live exchange prices (Kalshi, Novig, Polymarket US; 0.39.0, 2026-11-04)
+### Live exchange prices (Kalshi, Novig, Polymarket US, ProphetX; 0.40.0, 2026-11-04)
 
 Unabated's copies of the exchanges' prices lag the real books, sometimes for
 hours. On 2026-10-31 the Novig bot found 973 Novig lines priced worse than
@@ -777,7 +777,22 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   catalog listing first (`taker.novigSideMismatch`: outcome, type, period,
   strike, the outcome's name). Polymarket US: the contract found in its own
   event list the way Place finds it (event list reused 5 min per game) and
-  `/v1/markets/<slug>/book`, at most 60 a pass. The taker's own reads count,
+  `/v1/markets/<slug>/book`, at most 60 a pass. ProphetX (Cal, 2026-11-05):
+  the runner names every game with a ProphetX line in `POST
+  /prophetx_live.json` and gets back the bets service's last read of each at
+  once (`bets_service/prophetx_live.py`); a thread there reads one game's
+  `get_markets` every 2 s on a second key pair of its own,
+  `PROPHETX_LIVE_ACCESS_KEY` / `PROPHETX_LIVE_SECRET_KEY` in
+  `bets_service/.env` (ProphetX allows 1 request a second per key, so the bet
+  source and Place keep `PROPHETX_*` whole; half the key's rate because
+  ProphetX's CloudFront once banned a VM address that read it hard). The game
+  is found and its teams checked the way Place does
+  (`prophetx_place.event_of_line`, `teams_mismatch`; home and away swapped
+  keeps totals only), each row matched to the one side reading as its line,
+  priced at its best offer, `quantity` as the dollars resting (unverified
+  live) and no fee (ProphetX publishes none). Without that key pair the
+  service answers 503 and ProphetX lines stay at Unabated's price, untagged.
+  About 60 games stay read within the 2 min a read stands. The taker's own reads count,
   so a 3%+ line is not read twice. A line whose market fails its check is
   never painted with that market's price.
 - **The overlay (`extension/liveprices.js`).** A read under 2 min old at the
@@ -3737,7 +3752,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 729 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 731 tests) and
 the bets service's pytest suite (866 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

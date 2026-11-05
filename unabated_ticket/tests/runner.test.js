@@ -816,6 +816,12 @@ function takerService(script) {
         if (!books) return response({ status: 503, body: JSON.stringify({ error: "no bot Novig key is configured" }) });
         return response({ body: JSON.stringify(books(body)) });
       }
+      if (route === "/prophetx_live.json") {
+        // No reads scripted = a bets service without the ProphetX live key pair.
+        const reads = script["/prophetx_live.json"];
+        if (!reads) return response({ status: 503, body: JSON.stringify({ error: "no ProphetX live key pair is configured" }) });
+        return response({ body: JSON.stringify(reads(body)) });
+      }
       if (route === "/novig_read.json") {
         // No reads scripted = a bets service without the bot's Novig key.
         const read = script["/novig_read.json"];
@@ -2209,5 +2215,70 @@ test("live prices: a Polymarket US line is priced off its own book with the take
   assert.equal(poly.calls.filter((url) => url.startsWith(`${POLY_GATEWAY}/v1/events`)).length, 1);
   assert.equal(poly.calls.filter((url) => url === `${POLY_GATEWAY}/v1/markets/${POLY_SLUG}/book`).length, 2);
   assert.equal(runner.livePricesPayload().reads[key].readAtMs, clock.now);
+  runner.stop();
+});
+
+// The DUQ/WSU spread board with a ProphetX (book 66) copy of Novig's WSU line at -179.
+function prophetxUnabatedFetch(lineFields = {}) {
+  const json = JSON.parse(takerVenueSlice());
+  json.marketSources.push({ ...json.marketSources[0], id: 66, name: "Prophet Exchange", sortOrder: 66 });
+  const spreadRow = json.odds["lg2:pt1:pregame"].find((row) => row.key === "pt1:pregame:bt2:e123742");
+  spreadRow.sides["si1:tid717"].ms66 = {
+    ...spreadRow.sides["si1:tid717"].ms89, americanPrice: -179, price: -179, sourceFormat: 1, sourcePrice: -179, statusId: 1,
+    sequenceNumber: TAKER_NOW - 60000, alternateLines: [], sourceData: null, ...lineFields,
+  };
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+function prophetxLiveRunner(reads) {
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS, ...(reads ? { "/prophetx_live.json": reads } : {}) });
+  const runner = runnerLib.createRunner({
+    fetchImpl: prophetxUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  return { runner, service };
+}
+
+test("live prices: a ProphetX line is priced off the bets service's read of its game; a side that is not the row's leaves it unchecked", async () => {
+  let sides = [];
+  const readAt = new Date(TAKER_NOW - 5000).toISOString();
+  const { runner, service } = prophetxLiveRunner((body) => ({
+    reader: { wanted: body.games.length }, games: Object.fromEntries(body.games.map((game) => [game.gameKey, { readAt, prophetxEventId: 5501, totalsOnly: false, lines: sides }])),
+  }));
+  await runner.start();
+  const before = edgeRowsOf(runner.edgesPayload()).find((row) => row.book.id === 66);
+  assert.equal(before.liveCheck, null, "ProphetX is untagged until the service reads it");
+  sides = [{ betType: "spread", period: "FG", side: "home", points: before.points, strikeId: "c".repeat(32), price: -150, depth: 80 }];
+  await runner.livePricePass();
+  const ask = service.posts.find((post) => post.route === "/prophetx_live.json").body;
+  assert.deepEqual(ask.games.map((game) => [game.gameKey, game.line.league, game.line.awayTeamId != null, Array.isArray(game.strikeIds)]), [[String(before.eventId), before.league, true, true]]);
+  const served = runner.livePricesPayload();
+  assert.equal(served.bookIds.includes(66), true);
+  assert.deepEqual(served.reads[before.key], { venue: "prophetx", points: before.points, allIn: 0.6, depthDollars: 80, readAtMs: TAKER_NOW - 5000 });
+  const live = edgeRowsOf(runner.edgesPayload()).find((row) => row.key === before.key);
+  assert.equal(live.liveCheck, "live");
+  assert.equal(live.sourcePrice, 0.6);
+  // Nothing resting at that side: the line is gone. A side at another number: unchecked.
+  sides = [{ ...sides[0], price: null, depth: 0 }];
+  await runner.livePricePass();
+  assert.equal(edgeRowsOf(runner.edgesPayload()).some((row) => row.key === before.key), false);
+  sides = [{ ...sides[0], points: before.points + 1, price: -150 }];
+  await runner.livePricePass();
+  assert.equal(runner.health().livePrices.byVenue.prophetx.unchecked, 1);
+  runner.stop();
+});
+
+test("live prices: without the ProphetX live key ProphetX lines stay at Unabated's price, untagged", async () => {
+  const { runner } = prophetxLiveRunner(null);
+  await runner.start();
+  await runner.livePricePass();
+  assert.equal(runner.livePricesPayload().bookIds.includes(66), false);
+  const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => candidate.book.id === 66);
+  assert.equal(row.liveCheck, null);
+  assert.match(runner.health().livePrices.byVenue.prophetx.lastError, /HTTP 503/);
   runner.stop();
 });
