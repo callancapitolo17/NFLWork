@@ -88,6 +88,10 @@ REFUSED_RETRY_SEC = 60
 MAX_BUFFERED_DELTAS = 500
 # The most a caller may wait for a snapshot (the runner's own timeouts sit above it).
 MAX_WAIT_SEC = 3.0
+# Novig caps a connection at 2048 subscribed markets. The runner's live price
+# pass (background asks) may hold at most this many, so the bot's and Place's
+# markets always have room; a background market past it answers an error.
+MAX_BACKGROUND_MARKETS = 1536
 
 # Lifecycle transitions and the market status each leaves (streaming/lifecycle).
 STATUS_AFTER_TRANSITION = {"OPEN": "OPEN", "CLOSE": "CLOSED", "GRADE": "SETTLED"}
@@ -334,6 +338,8 @@ class NovigBookStream:
         # Kept across connections: the markets asked for (when last asked), Place's among them, and refusals.
         self._wanted: dict[str, float] = {}
         self._priority: set[str] = set()
+        # Markets only the runner's live price pass asks for: subscribed after every other.
+        self._background: set[str] = set()
         self._refused: dict[str, tuple[float, str]] = {}
         # Markets of a batch Novig refused as a whole: sent one a frame, so one bad market refuses only itself.
         self._solo: set[str] = set()
@@ -358,16 +364,25 @@ class NovigBookStream:
 
     # ---- what the HTTP route calls ----
 
-    def books_for(self, market_ids: list[str], wait_sec: float, priority: bool = False) -> dict:
+    def books_for(self, market_ids: list[str], wait_sec: float, priority: bool = False, background: bool = False) -> dict:
         """{stream: status, books: {marketId: view}}. Marks each market wanted
         (subscribing it if new; `priority` puts it ahead of the rest, for the
-        Place button) and waits up to wait_sec (capped at MAX_WAIT_SEC) for
+        Place button; `background` behind the rest, for the runner's live price
+        pass, until the bot or Place asks for it too) and waits up to wait_sec (capped at MAX_WAIT_SEC) for
         every market to be answered. A view is {status, started, seq, orders}
         or {error}; `seq` is for reading the logs, not for the runner."""
         wait_sec = max(0.0, min(wait_sec, MAX_WAIT_SEC))
         with self._cond:
             now = self._clock()
+            capped: set[str] = set()
             for market_id in market_ids:
+                if background and market_id not in self._wanted:
+                    if len(self._background) >= MAX_BACKGROUND_MARKETS:
+                        capped.add(market_id)
+                        continue
+                    self._background.add(market_id)
+                elif not background:
+                    self._background.discard(market_id)
                 self._wanted[market_id] = now
                 if priority:
                     self._priority.add(market_id)
@@ -381,6 +396,8 @@ class NovigBookStream:
                 self._cond.wait(remaining)
             for view in views.values():
                 view.pop("pending", None)
+            for market_id in capped:
+                views[market_id] = {"error": f"the live price pass already watches {MAX_BACKGROUND_MARKETS} Novig markets"}
             return {"stream": self._status_locked(), "books": views}
 
     def status(self) -> dict:
@@ -506,7 +523,7 @@ class NovigBookStream:
             in_flight = {market_id for markets, _sent_at in self._subscribes_in_flight.values() for market_id in markets}
             due = [market_id for market_id in self._wanted
                    if market_id not in self._subscribed and market_id not in in_flight and market_id not in self._refused]
-            due.sort(key=lambda market_id: (market_id not in self._priority, market_id))
+            due.sort(key=lambda market_id: (market_id not in self._priority, market_id in self._background, market_id))
             for market_id in [market_id for market_id in due if market_id in self._solo]:
                 frames.extend(self._paced_frames("subscribe", [market_id], self._subscribes_in_flight, now))
             frames.extend(self._paced_frames("subscribe", [market_id for market_id in due if market_id not in self._solo],
@@ -542,6 +559,7 @@ class NovigBookStream:
             if market_id not in self._subscribed and market_id not in in_flight:
                 del self._wanted[market_id]
                 self._priority.discard(market_id)
+                self._background.discard(market_id)
                 self._solo.discard(market_id)
         return frames
 

@@ -757,6 +757,68 @@ instead, so the row is still found. The expand-and-match path is verified
 against the scripted grid only (see Tests); the real screen's Alts row was
 not reachable from the harness, so the first real click is the check.
 
+### Live exchange prices (Kalshi, Novig, Polymarket US, ProphetX; 0.40.0, 2026-11-04)
+
+Unabated's copies of the exchanges' prices lag the real books, sometimes for
+hours. On 2026-10-31 the Novig bot found 973 Novig lines priced worse than
+Unabated showed and 575 with nothing resting at all, against 368 it bet; one
+CFB alt sat at +400 on Unabated and 20.5c (+388) on Novig for six hours. So
+the Edges list now prices every Kalshi, Novig and Polymarket US line off the
+exchange's own book (Cal, 2026-11-04: "build it"):
+
+- **Reads (server runner, `livePricePass`, right after each taker pass).**
+  Every line the Edges list could show at those three books (its settings,
+  by Unabated's price, no liquidity gate) not read in the last 20 s, oldest
+  read first. Kalshi: `GET /markets/<ticker>` once per ticker per 10 min
+  (the taker's `marketMismatch`) and `/markets/<ticker>/orderbook`, at most
+  120 a pass, two at a time. Novig: the bets service's book stream
+  (`POST /novig_books.json` with `background: true`, subscribed behind the
+  bot's and Place's markets, no wait), each market checked against Novig's
+  catalog listing first (`taker.novigSideMismatch`: outcome, type, period,
+  strike, the outcome's name). Polymarket US: the contract found in its own
+  event list the way Place finds it (event list reused 5 min per game) and
+  `/v1/markets/<slug>/book`, at most 60 a pass. ProphetX (Cal, 2026-11-05):
+  the runner names every game with a ProphetX line in `POST
+  /prophetx_live.json` and gets back the bets service's last read of each at
+  once (`bets_service/prophetx_live.py`); a thread there reads one game's
+  `get_markets` every 2 s on a second key pair of its own,
+  `PROPHETX_LIVE_ACCESS_KEY` / `PROPHETX_LIVE_SECRET_KEY` in
+  `bets_service/.env` (ProphetX allows 1 request a second per key, so the bet
+  source and Place keep `PROPHETX_*` whole; half the key's rate because
+  ProphetX's CloudFront once banned a VM address that read it hard). The game
+  is found and its teams checked the way Place does
+  (`prophetx_place.event_of_line`, `teams_mismatch`; home and away swapped
+  keeps totals only), each row matched to the one side reading as its line,
+  priced at its best offer, `quantity` as the dollars resting (unverified
+  live) and no fee (ProphetX publishes none). Without that key pair the
+  service answers 503 and ProphetX lines stay at Unabated's price, untagged.
+  About 60 games stay read within the 2 min a read stands. The taker's own reads count,
+  so a 3%+ line is not read twice. A line whose market fails its check is
+  never painted with that market's price.
+- **The overlay (`extension/liveprices.js`).** A read under 2 min old at the
+  line's own number reprices it: price = the live all-in (Kalshi's 7% fee and
+  Polymarket US's 6% fee included; Novig charges none pregame), liquidity =
+  the dollars resting at that price, edge = Unabated's fair against it. The
+  fair is the taker's: Unabated's edge on the cheaper of its two shown prices.
+  A read with nothing resting takes the line off the list and out of "best of
+  N". No fresh read: Unabated's line as it is, tagged `unchecked`. Rows say
+  `live price` in place of the line age, or `line 1h old · unchecked`.
+- **Where.** `/edges.json` (phone) lists through it; the panel reads
+  `GET /live_prices.json` through the bets service after every bets poll and
+  applies the same module to its own Edges list, alerts and "best of N".
+  Until the panel has read it once (the VM down when the panel opened) the
+  panel shows Unabated's prices untagged; a read that ages turns `unchecked`.
+- **What it does not change.** The automated taker decides on its own reads
+  exactly as before (Cal, 2026-11-02: the bot stays as it is), and its
+  `not_best` check still reads Unabated's prices. A Ticket the panel opens
+  from Unabated's own page shows Unabated's price; Place still checks the
+  live price before any order.
+- **After a deploy.** Novig's stream charges 16 tokens per new market and
+  refills 4 a second, so a Saturday's few hundred Novig lines take up to an
+  hour to all read `live`; until then they read `unchecked`. `/health`
+  `livePrices` counts each venue's live, empty and unchecked lines and the
+  last reason one was left unchecked.
+
 ### Other books at the same number
 
 Every pregame Edges row, card line and Ticket compares its price with every
@@ -2577,8 +2639,11 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
   bets service passes it through at its own `/scenarios.json`). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
   {tau, measured, rungCount, sampleCount, covariance}}}`, the pooled tail-flex tau the
-  panel ranks and gates on (Tail flex above; the pool's load state is on `/health`). `GET /health` →
-  `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool}`. Any verb but GET is
+  panel ranks and gates on (Tail flex above; the pool's load state is on `/health`). `GET /live_prices.json` →
+  `{generatedAt, maxAgeMs, bookIds, reads: {lineKey: {venue, points, allIn, depthDollars, readAtMs} |
+  {venue, points, empty: true, readAtMs}}, lastPass}`, the exchanges' live prices the Edges list is priced
+  through (Live exchange prices above; the bets service passes it through). `GET /health` →
+  `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
 - **Closing fairs** (2026-10-05): it also loads the leagues of open straight
@@ -3689,7 +3754,7 @@ One command runs everything and exits non-zero if any part fails:
 ```
 
 It runs, in order, ESLint over `extension/`, `server/` and `tests/` (`npm run lint`),
-the node suite (`npm test` = `node --test tests/*.test.js`, 624 tests) and
+the node suite (`npm test` = `node --test tests/*.test.js`, 731 tests) and
 the bets service's pytest suite (866 tests, on the `kalshi_draft/venv`
 python from the main checkout, resolved the way `bets_service/run.sh`
 does, else `python3`). All three run even when an earlier one fails, so one

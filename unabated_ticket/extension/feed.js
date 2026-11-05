@@ -562,6 +562,8 @@
       isBlurred: line.isBlurred,
       // When the book last changed this line (modifiedOn; an alt's sequenceNumber); null if unknown.
       modifiedMs: lineChangedMs(line),
+      // When the runner read the exchange's live book this price comes from (liveprices.js); null on Unabated's own price.
+      liveReadAtMs: line.liveReadAtMs ?? null,
       // The book's own opening price and number (main lines only; see the header). Tooltip context for the edge-move tag (#132).
       openerPrice: line.openerPrice ?? null,
       openerPoints: line.openerPoints ?? null,
@@ -621,6 +623,9 @@
   // a line whose change time is unknowable is excluded too). Alt lines
   // additionally pass altPassesGates. Every line passes liquidityCanWin.
   // Sorted by edge.
+  // opts.lineView (liveprices.createLineView): each line is read through it
+  // first, so an exchange line is judged at its live price; a line it returns
+  // null for is gone, and each row carries the view's liveCheck.
   function selectEdges(state, options) {
     const opts = options || {};
     const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
@@ -634,9 +639,13 @@
     const lines = Object.values(state.lines);
     const includeAlts = opts.includeAlts === true;
     const altOpts = { includeAlts, flatRungKeys: includeAlts ? flatFairRungKeys(lines) : new Set() };
+    const lineView = typeof opts.lineView === "function" ? opts.lineView : null;
     const rows = [];
-    for (const line of lines) {
-      if (line.bookId === UNABATED_LINE_BOOK_ID) continue;
+    for (const boardLine of lines) {
+      if (boardLine.bookId === UNABATED_LINE_BOOK_ID) continue;
+      const view = lineView ? lineView(boardLine) : { line: boardLine, liveCheck: null };
+      if (!view) continue;
+      const line = view.line;
       if (leagueIds && !leagueIds.has(line.leagueId)) continue;
       if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
       if (line.statusId !== STATUS_ON_BOARD) continue;
@@ -655,7 +664,7 @@
         const changedMs = lineChangedMs(line);
         if (changedMs == null || now - changedMs > maxLineAgeMs) continue;
       }
-      rows.push(describeLine(line, state));
+      rows.push({ ...describeLine(line, state), liveCheck: view.liveCheck });
     }
     rows.sort((a, b) => b.edgePct - a.edgePct || a.eventStartMs - b.eventStartMs);
     return rows;

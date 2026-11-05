@@ -89,6 +89,18 @@
 //       when Kalshi lists none; public, no key; taker.kalshiStartMsOf).
 //   GET <Kalshi>/markets/<ticker>/orderbook and /markets/<ticker> once per
 //       GET /kalshi_quote.json (Cal's Place button, never on a timer).
+//   The live price pass (livePricePass), right after each taker pass: for every
+//       Edges line at Kalshi, Novig and Polymarket US not read in the last
+//       LIVE_REREAD_MS (the taker's own reads count), GET <Kalshi>/markets/<ticker>
+//       once per ticker per 10 min and /markets/<ticker>/orderbook (at most
+//       LIVE_KALSHI_READS_PER_PASS a pass, two at a time), POST <bets
+//       service>/novig_books.json with background: true (subscribed behind
+//       the bot's and Place's markets, no wait), and Polymarket US's GET
+//       /v1/events (reused 5 min per game) and /v1/markets/<slug>/book (at
+//       most LIVE_POLYMARKET_READS_PER_PASS a pass), and POST <bets service>/prophetx_live.json
+//       naming every game with a ProphetX Edges line (answered at once from the
+//       service's own reads on its PROPHETX_LIVE_* key pair). Reads only; served at
+//       /live_prices.json and laid over /edges.json (extension/liveprices.js).
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
@@ -137,7 +149,14 @@
 //                    (BFA's rotations are Unabated's own), whether it is an
 //                    alt, and the line as a bet record names it. BFA's board
 //                    is read by the bets service on its login. Places nothing.
-//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, taker}
+//   GET /live_prices.json  the live price overlay's reads (extension/liveprices.js
+//                    createLineView's input): {generatedAt, maxAgeMs, bookIds (the
+//                    board's Kalshi, Novig, Polymarket US and, once the bets service
+//                    reads it, ProphetX book ids), reads:
+//                    {lineKey: {venue, points, allIn, depthDollars, readAtMs} |
+//                    {venue, points, empty: true, readAtMs}}, lastPass}. /edges.json
+//                    already lists through it; the panel reads it via the bets service.
+//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Threads: main() runs createRunner on a worker thread (server/board_thread.js)
@@ -178,6 +197,7 @@ const polymarket = require("./polymarket.js");
 const prophetx = require("./prophetx.js");
 const feedLib = require("../extension/feed.js");
 const boardThread = require("./board_thread.js");
+const livePrices = require("../extension/liveprices.js");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
@@ -211,6 +231,29 @@ const TAKER_PASS_MS = 30 * 1000;
 const KALSHI_BOOK_READS_AT_ONCE = 2;
 // How long a Novig book ask may wait for the stream's first snapshot of a game it was not watching.
 const NOVIG_STREAM_WAIT_MS = 2000;
+// The live price pass (livePricePass, run right after each taker pass): how long a read
+// (its own or the taker's) stands before the line is read again, and how
+// long a Kalshi market's check (taker.marketMismatch) and a Polymarket US
+// event list are reused (neither changes inside it; the book read every pass
+// still shows a closed market as empty).
+const LIVE_REREAD_MS = 20 * 1000;
+const KALSHI_MARKET_CHECK_TTL_MS = 10 * 60 * 1000;
+const POLYMARKET_EVENTS_REUSE_MS = 5 * 60 * 1000;
+// The most Novig markets one POST /novig_books.json may name (service.py MAX_NOVIG_BOOK_MARKETS).
+const NOVIG_BOOK_MARKETS_PER_ASK = 500;
+const POLYMARKET_BOOK_READS_AT_ONCE = 2;
+// Per-market reads a live price pass sends at most, best-need first (the rest
+// wait a pass): Kalshi's and Polymarket US's read budgets are shared with the
+// taker and Place, and a read stands for LIVE_READ_MAX_AGE_MS (2 min, four
+// passes), so up to ~4x this many lines stay read at each venue.
+const LIVE_KALSHI_READS_PER_PASS = 120;
+const LIVE_POLYMARKET_READS_PER_PASS = 60;
+// A live all-in price is kept to 6 decimals (Polymarket US's fee math rounds there).
+const LIVE_PRICE_DECIMALS = 1e6;
+// The venue name the overlay's ProphetX reads carry, and the most games one
+// POST /prophetx_live.json names (prophetx_live.py MAX_GAMES_PER_ASK).
+const VENUE_PROPHETX = "prophetx";
+const PROPHETX_LIVE_GAMES_PER_ASK = 300;
 // Time for the bets service to answer, on top of that wait.
 const NOVIG_STREAM_ANSWER_MS = 3000;
 const NOVIG_STREAM_READ_TIMEOUT_MS = NOVIG_STREAM_WAIT_MS + NOVIG_STREAM_ANSWER_MS;
@@ -495,6 +538,18 @@ function createRunner(deps) {
   let novigDeskStatus = "not asked yet";
   // Novig's catalog as last read: {leagues: Set, readAt, index (novigOutcomeIndex)}.
   let novigCatalog = null;
+  // The live price overlay (extension/liveprices.js): lineKey -> the last read
+  // of that line's exchange book, {venue, points, allIn, depthDollars,
+  // readAtMs} or {venue, points, empty: true, readAtMs}; ticker -> Kalshi's
+  // market check {mismatch, checkedAt}; Polymarket US event-list query ->
+  // {events, readAt} | {error, readAt}; and the last pass's counts.
+  const liveReads = new Map();
+  const kalshiMarketChecks = new Map();
+  const polymarketEventLists = new Map();
+  let liveBusy = false;
+  // Whether the bets service reads ProphetX's live prices (false while it answers 503: no live key pair).
+  let prophetxLiveOn = false;
+  let liveLastPass = { startedAt: null, finishedAt: null, rows: 0, byVenue: {}, error: null };
   // How long the event loop stalled since the last Novig quote (logged with it):
   // a quote slow on a stalled loop is the runner's own work, not Novig.
   const loopDelay = monitorEventLoopDelay({ resolution: 20 });
@@ -1155,6 +1210,7 @@ function createRunner(deps) {
       if (contract.ticker) tickers.add(contract.ticker);
     }
     const books = await readBooks(tickers, readKalshiBook);
+    keepTakerKalshiReads(rows, pass.board, books, now());
     return decideRows(pass, rows, taker.VENUE_KALSHI, (row) => taker.resolveKalshiContract(row, pass.board), (contract) => {
       const read = books.get(contract.ticker);
       if (!read) return null;
@@ -1186,6 +1242,7 @@ function createRunner(deps) {
       if (contract.marketId) marketIds.add(contract.marketId);
     }
     const books = await readStreamBooks(Array.from(marketIds), false);
+    if (!catalogError) keepTakerNovigReads(rows, resolve, index, books, now());
     return decideRows(pass, rows, taker.VENUE_NOVIG, resolve, (contract) => {
       const read = books.get(contract.marketId);
       if (!read) return null;
@@ -1198,17 +1255,380 @@ function createRunner(deps) {
     });
   }
 
+  // ---- the live price overlay (extension/liveprices.js) ---------------------
+  //
+  // Unabated's copies of the exchanges' prices lag, sometimes for hours, so
+  // every Edges line at Kalshi, Novig, Polymarket US and ProphetX is read off the
+  // exchange's own book here and the reads are laid over the board for the
+  // Edges list (/edges.json here, /live_prices.json for the panel). The
+  // taker decides on its own reads as before (Cal, 2026-11-02: the bot stays
+  // as it is); the reads it already made count here, so the 3%+ lines are not
+  // read twice. Each venue's line is shown at its book only when the book's
+  // market is the line's (Kalshi's market check, Novig's listed market and
+  // outcome name, Polymarket US's own sides): a rung Unabated filed under the
+  // wrong contract stays unchecked rather than painting that contract's price.
+
+  // The venue the pass reads a board book at, or null for a book it does not read.
+  function liveVenueOf(board, bookId) {
+    if (bookId === taker.KALSHI_BOOK_ID) return taker.VENUE_KALSHI;
+    if (bookId === taker.NOVIG_BOOK_ID) return taker.VENUE_NOVIG;
+    if (polymarket.isPolymarketUsBook(board.books[bookId])) return polymarket.VENUE;
+    if (bookId === prophetx.PROPHETX_BOOK_ID) return VENUE_PROPHETX;
+    return null;
+  }
+
+  // The board books the pass reads. `served`: only those whose reads are laid
+  // over the board, so ProphetX is left out (its lines untagged, at
+  // Unabated's price) until the bets service answers on the live key pair.
+  function liveBookIdsOf(board, served = false) {
+    return Object.values(board.books).map((book) => book.id)
+      .filter((id) => liveVenueOf(board, id) !== null && !(served && id === prophetx.PROPHETX_BOOK_ID && !prophetxLiveOn))
+      .sort((a, b) => a - b);
+  }
+
+  // The lines the Edges list could show at the read venues: the list's own
+  // selection (its settings, leagues, markets, alts, line age, minimum edge)
+  // by Unabated's price, with no liquidity gate (the live depth decides it).
+  function liveCandidateRows(board, at) {
+    const edgeSettings = settings.edgeSettings;
+    const effective = edgeRows.effectiveFilter(edgeSettings, board, null, null);
+    const bookIds = liveBookIdsOf(board).filter((id) => (effective.bookIds ? effective.bookIds.has(id) : board.books[id].isLive));
+    if (!bookIds.length) return [];
+    return feedLib.selectEdges(board, {
+      ...edgeRows.edgeSelectionOptions(edgeSettings, effective, at), bookIds: new Set(bookIds),
+      minLiquidityToWin: null, minEdge: edgeSettings.minEdgePct / 100,
+    });
+  }
+
+  // One line's read: quote {allIn, depthDollars}, or null when nothing rests to buy.
+  function recordLiveRead(row, venue, quote, at) {
+    const points = row.points ?? null;
+    liveReads.set(row.key, quote
+      ? { venue, points, allIn: Math.round(quote.allIn * LIVE_PRICE_DECIMALS) / LIVE_PRICE_DECIMALS, depthDollars: Math.round(quote.depthDollars * 100) / 100, readAtMs: at }
+      : { venue, points, empty: true, readAtMs: at });
+  }
+
+  // What buying costs off each venue's quote, as {allIn, depthDollars} (or null: nothing rests).
+  function kalshiLiveQuote(book, side) {
+    const quote = taker.quoteOf(book, side);
+    if (!quote) return null;
+    const allIn = taker.kalshiAllInPrice(quote.ask);
+    return { allIn, depthDollars: quote.depth * allIn };
+  }
+
+  function novigLiveQuote(book, contract) {
+    const quote = taker.novigQuoteOf(book, contract);
+    if (!quote) return null;
+    return { allIn: quote.ask, depthDollars: (quote.depth * quote.ask) / taker.NOVIG_QTY_PER_DOLLAR };
+  }
+
+  // Kalshi's market check for a row off the cached market read: the mismatch
+  // (null when the market is the row's), or undefined when no fresh read is held.
+  function kalshiCheckOf(row, contract, at) {
+    const check = kalshiMarketChecks.get(contract.ticker);
+    if (!check || at - check.checkedAt > KALSHI_MARKET_CHECK_TTL_MS) return undefined;
+    return taker.marketMismatch(check.market, row, contract);
+  }
+
+  // The row's Novig market off the catalog listing, or why it is not the row's
+  // line (a reason the overlay leaves the row unchecked for).
+  function novigListedMismatch(row, contract, index) {
+    const listed = index.get(contract.outcomeId);
+    if (!listed) return `outcome ${contract.outcomeId} is on no listed market`;
+    if (listed.market.status !== taker.NOVIG_MARKET_OPEN) return `market status "${listed.market.status}"`;
+    return taker.novigSideMismatch(listed.market, row, contract);
+  }
+
+  // The taker's own Kalshi reads, kept for the overlay where Kalshi's market check already passed for the row.
+  function keepTakerKalshiReads(rows, board, books, at) {
+    for (const row of rows) {
+      const contract = taker.resolveKalshiContract(row, board);
+      const read = contract.ticker ? books.get(contract.ticker) : null;
+      if (!read || !read.book || kalshiCheckOf(row, contract, at) !== null) continue;
+      recordLiveRead(row, taker.VENUE_KALSHI, kalshiLiveQuote(read.book, contract.side), at);
+    }
+  }
+
+  // The taker's own Novig reads, kept for the overlay where the listed market is the row's.
+  function keepTakerNovigReads(rows, resolve, index, books, at) {
+    for (const row of rows) {
+      const contract = resolve(row);
+      const read = contract.marketId ? books.get(contract.marketId) : null;
+      if (!read || read.error || novigListedMismatch(row, contract, index) !== null) continue;
+      try {
+        recordLiveRead(row, taker.VENUE_NOVIG, novigLiveQuote(read.book, contract), at);
+      } catch (_error) {
+        // A malformed book is the taker's no_book; the overlay leaves the row unchecked.
+      }
+    }
+  }
+
+  // One live price pass: every Edges line at the read venues that has no read
+  // newer than LIVE_REREAD_MS, oldest read first (a line never read first,
+  // best edge first), each venue's book read and kept. Kalshi and Polymarket
+  // US are read per market at a few at a time, at most LIVE_*_READS_PER_PASS
+  // a pass, so the taker's and Place's reads keep their room; Novig's books
+  // come off the stream, subscribed behind the bot's and Place's markets.
+  async function livePricePass() {
+    const board = feedState;
+    if (liveBusy || !board || !scannerStatus || scannerStatus.phase !== "live") return;
+    liveBusy = true;
+    const startedAt = now();
+    try {
+      for (const [key, read] of liveReads) {
+        if (startedAt - read.readAtMs > livePrices.LIVE_READ_MAX_AGE_MS) liveReads.delete(key);
+      }
+      for (const [ticker, check] of kalshiMarketChecks) {
+        if (startedAt - check.checkedAt > KALSHI_MARKET_CHECK_TTL_MS) kalshiMarketChecks.delete(ticker);
+      }
+      for (const [query, list] of polymarketEventLists) {
+        if (startedAt - list.readAt > POLYMARKET_EVENTS_REUSE_MS) polymarketEventLists.delete(query);
+      }
+      const readAtOf = (row) => {
+        const read = liveReads.get(row.key);
+        return read && (read.points ?? null) === (row.points ?? null) ? read.readAtMs : -Infinity;
+      };
+      const rows = liveCandidateRows(board, startedAt);
+      const due = rows.filter((row) => startedAt - readAtOf(row) > LIVE_REREAD_MS)
+        .sort((a, b) => readAtOf(a) - readAtOf(b));
+      const ofVenue = (venue) => due.filter((row) => liveVenueOf(board, row.book.id) === venue);
+      const [kalshiCounts, novigCounts, polymarketCounts, prophetxCounts] = await Promise.all([
+        liveKalshiReads(board, ofVenue(taker.VENUE_KALSHI).slice(0, LIVE_KALSHI_READS_PER_PASS)),
+        liveNovigReads(board, ofVenue(taker.VENUE_NOVIG)),
+        livePolymarketReads(ofVenue(polymarket.VENUE).slice(0, LIVE_POLYMARKET_READS_PER_PASS)),
+        // Every ProphetX row, due or not: the bets service answers its last reads at once and reads on its own pace.
+        liveProphetxReads(board, rows.filter((row) => liveVenueOf(board, row.book.id) === VENUE_PROPHETX)),
+      ]);
+      liveLastPass = {
+        startedAt, finishedAt: now(), rows: rows.length, due: due.length, error: null,
+        byVenue: { kalshi: kalshiCounts, novig: novigCounts, polymarket_us: polymarketCounts, prophetx: prophetxCounts },
+      };
+    } catch (error) {
+      logWarning(`live price pass failed: ${error.stack || error.message}`);
+      liveLastPass = { ...liveLastPass, startedAt, finishedAt: now(), error: error.message };
+    } finally {
+      liveBusy = false;
+    }
+  }
+
+  function newLiveCounts(rows) {
+    return { rows, live: 0, empty: 0, unchecked: 0, lastError: null };
+  }
+
+  function noteUnchecked(counts, why) {
+    counts.unchecked += 1;
+    counts.lastError = why;
+  }
+
+  function noteRead(counts, row, venue, quote, at) {
+    recordLiveRead(row, venue, quote, at);
+    if (quote) counts.live += 1;
+    else counts.empty += 1;
+  }
+
+  async function liveKalshiReads(board, rows) {
+    const counts = newLiveCounts(rows.length);
+    const at = now();
+    const wanted = [];
+    for (const row of rows) {
+      const contract = taker.resolveKalshiContract(row, board);
+      if (contract.reason) noteUnchecked(counts, `${row.key}: ${contract.detail}`);
+      else wanted.push({ row, contract });
+    }
+    const unchecked = new Set(wanted.filter(({ row, contract }) => kalshiCheckOf(row, contract, at) === undefined).map(({ contract }) => contract.ticker));
+    const markets = await readBooks(unchecked, readKalshiMarket);
+    for (const [ticker, read] of markets) {
+      if (read.book) kalshiMarketChecks.set(ticker, { market: read.book, checkedAt: now() });
+    }
+    const checked = wanted.filter(({ row, contract }) => {
+      const mismatch = kalshiCheckOf(row, contract, now());
+      if (mismatch === null) return true;
+      const read = markets.get(contract.ticker);
+      noteUnchecked(counts, `${contract.ticker}: ${mismatch === undefined ? `market unread: ${read ? read.error : "no read"}` : mismatch}`);
+      return false;
+    });
+    const books = await readBooks(new Set(checked.map(({ contract }) => contract.ticker)), readKalshiBook);
+    const readAt = now();
+    for (const { row, contract } of checked) {
+      const read = books.get(contract.ticker);
+      if (!read || !read.book) noteUnchecked(counts, `${contract.ticker}: ${read ? read.error : "no read"}`);
+      else noteRead(counts, row, taker.VENUE_KALSHI, kalshiLiveQuote(read.book, contract.side), readAt);
+    }
+    return counts;
+  }
+
+  async function liveNovigReads(board, rows) {
+    const counts = newLiveCounts(rows.length);
+    if (!rows.length) return counts;
+    let index;
+    try {
+      index = (await novigCatalogFor(rows, NOVIG_CATALOG_REUSE_MS)).index;
+    } catch (error) {
+      counts.unchecked = rows.length;
+      counts.lastError = `Novig's catalog unread: ${error.message}`;
+      return counts;
+    }
+    const wanted = [];
+    for (const row of rows) {
+      const contract = row.betTypeId === MONEYLINE_BET_TYPE_ID ? taker.novigMoneylineContract(row, index, board) : taker.novigContractOf(row, index);
+      const mismatch = contract.reason ? contract.detail : novigListedMismatch(row, contract, index);
+      if (mismatch) noteUnchecked(counts, `${row.key}: ${mismatch}`);
+      else wanted.push({ row, contract });
+    }
+    const marketIds = Array.from(new Set(wanted.map(({ contract }) => contract.marketId)));
+    const books = new Map();
+    for (let start = 0; start < marketIds.length; start += NOVIG_BOOK_MARKETS_PER_ASK) {
+      const read = await readStreamBooks(marketIds.slice(start, start + NOVIG_BOOK_MARKETS_PER_ASK), false, true);
+      for (const [marketId, view] of read) books.set(marketId, view);
+    }
+    const readAt = now();
+    for (const { row, contract } of wanted) {
+      const read = books.get(contract.marketId);
+      if (!read) {
+        noteUnchecked(counts, `${contract.marketId}: no stream answer`);
+      } else if (read.error) {
+        // The stream saw the market go live or leave OPEN: nothing there to buy pregame.
+        if (read.final) noteRead(counts, row, taker.VENUE_NOVIG, null, readAt);
+        else noteUnchecked(counts, read.error);
+      } else {
+        try {
+          noteRead(counts, row, taker.VENUE_NOVIG, novigLiveQuote(read.book, contract), readAt);
+        } catch (error) {
+          noteUnchecked(counts, `${contract.marketId}: ${error.message}`);
+        }
+      }
+    }
+    return counts;
+  }
+
+  async function livePolymarketReads(rows) {
+    const counts = newLiveCounts(rows.length);
+    const queue = rows.slice();
+    const books = new Map();
+    const readOne = async (row) => {
+      const found = await polymarketContractOfRow(row, readPolymarketEventsReused);
+      if (found.reason) return noteUnchecked(counts, `${row.key}: ${found.detail}`);
+      const { slug, side } = found.contract;
+      if (!books.has(slug)) books.set(slug, readPolymarketBook(slug).then((book) => ({ book }), (error) => ({ error: error.message })));
+      const read = await books.get(slug);
+      if (read.error) return noteUnchecked(counts, `${slug}: ${read.error}`);
+      const quote = polymarket.quoteOf(read.book, side);
+      if (quote.reason === "no_book" || quote.reason === "market_closed") return noteRead(counts, row, polymarket.VENUE, null, now());
+      if (quote.reason) return noteUnchecked(counts, `${slug}: ${quote.detail}`);
+      const allIn = polymarket.allInOf(quote.ask);
+      return noteRead(counts, row, polymarket.VENUE, { allIn, depthDollars: quote.depth * allIn }, now());
+    };
+    const worker = async () => {
+      while (queue.length) await readOne(queue.shift());
+    };
+    await Promise.all(Array.from({ length: POLYMARKET_BOOK_READS_AT_ONCE }, worker));
+    return counts;
+  }
+
+  // ProphetX's reads off the bets service (POST /prophetx_live.json,
+  // prophetx_live.py, its own key pair): each game the rows are on is named
+  // with the ProphetX strike ids Unabated carries for it, and each row is
+  // matched to the one ProphetX side that reads as its line (the line's own
+  // strike id, when Unabated names one, must be that side's). The service
+  // never waits: a game it has not read yet leaves its rows unchecked.
+  async function liveProphetxReads(board, rows) {
+    const counts = newLiveCounts(rows.length);
+    if (!rows.length) return counts;
+    const rowsByGame = new Map();
+    for (const row of rows) {
+      if (!rowsByGame.has(row.eventId)) rowsByGame.set(row.eventId, []);
+      rowsByGame.get(row.eventId).push(row);
+    }
+    const games = Array.from(rowsByGame, ([eventId, gameRows]) => ({
+      gameKey: String(eventId), eventStart: gameRows[0].eventStart, line: taker.novigLineOf(gameRows[0]),
+      strikeIds: prophetx.strikeIdsOf(board.lines[gameRows[0].key] || {}, linesOfEvent(board, eventId)).strikeIds,
+    })).slice(0, PROPHETX_LIVE_GAMES_PER_ASK);
+    let reply;
+    try {
+      reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/prophetx_live.json`, "POST", { games }, SERVICE_TIMEOUT_MS);
+      prophetxLiveOn = true;
+    } catch (error) {
+      if (error.status === 503) prophetxLiveOn = false;
+      counts.unchecked = rows.length;
+      counts.lastError = `ProphetX's live prices unread: ${error.message}`;
+      return counts;
+    }
+    const gameReads = reply && reply.games && typeof reply.games === "object" ? reply.games : {};
+    for (const row of rows) {
+      const read = gameReads[String(row.eventId)];
+      const matched = prophetxLiveSideOf(board, row, read);
+      if (matched.reason) {
+        noteUnchecked(counts, `${row.key}: ${matched.reason}`);
+        continue;
+      }
+      const { side, readAtMs } = matched;
+      const quote = side.price == null ? null : { allIn: pricecheck.impliedProb(side.price), depthDollars: side.depth };
+      noteRead(counts, row, VENUE_PROPHETX, quote, readAtMs);
+    }
+    return counts;
+  }
+
+  // The one side of a ProphetX game read that is the row's line, with the
+  // read's time, or {reason} why the row stays unchecked.
+  function prophetxLiveSideOf(board, row, read) {
+    if (!read) return { reason: "ProphetX game not read yet" };
+    if (read.error) return { reason: read.error };
+    const readAtMs = Date.parse(read.readAt);
+    if (!Number.isFinite(readAtMs) || !Array.isArray(read.lines)) return { reason: "ProphetX read has no time or lines" };
+    const want = taker.novigLineOf(row);
+    if (read.totalsOnly && want.betType !== "total") return { reason: "ProphetX lists the teams the other way round: totals only" };
+    const points = want.betType === "moneyline" ? null : want.points;
+    const found = read.lines.filter((side) => side.betType === want.betType && side.period === want.period
+      && side.side === want.side && (side.points ?? null) === points);
+    if (found.length !== 1) return { reason: `${found.length} ProphetX sides read as ${want.side} ${points ?? ""} ${want.period}` };
+    const ownStrike = (board.lines[row.key] || {}).sourceData;
+    if (prophetx.isProphetxStrikeId(ownStrike) && ownStrike !== found[0].strikeId) {
+      return { reason: `Unabated's ProphetX strike ${ownStrike} is not the one that reads as this line (${found[0].strikeId})` };
+    }
+    if (found[0].price != null && pricecheck.impliedProb(found[0].price) == null) return { reason: `ProphetX price ${found[0].price} is no American price` };
+    return { side: found[0], readAtMs };
+  }
+
+  // The /live_prices.json body (liveprices.createLineView's input): the read
+  // venues' book ids on the board and every line's last read, for the panel.
+  function livePricesPayloadNow() {
+    const board = feedState;
+    const reads = {};
+    for (const [key, read] of liveReads) {
+      reads[key] = read.empty
+        ? { venue: read.venue, points: read.points, empty: true, readAtMs: read.readAtMs }
+        : { venue: read.venue, points: read.points, allIn: read.allIn, depthDollars: read.depthDollars, readAtMs: read.readAtMs };
+    }
+    return {
+      generatedAt: new Date(now()).toISOString(), maxAgeMs: livePrices.LIVE_READ_MAX_AGE_MS,
+      bookIds: board ? liveBookIdsOf(board, true) : [], reads, lastPass: liveStatus(),
+    };
+  }
+
+  function liveStatus() {
+    return {
+      startedAt: isoOrNull(liveLastPass.startedAt), finishedAt: isoOrNull(liveLastPass.finishedAt),
+      rows: liveLastPass.rows, due: liveLastPass.due ?? null, reads: liveReads.size, error: liveLastPass.error, byVenue: liveLastPass.byVenue,
+    };
+  }
+
+  // The view /edges.json reads the board through: the reads held now, or none before the board loads.
+  function liveLineView() {
+    return feedState ? livePrices.createLineView(livePricesPayloadNow(), now()) : null;
+  }
+
   // Novig's live books off the bets service's stream: marketId -> {book} |
   // {error, final?} (taker.novigStreamBookRead) for every market id. The
   // stream unreachable, off or down is an error on every market (never a
   // stale book). `priority` (the Place quote) subscribes ahead of the bot's.
-  async function readStreamBooks(marketIds, priority) {
+  //   background  the live price pass: subscribed after the bot's and Place's markets, no wait for a snapshot
+  async function readStreamBooks(marketIds, priority, background = false) {
     const books = new Map();
     if (!marketIds.length) return books;
     let reply;
     try {
-      reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/novig_books.json`, "POST",
-        { marketIds, waitMs: NOVIG_STREAM_WAIT_MS, priority }, NOVIG_STREAM_READ_TIMEOUT_MS);
+      const body = background ? { marketIds, waitMs: 0, priority: false, background: true } : { marketIds, waitMs: NOVIG_STREAM_WAIT_MS, priority };
+      reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/novig_books.json`, "POST", body, NOVIG_STREAM_READ_TIMEOUT_MS);
     } catch (error) {
       for (const marketId of marketIds) books.set(marketId, { error: `Novig's stream books unread: ${error.message}` });
       return books;
@@ -1439,48 +1859,20 @@ function createRunner(deps) {
     }
     const row = feedLib.describeLine(found[0], board);
     const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
-    const type = polymarket.marketTypeOf(row);
-    if (type.reason) return { ok: false, ...fields, reason: type.reason, detail: type.detail };
-    const startMs = Date.parse(row.eventStart);
-    if (!Number.isFinite(startMs)) return { ok: false, ...fields, reason: "no_start", detail: "the board has no start for this game" };
-    if (row.awayTeamId == null || row.homeTeamId == null) return { ok: false, ...fields, reason: "no_teams", detail: "the board names no team ids for this game" };
-    const query = new URLSearchParams({
-      limit: String(polymarket.EVENTS_PAGE_LIMIT), active: "true", sportsMarketTypes: type.type,
-      startTimeMin: new Date(startMs - polymarket.START_TOLERANCE_MS).toISOString(),
-      startTimeMax: new Date(startMs + polymarket.START_TOLERANCE_MS).toISOString(),
-    });
-    let events;
-    try {
-      const body = await getServiceJson(polymarketFetch, `${polymarketGatewayUrl}/v1/events?${query}`, { headers: { Accept: "application/json" } });
-      if (!body || !Array.isArray(body.events)) throw new Error("Polymarket US events: no events list");
-      if (body.events.length >= polymarket.EVENTS_PAGE_LIMIT) throw new Error(`${body.events.length} events in one page may be a cut list`);
-      events = body.events;
-    } catch (error) {
-      return { ok: false, ...fields, reason: "no_market", detail: `Polymarket US's events unread: ${error.message}` };
-    }
-    const keysOf = (record) => betsLib.resolveTeamKeys([record], held.crosswalk)[0];
-    const boardKeys = { away: teams.keyOf(row.league, row.awayTeamId), home: teams.keyOf(row.league, row.homeTeamId) };
-    const exact = polymarket.matchingEvents(events, row, keysOf, boardKeys);
-    // No event names both teams: a college name nothing resolves yet may still
-    // be the game by its other team (polymarket.oneTeamMatches).
-    const games = exact.length ? exact : polymarket.oneTeamMatches(events, row, keysOf, boardKeys);
-    if (games.length !== 1) {
-      const byOneTeam = exact.length ? "" : ` (${games.length} by one team and start)`;
-      return { ok: false, ...fields, reason: "no_market", detail: `${exact.length} of Polymarket US's ${events.length} ${type.type} events are ${row.eventName} at its start${byOneTeam}` };
-    }
-    const { event, teams: eventTeams, learnedRow } = games[0];
-    if (learnedRow) {
+    const foundContract = await polymarketContractOfRow(row, readPolymarketEvents);
+    if (foundContract.reason) return { ok: false, ...fields, reason: foundContract.reason, detail: foundContract.detail };
+    const { contract, event, startMs } = foundContract;
+    if (foundContract.learnedRow) {
+      const { learnedRow } = foundContract;
       logInfo(`polymarket quote ${row.eventId}: matched ${event.slug} by one team; "${learnedRow.venueTeamName}" is Unabated team ${learnedRow.unabatedTeamId}`);
       postCrosswalkRows([learnedRow]).catch((error) => logWarning(`crosswalk: polymarket name not saved: ${error.message}`));
     }
-    const contract = polymarket.contractOf(row, event, eventTeams, type.type);
-    if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
     const eventStartMs = Math.min(startMs, Date.parse(event.startTime));
     const position = { ...fields, eventStart: new Date(eventStartMs).toISOString(), unabatedStart: row.eventStart,
       polymarketStart: event.startTime, slug: contract.slug, side: contract.side, eventSlug: event.slug };
     let book;
     try {
-      book = await getServiceJson(polymarketFetch, `${polymarketGatewayUrl}/v1/markets/${encodeURIComponent(contract.slug)}/book`, { headers: { Accept: "application/json" } });
+      book = await readPolymarketBook(contract.slug);
     } catch (error) {
       return { ok: false, ...position, reason: "no_book", detail: error.message };
     }
@@ -1569,6 +1961,79 @@ function createRunner(deps) {
       eventName: row.eventName, price: found[0].price, isAlt: row.isAlt, rotation: row.rotation ?? null,
       awayRotation: row.awayRotation ?? null, homeRotation: row.homeRotation ?? null, line: taker.novigLineOf(row),
     };
+  }
+
+  // The Polymarket US contract a board row buys, found in Polymarket US's own
+  // list (polymarket.js: the game by its two teams through the crosswalk, the
+  // market by its own sides): {contract, event, startMs, learnedRow} or
+  // {reason, detail}. Shared by Place's quote (which saves a learnedRow, a
+  // name matched by one team) and the live price pass (which saves nothing).
+  //   readEvents  (marketType, startMs) -> Promise of Polymarket US's events around the start (throws naming why)
+  async function polymarketContractOfRow(row, readEvents) {
+    const type = polymarket.marketTypeOf(row);
+    if (type.reason) return { reason: type.reason, detail: type.detail };
+    const startMs = Date.parse(row.eventStart);
+    if (!Number.isFinite(startMs)) return { reason: "no_start", detail: "the board has no start for this game" };
+    if (row.awayTeamId == null || row.homeTeamId == null) return { reason: "no_teams", detail: "the board names no team ids for this game" };
+    let events;
+    try {
+      events = await readEvents(type.type, startMs);
+    } catch (error) {
+      return { reason: "no_market", detail: `Polymarket US's events unread: ${error.message}` };
+    }
+    const keysOf = (record) => betsLib.resolveTeamKeys([record], held.crosswalk)[0];
+    const boardKeys = { away: teams.keyOf(row.league, row.awayTeamId), home: teams.keyOf(row.league, row.homeTeamId) };
+    const exact = polymarket.matchingEvents(events, row, keysOf, boardKeys);
+    // No event names both teams: a college name nothing resolves yet may still
+    // be the game by its other team (polymarket.oneTeamMatches).
+    const games = exact.length ? exact : polymarket.oneTeamMatches(events, row, keysOf, boardKeys);
+    if (games.length !== 1) {
+      const byOneTeam = exact.length ? "" : ` (${games.length} by one team and start)`;
+      return { reason: "no_market", detail: `${exact.length} of Polymarket US's ${events.length} ${type.type} events are ${row.eventName} at its start${byOneTeam}` };
+    }
+    const { event, teams: eventTeams, learnedRow } = games[0];
+    const contract = polymarket.contractOf(row, event, eventTeams, type.type);
+    if (contract.reason) return { reason: contract.reason, detail: contract.detail };
+    return { contract, event, startMs, learnedRow: learnedRow || null };
+  }
+
+  // Polymarket US's active events of one market type starting within
+  // START_TOLERANCE_MS of startMs (public gateway). Throws naming why; a full
+  // page may be a cut list, so it throws rather than miss the game.
+  async function readPolymarketEvents(marketType, startMs) {
+    const query = new URLSearchParams({
+      limit: String(polymarket.EVENTS_PAGE_LIMIT), active: "true", sportsMarketTypes: marketType,
+      startTimeMin: new Date(startMs - polymarket.START_TOLERANCE_MS).toISOString(),
+      startTimeMax: new Date(startMs + polymarket.START_TOLERANCE_MS).toISOString(),
+    });
+    const body = await getServiceJson(polymarketFetch, `${polymarketGatewayUrl}/v1/events?${query}`, { headers: { Accept: "application/json" } });
+    if (!body || !Array.isArray(body.events)) throw new Error("Polymarket US events: no events list");
+    if (body.events.length >= polymarket.EVENTS_PAGE_LIMIT) throw new Error(`${body.events.length} events in one page may be a cut list`);
+    return body.events;
+  }
+
+  // readPolymarketEvents for the live price pass, each query's answer (or
+  // failure) reused for POLYMARKET_EVENTS_REUSE_MS: one game's ladder is one
+  // read, not one per rung. Place reads its own, fresh.
+  async function readPolymarketEventsReused(marketType, startMs) {
+    const key = `${marketType}|${startMs}`;
+    const held_ = polymarketEventLists.get(key);
+    if (held_ && now() - held_.readAt <= POLYMARKET_EVENTS_REUSE_MS) {
+      if (held_.error) throw new Error(held_.error);
+      return held_.events;
+    }
+    try {
+      const events = await readPolymarketEvents(marketType, startMs);
+      polymarketEventLists.set(key, { events, readAt: now() });
+      return events;
+    } catch (error) {
+      polymarketEventLists.set(key, { error: error.message, readAt: now() });
+      throw error;
+    }
+  }
+
+  async function readPolymarketBook(slug) {
+    return getServiceJson(polymarketFetch, `${polymarketGatewayUrl}/v1/markets/${encodeURIComponent(slug)}/book`, { headers: { Accept: "application/json" } });
   }
 
   // Kalshi's start for an event as epoch ms, or null when it lists none or
@@ -1842,7 +2307,11 @@ function createRunner(deps) {
       timers.setInterval(() => pollBets(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
-      timers.setInterval(() => takerPass(), TAKER_PASS_MS),
+      // The live price pass right after each taker pass, so the lines the taker just read are not read again.
+      timers.setInterval(async () => {
+        await takerPass();
+        await livePricePass();
+      }, TAKER_PASS_MS),
       timers.setInterval(() => postTauSamples(), TAU_SAMPLES_POST_MS),
     ];
     await loadTauPool();
@@ -1863,7 +2332,7 @@ function createRunner(deps) {
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
       betsStatus: { ...betsStatus }, boardLines: boardLines(), ladderReaderOf,
       teasers: openTeasersNow(), measurement: feedState ? tailFlexMeasurement() : null, now: now(),
-      dismissedIds, edgeSkips,
+      dismissedIds, edgeSkips, lineView: liveLineView(),
     });
   }
 
@@ -1971,6 +2440,7 @@ function createRunner(deps) {
       closingFairs: { ...closingStatus },
       closeSnapshots: { ...closeSnapshotStatus },
       tauPool: { ...tauStatus, size: tauPool.size(), unsent: tauUnsent.size },
+      livePrices: liveStatus(),
       taker: {
         desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
         skipped: takerLastPass.skipped, novigSkipped: takerLastPass.novigSkipped,
@@ -1980,8 +2450,8 @@ function createRunner(deps) {
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions,
-    edgesPayload: edgesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
+    start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
+    edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
   };
@@ -2030,7 +2500,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json, /team_keys.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /live_prices.json, /kalshi_quote.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json, /team_keys.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -2057,6 +2527,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/scenarios.json") return sendJson(response, 200, await runner.scenariosPayload());
       if (path === "/taker.json") return sendJson(response, 200, await runner.takerPayload());
       if (path === "/tau.json") return sendJson(response, 200, await runner.tauPayload());
+      if (path === "/live_prices.json") return sendJson(response, 200, await runner.livePricesPayload());
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));

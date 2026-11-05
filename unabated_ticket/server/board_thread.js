@@ -8,7 +8,7 @@
 // sends, and every page and quote built off the board. The main thread
 // (runner.js main) holds only the HTTP server and this file's board client,
 // which answers:
-//   /edges.json, /teasers.json, /scenarios.json, /taker.json  from the last
+//   /edges.json, /teasers.json, /scenarios.json, /taker.json, /tau.json, /live_prices.json  from the last
 //       copy the board thread built, at once, when that copy is under
 //       PAYLOAD_SERVE_MAX_AGE_MS old, and asks for a new copy for the next
 //       request (so a page polling every 15 s reads a list at most one poll
@@ -40,7 +40,7 @@ const BOARD_RESTART_DELAY_MS = 5 * 1000;
 const BOARD_RESTART_MAX_DELAY_MS = 5 * 60 * 1000;
 const BOARD_HEALTHY_RUN_MS = 10 * 60 * 1000;
 // The pages the main thread serves from a copy, by the runner method that builds each.
-const PAYLOAD_METHODS = { edges: "edgesPayload", teasers: "teasersPayload", scenarios: "scenariosPayload", taker: "takerPayload", tau: "tauPayload" };
+const PAYLOAD_METHODS = { edges: "edgesPayload", teasers: "teasersPayload", scenarios: "scenariosPayload", taker: "takerPayload", tau: "tauPayload", livePrices: "livePricesPayload" };
 const HTTP_SERVICE_UNAVAILABLE = 503;
 
 // A reply body already serialized: runner.js sendJson writes its text as is.
@@ -202,6 +202,7 @@ function createBoardClient(options) {
     scenariosPayload: () => payload("scenarios"),
     takerPayload: () => payload("taker"),
     tauPayload: () => payload("tau"),
+    livePricesPayload: () => payload("livePrices"),
     attachPayload: (params) => call("attachPayload", [params.toString()]).then((text) => new RawJson(text)),
     kalshiQuote: (params) => call("kalshiQuote", [params.toString()]).then((text) => new RawJson(text)),
     novigQuote: (params) => call("novigQuote", [params.toString()]).then((text) => new RawJson(text)),

@@ -240,6 +240,26 @@ def test_subscribes_are_paced_by_the_stream_throttle_with_place_first(made):
     assert [len(frame["subscribe"]["markets"]) for frame in stream._outgoing_frames()] == [2]
 
 
+def test_the_live_price_pass_subscribes_behind_the_bot_until_the_bot_asks_too(made):
+    stream, _connection, _clock, _client = made
+    stream.books_for(["mk-aa-live", "mk-ab-both"], 0.0, background=True)
+    stream.books_for(["mk-zz-bot"], 0.0)
+    stream.books_for(["mk-ab-both"], 0.0)  # the bot asks for a market the live pass watches: it moves up
+    stream.books_for(["mk-ab-both"], 0.0, background=True)  # a later background ask does not move it back
+    first = stream._outgoing_frames()
+    assert list(first[0]["subscribe"]["markets"]) == ["mk-ab-both", "mk-zz-bot", "mk-aa-live"]
+
+
+def test_the_live_price_pass_watches_at_most_its_cap_and_the_bot_still_gets_in(made, monkeypatch):
+    stream, _connection, _clock, _client = made
+    monkeypatch.setattr(nbs, "MAX_BACKGROUND_MARKETS", 2)
+    answer = stream.books_for(["mk-a", "mk-b", "mk-c"], 0.0, background=True)
+    assert answer["books"]["mk-c"] == {"error": "the live price pass already watches 2 Novig markets"}
+    assert "mk-c" not in stream._wanted
+    stream.books_for(["mk-bot"], 0.0)
+    assert "mk-bot" in stream._wanted and "mk-bot" not in stream._background
+
+
 def test_a_refused_subscribe_answers_its_code(made):
     stream, _connection, _clock, _client = made
     ask(stream)
@@ -368,6 +388,13 @@ def _serve(handler):
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_a_novig_books_ask_is_priority_or_background_never_both():
+    assert service.validate_novig_books_request({"marketIds": ["mk-a"], "background": True}) == (["mk-a"], 0.0, False, True)
+    assert service.validate_novig_books_request({"marketIds": ["mk-a"], "priority": True}) == (["mk-a"], 0.0, True, False)
+    assert service.validate_novig_books_request({"marketIds": ["mk-a"], "priority": True, "background": True}) == "priority and background cannot both be true"
+    assert "background must be" in service.validate_novig_books_request({"marketIds": ["mk-a"], "background": "yes"})
 
 
 def test_post_novig_books_answers_the_streams_books(bets_store, made):

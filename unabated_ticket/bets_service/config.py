@@ -256,6 +256,12 @@ PROPHETX_BASE_URL = _get("PROPHETX_BASE_URL", "https://cash.api.prophetx.co/part
 PROPHETX_POLL_SEC = 30.0
 # ProphetX's order history allows at most a 60-day creation window per read.
 PROPHETX_HISTORY_DAYS = 60
+# A second ProphetX key pair (2026-11-05), only for the Edges list's live
+# ProphetX prices (prophetx_live.py, reads only), so its reads never take the
+# 1 request a second PROPHETX_* has for the bet source and Place. Unset =
+# ProphetX Edges lines stay at Unabated's price, untagged.
+PROPHETX_LIVE_ACCESS_KEY = _get("PROPHETX_LIVE_ACCESS_KEY")
+PROPHETX_LIVE_SECRET_KEY = _get("PROPHETX_LIVE_SECRET_KEY")
 
 # Bet105 (2026-09-29): no credentials and no poll here. Cloudflare challenges any
 # request that is not the browser session's own, so the extension reads the account

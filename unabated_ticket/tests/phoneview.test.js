@@ -65,6 +65,10 @@ test("formatting: edge, price with cents off the exchange's own price, points, k
   assert.deepEqual([phoneView.fmtLineAge(null, NOW), phoneView.fmtLineAge(NOW - 30000, NOW), phoneView.fmtLineAge(NOW - 4 * 60000, NOW), phoneView.fmtLineAge(NOW - 3 * 86400000, NOW)],
     ["line age unknown", "line just changed", "line 4m old", "line 3d old"]);
   assert.equal(phoneView.fmtLiquidity(1234.5), "liq $1,235");
+  // An exchange line off its live book says so in place of Unabated's line age; an unread one is flagged.
+  const row = { modifiedMs: NOW - 3600000, liquidity: 209.4 };
+  assert.deepEqual([phoneView.lineAgeText(row, NOW), phoneView.lineAgeText({ ...row, liveCheck: "live" }, NOW), phoneView.lineAgeText({ ...row, liveCheck: "unchecked" }, NOW)],
+    ["line 1h old · liq $209", "live price · liq $209", "line 1h old · unchecked · liq $209"]);
   assert.equal(phoneView.marketText({ betType: "Spread", period: "1H", isAlt: true, mainPoints: -3, rotation: 466 }), "Spread · 1H · alt of -3 · rot 466");
   assert.equal(phoneView.describeMatchup({ awayTeam: "Chicago Bears", homeTeam: "Carolina Panthers", leagueLabel: "NFL" }), "Chicago Bears @ Carolina Panthers · NFL");
 });

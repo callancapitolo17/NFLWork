@@ -212,6 +212,15 @@
   // better" tags: built once per scanner update and max line age.
   const pricecheck = globalThis.UnabatedPriceCheck;
   let priceIndexCache = null;
+  // The exchanges' own prices (liveprices.js): the server runner's reads of
+  // every Edges line at Kalshi, Novig and Polymarket US, from the bets
+  // service's GET /live_prices.json after every bets poll; {body, fetchedAt,
+  // error}. Until one is read every line shows Unabated's price untagged; a
+  // read that ages past liveprices.LIVE_READ_MAX_AGE_MS tags its line "unchecked".
+  const livePricesLib = globalThis.UnabatedLivePrices;
+  let livePriceReads = null;
+  // The bets poll awaits the /live_prices.json read, so a hung one must not hold the poll.
+  const LIVE_PRICES_TIMEOUT_MS = 10 * 1000;
   const teamsLib = globalThis.UnabatedTeams;
   let teamsSpellingCount = 0;
   const fillfair = globalThis.UnabatedFillFair;
@@ -1132,6 +1141,15 @@
     return `line ${Math.round(ms / 86400000)}d old`;
   }
 
+  // The age words of a pregame row: "live price" when the exchange's own book
+  // priced it (liveprices.js), Unabated's line age with "unchecked" when the
+  // runner has not read that exchange line yet, else Unabated's line age.
+  function rowAgeText(row) {
+    if (row.liveCheck === "live") return "live price";
+    if (row.liveCheck === "unchecked") return `${fmtLineAge(row.modifiedMs)} · unchecked`;
+    return fmtLineAge(row.modifiedMs);
+  }
+
   // A live line's last price change: seconds matter between quarters.
   function fmtChangedAgo(modifiedMs) {
     if (modifiedMs == null) return null;
@@ -1352,7 +1370,7 @@
 
   // Everything selectEdges needs except the edge threshold (list and alerts differ there).
   function edgeSelectionOptions(effective) {
-    return edgeRows.edgeSelectionOptions(state.edgeSettings, effective, Date.now());
+    return edgeRows.edgeSelectionOptions(state.edgeSettings, effective, Date.now(), liveLineView());
   }
 
   // (period, axis) -> Unabated's fair ladder for one event, kept until the next scanner update.
@@ -1436,9 +1454,32 @@
   function priceIndex() {
     const maxLineAgeHours = state.edgeSettings.maxLineAgeHours;
     if (!priceIndexCache || priceIndexCache.maxLineAgeHours !== maxLineAgeHours) {
-      priceIndexCache = { maxLineAgeHours, index: edgeRows.createPriceIndex(scannerState, state.edgeSettings, Date.now()) };
+      priceIndexCache = { maxLineAgeHours, index: edgeRows.createPriceIndex(scannerState, state.edgeSettings, Date.now(), liveLineView()) };
     }
     return priceIndexCache.index;
+  }
+
+  // The view the Edges list reads the board through (liveprices.createLineView), or null before any read.
+  function liveLineView() {
+    return livePriceReads && livePriceReads.body ? livePricesLib.createLineView(livePriceReads.body, Date.now()) : null;
+  }
+
+  // One GET of /live_prices.json (the bets service passes it through from the
+  // server runner), after each bets poll. A failure keeps the last read, whose
+  // lines turn "unchecked" as they age; the list is rebuilt on every read.
+  async function syncLivePrices() {
+    try {
+      const body = await serviceRequest("GET", "/live_prices.json", undefined, LIVE_PRICES_TIMEOUT_MS);
+      if (!body || !Array.isArray(body.bookIds) || typeof body.reads !== "object" || body.reads === null) {
+        throw new Error("live_prices.json has no bookIds list or reads object");
+      }
+      livePriceReads = { body, fetchedAt: Date.now(), error: null };
+    } catch (error) {
+      if (!livePriceReads || livePriceReads.error !== error.message) console.warn("[unabated-ticket] live price read failed (the last read stands until its lines age to unchecked)", error.message);
+      livePriceReads = { ...(livePriceReads || { body: null, fetchedAt: null }), error: error.message };
+    }
+    priceIndexCache = null;
+    renderEdges();
   }
 
   // The standalone stake and the tail-flex rank score (edgeRows.withStakeAndRank).
@@ -1450,6 +1491,7 @@
     if (!scannerState) return [];
     return edgeRows.listedEdgeRows(scannerState, {
       ...betFlagContext(), edgeSettings: state.edgeSettings, effective: effectiveFilter(), measurement: tailFlexMeasurement(), priceIndex: priceIndex(), now: Date.now(),
+      lineView: liveLineView(),
     });
   }
 
@@ -1749,7 +1791,7 @@
     age.className = "age";
     const ageParts = row.live
       ? [`fair ${fmtAmerican(row.fair)}`, fmtChangedAgo(row.modifiedMs), fmtLiquidity(row.liquidity)]
-      : [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)];
+      : [rowAgeText(row), fmtLiquidity(row.liquidity)];
     age.textContent = ` · ${ageParts.filter(Boolean).join(" · ")}`;
     book.append(price, age);
     main.append(side, meta, book);
@@ -1783,7 +1825,7 @@
       + `${row.isAlt ? ` · alt of ${fmtPoints(row.mainPoints)}` : ""}`;
     const age = document.createElement("span");
     age.className = "gl-age";
-    age.textContent = [fmtLineAge(row.modifiedMs), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
+    age.textContent = [rowAgeText(row), fmtLiquidity(row.liquidity)].filter(Boolean).join(" · ");
     main.append(price, age);
     main.append(...(priceCheckLineEl(row, false) || []));
 
@@ -2523,6 +2565,7 @@
     if (state.betsService.error == null) {
       syncSettings().catch((error) => console.error("[unabated-ticket] settings sync failed", error));
       syncPooledTau().catch((error) => console.error("[unabated-ticket] tau pool sync failed", error));
+      syncLivePrices().catch((error) => console.error("[unabated-ticket] live price sync failed", error));
       if (sharedMarksDue) migrateSharedMarks().catch((error) => console.error("[unabated-ticket] marks migration failed", error));
     }
   }
@@ -2673,9 +2716,10 @@
   // One request to a bets-service write route (crosswalk, pins, fill fairs):
   // the parsed reply, or an Error carrying the HTTP status and the service's
   // own error text — none when the body is not JSON (an older service's 404).
-  async function serviceRequest(method, path, body) {
+  //   timeoutMs  optional: abort the request after this long (a poll that awaits it never hangs on it)
+  async function serviceRequest(method, path, body, timeoutMs = null) {
     const response = await fetch(`${state.betsSettings.serviceUrl}${path}`, {
-      method, cache: "no-store",
+      method, cache: "no-store", signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
       headers: body ? { "Content-Type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
     });
