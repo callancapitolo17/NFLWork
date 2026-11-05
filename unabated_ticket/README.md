@@ -776,8 +776,10 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   bot's and Place's markets, no wait), each market checked against Novig's
   catalog listing first (`taker.novigSideMismatch`: outcome, type, period,
   strike, the outcome's name). Polymarket US: the contract found in its own
-  event list the way Place finds it (event list reused 5 min per game) and
-  `/v1/markets/<slug>/book`, at most 60 a pass. ProphetX (Cal, 2026-11-05):
+  event list the way Place finds it (event list reused 5 min per game, at
+  most 3 fresh lists a pass) and its book off the bets service's Polymarket
+  US stream (`POST /polymarket_books.json` with `background: true`, never the
+  gateway's `/book`, whose 429s refused Place, 2026-11-05), at most 60 a pass. ProphetX (Cal, 2026-11-05):
   the runner names every game with a ProphetX line in `POST
   /prophetx_live.json` and gets back the bets service's last read of each at
   once (`bets_service/prophetx_live.py`); a thread there reads one game's
@@ -3561,7 +3563,10 @@ signs (one balance read at start) and the service reads `polymarket_us`; else
    is Over; the bets source's grammar, so the bet reads back as the line it
    was placed on). Zero or two of either refuses. A half moneyline refuses
    (tie rule unchecked, as at Kalshi and Novig). It then reads the market's
-   book: YES costs the best offer, NO costs 1 minus the best bid (one
+   book, off the bets service's Polymarket US stream (below; a market it was
+   not watching gets 2 s for its first book), else ONE read of the public
+   gateway's `/v1/markets/<slug>/book`; the log says which (`book from
+   stream` / `gateway`). YES costs the best offer, NO costs 1 minus the best bid (one
    instrument per market; every price is the YES price), and a market not
    `MARKET_STATE_OPEN` refuses. The quote carries the earlier of Unabated's
    and Polymarket US's start.
@@ -3595,6 +3600,30 @@ SELECT placed_at, label, ticker AS slug, contract_side, ticket_all_in, ask_price
        count_filled, cost_filled, polymarket_order_id, status, error
 FROM manual_orders WHERE venue = 'polymarket_us' ORDER BY placed_at DESC;
 ```
+
+**Live books (`bets_service/polymarket_book_stream.py`, 2026-11-05, Cal's
+option A).** The live price pass (#252) read every Polymarket US line's book
+off the public gateway, up to 60 a pass every 30 s. The gateway allows about 5
+reads then a 10 s wait per address, so most of those answered `HTTP 429` (54
+of 60 on the VM, 2026-11-05), and so did Place's own book read from the same
+VM ("Not placed: HTTP 429 from .../book"). Now the bets service keeps ONE
+websocket, `wss://api.polymarket.us/v1/ws/markets`, signed with the
+`POLYMARKET_US_*` key like a REST GET, **reads only**; it runs whenever the key
+is set. The runner asks `POST /polymarket_books.json` (loopback only) for the
+slugs it needs: each is subscribed on first ask under its own requestId
+(`SUBSCRIPTION_TYPE_MARKET_DATA`; Place's first, the live pass's last and at
+most 400), the subscribe answers the whole book at once, and every change
+pushes the whole book again (a live recon on the VM, 2026-11-05, matched the
+SDK: the REST `/book`'s `marketData` shape, several subscriptions on one
+connection). A still market sends nothing, so its subscription is renewed for
+a fresh book every 2 min and a book over 3 min old is not served; the stream
+pings every 15 s and reconnects after 45 s with no frame or pong (no heartbeat
+came in the recon). A market nobody asked about for 10 min is unsubscribed; a
+refused one is asked again a minute later. The live pass never reads a book
+off the gateway (no stream book: the line stays `unchecked`), and reads at
+most 3 fresh event lists a pass there (each reused 5 min), so the gateway is
+left to Place. `/health` carries `polymarketStream` (connected, last frame
+age, subscribed, held and wanted markets, last error).
 
 ### ProphetX source and Place (`bets_service/sources/prophetx.py`, `prophetx_place.py`, `server/prophetx.js`, 2026-10-31)
 

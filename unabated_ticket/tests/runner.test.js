@@ -816,6 +816,12 @@ function takerService(script) {
         if (!books) return response({ status: 503, body: JSON.stringify({ error: "no bot Novig key is configured" }) });
         return response({ body: JSON.stringify(books(body)) });
       }
+      if (route === "/polymarket_books.json") {
+        // No stream scripted = a bets service without the Polymarket US key.
+        const books = script["/polymarket_books.json"];
+        if (!books) return response({ status: 503, body: JSON.stringify({ error: "no Polymarket US key is configured" }) });
+        return response({ body: JSON.stringify(books(body)) });
+      }
       if (route === "/prophetx_live.json") {
         // No reads scripted = a bets service without the ProphetX live key pair.
         const reads = script["/prophetx_live.json"];
@@ -1933,6 +1939,21 @@ function polymarketEvent(fields = {}) {
   };
 }
 
+// The book Polymarket US's gateway /book and the bets service's stream both
+// answer in these tests (the stream's marketData is the REST body's).
+function polymarketBook() {
+  return { marketData: {
+    marketSlug: POLY_SLUG, state: "MARKET_STATE_OPEN",
+    bids: [{ px: { value: "0.3700", currency: "USD" }, qty: "500" }, { px: { value: "0.3500", currency: "USD" }, qty: "900" }],
+    offers: [{ px: { value: "0.3800", currency: "USD" }, qty: "100" }],
+  } };
+}
+
+// A bets service stream answer: every slug asked for gets polymarketBook()'s.
+function polymarketStreamBooks(body) {
+  return { stream: { connected: true }, books: Object.fromEntries(body.slugs.map((slug) => [slug, { ...polymarketBook(), ageMs: 1500 }])) };
+}
+
 function polymarketFetch(events = [polymarketEvent()], book = null) {
   const calls = [];
   const impl = async (url) => {
@@ -1940,11 +1961,7 @@ function polymarketFetch(events = [polymarketEvent()], book = null) {
     const bare = url.split("?")[0];
     if (bare === `${POLY_GATEWAY}/v1/events`) return response({ body: JSON.stringify({ events }) });
     if (bare === `${POLY_GATEWAY}/v1/markets/${POLY_SLUG}/book`) {
-      return response({ body: JSON.stringify(book || { marketData: {
-        marketSlug: POLY_SLUG, state: "MARKET_STATE_OPEN",
-        bids: [{ px: { value: "0.3700", currency: "USD" }, qty: "500" }, { px: { value: "0.3500", currency: "USD" }, qty: "900" }],
-        offers: [{ px: { value: "0.3800", currency: "USD" }, qty: "100" }],
-      } }) });
+      return response({ body: JSON.stringify(book || polymarketBook()) });
     }
     return response({ status: 404, body: "{}" });
   };
@@ -1966,7 +1983,20 @@ test("polymarket_quote: the board's Polymarket US line is found in Polymarket US
   assert.deepEqual([quote.line.betType, quote.line.side, quote.line.points], ["spread", "home", -35.5]);
   const eventsUrl = new URL(poly.calls[0]);
   assert.equal(eventsUrl.searchParams.get("sportsMarketTypes"), "football_team_full_game_spread");
-  assert.equal(service.posts.length, 0, "nothing is sent");
+  // No stream (no key): the stream is asked first, then the gateway's /book once.
+  assert.deepEqual(service.posts, [{ route: "/polymarket_books.json", body: { slugs: [POLY_SLUG], waitMs: 2000, priority: true, background: false } }]);
+  assert.equal(quote.bookFrom, "gateway");
+  assert.equal(poly.calls.filter((url) => url.endsWith("/book")).length, 1);
+});
+
+test("polymarket_quote: the stream's book prices Place, and the gateway's /book is never read", async () => {
+  const poly = polymarketFetch();
+  const { runner } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY },
+    WSU_UNABATED_START, { "/polymarket_books.json": polymarketStreamBooks });
+  const quote = await runner.polymarketQuote(new URLSearchParams(POLY_LINE_PARAMS));
+  runner.stop();
+  assert.deepEqual([quote.ok, quote.ask, quote.depth, quote.bookFrom], [true, 0.63, 500, "stream"]);
+  assert.equal(poly.calls.filter((url) => url.endsWith("/book")).length, 0);
 });
 
 test("polymarket_quote: a game Polymarket US lists with its teams swapped, at another start, twice, or no market at the number refuses", async () => {
@@ -2193,10 +2223,10 @@ test("live prices: the taker's own reads count, so a line it just read is not re
   runner.stop();
 });
 
-test("live prices: a Polymarket US line is priced off its own book with the taker fee; the game's event list is read once and reused", async () => {
+test("live prices: a Polymarket US line is priced off the stream's book with the taker fee; the event list is read once, no gateway /book", async () => {
   const poly = polymarketFetch();
   const clock = { now: TAKER_NOW };
-  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS });
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS, "/polymarket_books.json": polymarketStreamBooks });
   const runner = runnerLib.createRunner({
     fetchImpl: polymarketUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
     polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY, betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers, ...quiet,
@@ -2209,12 +2239,28 @@ test("live prices: a Polymarket US line is priced off its own book with the take
   const row = edgeRowsOf(runner.edgesPayload()).find((entry) => entry.key === key);
   assert.equal(row.liveCheck, "live");
   assert.equal(row.sourcePrice, allIn);
-  // A pass 25 s later reads the book again and reuses the game's event list.
+  // A pass 25 s later asks the stream again and reuses the game's event list.
   clock.now += 25 * 1000;
   await runner.livePricePass();
   assert.equal(poly.calls.filter((url) => url.startsWith(`${POLY_GATEWAY}/v1/events`)).length, 1);
-  assert.equal(poly.calls.filter((url) => url === `${POLY_GATEWAY}/v1/markets/${POLY_SLUG}/book`).length, 2);
+  assert.equal(poly.calls.filter((url) => url.endsWith("/book")).length, 0, "no book off the public gateway");
+  const asks = service.posts.filter((post) => post.route === "/polymarket_books.json");
+  assert.deepEqual(asks.map((post) => post.body), [1, 2].map(() => ({ slugs: [POLY_SLUG], waitMs: 0, priority: false, background: true })));
   assert.equal(runner.livePricesPayload().reads[key].readAtMs, clock.now);
+  runner.stop();
+});
+
+test("live prices: without the stream a Polymarket US line stays unchecked and the gateway's /book is not read", async () => {
+  const poly = polymarketFetch();
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: polymarketUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY, betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.livePricePass();
+  assert.equal(Object.values(runner.livePricesPayload().reads).filter((entry) => entry.venue === "polymarket_us").length, 0);
+  assert.equal(poly.calls.filter((url) => url.endsWith("/book")).length, 0);
   runner.stop();
 });
 

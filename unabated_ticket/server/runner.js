@@ -95,9 +95,12 @@
 //       once per ticker per 10 min and /markets/<ticker>/orderbook (at most
 //       LIVE_KALSHI_READS_PER_PASS a pass, two at a time), POST <bets
 //       service>/novig_books.json with background: true (subscribed behind
-//       the bot's and Place's markets, no wait), and Polymarket US's GET
-//       /v1/events (reused 5 min per game) and /v1/markets/<slug>/book (at
-//       most LIVE_POLYMARKET_READS_PER_PASS a pass), and POST <bets service>/prophetx_live.json
+//       the bot's and Place's markets, no wait), Polymarket US's GET
+//       /v1/events (reused 5 min per game, at most
+//       LIVE_POLYMARKET_EVENT_READS_PER_PASS fresh a pass) and POST <bets
+//       service>/polymarket_books.json with background: true (the books off
+//       its websocket, never the gateway's /book; at most
+//       LIVE_POLYMARKET_READS_PER_PASS rows a pass), and POST <bets service>/prophetx_live.json
 //       naming every game with a ProphetX Edges line (answered at once from the
 //       service's own reads on its PROPHETX_LIVE_* key pair). Reads only; served at
 //       /live_prices.json and laid over /edges.json (extension/liveprices.js).
@@ -241,7 +244,20 @@ const KALSHI_MARKET_CHECK_TTL_MS = 10 * 60 * 1000;
 const POLYMARKET_EVENTS_REUSE_MS = 5 * 60 * 1000;
 // The most Novig markets one POST /novig_books.json may name (service.py MAX_NOVIG_BOOK_MARKETS).
 const NOVIG_BOOK_MARKETS_PER_ASK = 500;
-const POLYMARKET_BOOK_READS_AT_ONCE = 2;
+// Rows whose Polymarket US contract the live pass looks up at once (the
+// event-list reads behind them are the only gateway reads it sends).
+const POLYMARKET_CONTRACT_LOOKUPS_AT_ONCE = 2;
+// Fresh Polymarket US event lists one live pass may read off the public
+// gateway (the rest wait a pass; a list is reused POLYMARKET_EVENTS_REUSE_MS).
+// The gateway allows about 5 reads then a 10 s wait per address (2026-11-05),
+// and Place's own event-list read shares it, so the pass keeps well under.
+const LIVE_POLYMARKET_EVENT_READS_PER_PASS = 3;
+// The most slugs one POST /polymarket_books.json may name (service.py MAX_POLYMARKET_BOOK_SLUGS).
+const POLYMARKET_BOOK_SLUGS_PER_ASK = 500;
+// How long Place's quote waits for a market the stream had not watched yet
+// (polymarket_book_stream.MAX_WAIT_SEC caps it), and the service's answer on top.
+const POLYMARKET_STREAM_WAIT_MS = 2000;
+const POLYMARKET_STREAM_READ_TIMEOUT_MS = POLYMARKET_STREAM_WAIT_MS + 3000;
 // Per-market reads a live price pass sends at most, best-need first (the rest
 // wait a pass): Kalshi's and Polymarket US's read budgets are shared with the
 // taker and Place, and a read stands for LIVE_READ_MAX_AGE_MS (2 min, four
@@ -1501,28 +1517,84 @@ function createRunner(deps) {
     return counts;
   }
 
+  // Polymarket US's live prices: each row's contract found in its event list
+  // (reused POLYMARKET_EVENTS_REUSE_MS, at most LIVE_POLYMARKET_EVENT_READS_PER_PASS
+  // fresh lists a pass), then every contract's book in ONE ask of the bets
+  // service's book stream (background: behind Place's markets, no wait). No
+  // book is read off the public gateway here: its 429s once refused Place.
   async function livePolymarketReads(rows) {
     const counts = newLiveCounts(rows.length);
     const queue = rows.slice();
-    const books = new Map();
-    const readOne = async (row) => {
-      const found = await polymarketContractOfRow(row, readPolymarketEventsReused);
-      if (found.reason) return noteUnchecked(counts, `${row.key}: ${found.detail}`);
-      const { slug, side } = found.contract;
-      if (!books.has(slug)) books.set(slug, readPolymarketBook(slug).then((book) => ({ book }), (error) => ({ error: error.message })));
-      const read = await books.get(slug);
-      if (read.error) return noteUnchecked(counts, `${slug}: ${read.error}`);
-      const quote = polymarket.quoteOf(read.book, side);
-      if (quote.reason === "no_book" || quote.reason === "market_closed") return noteRead(counts, row, polymarket.VENUE, null, now());
-      if (quote.reason) return noteUnchecked(counts, `${slug}: ${quote.detail}`);
-      const allIn = polymarket.allInOf(quote.ask);
-      return noteRead(counts, row, polymarket.VENUE, { allIn, depthDollars: quote.depth * allIn }, now());
+    const found = [];
+    // One read per list a pass, shared by the rows that need it, so two lookups of one game spend one read.
+    const freshEventReads = new Map();
+    const readEventsWithinBudget = (marketType, startMs) => {
+      const key = `${marketType}|${startMs}`;
+      if (freshEventReads.has(key)) return freshEventReads.get(key);
+      if (polymarketEventListHeld(marketType, startMs)) return readPolymarketEventsReused(marketType, startMs);
+      if (freshEventReads.size >= LIVE_POLYMARKET_EVENT_READS_PER_PASS) {
+        return Promise.reject(new Error(`this pass already read ${LIVE_POLYMARKET_EVENT_READS_PER_PASS} Polymarket US event lists; next pass`));
+      }
+      const read = readPolymarketEventsReused(marketType, startMs);
+      freshEventReads.set(key, read);
+      return read;
+    };
+    const lookUp = async (row) => {
+      const contract = await polymarketContractOfRow(row, readEventsWithinBudget);
+      if (contract.reason) return noteUnchecked(counts, `${row.key}: ${contract.detail}`);
+      found.push({ row, ...contract.contract });
     };
     const worker = async () => {
-      while (queue.length) await readOne(queue.shift());
+      while (queue.length) await lookUp(queue.shift());
     };
-    await Promise.all(Array.from({ length: POLYMARKET_BOOK_READS_AT_ONCE }, worker));
+    await Promise.all(Array.from({ length: POLYMARKET_CONTRACT_LOOKUPS_AT_ONCE }, worker));
+    const slugs = Array.from(new Set(found.map((entry) => entry.slug))).slice(0, POLYMARKET_BOOK_SLUGS_PER_ASK);
+    const books = await readPolymarketStreamBooks(slugs, { background: true });
+    for (const { row, slug, side } of found) {
+      const read = books.get(slug) || { error: `${slug}: more than ${POLYMARKET_BOOK_SLUGS_PER_ASK} markets in one pass` };
+      if (read.error) {
+        noteUnchecked(counts, `${slug}: ${read.error}`);
+        continue;
+      }
+      const quote = polymarket.quoteOf(read.book, side);
+      if (quote.reason === "no_book" || quote.reason === "market_closed") {
+        noteRead(counts, row, polymarket.VENUE, null, now());
+        continue;
+      }
+      if (quote.reason) {
+        noteUnchecked(counts, `${slug}: ${quote.detail}`);
+        continue;
+      }
+      const allIn = polymarket.allInOf(quote.ask);
+      noteRead(counts, row, polymarket.VENUE, { allIn, depthDollars: quote.depth * allIn }, now());
+    }
     return counts;
+  }
+
+  // Polymarket US's books off the bets service's stream (POST
+  // /polymarket_books.json): slug -> {book: {marketData}} (the REST /book's
+  // body, so polymarket.quoteOf reads either) | {error}. The stream
+  // unreachable, off or down is an error on every slug, never an old book.
+  //   priority    the Place quote: subscribed first, waiting POLYMARKET_STREAM_WAIT_MS for a new market
+  //   background  the live price pass: behind the rest, no wait
+  async function readPolymarketStreamBooks(slugs, { priority = false, background = false } = {}) {
+    const books = new Map();
+    if (!slugs.length) return books;
+    let reply;
+    try {
+      const body = { slugs, waitMs: background ? 0 : POLYMARKET_STREAM_WAIT_MS, priority, background };
+      reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/polymarket_books.json`, "POST", body,
+        POLYMARKET_STREAM_READ_TIMEOUT_MS);
+    } catch (error) {
+      for (const slug of slugs) books.set(slug, { error: `Polymarket US stream books unread: ${error.message}` });
+      return books;
+    }
+    for (const slug of slugs) {
+      const view = reply && reply.books && typeof reply.books === "object" ? reply.books[slug] : null;
+      if (view && view.marketData && typeof view.marketData === "object") books.set(slug, { book: { marketData: view.marketData }, ageMs: view.ageMs });
+      else books.set(slug, { error: view && typeof view.error === "string" ? view.error : "the stream answered no book for it" });
+    }
+    return books;
   }
 
   // ProphetX's reads off the bets service (POST /prophetx_live.json,
@@ -1844,7 +1916,7 @@ function createRunner(deps) {
     const startedAt = now();
     const answer = await polymarketQuoteOfSpec(spec);
     logInfo(`polymarket quote ${spec.eventId} ${answer.label || `bet type ${spec.betTypeId} side ${spec.sideIndex} ${spec.points}`}: `
-      + `${answer.ok ? `ok ${answer.slug} ${answer.side} @ ${answer.ask}` : `${answer.reason}: ${answer.detail}`} in ${now() - startedAt} ms`);
+      + `${answer.ok ? `ok ${answer.slug} ${answer.side} @ ${answer.ask} (book from ${answer.bookFrom})` : `${answer.reason}: ${answer.detail}`} in ${now() - startedAt} ms`);
     return answer;
   }
 
@@ -1870,16 +1942,13 @@ function createRunner(deps) {
     const eventStartMs = Math.min(startMs, Date.parse(event.startTime));
     const position = { ...fields, eventStart: new Date(eventStartMs).toISOString(), unabatedStart: row.eventStart,
       polymarketStart: event.startTime, slug: contract.slug, side: contract.side, eventSlug: event.slug };
-    let book;
-    try {
-      book = await readPolymarketBook(contract.slug);
-    } catch (error) {
-      return { ok: false, ...position, reason: "no_book", detail: error.message };
-    }
+    const read = await polymarketPlaceBook(contract.slug);
+    if (read.error) return { ok: false, ...position, reason: "no_book", detail: read.error };
+    const { book } = read;
     const quote = polymarket.quoteOf(book, contract.side);
     if (quote.reason) return { ok: false, ...position, reason: quote.reason, detail: `${contract.slug}: ${quote.detail}` };
     return {
-      ok: true, ...position, ask: quote.ask, allIn: polymarket.allInOf(quote.ask), depth: quote.depth,
+      ok: true, ...position, ask: quote.ask, allIn: polymarket.allInOf(quote.ask), depth: quote.depth, bookFrom: read.from,
       feeTheta: polymarket.TAKER_FEE_THETA, polymarketGatewayUrl, line: taker.novigLineOf(row),
     };
   }
@@ -2015,6 +2084,11 @@ function createRunner(deps) {
   // readPolymarketEvents for the live price pass, each query's answer (or
   // failure) reused for POLYMARKET_EVENTS_REUSE_MS: one game's ladder is one
   // read, not one per rung. Place reads its own, fresh.
+  function polymarketEventListHeld(marketType, startMs) {
+    const held_ = polymarketEventLists.get(`${marketType}|${startMs}`);
+    return Boolean(held_ && now() - held_.readAt <= POLYMARKET_EVENTS_REUSE_MS);
+  }
+
   async function readPolymarketEventsReused(marketType, startMs) {
     const key = `${marketType}|${startMs}`;
     const held_ = polymarketEventLists.get(key);
@@ -2029,6 +2103,21 @@ function createRunner(deps) {
     } catch (error) {
       polymarketEventLists.set(key, { error: error.message, readAt: now() });
       throw error;
+    }
+  }
+
+  // Place's book: the stream's (subscribed first; a market it had not watched
+  // gets POLYMARKET_STREAM_WAIT_MS for its first book), else ONE read of the
+  // public gateway, which the live pass no longer reads books off.
+  //   -> {book, from: "stream" | "gateway"} | {error}
+  async function polymarketPlaceBook(slug) {
+    const streamed = (await readPolymarketStreamBooks([slug], { priority: true })).get(slug);
+    if (streamed.book) return { book: streamed.book, from: "stream" };
+    logInfo(`polymarket quote ${slug}: no stream book (${streamed.error}), reading the gateway`);
+    try {
+      return { book: await readPolymarketBook(slug), from: "gateway" };
+    } catch (error) {
+      return { error: `${error.message} (stream: ${streamed.error})` };
     }
   }
 
