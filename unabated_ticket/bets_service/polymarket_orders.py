@@ -179,12 +179,15 @@ class PolymarketOrderClient:
         self._transport = transport or requests_transport()
         self._clock = clock
 
-    def _headers(self, method: str, path: str) -> dict:
+    def signed_headers(self, method: str, path: str) -> dict:
+        """The three signing headers alone (the markets websocket's upgrade is signed like a GET)."""
         timestamp = str(int(self._clock() * 1000))
         signature = self._signer.sign(f"{timestamp}{method}{path}".encode())
         return {ACCESS_KEY_HEADER: self.key_id, TIMESTAMP_HEADER: timestamp,
-                SIGNATURE_HEADER: base64.b64encode(signature).decode(), "Accept": "application/json",
-                "Content-Type": "application/json"}
+                SIGNATURE_HEADER: base64.b64encode(signature).decode()}
+
+    def _headers(self, method: str, path: str) -> dict:
+        return {**self.signed_headers(method, path), "Accept": "application/json", "Content-Type": "application/json"}
 
     def request(self, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
         """One signed call: (HTTP status, parsed JSON or a text snippet).

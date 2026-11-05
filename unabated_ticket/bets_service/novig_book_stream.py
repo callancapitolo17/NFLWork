@@ -147,6 +147,16 @@ class _WebsocketClientConnection:
             return frame.data.decode(errors="replace") if isinstance(frame.data, bytes) else str(frame.data)
         return ""
 
+    def ping(self) -> None:
+        """A websocket-level ping; the pong comes back through recv as "" (the Polymarket US
+        stream sends nothing while its books are still, so a ping is its only sign of life)."""
+        import websocket
+        self._ws.settimeout(CONNECT_TIMEOUT_SEC)
+        try:
+            self._ws.ping()
+        except websocket.WebSocketException as error:
+            raise ConnectionError(f"{type(error).__name__}: {error}") from error
+
     def close(self) -> None:
         import websocket
         try:
