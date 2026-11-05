@@ -558,10 +558,14 @@ function createRunner(deps) {
   // of that line's exchange book, {venue, points, allIn, depthDollars,
   // readAtMs} or {venue, points, empty: true, readAtMs}; ticker -> Kalshi's
   // market check {mismatch, checkedAt}; Polymarket US event-list query ->
-  // {events, readAt} | {error, readAt}; and the last pass's counts.
+  // {events, readAt} | {error, readAt}; Polymarket US line (row key, points,
+  // start) -> its contract {slug, side, startMs}, found once and kept until
+  // the game starts, so the event-list budget goes only to lines not yet
+  // found; and the last pass's counts.
   const liveReads = new Map();
   const kalshiMarketChecks = new Map();
   const polymarketEventLists = new Map();
+  const polymarketLineContracts = new Map();
   let liveBusy = false;
   // Whether the bets service reads ProphetX's live prices (false while it answers 503: no live key pair).
   let prophetxLiveOn = false;
@@ -1400,6 +1404,9 @@ function createRunner(deps) {
       for (const [query, list] of polymarketEventLists) {
         if (startedAt - list.readAt > POLYMARKET_EVENTS_REUSE_MS) polymarketEventLists.delete(query);
       }
+      for (const [line, contract] of polymarketLineContracts) {
+        if (startedAt >= contract.startMs) polymarketLineContracts.delete(line);
+      }
       const readAtOf = (row) => {
         const read = liveReads.get(row.key);
         return read && (read.points ?? null) === (row.points ?? null) ? read.readAtMs : -Infinity;
@@ -1517,15 +1524,22 @@ function createRunner(deps) {
     return counts;
   }
 
-  // Polymarket US's live prices: each row's contract found in its event list
-  // (reused POLYMARKET_EVENTS_REUSE_MS, at most LIVE_POLYMARKET_EVENT_READS_PER_PASS
-  // fresh lists a pass), then every contract's book in ONE ask of the bets
-  // service's book stream (background: behind Place's markets, no wait). No
+  // Polymarket US's live prices: each row's contract found once in its event
+  // list (reused POLYMARKET_EVENTS_REUSE_MS, at most LIVE_POLYMARKET_EVENT_READS_PER_PASS
+  // fresh lists a pass) and then remembered until its game starts (a line's
+  // market does not change; a closed one reads as an empty book), then every
+  // contract's book in ONE ask of the bets service's book stream
+  // (background: behind Place's markets, no wait). No
   // book is read off the public gateway here: its 429s once refused Place.
   async function livePolymarketReads(rows) {
     const counts = newLiveCounts(rows.length);
-    const queue = rows.slice();
     const found = [];
+    const queue = [];
+    for (const row of rows) {
+      const known = polymarketLineContracts.get(polymarketLineKey(row));
+      if (known) found.push({ row, slug: known.slug, side: known.side });
+      else queue.push(row);
+    }
     // One read per list a pass, shared by the rows that need it, so two lookups of one game spend one read.
     const freshEventReads = new Map();
     const readEventsWithinBudget = (marketType, startMs) => {
@@ -1542,11 +1556,14 @@ function createRunner(deps) {
     const lookUp = async (row) => {
       const contract = await polymarketContractOfRow(row, readEventsWithinBudget);
       if (contract.reason) return noteUnchecked(counts, `${row.key}: ${contract.detail}`);
-      found.push({ row, ...contract.contract });
+      const { slug, side } = contract.contract;
+      polymarketLineContracts.set(polymarketLineKey(row), { slug, side, startMs: contract.startMs });
+      found.push({ row, slug, side });
     };
     const worker = async () => {
       while (queue.length) await lookUp(queue.shift());
     };
+
     await Promise.all(Array.from({ length: POLYMARKET_CONTRACT_LOOKUPS_AT_ONCE }, worker));
     const slugs = Array.from(new Set(found.map((entry) => entry.slug))).slice(0, POLYMARKET_BOOK_SLUGS_PER_ASK);
     const books = await readPolymarketStreamBooks(slugs, { background: true });
@@ -1569,6 +1586,11 @@ function createRunner(deps) {
       noteRead(counts, row, polymarket.VENUE, { allIn, depthDollars: quote.depth * allIn }, now());
     }
     return counts;
+  }
+
+  // One Polymarket US line: a moved number or start is another line, found afresh.
+  function polymarketLineKey(row) {
+    return `${row.key}|${row.points ?? ""}|${row.eventStart}`;
   }
 
   // Polymarket US's books off the bets service's stream (POST

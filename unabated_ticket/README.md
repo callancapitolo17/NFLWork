@@ -777,7 +777,8 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   catalog listing first (`taker.novigSideMismatch`: outcome, type, period,
   strike, the outcome's name). Polymarket US: the contract found in its own
   event list the way Place finds it (event list reused 5 min per game, at
-  most 3 fresh lists a pass) and its book off the bets service's Polymarket
+  most 3 fresh lists a pass; a line's market, once found, kept until its game
+  starts, so only new lines spend that budget) and its book off the bets service's Polymarket
   US stream (`POST /polymarket_books.json` with `background: true`, never the
   gateway's `/book`, whose 429s refused Place, 2026-11-05), at most 60 a pass. ProphetX (Cal, 2026-11-05):
   the runner names every game with a ProphetX line in `POST
@@ -3626,7 +3627,8 @@ pings every 15 s and reconnects after 45 s with no frame or pong (no heartbeat
 came in the recon). A market nobody asked about for 10 min is unsubscribed; a
 refused one is asked again a minute later. The live pass never reads a book
 off the gateway (no stream book: the line stays `unchecked`), and reads at
-most 3 fresh event lists a pass there (each reused 5 min), so the gateway is
+most 3 fresh event lists a pass there (each reused 5 min; a line's market,
+once found, is kept until the game starts), so the gateway is
 left to Place. `/health` carries `polymarketStream` (connected, last frame
 age, subscriptions, subscribed, held and wanted markets, last error).
 
