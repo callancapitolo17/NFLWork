@@ -4140,6 +4140,12 @@ in red.
   is not in `bets.js` `GAME_SERIES` (and its Python twin in
   `bets_service/sources/kalshi_ticker.py`); the raw ticker is in the list.
   Add the series with its league, bet type and period, with a fixture test.
+  NBA and college basketball (`KXNBA*`, `KXNCAAMB*`: game, spread, total,
+  1H spread, 1H total) were added 2026-11-05.
+- **Tracker: Timing shows "Live or unknown"**: the bet has no game start
+  of its own (Kalshi football tickers carry a date only; BetOnline, BFA
+  settled and Wagerzon none) and no closing fair, whose saved start the
+  tracker otherwise uses (2026-11-05).
 - **Bets: unmatched "team not recognised (Name)"**: the venue's spelling
   resolves to no team, or to more than one, in the league's index. The
   index is not hand-written: every league snapshot the scanner parses
