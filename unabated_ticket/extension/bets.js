@@ -109,6 +109,18 @@
     KXNCAAFTOTAL: { league: "cfb", betType: "total", period: "FG" },
     KXNCAAF1HSPREAD: { league: "cfb", betType: "spread", period: "1H" },
     KXNCAAF1HTOTAL: { league: "cfb", betType: "total", period: "1H" },
+    // Basketball (read off the public events endpoint 2026-11-05): the football
+    // grammar exactly, date-only suffix, "Away vs Home: Spread", "AWAY vs HOME (Nov 5)".
+    KXNBAGAME: { league: "nba", betType: "moneyline", period: "FG" },
+    KXNBASPREAD: { league: "nba", betType: "spread", period: "FG" },
+    KXNBATOTAL: { league: "nba", betType: "total", period: "FG" },
+    KXNBA1HSPREAD: { league: "nba", betType: "spread", period: "1H" },
+    KXNBA1HTOTAL: { league: "nba", betType: "total", period: "1H" },
+    KXNCAAMBGAME: { league: "cbb", betType: "moneyline", period: "FG" },
+    KXNCAAMBSPREAD: { league: "cbb", betType: "spread", period: "FG" },
+    KXNCAAMBTOTAL: { league: "cbb", betType: "total", period: "FG" },
+    KXNCAAMB1HSPREAD: { league: "cbb", betType: "spread", period: "1H" },
+    KXNCAAMB1HTOTAL: { league: "cbb", betType: "total", period: "1H" },
     KXMLBGAME: { league: "mlb", betType: "moneyline", period: "FG" },
     KXMLBSPREAD: { league: "mlb", betType: "spread", period: "FG" },
     KXMLBTOTAL: { league: "mlb", betType: "total", period: "FG" },

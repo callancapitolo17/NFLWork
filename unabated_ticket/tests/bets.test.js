@@ -259,7 +259,7 @@ test("normalize: position_fp 0 with trades is closed; sell-only fills price from
 });
 
 test("normalize: futures are 'other' / not a game market; unknown series fails closed", () => {
-  const unknown = [fill("KXNBAGAME-26OCT20LALBOS-BOS", "yes", 10, 0.50, "2026-09-11T12:00:00Z")];
+  const unknown = [fill("KXNHLGAME-26OCT20BOSTOR-TOR", "yes", 10, 0.50, "2026-09-11T12:00:00Z")];
   const records = normalizedFixture({ fills: unknown });
   const future = byId(records, "kalshi:KXNFLOROTY-27-MWAS:yes");
   assert.equal(future.betType, "other");
@@ -269,10 +269,34 @@ test("normalize: futures are 'other' / not a game market; unknown series fails c
   assert.equal(future.status, "open");
   assert.equal(future.stake, 100); // 5000 x 2c
   assert.equal(bets.describeBet(future), "Will Mike Washington Jr. win the Offensive Rookie of the Year? +4900 · 2.0¢");
-  const nba = byId(records, "kalshi:KXNBAGAME-26OCT20LALBOS-BOS:yes");
-  assert.equal(nba.betType, "other");
-  assert.equal(nba.league, null);
-  assert.equal(nba.unmatchable, "unknown Kalshi series");
+  const nhl = byId(records, "kalshi:KXNHLGAME-26OCT20BOSTOR-TOR:yes");
+  assert.equal(nhl.betType, "other");
+  assert.equal(nhl.league, null);
+  assert.equal(nhl.unmatchable, "unknown Kalshi series");
+});
+
+test("normalize: basketball series read like football (titles off Kalshi's events endpoint, 2026-11-05)", () => {
+  const spreadEvent = { event_ticker: "KXNCAAMBSPREAD-26NOV05CPARIZ", series_ticker: "KXNCAAMBSPREAD", title: "Cal Poly vs Arizona: Spread", sub_title: "CP vs ARIZ (Nov 5)", mutually_exclusive: false };
+  const totalEvent = { event_ticker: "KXNBA1HTOTAL-26NOV04MIALAC", series_ticker: "KXNBA1HTOTAL", title: "Miami vs Los Angeles C: 1st Half Total", sub_title: "MIA vs LAC (Nov 4)", mutually_exclusive: false };
+  const records = bets.normalizeKalshi({
+    fills: [
+      fill("KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48", "no", 100, 0.45, "2026-11-05T15:00:00Z"),
+      fill("KXNBA1HTOTAL-26NOV04MIALAC-108", "yes", 50, 0.50, "2026-11-04T15:00:00Z"),
+    ],
+    positions: [],
+    markets: {
+      "KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48": market("KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48", spreadEvent.event_ticker, "greater", 47.5, "Arizona wins by over 47.5 points"),
+      "KXNBA1HTOTAL-26NOV04MIALAC-108": market("KXNBA1HTOTAL-26NOV04MIALAC-108", totalEvent.event_ticker, "greater", 107.5, "Over 107.5 points"),
+    },
+    events: { [spreadEvent.event_ticker]: spreadEvent, [totalEvent.event_ticker]: totalEvent },
+    fetchedAt: FETCHED_AT,
+  });
+  const cbb = byId(records, "kalshi:KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48:no");
+  assert.deepEqual([cbb.league, cbb.betType, cbb.period, cbb.side, cbb.points], ["cbb", "spread", "FG", "away", 47.5]);
+  assert.deepEqual([cbb.awayTeam, cbb.homeTeam, cbb.eventDate], ["Cal Poly", "Arizona", "2026-11-05"]);
+  assert.equal(cbb.unmatchable, null);
+  const nba = byId(records, "kalshi:KXNBA1HTOTAL-26NOV04MIALAC-108:yes");
+  assert.deepEqual([nba.league, nba.betType, nba.period, nba.side, nba.points], ["nba", "total", "1H", "over", 107.5]);
 });
 
 test("normalize: a known series with a strike its event cannot name fails closed", () => {
@@ -560,8 +584,8 @@ test("teaserLegPositionOf: a teaser leg sits at its own teased number; the ticke
 });
 
 test("unmatchedReasons: every open bet with no match, with why", () => {
-  const nbaFill = [fill("KXNBAGAME-26OCT20LALBOS-BOS", "yes", 10, 0.50, "2026-09-11T12:00:00Z")];
-  const records = normalizedFixture({ fills: nbaFill }).concat([
+  const nhlFill = [fill("KXNHLGAME-26OCT20BOSTOR-TOR", "yes", 10, 0.50, "2026-09-11T12:00:00Z")];
+  const records = normalizedFixture({ fills: nhlFill }).concat([
     Object.assign({}, byId(normalizedFixture(), "kalshi:KXNCAAFGAME-26SEP12LINWMOSU-LINW:yes"), { id: "kalshi:synthetic:unknown-team", awayTeam: "Springfield", awayKey: null }),
   ]);
   const board = [cfbRow(), cfbRow({ eventId: 1 }), cfbRow({ eventId: 2, eventStartMs: Date.parse("2026-09-13T20:00:00Z") })];
@@ -571,7 +595,7 @@ test("unmatchedReasons: every open bet with no match, with why", () => {
   assert.equal(reasons.get("kalshi:KXNCAAFTOTAL-26SEP12RICEND-60:yes"), "by id: Kalshi event 26SEP12RICEND not on any board ladder; by name: no event on the board yet");
   assert.equal(reasons.get("kalshi:KXNFLGAME-26SEP20PITNE-NE:yes"), "league not on the scanner");
   assert.equal(reasons.get("kalshi:KXNFLOROTY-27-MWAS:yes"), "not a game market");
-  assert.equal(reasons.get("kalshi:KXNBAGAME-26OCT20LALBOS-BOS:yes"), "unknown Kalshi series");
+  assert.equal(reasons.get("kalshi:KXNHLGAME-26OCT20BOSTOR-TOR:yes"), "unknown Kalshi series");
   assert.equal(reasons.get("kalshi:synthetic:unknown-team"), "by id: Kalshi event 26SEP12LINWMOSU not on any board ladder; by name: team not recognised (Springfield)");
   assert.equal(reasons.has("kalshi:KXNCAAFSPREAD-26SEP05MOSUTXAM-TXAM39:yes"), false); // settled: not a problem
   assert.equal(reasons.has("kalshi:KXNEXTTEAMNFL-26MCROSBY-LV:yes"), false); // closed

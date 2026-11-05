@@ -479,6 +479,14 @@
     return kalshiBot || record.source === NOVIG_BOT_SOURCE ? ORIGINS.bot : ORIGINS.other;
   }
 
+  /** The bet's game start: the venue's own, else the board's start saved with
+   * its closing fair (Kalshi football tickers carry only a date, and BetOnline,
+   * BFA settled and Wagerzon records none, 2026-11-05), else null. */
+  function eventStartOf(record, close) {
+    if (record.eventStart) return record.eventStart;
+    return close && parseMs(close.eventStart) !== null ? close.eventStart : null;
+  }
+
   function straightTicket(record, fillAmerican, close) {
     const combo = isKalshiCombo(record);
     return finishTicket({
@@ -490,7 +498,7 @@
       side: sideOf(record), favDog: favDogOf(record), number: numberOf(record),
       price: record.price, stake: Number(record.stake) || 0, toWin: record.toWin,
       venuePnl: Number.isFinite(record.pnl) ? record.pnl : null,
-      status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: record.eventStart || null,
+      status: record.status, placedAt: record.placedAt, closedAt: record.closedAt, eventStart: eventStartOf(record, close),
       legCount: 1, betIds: [record.id],
     }, fillAmerican, close);
   }

@@ -212,15 +212,40 @@ def test_no_moneyline_in_mlb_carries_no_tie_caveat():
 # ---- fail closed -------------------------------------------------------------------
 
 def test_futures_are_other_and_unknown_series_fails_closed(kalshi_fixture):
-    unknown = [fill("KXNBAGAME-26OCT20LALBOS-BOS", "yes", 10, 0.50, "2026-09-11T12:00:00Z")]
+    unknown = [fill("KXNHLGAME-26OCT20BOSTOR-TOR", "yes", 10, 0.50, "2026-09-11T12:00:00Z")]
     records = normalized(kalshi_fixture, extra_fills=unknown)
     future = by_id(records, "kalshi:KXNFLOROTY-27-MWAS:yes")
     assert (future["betType"], future["league"], future["side"], future["period"]) == ("other", None, None, None)
     assert future["unmatchable"] == "not a game market"
     assert (future["status"], future["stake"]) == ("open", 100)  # 5000 x 2c
-    nba = by_id(records, "kalshi:KXNBAGAME-26OCT20LALBOS-BOS:yes")
-    assert (nba["betType"], nba["league"]) == ("other", None)
-    assert nba["unmatchable"] == "unknown Kalshi series"
+    nhl = by_id(records, "kalshi:KXNHLGAME-26OCT20BOSTOR-TOR:yes")
+    assert (nhl["betType"], nhl["league"]) == ("other", None)
+    assert nhl["unmatchable"] == "unknown Kalshi series"
+
+
+def test_basketball_series_read_like_football():
+    # Titles and strikes as Kalshi's public events endpoint served them on 2026-11-05.
+    fills = [fill("KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48", "no", 100, 0.45, "2026-11-05T15:00:00Z"),
+             fill("KXNBA1HTOTAL-26NOV04MIALAC-108", "yes", 50, 0.50, "2026-11-04T15:00:00Z")]
+    markets = {
+        "KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48": market(
+            "KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48", "KXNCAAMBSPREAD-26NOV05CPARIZ", "greater", 47.5,
+            "Arizona wins by over 47.5 points"),
+        "KXNBA1HTOTAL-26NOV04MIALAC-108": market(
+            "KXNBA1HTOTAL-26NOV04MIALAC-108", "KXNBA1HTOTAL-26NOV04MIALAC", "greater", 107.5, "Over 107.5 points"),
+    }
+    events = {
+        "KXNCAAMBSPREAD-26NOV05CPARIZ": event(
+            "KXNCAAMBSPREAD-26NOV05CPARIZ", "KXNCAAMBSPREAD", "Cal Poly vs Arizona: Spread", "CP vs ARIZ (Nov 5)"),
+        "KXNBA1HTOTAL-26NOV04MIALAC": event(
+            "KXNBA1HTOTAL-26NOV04MIALAC", "KXNBA1HTOTAL", "Miami vs Los Angeles C: 1st Half Total", "MIA vs LAC (Nov 4)"),
+    }
+    records = normalize_kalshi(fills, [], markets, events, FETCHED_AT)
+    cbb = by_id(records, "kalshi:KXNCAAMBSPREAD-26NOV05CPARIZ-ARIZ48:no")
+    assert (cbb["league"], cbb["betType"], cbb["period"], cbb["side"], cbb["points"]) == ("cbb", "spread", "FG", "away", 47.5)
+    assert (cbb["awayTeam"], cbb["homeTeam"], cbb["eventDate"], cbb["unmatchable"]) == ("Cal Poly", "Arizona", "2026-11-05", None)
+    nba = by_id(records, "kalshi:KXNBA1HTOTAL-26NOV04MIALAC-108:yes")
+    assert (nba["league"], nba["betType"], nba["period"], nba["side"], nba["points"]) == ("nba", "total", "1H", "over", 107.5)
 
 
 def test_known_series_with_an_unreadable_strike_fails_closed(kalshi_fixture):
