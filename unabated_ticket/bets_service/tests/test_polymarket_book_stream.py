@@ -97,7 +97,7 @@ def subscribes(frames):
 
 
 def subscribe(stream, slug=DUKE, **book):
-    """Ask for `slug`, send its subscribe, answer it with a whole book; returns the requestId."""
+    """Ask for `slug`, send its group's subscribe, answer it with a whole book; returns the requestId."""
     stream.books_for([slug], 0.0)
     (request_id, _slugs), = subscribes(stream._outgoing_frames())
     handle(stream, book_frame(request_id, slug, **book))
@@ -110,7 +110,7 @@ def test_the_upgrade_is_signed_like_a_get_of_the_stream_path(made):
     assert pbs.stream_url("https://api.polymarket.us") == "wss://api.polymarket.us/v1/ws/markets"
 
 
-def test_a_new_market_is_subscribed_alone_and_served_as_the_rest_books_body(made):
+def test_a_new_market_is_subscribed_and_served_as_the_rest_books_body(made):
     stream, _connection, clock, _client = made
     first = stream.books_for([DUKE], 0.0)
     assert "waiting for" in first["books"][DUKE]["error"]
@@ -124,6 +124,54 @@ def test_a_new_market_is_subscribed_alone_and_served_as_the_rest_books_body(made
     assert stream._outgoing_frames() == [], "subscribed once, not again every loop"
 
 
+def test_markets_share_at_most_ten_subscriptions(made):
+    """Polymarket US refuses an 11th subscription on a connection (live, 2026-11-05)."""
+    stream, _connection, _clock, _client = made
+    slugs = [f"slug-{index:03d}" for index in range(35)]
+    stream.books_for(slugs, 0.0)
+    sent = subscribes(stream._outgoing_frames())
+    assert len(sent) == pbs.MAX_SUBSCRIPTIONS
+    assert sorted(slug for _request_id, group in sent for slug in group) == slugs
+    assert max(len(group) for _request_id, group in sent) - min(len(group) for _request_id, group in sent) <= 1
+
+
+def test_a_new_market_resubscribes_only_the_group_it_joins(made):
+    stream, _connection, _clock, _client = made
+    stream.books_for([DUKE], 0.0)
+    stream._outgoing_frames()
+    handle(stream, book_frame("pm-1"))
+    stream.books_for([OKST], 0.0)
+    frames = stream._outgoing_frames()
+    assert subscribes(frames) == [("pm-2", [OKST])], "the emptiest group takes it; DUKE's group is left alone"
+    assert "marketData" in stream.books_for([DUKE], 0.0)["books"][DUKE]
+
+
+def test_a_full_group_is_resubscribed_with_its_new_member(made, monkeypatch):
+    stream, _connection, _clock, _client = made
+    monkeypatch.setattr(pbs, "MAX_SUBSCRIPTIONS", 1)
+    request_id = subscribe(stream)
+    stream.books_for([OKST], 0.0)
+    frames = stream._outgoing_frames()
+    assert frames == [{"unsubscribe": {"requestId": request_id}},
+                      {"subscribe": {"requestId": "pm-2", "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA",
+                                     "marketSlugs": [DUKE, OKST]}}]
+    assert "marketData" in stream.books_for([DUKE], 0.0)["books"][DUKE], "the held book is served meanwhile"
+    handle(stream, book_frame(request_id, OKST))
+    assert "waiting for" in stream.books_for([OKST], 0.0)["books"][OKST]["error"], "the old id's frames are ignored"
+    handle(stream, book_frame("pm-2", OKST))
+    assert "marketData" in stream.books_for([OKST], 0.0)["books"][OKST]
+
+
+def test_when_every_group_is_full_a_new_market_says_so(made, monkeypatch):
+    stream, _connection, _clock, _client = made
+    monkeypatch.setattr(pbs, "MAX_SUBSCRIPTIONS", 1)
+    monkeypatch.setattr(pbs, "SLUGS_PER_SUBSCRIPTION", 1)
+    subscribe(stream)
+    stream.books_for([OKST], 0.0)
+    assert subscribes(stream._outgoing_frames()) == []
+    assert "subscriptions of 1 markets are full" in stream.books_for([OKST], 0.0)["books"][OKST]["error"]
+
+
 def test_every_new_whole_book_replaces_the_last(made):
     stream, _connection, _clock, _client = made
     request_id = subscribe(stream)
@@ -131,20 +179,13 @@ def test_every_new_whole_book_replaces_the_last(made):
     assert stream.books_for([DUKE], 0.0)["books"][DUKE]["marketData"]["offers"][0]["px"]["value"] == "0.6400"
 
 
-def test_place_goes_ahead_of_the_live_pass_and_the_live_pass_goes_last(made):
+def test_place_is_placed_ahead_of_the_live_pass(made, monkeypatch):
     stream, _connection, _clock, _client = made
+    monkeypatch.setattr(pbs, "MAX_SUBSCRIPTIONS", 1)
+    monkeypatch.setattr(pbs, "SLUGS_PER_SUBSCRIPTION", 2)
     stream.books_for(["z-live-a", "a-live-b"], 0.0, background=True)
-    stream.books_for(["m-other"], 0.0)
     stream.books_for([OKST], 0.0, priority=True)
-    order = [slugs[0] for _request_id, slugs in subscribes(stream._outgoing_frames())]
-    assert order == [OKST, "m-other", "a-live-b", "z-live-a"]
-
-
-def test_subscribes_are_spread_over_steps(made):
-    stream, _connection, _clock, _client = made
-    stream.books_for([f"slug-{index:03d}" for index in range(pbs.MAX_SUBSCRIBES_PER_STEP + 5)], 0.0)
-    assert len(subscribes(stream._outgoing_frames())) == pbs.MAX_SUBSCRIBES_PER_STEP
-    assert len(subscribes(stream._outgoing_frames())) == 5
+    assert subscribes(stream._outgoing_frames()) == [("pm-1", sorted([OKST, "a-live-b"]))]
 
 
 def test_an_unanswered_subscribe_is_sent_again_under_a_new_id_after_the_wait(made):
@@ -162,7 +203,18 @@ def test_an_unanswered_subscribe_is_sent_again_under_a_new_id_after_the_wait(mad
     assert "marketData" in stream.books_for([DUKE], 0.0)["books"][DUKE]
 
 
-def test_a_still_market_is_renewed_for_a_fresh_book_and_its_last_book_served_meanwhile(made):
+def test_a_market_its_answered_group_sent_no_book_for_reads_as_an_error(made, monkeypatch):
+    stream, _connection, clock, _client = made
+    monkeypatch.setattr(pbs, "MAX_SUBSCRIPTIONS", 1)
+    stream.books_for([DUKE, OKST], 0.0)
+    stream._outgoing_frames()
+    handle(stream, book_frame("pm-1"))
+    clock.now += pbs.ANSWER_WAIT_SEC + 1
+    assert "no book of" in stream.books_for([OKST], 0.0)["books"][OKST]["error"]
+    assert stream._outgoing_frames() == [], "an answered group is not resent for one silent market"
+
+
+def test_a_group_is_renewed_for_fresh_books_and_its_last_books_served_meanwhile(made):
     stream, _connection, clock, _client = made
     subscribe(stream)
     clock.now += pbs.RESUBSCRIBE_SEC + 1
@@ -176,26 +228,25 @@ def test_a_still_market_is_renewed_for_a_fresh_book_and_its_last_book_served_mea
     assert stream.books_for([DUKE], 0.0)["books"][DUKE]["ageMs"] == 0
 
 
-def test_a_refused_subscription_answers_the_reason_and_is_asked_again_a_minute_later(made):
+def test_a_refused_group_refuses_its_markets_and_asks_again_a_minute_later(made):
     stream, _connection, clock, _client = made
     stream.books_for([DUKE], 0.0)
     stream._outgoing_frames()
-    handle(stream, {"requestId": "pm-1", "error": "market not found", "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA"})
-    assert "market not found" in stream.books_for([DUKE], 0.0)["books"][DUKE]["error"]
+    handle(stream, {"requestId": "pm-1", "error": "max subscriptions per connection reached",
+                    "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA"})
+    assert "max subscriptions" in stream.books_for([DUKE], 0.0)["books"][DUKE]["error"]
     assert stream._outgoing_frames() == []
     clock.now += pbs.REFUSED_RETRY_SEC + 1
     assert subscribes(stream._outgoing_frames()) == [("pm-2", [DUKE])]
 
 
-def test_a_book_frame_naming_another_market_is_not_served(made):
-    stream, _connection, clock, _client = made
+def test_a_book_frame_naming_a_market_its_subscription_does_not_name_is_not_served(made):
+    stream, _connection, _clock, _client = made
     stream.books_for([DUKE], 0.0)
     stream._outgoing_frames()
     handle(stream, book_frame("pm-1", slug=OKST))
-    assert "another market's book" in stream.books_for([DUKE], 0.0)["books"][DUKE]["error"]
-    assert stream._outgoing_frames() == [], "not resubscribed every loop"
-    clock.now += pbs.REFUSED_RETRY_SEC + 1
-    assert subscribes(stream._outgoing_frames()) == [("pm-2", [DUKE])]
+    stream.books_for([OKST], 0.0)
+    assert "waiting for" in stream.books_for([OKST], 0.0)["books"][OKST]["error"]
 
 
 def test_frames_without_a_whole_book_change_nothing(made):
@@ -206,12 +257,13 @@ def test_frames_without_a_whole_book_change_nothing(made):
     assert stream.books_for([DUKE], 0.0)["books"][DUKE]["marketData"] == market_data()
 
 
-def test_a_market_nobody_asks_about_is_unsubscribed(made):
+def test_a_market_nobody_asks_about_leaves_its_group(made):
     stream, _connection, clock, _client = made
     subscribe(stream)
     clock.now += pbs.WATCH_IDLE_SEC + 1
     assert stream._outgoing_frames() == [{"unsubscribe": {"requestId": "pm-1"}}]
-    assert stream.status()["wantedMarkets"] == 0 and stream.status()["booksHeld"] == 0
+    status = stream.status()
+    assert (status["wantedMarkets"], status["booksHeld"], status["subscriptions"]) == (0, 0, 0)
 
 
 def test_the_live_pass_is_capped_but_place_never_is(made, monkeypatch):
