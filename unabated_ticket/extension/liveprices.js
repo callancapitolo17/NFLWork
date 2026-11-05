@@ -42,9 +42,11 @@
     return americanOdds > 0 ? 100 / (americanOdds + 100) : -americanOdds / (-americanOdds + 100);
   }
 
-  // A probability as an American price, unrounded (0.25 -> +300, 0.6 -> -150).
+  // A probability as a whole American price (0.25 -> +300, 0.43 -> +133), as
+  // Unabated shows every price; the exact price stays in sourcePrice, which is
+  // what the stake and the cents are sized on (kelly.bookProbOf).
   function americanOfProb(prob) {
-    return prob < 0.5 ? (100 * (1 - prob)) / prob : (-100 * prob) / (1 - prob);
+    return Math.round(prob < 0.5 ? (100 * (1 - prob)) / prob : (-100 * prob) / (1 - prob));
   }
 
   // Unabated's fair win probability for the line: its edge (ge) on the cheaper
