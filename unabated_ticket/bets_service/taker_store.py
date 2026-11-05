@@ -317,7 +317,7 @@ class TakerStore:
         where, params = _window_clause("o.placed_at", window_start, window_end)
         row = self._con.execute(
             f"SELECT count(*), count(*) FILTER (WHERE o.{filled_column} > 0), "
-            f"coalesce(sum(o.{requested_column}), 0), coalesce(sum(o.{requested_column}) FILTER (WHERE o.{filled_column} IS NOT NULL), 0), "
+            f"coalesce(sum(o.{requested_column}) FILTER (WHERE o.{filled_column} IS NOT NULL), 0), "
             f"coalesce(sum(o.{filled_column}), 0), coalesce(sum(o.cost_filled), 0), "
             f"sum(o.cost_filled * d.live_edge) FILTER (WHERE o.cost_filled > 0 AND d.live_edge IS NOT NULL), "
             f"sum(o.cost_filled) FILTER (WHERE o.cost_filled > 0 AND d.live_edge IS NOT NULL) "
@@ -325,10 +325,9 @@ class TakerStore:
             f"  SELECT json_extract_string(decision, '{decision_id_path}') AS order_id, any_value(live_edge) AS live_edge "
             f"  FROM taker_decisions WHERE reason = 'bet' AND json_extract_string(decision, '{decision_id_path}') IS NOT NULL GROUP BY 1"
             f") d ON d.order_id = o.{id_column} WHERE {where}", params).fetchone()
-        orders, filled_orders, requested, requested_read, filled, cost, edge_dollars, edge_cost = row
+        orders, filled_orders, requested_read, filled, cost, edge_dollars, edge_cost = row
         return {
             "orders": orders, "filledOrders": filled_orders,
-            "contractsRequested": float(requested), "contractsFilled": float(filled),
             # Fill rate over the orders whose fills have been read (a NULL fill is not yet known, never 0).
             "fillRate": float(filled) / float(requested_read) if requested_read else None,
             "staked": float(cost),

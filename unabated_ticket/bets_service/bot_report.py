@@ -40,9 +40,9 @@ def desk_status(armed: bool, off_reason: str, stop_paths: tuple[Path, ...]) -> d
 
 def runner_pass(fetch_taker_json: Callable[[], tuple[int, bytes]]) -> dict:
     """The runner's last taker pass as {finishedAt, kalshiSkipped, novigSkipped,
-    rows, novigKellyBankroll, kalshiDesk, novigDesk, error}: error names why it
+    novigKellyBankroll, kalshiDesk, novigDesk, error}: error names why it
     could not be read (the rest null)."""
-    empty = {"finishedAt": None, "kalshiSkipped": None, "novigSkipped": None, "rows": None,
+    empty = {"finishedAt": None, "kalshiSkipped": None, "novigSkipped": None,
              "novigKellyBankroll": None, "kalshiDesk": None, "novigDesk": None, "error": None}
     status, body = fetch_taker_json()
     try:
@@ -55,7 +55,7 @@ def runner_pass(fetch_taker_json: Callable[[], tuple[int, bytes]]) -> dict:
     last_pass = parsed.get("pass") if isinstance(parsed.get("pass"), dict) else {}
     rules = parsed.get("rules") if isinstance(parsed.get("rules"), dict) else {}
     return {**empty, "finishedAt": last_pass.get("finishedAt"), "kalshiSkipped": last_pass.get("skipped"),
-            "novigSkipped": last_pass.get("novigSkipped"), "rows": last_pass.get("rows"),
+            "novigSkipped": last_pass.get("novigSkipped"),
             "novigKellyBankroll": rules.get("novigKellyBankroll"),
             "kalshiDesk": parsed.get("desk"), "novigDesk": parsed.get("novigDesk")}
 
@@ -81,8 +81,7 @@ def bot_payload(store: TakerStore | None, kalshi_desk: dict, novig_desk: dict, r
     ]
     recent = [_iso_times(order) for order in store.recent_bot_orders(RECENT_ORDERS_LIMIT)]
     return {"generatedAt": generated_at, "error": None,
-            "window": {"start": _iso_or_none(window_start), "end": _iso_or_none(window_end)},
-            "runner": {"finishedAt": runner["finishedAt"], "rows": runner["rows"], "error": runner["error"]},
+            "runner": {"finishedAt": runner["finishedAt"], "error": runner["error"]},
             "bots": bots, "recentOrders": recent}
 
 

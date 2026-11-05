@@ -677,8 +677,11 @@
     const share = entry.capDollars > 0 ? Math.min(1, entry.openCost / entry.capDollars) : 0;
     const balance = balances && balances.balances ? balances.balances[entry.venue + "_bot"] : null;
     const cash = balance && Number.isFinite(balance.cash) ? balanceMoney(balance.cash) : "n/a";
+    // A failed read keeps the last number (balances.py): say so rather than show it as live.
+    const cashStale = Boolean(balance && balance.error);
     const bar = el("div", { className: share >= 0.95 ? "full" : "", style: { width: (share * 100).toFixed(1) + "%" } });
-    const fig = (label, value) => el("div", null, [el("div", { className: "lbl", text: label }), el("div", { className: "fig", text: value })]);
+    const fig = (label, value, note) => el("div", { title: note || "" }, [el("div", { className: "lbl", text: label }),
+      el("div", { className: "fig" + (note ? " warn" : ""), text: value })]);
     return el("section", { className: "panel bot-card", attrs: { "aria-label": entry.label } }, [
       el("div", { className: "top-line" }, [
         el("h2", { text: entry.label }),
@@ -691,7 +694,7 @@
         el("div", { className: "meter", attrs: { role: "img", "aria-label": pct(share) + " of the cap in use" } }, [bar]),
       ]),
       el("div", { className: "bot-figs" }, [
-        fig("Cash in sub", cash),
+        fig("Cash in sub", cash, cashStale ? "last read " + ago(balance.fetchedAt) + ", the latest failed: " + balance.error : null),
         fig("Open orders", String(entry.openOrders)),
         fig("Kelly roll", Number.isFinite(entry.kellyBankroll) ? "$" + entry.kellyBankroll.toLocaleString("en-US") : "—"),
       ]),

@@ -1903,11 +1903,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   balances: {venue: {cash, inBets, available, creditLimit, fetchedAt, error}}}`
   (dollars or null; in memory only) — the tracker's Balances tab. `GET
   /bot.json?start=<ISO>&end=<ISO>` (both optional; `bets_service/bot_report.py`,
-  read only) → `{generatedAt, error, window, runner: {finishedAt, rows, error},
+  read only) → `{generatedAt, error, runner: {finishedAt, error},
   bots: [{venue, label, status: off|stopped|running, detail, capDollars,
   openCost, kellyBankroll, skipped, runnerDesk, openOrders, lastOrderAt,
-  activity: {orders, filledOrders, contractsRequested, contractsFilled,
-  fillRate, staked, avgEdgeAtFill, reasons: [{reason, orderStatus, lines}]}}],
+  activity: {orders, filledOrders, fillRate, staked, avgEdgeAtFill, reasons: [{reason, orderStatus, lines}]}}],
   recentOrders}` — the tracker's Bot tab, from `taker.duckdb` plus one GET of
   the runner's `/taker.json` for its last pass. `POST
   /bet105.json` with `{fetchedAt, feeds: {prematch: [betGroup], live:
