@@ -251,10 +251,16 @@ class ManualProphetXDesk:
     def __init__(self, client: ProphetXClient, store: BetsStore, quote_reader: Callable[[dict], dict],
                  team_keys_reader: TeamKeysReader, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
-                 order_stream: ProphetXOrderStream | None = None):
+                 order_stream: ProphetXOrderStream | None = None,
+                 streamed_game: Callable[[str], tuple[dict, list[dict]] | None] | None = None):
         """`order_stream`: the account's pushed order updates (prophetx_order_stream.py);
-        while it is live Place waits on it, else it reads the order history."""
+        while it is live Place waits on it, else it reads the order history.
+        `streamed_game`: the live price stream's (event, markets) for a board
+        game id while it holds a current book of it (prophetx_live.py), so a
+        click needs no ProphetX read of the game; None or no book = Place reads
+        ProphetX itself, as before."""
         self._order_stream = order_stream
+        self._streamed_game = streamed_game
         self._client = client
         self._store = store
         self._quote_reader = quote_reader
@@ -275,7 +281,7 @@ class ManualProphetXDesk:
         quote = self._quote_reader({"eventId": request["eventId"], "periodTypeId": request["periodTypeId"],
                                     "betTypeId": request["betTypeId"], "sideIndex": request["sideIndex"],
                                     "points": request["points"]})
-        target = self._target(quote)
+        target = self._target(quote, str(request["eventId"]))
         if isinstance(target, str):
             return {"status": STATUS_REFUSED, "message": f"Not placed: {target}"}
         refusal = self._refusal(request, target)
@@ -297,13 +303,14 @@ class ManualProphetXDesk:
         })
         if not inserted:
             return {"status": STATUS_REFUSED, "message": "Not placed: this click was already sent."}
-        log.info("prophetx place %s: strike %s $%.2f @ %+d (%s, Ticket %s)", client_order_id, target["strike_id"],
-                 request["stake"], target["price"], _cents(probability), _cents(request["ticket_all_in"]))
+        log.info("prophetx place %s: strike %s $%.2f @ %+d (%s, Ticket %s, book from %s)", client_order_id,
+                 target["strike_id"], request["stake"], target["price"], _cents(probability),
+                 _cents(request["ticket_all_in"]), target["bookFrom"])
         return self._send(client_order_id, target, request["stake"])
 
     # ---- finding the strike ----------------------------------------------------------
 
-    def _target(self, quote: dict) -> dict | str:
+    def _target(self, quote: dict, game_key: str) -> dict | str:
         """{strike_id, price, probability, depth, marketId, eventStart, otherStrikeId}
         for the quote's board line, or why there is none."""
         if not quote.get("ok"):
@@ -313,15 +320,22 @@ class ManualProphetXDesk:
             return "the runner did not name the board line."
         if line.get("betType") == "moneyline" and line.get("period") != "FG":
             return f"a {line.get('period')} moneyline: whether ProphetX voids a tied period is unchecked."
+        streamed = self._streamed_game(game_key) if self._streamed_game is not None else None
         try:
-            event = self._event_of(quote, line)
-            if isinstance(event, str):
-                return event
+            if streamed is not None:
+                event, markets = streamed
+            else:
+                event = self._event_of(quote, line)
+                if isinstance(event, str):
+                    return event
+                markets = None
             mismatch = teams_mismatch(event, line, self._team_keys_reader)
             # A total is the same bet with home and away swapped; any other mismatch refuses.
             if mismatch and not (line.get("betType") == "total" and mismatch.endswith(REVERSED_TEAMS_WORDS)):
                 return f"{mismatch}."
-            lines = lines_of_event(event, self._client.markets(event["event_id"]))
+            if markets is None:
+                markets = self._client.markets(event["event_id"])
+            lines = lines_of_event(event, markets)
         except TeamKeysUnread as error:
             return f"ProphetX's teams could not be checked against the board's ({error})."
         except (OSError, ProphetXError) as error:
@@ -345,7 +359,8 @@ class ManualProphetXDesk:
         return {"strike_id": target["strike_id"], "price": offer["price"], "depth": offer["depth"],
                 "probability": round(american_to_probability(offer["price"]), 6), "marketId": target["marketId"],
                 "eventStart": min(starts) if starts else None, "eventStatus": event.get("status"),
-                "otherStrikeId": target["otherStrikeId"], "prophetxEventId": event["event_id"]}
+                "otherStrikeId": target["otherStrikeId"], "prophetxEventId": event["event_id"],
+                "bookFrom": "stream" if streamed is not None else "rest"}
 
     def _event_of(self, quote: dict, line: dict) -> dict | str:
         return event_of_line(self._client, self._team_keys_reader, quote, line)

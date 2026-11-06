@@ -435,11 +435,11 @@ def team_keys_reader(keys=None):
     return read
 
 
-def desk_with(store, client, quote=None, now=NOW, team_keys=None, order_stream=None, clock=None):
+def desk_with(store, client, quote=None, now=NOW, team_keys=None, order_stream=None, clock=None, streamed_game=None):
     return ManualProphetXDesk(client, store, lambda _line: dict(QUOTE if quote is None else quote),
                               team_keys or team_keys_reader(), now=lambda: now,
                               sleep=lambda _sec: None, clock=clock or iter(range(0, 1000)).__next__,
-                              order_stream=order_stream)
+                              order_stream=order_stream, streamed_game=streamed_game)
 
 
 class FakeOrderStream:
@@ -481,6 +481,43 @@ def test_a_click_finds_the_strike_by_the_games_ids_and_sends_one_fill_or_kill_at
     row = store._con.execute("SELECT status, prophetx_order_id, count_filled, cost_filled, ticker FROM manual_orders "
                              "WHERE client_order_id = 'xman-abc12345-0001'").fetchone()
     assert row == ("filled", row[1], 5000, 50.25, "c" * 32) and row[1]
+
+
+class NoGameReads(ScriptedProphetX):
+    """A client that fails the click if Place reads the game off ProphetX."""
+
+    def strikes(self, strike_ids):
+        raise AssertionError("Place read the game's strikes with a streamed book in hand")
+
+    def markets(self, event_id):
+        raise AssertionError("Place read get_markets with a streamed book in hand")
+
+
+def test_a_click_takes_the_game_off_the_live_stream_when_it_holds_a_current_book(store):
+    streamed = [{**SPREAD, "selections": [[offer("c" * 32, -105, 300, 12, "Buffalo Bills", 3.5, "+3.5")],
+                                          SPREAD["selections"][1]]}]
+    asked = []
+
+    def streamed_game(game_key):
+        asked.append(game_key)
+        return EVENT, streamed
+    client = NoGameReads()
+    result = desk_with(store, client, streamed_game=streamed_game).place(request(ticketAllIn=0.52))
+    assert asked == [str(EVENT_ID)] and result["status"] == "filled"
+    assert client.submits == [("c" * 32, -105, 50, "xman-abc12345-0001")]
+
+
+def test_without_a_streamed_book_a_click_reads_prophetx_itself(store):
+    client = ScriptedProphetX()
+    result = desk_with(store, client, streamed_game=lambda _key: None).place(request())
+    assert result["status"] == "filled" and client.submits[0][:2] == ("c" * 32, -110)
+
+
+def test_a_streamed_game_still_refuses_teams_that_do_not_read_as_the_boards(store):
+    other = {**EVENT, "competitors": [{"id": 11, "name": "Kansas City Chiefs", "side": "home"},
+                                      {"id": 13, "name": "Miami Dolphins", "side": "away"}]}
+    result = desk_with(store, NoGameReads(), streamed_game=lambda _key: (other, MARKETS)).place(request())
+    assert result["status"] == "refused" and "does not read as" in result["message"]
 
 
 def test_without_strike_ids_the_game_is_found_by_its_teams_and_start(store):
