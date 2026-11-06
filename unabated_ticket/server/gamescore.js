@@ -28,32 +28,33 @@ const STATUS_FINAL = 3;
 // A score older than this reads as missing, not as the current score.
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
-// League path -> the eventPeriodTypeIds named there, with live.js's names
-// (Q1-Q4 = 4-7, halves 2 / 3). Football: live.js reads these at every NFL
-// break; on 2026-11-06 an NFL game went 5 (10-3, 6:43) to 6 (17-3, 13:59)
-// and CFB games sat at 2 with 00:00 (halftime). NCAAB: 3 with minutes left
-// and at the final the same night. Other sports are added once their own
-// live games are read.
-const NAMED_PERIOD_IDS = {
-  nfl: [2, 4, 5, 6, 7],
-  cfb: [2, 4, 5, 6, 7],
-  cbb: [2, 3],
+// League path -> {eventPeriodTypeId: name} for the numbers checked against
+// live games; other sports are added once their own live games are read.
+//
+// Football and NCAAB use live.js's names (Q1-Q4 = 4-7, halves 2 / 3): live.js
+// reads these at every NFL break; on 2026-11-06 an NFL game went 5 (10-3,
+// 6:43) to 6 (17-3, 13:59), CFB games sat at 2 with 00:00 (halftime), and
+// NCAAB was at 3 with minutes left and at the final the same night.
+//
+// Hockey (league 6) read live 2026-11-06: games started 00:00Z were at 10
+// with the clock counting down in the 3rd at 02:08Z and final at 10 by
+// 03:46Z; a 01:00Z game sat at 8 with 00:00 at 02:08Z (end of the 1st); a
+// 02:30Z game was at 9 with 14:10 left at 03:46Z. The league's own market
+// periods are pt8 / pt9 / pt10. Overtime and the shootout were not seen, so
+// they stay unnamed. The "nhl" path also carries Olympic hockey (league 11),
+// not read live; no Olympic tournament before 2030.
+function namesOf(periodIds) {
+  return Object.fromEntries(periodIds.map((id) => [id, live.PERIOD_ENDED[id]]));
+}
+const PERIOD_NAMES = {
+  nfl: namesOf([2, 4, 5, 6, 7]),
+  cfb: namesOf([2, 4, 5, 6, 7]),
+  cbb: namesOf([2, 3]),
+  nhl: { 8: "P1", 9: "P2", 10: "P3" },
 };
 
-// Hockey's own period numbers, which live.js does not name. Read live
-// 2026-11-06 (league 6): games started 00:00Z were at 10 with the clock
-// counting down in the 3rd at 02:08Z and final at 10 by 03:46Z; a 01:00Z
-// game sat at 8 with 00:00 at 02:08Z (end of the 1st); a 02:30Z game was at
-// 9 with 14:10 left at 03:46Z. The feed's own market periods are pt8 / pt9 /
-// pt10 for the same league. Overtime and the shootout were not seen, so they
-// stay unnamed.
-const HOCKEY_PERIOD_NAMES = { 8: "P1", 9: "P2", 10: "P3" };
-
 function periodNameOf(league, periodId) {
-  if (league === "nhl") return HOCKEY_PERIOD_NAMES[periodId] ?? null;
-  const ids = NAMED_PERIOD_IDS[league];
-  if (!ids || !ids.includes(periodId)) return null;
-  return live.PERIOD_ENDED[periodId] ?? null;
+  return PERIOD_NAMES[league]?.[periodId] ?? null;
 }
 
 function statusOf(statusId) {
