@@ -10,8 +10,9 @@
 // scan loop the panel runs while it is open and visible: a snapshot per
 // league on start — the settings' leagues plus NFL and CFB, which the panel
 // always loads for its Teasers tab and whose open BFA teasers size the Edges
-// rows, plus the leagues of open straight bets, whose closing fairs it saves —
-// each league re-downloaded on its own size-based cadence, a full
+// rows, plus CBB, whose fair ladders it stores with NFL's and CFB's
+// (server/laddersnapshot.js), plus the leagues of open straight bets, whose
+// closing fairs it saves — each league re-downloaded on its own size-based cadence, a full
 // resync every 10 min (scanner.js). It never pauses — the panel pauses when
 // hidden; this is a panel that is always in view.
 //
@@ -47,6 +48,12 @@
 //   POST <bets service>/close_snapshots.json every 30 s with the closing
 //       fairs — every book's two sides at each open bet's number before its
 //       game starts; the service keeps the newest pre-start one.
+//   POST <bets service>/ladders.json every 30 s — Unabated's full-game fair
+//       ladder (spread, total, moneyline) of every NFL / CFB / CBB game still
+//       to start (server/laddersnapshot.js): an opener once per game and
+//       market, then the close whenever the ladder changes or every 10 min
+//       unchanged; ladders.duckdb keeps the first opener and the newest
+//       pregame close (issue #264). Stored only, nothing reads it back.
 //   GET <bets service>/tau_samples.json once on start and POST /tau_samples.json
 //       every 30 s with the readings that changed (an unchanged one hourly;
 //       each pass absorbs the board's current refresh first): the tail
@@ -193,6 +200,7 @@ const edgesPayload = require("./edges_payload.js");
 const closefair = require("./closefair.js");
 const fillbooks = require("./fillbooks.js");
 const edgesnapshot = require("./edgesnapshot.js");
+const laddersnapshot = require("./laddersnapshot.js");
 const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
 const teasersPayload = require("./teasers_payload.js");
@@ -332,6 +340,9 @@ const SERVICE_WRITE_RETRY_MS = 60 * 1000;
 // Close snapshots per POST: each carries every book's two sides (a few KB),
 // so a full slate of open bets stays far under the service's 1 MB body cap.
 const CLOSE_SNAPSHOT_ROWS_PER_POST = 25;
+// Ladder rows per POST /ladders.json: a CBB spread ladder is a few KB, so 40
+// stay far under the service's 1 MB body cap.
+const LADDER_ROWS_PER_POST = 40;
 const HTTP_BAD_REQUEST = 400;
 
 function log(message) {
@@ -385,10 +396,14 @@ function hostAllowed(hostHeader, allowed) {
 // The leagues the scanner loads: the Edges list's, plus NFL and CFB, as the
 // panel's scannerLeaguesOf does — the board the open teasers and the bets are
 // matched against must be the panel's, or the stakes would differ — plus the
-// open bets' leagues, so each has a closing fair. A league outside the
-// settings never reaches the Edges list (edgerows.js leagueIds).
+// open bets' leagues, so each has a closing fair, plus the leagues whose fair
+// ladders are stored (laddersnapshot.js: NFL, CFB, CBB). A league outside the
+// settings never reaches the Edges list (edgerows.js leagueIds) or the taker
+// (taker.js leagueIds), and tail flex measures per league, so loading CBB for
+// its ladders changes no other league's rows or stakes.
 function scannerLeaguesOf(edgeLeagues, betLeagueIds = []) {
-  return Array.from(new Set([...edgeLeagues, ...teaser.TEASER_LEAGUE_IDS, ...betLeagueIds])).sort((a, b) => a - b);
+  return Array.from(new Set([...edgeLeagues, ...teaser.TEASER_LEAGUE_IDS, ...laddersnapshot.LADDER_LEAGUE_IDS, ...betLeagueIds]))
+    .sort((a, b) => a - b);
 }
 
 // scanner.js passes the browser's fetch options ({cache: "no-cache",
@@ -441,7 +456,7 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 //          polymarketFetch (Polymarket US's public gateway, default serviceFetch), polymarketGatewayUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
-// Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
+// Returns {start, stop, pollBets, pollSettings, postLadders, scanLoaded, learn, takerPass,
 //          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
 //          scenariosPayload, takerPayload, health, scanner, boardLines (the
 //          board's rows, read by the tests)}.
@@ -540,6 +555,13 @@ function createRunner(deps) {
   // betId -> what was last POSTed to /close_snapshots.json (edgesnapshot.unsentCloseRows).
   const sentCloseSnapshots = new Map();
   const closeSnapshotStatus = { okAt: null, error: null, rowsSent: 0 };
+  // The stored fair ladders (laddersnapshot.js): leagueId -> {version,
+  // ladders} as of the league's last snapshot, ladderKey -> what the service
+  // took (laddersnapshot.markSent), and the last pass's outcome.
+  const ladderCache = new Map();
+  const sentLadders = new Map();
+  let laddersBusy = false;
+  const ladderStatus = { okAt: null, error: null, rowsSent: 0 };
   // The tail flex's rolling tau pool (tailflex.createTauPool): every refresh's
   // two-sided exchange rungs where two or more exchanges quote both sides,
   // kept 24 h, loaded from the bets service on start (GET /tau_samples.json)
@@ -1109,6 +1131,60 @@ function createRunner(deps) {
         }
         return;
       }
+    }
+  }
+
+  // Each stored league's ladders, rebuilt only when its snapshot landed again;
+  // a stale league (a CDN copy built long ago) is not read, as closefair does.
+  function currentLadders() {
+    const staleLeagues = new Set(scannerStatus.staleLeagues || []);
+    const loadedAt = scannerStatus.leagueLoadedAt || {};
+    const ladders = [];
+    for (const leagueId of laddersnapshot.LADDER_LEAGUE_IDS) {
+      if (!boardLeagueIds().includes(leagueId) || staleLeagues.has(leagueId)) continue;
+      const version = scanner.getLeagueVersion(leagueId);
+      let cached = ladderCache.get(leagueId);
+      if (!cached || cached.version !== version) {
+        cached = { version, ladders: laddersnapshot.leagueLadders({
+          leagueId, linesByEvent: leagueLinesByEvent(leagueId), events: feedState.events, observedMs: loadedAt[leagueId],
+        }) };
+        ladderCache.set(leagueId, cached);
+      }
+      ladders.push(...cached.ladders);
+    }
+    return ladders;
+  }
+
+  // POST the ladder rows the service has not taken, LADDER_ROWS_PER_POST to
+  // a request. A failed request keeps its rows (and the rest) for the next
+  // pass; a 400 (a row the service refuses) drops only its own rows. Stored
+  // only: nothing reads the ladders back.
+  async function postLadders() {
+    if (laddersBusy || !feedState || !scannerStatus) return;
+    laddersBusy = true;
+    try {
+      const at = now();
+      laddersnapshot.forgetStarted(sentLadders, at);
+      const rows = laddersnapshot.unsentRows(currentLadders(), sentLadders, at);
+      for (let start = 0; start < rows.length; start += LADDER_ROWS_PER_POST) {
+        const chunk = rows.slice(start, start + LADDER_ROWS_PER_POST);
+        try {
+          await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/ladders.json`, "POST", { rows: chunk.map(laddersnapshot.wireRow) });
+          laddersnapshot.markSent(chunk, sentLadders);
+          if (ladderStatus.error) logInfo("ladders saving again");
+          Object.assign(ladderStatus, { okAt: now(), error: null, rowsSent: ladderStatus.rowsSent + chunk.length });
+        } catch (error) {
+          if (ladderStatus.error !== error.message) logWarning(`ladders POST failed: ${error.message}`);
+          ladderStatus.error = error.message;
+          if (error.status !== HTTP_BAD_REQUEST) return;
+          laddersnapshot.markSent(chunk, sentLadders);
+        }
+      }
+    } catch (error) {
+      if (ladderStatus.error !== error.message) logWarning(`ladder pass failed: ${error.stack || error.message}`);
+      ladderStatus.error = error.message;
+    } finally {
+      laddersBusy = false;
     }
   }
 
@@ -2549,6 +2625,7 @@ function createRunner(deps) {
       timers.setInterval(() => pollBets(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
+      timers.setInterval(() => postLadders(), CLOSING_FAIRS_POST_MS),
       // The live price pass right after each taker pass, so the lines the taker just read are not read again.
       timers.setInterval(async () => {
         await takerPass();
@@ -2681,6 +2758,7 @@ function createRunner(deps) {
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
       closeSnapshots: { ...closeSnapshotStatus },
+      ladders: { ...ladderStatus, tracked: sentLadders.size },
       tauPool: { ...tauStatus, size: tauPool.size(), unsent: tauUnsent.size },
       livePrices: liveStatus(),
       taker: {
@@ -2692,7 +2770,7 @@ function createRunner(deps) {
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
+    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
     edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
