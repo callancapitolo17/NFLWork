@@ -404,6 +404,9 @@ button, select, input { font: inherit; color: inherit; }
 }
 .books-grid .better { color: var(--warn-fg); }
 .books-grid .worse { color: var(--ink-2); }
+/* Nearest lines when no other book posts your number: reference only. */
+.books-grid .near, .others-list .near { color: var(--ink-2); }
+.books-grid .num, .others-list .num { font-family: var(--figure); color: var(--muted); margin-left: 6px; }
 .books-grid .thin { color: var(--muted); opacity: .6; }
 .books-grid .thin .px { text-decoration: line-through; }
 .books-more {

@@ -23,7 +23,12 @@
 //     price (exchanges; sportsbooks report none and always count) is listed
 //     greyed as thin and counts toward nothing: not better, not the outlier
 //     check, not the book count (Cal, 2026-10-15: a $4 Kalshi offer must not
-//     bring up Skip).
+//     bring up Skip);
+//   - when no counted book posts your number (Cal, 2026-11-06), the row
+//     reads "only book at 160" (never "best") and the Ticket lists each
+//     other book's line on your side NEAREST your number, for reference
+//     only: a different number is never called better or worse, so it
+//     brings no Skip and the taker's check is unchanged.
 //
 // Pure: no DOM, no fetch, no chrome.*, no clock (now comes in). Input is the
 // scanner's feed state (feed.js shape). Loaded as a plain <script> before
@@ -58,6 +63,7 @@
   }
 
   const BET_TYPE_MONEYLINE = 1;
+  const BET_TYPE_TOTAL = 3;
 
   // One number on one side of one market of one game, whoever posts it. A
   // moneyline has no number, whatever points field a book sends with it.
@@ -114,14 +120,23 @@
     return Math.max(a, b);
   }
 
-  // rung key -> Map(bookId -> {bookId, bookName, price, liquidity}), every book's best
-  // price at each number (a book can sit on a number twice: main and alt).
-  // Build once per feed update.
+  // One side of one market of one game, whatever the number.
+  function sideKeyOf({ eventId, periodTypeId, betTypeId, sideIndex }) {
+    return `${eventId}:${periodTypeId}:${betTypeId}:${sideIndex}`;
+  }
+
+  // Every book's best price at each number (a book can sit on a number twice:
+  // main and alt), and the numbers each side is posted at (for the nearest
+  // lines). Build once per feed update; read it only through comparePrice.
+  //   {byRung: Map(rung key -> Map(bookId -> {bookId, bookName, price, liquidity})),
+  //    pointsBySide: Map(side key -> Set(points))}
   //   options  {now, maxLineAgeMs (null = no age gate), lineView (liveprices.createLineView,
   //            optional: an exchange line counts at its live price, a gone one not at all)}
   function buildPriceIndex(state, options) {
     const index = new Map();
-    if (!state) return index;
+    const pointsBySide = new Map();
+    const built = { byRung: index, pointsBySide };
+    if (!state) return built;
     const now = options.now;
     const maxLineAgeMs = typeof options.maxLineAgeMs === "number" && options.maxLineAgeMs > 0 ? options.maxLineAgeMs : null;
     const lineView = typeof options.lineView === "function" ? options.lineView : null;
@@ -131,13 +146,59 @@
       const line = view.line;
       if (!countsAsPrice(line, state, now, maxLineAgeMs)) continue;
       const key = rungKeyOf(line);
+      if (line.betTypeId !== BET_TYPE_MONEYLINE && typeof line.points === "number") {
+        const sideKey = sideKeyOf(line);
+        if (!pointsBySide.has(sideKey)) pointsBySide.set(sideKey, new Set());
+        pointsBySide.get(sideKey).add(line.points);
+      }
       if (!index.has(key)) index.set(key, new Map());
       const byBook = index.get(key);
       const held = byBook.get(line.bookId);
       if (held && impliedProb(held.price) <= impliedProb(line.price)) continue;
       byBook.set(line.bookId, { bookId: line.bookId, bookName: state.books[line.bookId].name, price: line.price, liquidity: line.liquidity ?? null });
     }
-    return index;
+    return built;
+  }
+
+  // "u159" / "o47.5" for a total, "+3.5" / "-7" for a spread: the number a
+  // nearest line sits at, beside its book.
+  function lineTextOf(betTypeId, sideIndex, points) {
+    if (betTypeId === BET_TYPE_TOTAL) return `${sideIndex === 0 ? "o" : "u"}${points}`;
+    return points > 0 ? `+${points}` : `${points}`;
+  }
+
+  // Each other book's line on the spec's side at the number nearest the spec's
+  // own (both, when a book sits as near above as below), nearest first, then
+  // by number. Same-name books merge per number. [] for a moneyline.
+  //   [{bookName, price, liquidity, points, lineText, thin}]
+  function nearestLines(priceIndex, spec) {
+    if (spec.betTypeId === BET_TYPE_MONEYLINE || typeof spec.points !== "number") return [];
+    const posted = priceIndex.pointsBySide.get(sideKeyOf(spec));
+    if (!posted) return [];
+    const distanceOf = (points) => Math.abs(points - spec.points);
+    const numbers = Array.from(posted).filter((points) => points !== spec.points)
+      .sort((a, b) => distanceOf(a) - distanceOf(b) || a - b);
+    const nearestDistanceByBook = new Map();
+    const lines = [];
+    for (const points of numbers) {
+      const atNumber = [];
+      for (const entry of (priceIndex.byRung.get(rungKeyOf({ ...spec, points })) || new Map()).values()) {
+        if (entry.bookId === spec.bookId) continue;
+        const held = nearestDistanceByBook.get(entry.bookId);
+        if (held != null && held !== distanceOf(points)) continue;
+        nearestDistanceByBook.set(entry.bookId, distanceOf(points));
+        atNumber.push(entry);
+      }
+      const yours = spec.bookName ? { bookName: spec.bookName, price: spec.price } : null;
+      for (const entry of mergeSameNameBooks(atNumber, null)) {
+        if (yours && sameNameKey(entry.bookName) === sameNameKey(yours.bookName)) continue;
+        lines.push({
+          bookName: entry.bookName, price: entry.price, liquidity: entry.liquidity ?? null,
+          points, lineText: lineTextOf(spec.betTypeId, spec.sideIndex, points), thin: isThin(entry),
+        });
+      }
+    }
+    return lines;
   }
 
   // How the price compares with every other book at the same number.
@@ -146,13 +207,15 @@
   //   {better: [{bookName, price, liquidity}] best first, worse: [...] best first, same: n,
   //    sameAs: [...] (the n books at your price), thin: [...] best first (isThin,
   //    in none of the others), bookCount (counted books at the number, yours
-  //    included), wouldSkip, outlier: {nextBest}|null}
+  //    included), wouldSkip, outlier: {nextBest}|null, onlyBook (no other book
+  //    counts at the number), numberText / yourLineText ("160" / "u160"; null on a
+  //    moneyline), nearest: nearestLines(...) when onlyBook, else []}
   // "better" means a strictly lower implied probability for the same bet;
   // liquidity is null for a book that reports none.
   function comparePrice(index, spec) {
     const yourProb = impliedProb(spec.price);
     if (yourProb == null) return null;
-    const atNumber = Array.from((index.get(rungKeyOf(spec)) || new Map()).values())
+    const atNumber = Array.from((index.byRung.get(rungKeyOf(spec)) || new Map()).values())
       .filter((entry) => entry.bookId !== spec.bookId);
     const yours = spec.bookName ? { bookName: spec.bookName, price: spec.price } : null;
     const merged = mergeSameNameBooks(atNumber, yours)
@@ -170,6 +233,7 @@
       else sameAs.push(shown);
     }
     const nextBest = others.length ? others[0] : null;
+    const isOnlyBook = others.length === 0;
     const isOutlier = better.length === 0 && nextBest != null && impliedProb(nextBest.price) - yourProb > OUTLIER_PROB_GAP;
     return {
       better,
@@ -180,13 +244,19 @@
       bookCount: others.length + 1,
       wouldSkip: better.length >= BOOKS_BETTER_TO_SKIP,
       outlier: isOutlier ? { nextBest: { bookName: nextBest.bookName, price: nextBest.price } } : null,
+      onlyBook: isOnlyBook,
+      numberText: spec.betTypeId === BET_TYPE_MONEYLINE || typeof spec.points !== "number" ? null : `${spec.points}`,
+      yourLineText: spec.betTypeId === BET_TYPE_MONEYLINE || typeof spec.points !== "number" ? null : lineTextOf(spec.betTypeId, spec.sideIndex, spec.points),
+      nearest: isOnlyBook ? nearestLines(index, spec) : [],
     };
   }
 
-  // The tag a row or ticket shows: {kind, label}, or null when no other book
-  // posts the number (nothing to compare). kind: best | better | skip | outlier.
+  // The tag a row or ticket shows: {kind, label}, or null when the price is
+  // unusable. kind: only | best | better | skip | outlier. "only" = no other
+  // book counts at the number: it says so and claims nothing about price.
   function priceCheckTag(check) {
-    if (!check || check.bookCount < 2) return null;
+    if (!check) return null;
+    if (check.bookCount < 2) return { kind: "only", label: check.numberText == null ? "only book on this line" : `only book at ${check.numberText}` };
     const fmt = (price) => (price > 0 ? `+${price}` : `${price}`);
     if (check.outlier) return { kind: "outlier", label: `outlier, check · next best ${fmt(check.outlier.nextBest.price)}` };
     const n = check.better.length;

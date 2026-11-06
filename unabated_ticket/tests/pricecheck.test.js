@@ -67,7 +67,36 @@ test("only the same number and side count; another number or the other side is n
   const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });
   const check = pricecheck.comparePrice(index, overSpec(1, -110));
   assert.equal(check.bookCount, 1);
-  assert.equal(pricecheck.priceCheckTag(check), null);
+  assert.deepEqual(check.better, []);
+  assert.equal(check.wouldSkip, false);
+  assert.equal(pricecheck.canSkip(check), false);
+  assert.deepEqual(pricecheck.priceCheckTag(check), { kind: "only", label: "only book at 47.5" });
+});
+
+test("no other book at the number: each book's nearest line on the side, nearest first, reference only", () => {
+  // You: BetMGM o47.5. Circa posts 48.5 and 50.5 (nearest 48.5), Pinnacle 46.5
+  // and 48.5 (a tie: both), DraftKings only on the Under, your own book's 46 left out.
+  const state = stateWith([
+    [1, 0, 47.5, -110], [1, 0, 46, -130], [2, 0, 48.5, +120], [2, 0, 50.5, +150],
+    [3, 0, 46.5, -125], [3, 0, 48.5, +105], [4, 1, 47.5, -110], [5, 0, 45.5, -140, { liquidity: 10 }],
+  ]);
+  const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });
+  const check = pricecheck.comparePrice(index, { ...overSpec(1, -110), bookName: "BetMGM" });
+  assert.equal(check.onlyBook, true);
+  assert.equal(check.yourLineText, "o47.5");
+  assert.deepEqual(check.nearest.map((entry) => `${entry.bookName} ${entry.lineText} ${entry.price}${entry.thin ? " thin" : ""}`),
+    ["Pinnacle o46.5 -125", "Circa o48.5 120", "Pinnacle o48.5 105", "FanDuel o45.5 -140 thin"]);
+  assert.deepEqual(check.better, []);
+  assert.deepEqual(check.worse, []);
+});
+
+test("a book at your number means no nearest list; a moneyline has none", () => {
+  const state = stateWith([[1, 0, 47.5, -110], [2, 0, 47.5, -112], [3, 0, 48.5, +120], [1, 0, null, 120], [2, 1, null, -140]]);
+  const index = pricecheck.buildPriceIndex(state, { now: NOW, maxLineAgeMs: null });
+  assert.deepEqual(pricecheck.comparePrice(index, overSpec(1, -110)).nearest, []);
+  const ml = pricecheck.comparePrice(index, { eventId: 100, periodTypeId: 1, betTypeId: 1, sideIndex: 0, points: null, bookId: 1, price: 120 });
+  assert.deepEqual(ml.nearest, []);
+  assert.deepEqual(pricecheck.priceCheckTag(ml), { kind: "only", label: "only book on this line" });
 });
 
 test("stale, dead, blurred, off-board and Unabated's own lines never count as a better price", () => {
