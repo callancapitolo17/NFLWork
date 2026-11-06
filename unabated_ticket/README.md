@@ -3493,12 +3493,14 @@ SELECT placed_at, label, ticker, contract_side, ticket_all_in, all_in_price, sta
 FROM manual_orders ORDER BY placed_at DESC;
 ```
 
-#### Live Place on Kalshi at a break (0.39.0, 2026-11-04)
+#### Live Place at a break (Kalshi 0.39.0, all four exchanges 0.42.0, 2026-11-06)
 
-A live Kalshi Ticket (a price clicked in the Live block, priced off
-Unabated's in-game fair) gets Place too, panel only (the phone has no live
-edges). The other four venues still refuse a live Ticket until each one's
-live market has been read (`place.js` `VENUES[..].live`).
+A live Ticket (a price clicked in the Live block, priced off Unabated's
+in-game fair) gets Place at Kalshi, Novig, ProphetX and Polymarket US
+(moneyline only), panel only (the phone has no live edges). BFA stays
+pregame. `place.js` `VENUES[..].live` / `liveBetTypeIds` say which; any
+other live Ticket reads "X does not place live yet" or "X lists only some
+markets in game, not this one". Pregame Place is unchanged at every venue.
 
 - **Only while there is a number.** The button shows only when the Ticket
   can be sized (`liveTicketBlock` empty: the fair is still ready, still the
@@ -3508,16 +3510,41 @@ live market has been read (`place.js` `VENUES[..].live`).
   so the request says `live: true` and `liveFairReadAt`, when the tab last
   said this exact fair (its `producedUtc`) was ready
   (`live.liveFairReadAtMs`; null, so no request, once the panel itself
-  stops trusting the tab: 10 s visible, 75 s hidden). The desk refuses one
-  over 90 s old (`LIVE_FAIR_READ_MAX_AGE_SEC`: the hidden-tab window plus
-  the round trip; the fair expiring fires a grid event that posts at once).
+  stops trusting the tab: 10 s visible, 75 s hidden). Every desk refuses one
+  over 90 s old (`manual_orders.validate_live_fields` / `start_refusal`,
+  `LIVE_FAIR_READ_MAX_AGE_SEC`: the hidden-tab window plus the round trip).
 - **The live board.** The runner's scanner (`keepLive`) also parses each
   snapshot's in-game rows (`feed.parseSnapshot(.., {phase: "live"})`) into
   a separate board per league, never merged into the pregame board, so the
-  Edges list, the phone and the bot never see a live line. `GET
-  /kalshi_quote.json?..&live=1` finds the line there (`not_live` when the
-  game is on no live board) and answers `live: true`; the desk accepts a
-  started game only for such a quote.
+  Edges list, the phone and the bot never see a live line. Each venue's
+  quote (`/<venue>_quote.json?..&live=1`) finds the line there (`not_live`
+  when the game is on no live board) and answers `live: true`; a desk
+  accepts a started game only for such a quote.
+- **Venue ids remembered from pregame (`server/liveboard.js`).** Unabated's
+  live rows carry no Kalshi or Novig ids and no alternate lines (recon of
+  JAX @ BAL, 2026-11-06, `bets_service/live_recon.py`). So the runner keeps
+  each game's venue ids from its last pregame snapshot (`pregameVenueMemo`,
+  pruned with the kickoff odds) and re-points each id at the live main line
+  of the same period, market, side and book (`liveQuoteBoard`; ids a live
+  line carries itself win). A game the runner never saw pregame (a restart
+  mid-game) has no ids and refuses. Kalshi derives its tickers from these as
+  pregame; a live full-game spread off the live number falls back to the
+  team code (`taker.derivedSpreadFromTeamCodes`). Novig's in-game markets
+  are new markets created after kickoff, so the runner also remembers the
+  game's Novig event, market types and side names from the pregame catalog
+  (`novigEventMemo`, `taker.novigEventMemoryOf`) and finds the live outcome
+  by type, strike and side on the in-game catalog (`taker.novigLiveContract`).
+- **Per venue.** Kalshi: the market must still be active at the strike.
+  Novig: event `OPEN_INGAME`, market `OPEN`, the book read over keyed REST
+  (the stream covers pregame only), and the live fee counted: Novig charges
+  `coefficient × p × (1−p)` per contract in game (`fee.charged` `WHEN_LIVE`,
+  coefficient 0.06 on the recon; `taker.novigFeeRateOf`, an unknown shape
+  refuses, the desk refuses a rate over 0.1), compared as the all-in with
+  the Ticket. Whether Unabated's live Novig price already includes that fee
+  is unverified, so Place may refuse more often than it would pregame.
+  ProphetX: event status `live` and `live_disabled` false. Polymarket US:
+  the event must say `live: true`, and only the full-game moneyline is open
+  in play.
 - Every other rule is unchanged: the live all-in at most 0.1c worse than the
   Ticket's, the other side held, an unseen earlier Place, the cash pot.
 

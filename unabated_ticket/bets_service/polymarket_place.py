@@ -13,7 +13,10 @@ Rules, in order, for every request (validate_polymarket_place_request's shape):
      line (the game by its two teams, the market by its own sides), and reads
      the live price (GET /polymarket_quote.json, server/polymarket.js);
   3. the game has not started (the earlier of Unabated's and Polymarket US's
-     start), and the runner read the Polymarket US this desk trades on;
+     start), and the runner read the Polymarket US this desk trades on; a live
+     click (`live`, a Ticket at a break) instead needs the line on Unabated's
+     live board, Polymarket US's event live and the panel's in-game fair read
+     within 90 s (manual_orders.start_refusal);
   4. the live all-in price (ask + the taker fee) is at most PRICE_TOLERANCE
      (0.1c) worse than the Ticket's; a better one is taken;
   5. the other side of the market is not held: buying NO against a held YES
@@ -46,7 +49,7 @@ from datetime import datetime, timedelta, timezone
 from unabated_ticket.bets_service.manual_orders import (
     CLICK_ID_PATTERN, PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED,
     STATUS_UNFILLED, STATUS_UNKNOWN, VENUE_POLYMARKET, _cents, _is_number, _iso_time, contracts_detail, filled_bet_message,
-    optional_read_at, unpriced_fill_message, unseen_manual_fill,
+    optional_read_at, start_refusal, unpriced_fill_message, unseen_manual_fill, validate_live_fields,
 )
 from unabated_ticket.bets_service.polymarket_orders import (
     FINAL_ORDER_STATES, MAX_PRICE, MIN_PRICE, RESTING_ORDER_STATES, PolymarketError, PolymarketOrderClient,
@@ -114,7 +117,10 @@ def validate_polymarket_place_request(body: object) -> dict | str:
         if isinstance(read_at, str):
             return read_at
         read_ats[field] = read_at
-    return {"click_id": click_id, **whole, "points": None if points is None else float(points),
+    live = validate_live_fields(body)
+    if isinstance(live, str):
+        return live
+    return {"click_id": click_id, **whole, "points": None if points is None else float(points), **live,
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "polymarket_read_at": polymarket_read_at,
             "kalshi_read_at": read_ats["kalshiReadAt"], "novig_read_at": read_ats["novigReadAt"],
             "prophetx_read_at": read_ats["prophetxReadAt"], "bfa_read_at": read_ats["bfaReadAt"]}
@@ -152,7 +158,7 @@ class ManualPolymarketDesk:
         client_order_id = f"{POLYMARKET_ORDER_ID_PREFIX}{request['click_id']}"
         quote = self._quote_reader({"eventId": request["eventId"], "periodTypeId": request["periodTypeId"],
                                     "betTypeId": request["betTypeId"], "sideIndex": request["sideIndex"],
-                                    "points": request["points"]})
+                                    "points": request["points"], "live": request["live"]})
         refusal = self._refusal(request, quote)
         if refusal:
             return {"status": STATUS_REFUSED, "message": f"Not placed: {refusal}"}
@@ -182,11 +188,9 @@ class ManualPolymarketDesk:
         """Why this click must not become an order, in words, or None."""
         if not quote.get("ok"):
             return f"{quote.get('detail') or quote.get('reason') or 'no Polymarket US market for this line'}."
-        start = _iso_time(quote.get("eventStart"))
-        if start is None:
-            return "the game's start time is unknown."
-        if start <= self._now():
-            return "the game has started."
+        clock = start_refusal(request, quote, self._now())
+        if clock:
+            return clock
         if quote.get("polymarketGatewayUrl") != self._client.gateway_url:
             return (f"the runner read Polymarket US at {quote.get('polymarketGatewayUrl')!r} but this desk trades "
                     f"{self._client.gateway_url}.")

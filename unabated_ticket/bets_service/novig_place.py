@@ -14,9 +14,13 @@ Rules, in order, for every request (validate_novig_place_request's shape):
      price for it (1 minus the best resting order on the other outcome) and
      checks the market is open and pregame (GET /novig_quote.json);
   3. the game has not started, and the runner read the Novig this desk trades
-     on (its base URL);
-  4. the live price is at most PRICE_TOLERANCE (0.1c) worse than the Ticket's;
-     a better one is taken (a pregame take pays no fee, so price = all-in);
+     on (its base URL); a live click (`live`, a Ticket at a break) instead
+     needs the line on Unabated's live board, Novig's event in game and the
+     panel's in-game fair read within 90 s (manual_orders.start_refusal);
+  4. the all-in price (the live price plus Novig's taker fee: none pregame,
+     the market's own coefficient x p x (1 - p) in game, Novig's
+     `fee.charged WHEN_LIVE`) is at most PRICE_TOLERANCE (0.1c) worse than
+     the Ticket's; a better one is taken;
   5. no open straight Novig bet is on the other outcome (sizing cannot price
      a hedge, as on Kalshi);
   6. the Novig reads the stake was sized on are fresh and ok;
@@ -61,7 +65,8 @@ from datetime import datetime, timedelta, timezone
 
 from unabated_ticket.bets_service.manual_orders import (
     PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNKNOWN,
-    VENUE_NOVIG, _cents, _is_number, _iso_time, filled_bet_message, optional_read_at, unseen_manual_fill,
+    VENUE_NOVIG, _cents, _is_number, _iso_time, filled_bet_message, optional_read_at, start_refusal,
+    unseen_manual_fill, validate_live_fields,
 )
 from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, QTY_PER_DOLLAR, STATUS_OPEN,
                                                        NovigError, NovigOrderClient, error_code_of, fill_outcome,
@@ -96,6 +101,9 @@ NOVIG_READ_MAX_AGE = timedelta(seconds=MAX_HOLDINGS_AGE_SEC)
 # no Novig id on Unabated; the runner finds it in Novig's catalog.
 NOVIG_PLACE_BET_TYPES = (1, 2, 3)
 BET_TYPE_MONEYLINE = 1
+# A fee coefficient above this is not Novig's (0.06 in game on 2026-11-06,
+# third parties saw 0.03 earlier): refused rather than paid.
+MAX_FEE_RATE = 0.1
 # Novig's sources whose reads the Ticket's stake counts: Cal's app account and
 # Place's own sub-account (the bot's is added when it is read, service.py).
 NOVIG_PLACE_READ_SOURCES = ("novig", "novig_place")
@@ -147,10 +155,23 @@ def validate_novig_place_request(body: object) -> dict | str:
     bfa_read_at = optional_read_at(body, "bfaReadAt")
     if isinstance(bfa_read_at, str):
         return bfa_read_at
+    live = validate_live_fields(body)
+    if isinstance(live, str):
+        return live
     return {"click_id": click_id, **whole, "points": None if points is None else float(points),
             "stake": float(stake), "ticket_all_in": float(ticket_all_in), "novig_read_at": novig_read_at,
             "kalshi_read_at": kalshi_read_at, "polymarket_read_at": polymarket_read_at,
-            "prophetx_read_at": prophetx_read_at, "bfa_read_at": bfa_read_at}
+            "prophetx_read_at": prophetx_read_at, "bfa_read_at": bfa_read_at, **live}
+
+
+def all_in_of(quote: dict) -> float | None:
+    """What one contract costs with Novig's taker fee: price + feeRate x p x (1 - p),
+    feeRate the market's coefficient when Novig charges it now (the runner's
+    quote; 0 pregame). None when the quote names no usable rate."""
+    price, fee_rate = quote.get("price"), quote.get("feeRate", 0)
+    if not _is_number(price) or not _is_number(fee_rate) or not 0 <= fee_rate <= MAX_FEE_RATE:
+        return None
+    return round(price + fee_rate * price * (1 - price), 6)
 
 
 class ManualNovigDesk:
@@ -184,39 +205,38 @@ class ManualNovigDesk:
         client_order_id = f"{NOVIG_ORDER_ID_PREFIX}{request['click_id']}"
         quote = self._quote_reader({"eventId": request["eventId"], "periodTypeId": request["periodTypeId"],
                                     "betTypeId": request["betTypeId"], "sideIndex": request["sideIndex"],
-                                    "points": request["points"]})
+                                    "points": request["points"], "live": request["live"]})
         refusal = self._refusal(request, quote)
         if refusal:
             return {"status": STATUS_REFUSED, "message": f"Not placed: {refusal}"}
         context = line_context_of(quote.get("line"))
         if isinstance(context, str):
             return {"status": STATUS_REFUSED, "message": f"Not placed: {context}."}
-        quantity = qty_for_stake(request["stake"], quote["price"])
+        all_in = all_in_of(quote)
+        quantity = qty_for_stake(request["stake"], all_in)
         if quantity < 1:
             return {"status": STATUS_REFUSED,
-                    "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(quote['price'])}."}
+                    "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(all_in)}."}
         inserted = self._store.insert_manual_order({
             "client_order_id": client_order_id, "placed_at": self._now(), "venue": VENUE_NOVIG, "event_id": request["eventId"],
             "ticker": quote["outcomeId"], "contract_side": "buy", "label": quote.get("label"),
-            "ticket_all_in": request["ticket_all_in"], "ask_price": quote["price"], "all_in_price": quote["price"],
+            "ticket_all_in": request["ticket_all_in"], "ask_price": quote["price"], "all_in_price": all_in,
             "stake": request["stake"], "count_requested": quantity, "status": "sending", "updated_at": self._now(),
             "market_id": quote["marketId"], "event_start": _iso_time(quote["eventStart"]), **context,
         })
         if not inserted:
             return {"status": STATUS_REFUSED, "message": "Not placed: this click was already sent."}
-        log.info("novig place %s: outcome %s x%d @ %s (Ticket %s)", client_order_id, quote["outcomeId"], quantity,
-                 quote["price"], request["ticket_all_in"])
+        log.info("novig place %s: outcome %s x%d @ %s, all-in %s (Ticket %s%s)", client_order_id, quote["outcomeId"],
+                 quantity, quote["price"], all_in, request["ticket_all_in"], ", live" if request["live"] else "")
         return self._send(client_order_id, request["click_id"], quote, quantity)
 
     def _refusal(self, request: dict, quote: dict) -> str | None:
         """Why this click must not become an order, in words, or None."""
         if not quote.get("ok"):
             return f"{quote.get('detail') or quote.get('reason') or 'no Novig outcome for this line'}."
-        start = _iso_time(quote.get("eventStart"))
-        if start is None:
-            return "the game's start time is unknown."
-        if start <= self._now():
-            return "the game has started."
+        clock = start_refusal(request, quote, self._now())
+        if clock:
+            return clock
         if quote.get("novigBaseUrl") != self._client.base_url:
             return (f"the runner read Novig at {quote.get('novigBaseUrl')!r} but this desk trades "
                     f"{self._client.base_url}.")
@@ -226,8 +246,12 @@ class ManualNovigDesk:
         if not all(isinstance(quote.get(field), str) and quote[field]
                    for field in ("outcomeId", "otherOutcomeId", "marketId")):
             return "the runner did not name the market and both its outcomes."
-        if price > request["ticket_all_in"] + PRICE_TOLERANCE:
-            return (f"Novig is at {_cents(price)} now, more than 0.1¢ worse than the Ticket's "
+        all_in = all_in_of(quote)
+        if all_in is None:
+            return f"Novig's fee rate {quote.get('feeRate')!r} is not one this desk pays."
+        if all_in > request["ticket_all_in"] + PRICE_TOLERANCE:
+            fee_words = f" all-in ({_cents(price)} + fee)" if all_in != price else ""
+            return (f"Novig is at {_cents(all_in)}{fee_words} now, more than 0.1¢ worse than the Ticket's "
                     f"{_cents(request['ticket_all_in'])}.")
         if self._store.novig_outcome_is_held(quote["otherOutcomeId"]):
             return "you hold the other side of this Novig market; the stake cannot size a hedge."

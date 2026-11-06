@@ -43,12 +43,15 @@
   // by the server runner, Cal 2026-10-19).
   const VENUES = {
     // live: places a Ticket priced off Unabated's in-game fair at a break
-    // (Cal, 2026-11-04); the bets service finds the line on the runner's live
-    // board and refuses a fair the panel has not seen ready lately.
+    // (Kalshi 2026-11-04; Novig, Polymarket US and ProphetX 2026-11-06, Cal:
+    // every venue but BFA); the bets service finds the line on the runner's
+    // live board and refuses a fair the panel has not seen ready lately.
+    // liveBetTypeIds: the bet types a venue lists in game, when fewer
+    // (Polymarket US showed only its moneyline open in play, recon 2026-11-06).
     [KALSHI_BOOK_ID]: { venue: "kalshi", name: "Kalshi", path: "/place_kalshi.json", betTypeIds: [1, 2, 3], live: true },
-    [NOVIG_BOOK_ID]: { venue: "novig", name: "Novig", path: "/place_novig.json", betTypeIds: [1, 2, 3] },
-    [POLYMARKET_US_BOOK_ID]: { venue: "polymarket_us", name: "Polymarket US", path: "/place_polymarket.json", betTypeIds: [1, 2, 3] },
-    [PROPHETX_BOOK_ID]: { venue: "prophetx", name: "ProphetX", path: "/place_prophetx.json", betTypeIds: [1, 2, 3] },
+    [NOVIG_BOOK_ID]: { venue: "novig", name: "Novig", path: "/place_novig.json", betTypeIds: [1, 2, 3], live: true },
+    [POLYMARKET_US_BOOK_ID]: { venue: "polymarket_us", name: "Polymarket US", path: "/place_polymarket.json", betTypeIds: [1, 2, 3], live: true, liveBetTypeIds: [1] },
+    [PROPHETX_BOOK_ID]: { venue: "prophetx", name: "ProphetX", path: "/place_prophetx.json", betTypeIds: [1, 2, 3], live: true },
     // BFA takes whole dollars and books a straight whole or not at all.
     [BFA_BOOK_ID]: { venue: "bfa", name: "BFA", path: "/place_bfa.json", betTypeIds: [1, 2, 3], wholeDollars: true, fullGameOnly: true, mainLinesOnly: true },
   };
@@ -65,13 +68,18 @@
     return VENUES[bookId] || null;
   }
 
+  // Does the venue place this bet type live?
+  function placesLive(venue, betTypeId) {
+    return venue.live === true && (venue.liveBetTypeIds || venue.betTypeIds).includes(betTypeId);
+  }
+
   // Does this Ticket get a Place button: a line of a Place venue; a live
   // capture (priced off the in-game screen at a break) only at a venue that
   // places live; at BFA a main full-game line only (BFA's board lists no alt
   // or period lines).
   function canPlace({ bookId, live, eventId, periodTypeId, betTypeId, sideIndex, isAlt }) {
     const venue = venueOf(bookId);
-    return Boolean(venue) && venue.betTypeIds.includes(betTypeId) && (!live || venue.live === true) && Number.isInteger(eventId)
+    return Boolean(venue) && venue.betTypeIds.includes(betTypeId) && (!live || placesLive(venue, betTypeId)) && Number.isInteger(eventId)
       && Number.isInteger(periodTypeId) && (!venue.fullGameOnly || periodTypeId === FULL_GAME_PERIOD_TYPE_ID)
       && (!venue.mainLinesOnly || isAlt !== true)
       && (sideIndex === 0 || sideIndex === 1);
@@ -127,7 +135,9 @@
   function placeRequestOf({ line, stakeInput, readAts, clickId, liveFairReadAtMs = null }) {
     const venue = venueOf(line.bookId);
     if (!venue) return { error: "this book has no Place button" };
-    if (line.live && venue.live !== true) return { error: `${venue.name} does not place live yet` };
+    if (line.live && !placesLive(venue, line.betTypeId)) {
+      return { error: venue.live === true ? `${venue.name} lists only some markets in game, not this one` : `${venue.name} does not place live yet` };
+    }
     if (line.live && typeof liveFairReadAtMs !== "number") {
       return { error: "the in-game fair is not ready on the Unabated tab now (the break ended, or the tab stopped reading)" };
     }
