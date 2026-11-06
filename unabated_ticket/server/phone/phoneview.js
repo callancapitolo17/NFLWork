@@ -496,6 +496,46 @@
     return `+${others.length} more line${others.length === 1 ? "" : "s"} at ${where} \u00b7 tap to see`;
   }
 
+  // ---- Open at Underdog (2026-11-05) ----------------------------------------------
+  // Underdog has no API Cal can use (UDX's participant API is approval-gated) and
+  // a web page cannot fill another site's slip, so an Underdog Ticket links to
+  // the league's Underdog page, where every game's spread, total and moneyline
+  // sit on one screen; Underdog has no per-game link. Cal taps the price and
+  // types the stake himself. Underdog shows prices as payout multipliers
+  // ("1.57x"), so the line says which multiplier to look for.
+  const UNDERDOG_BOOK_NAME = "Underdog Prediction Market";
+  const UNDERDOG_LEAGUE_URL = "https://app.underdogsports.com/pick-em/higher-lower/all/";
+  // The row's league path (feed.LEAGUES path) -> Underdog's own league path (its sport chips, read 2026-11-05).
+  // Underdog files every soccer league under one "Soccer" chip whose path is FIFA.
+  const UNDERDOG_LEAGUE_PATHS = { nfl: "NFL", cfb: "CFB", nba: "NBA", cbb: "CBB", mlb: "MLB", nhl: "NHL", soccer: "FIFA" };
+  // A league Underdog has no chip for (WNBA in its off-season) opens the Featured page.
+  const UNDERDOG_FALLBACK_PATH = "featured";
+  const SOURCE_FORMAT_DECIMAL = 2;
+
+  // Underdog's multiplier for the row's price: its own decimal when Unabated
+  // carries it, else the American price as decimal odds.
+  function underdogMultiplierText(row) {
+    const decimal = row.sourceFormat === SOURCE_FORMAT_DECIMAL && row.sourcePrice > 1 ? row.sourcePrice : kelly.americanToDecimal(row.price);
+    return `${decimal.toFixed(2)}x`;
+  }
+
+  // The side as Cal will spot it on Underdog: "Cincinnati Bengals ML", "Over 47.5 · 1H".
+  function underdogPickText(row) {
+    const moneyline = row.betType === "Moneyline" ? " ML" : "";
+    const period = row.period && row.period !== "FG" ? ` \u00b7 ${row.period}` : "";
+    return `${row.sideLabel}${moneyline}${period}`;
+  }
+
+  // null for any other book; else {url, lookFor}:
+  //   lookFor "Cincinnati Bengals ML at 1.57x", "Over 47.5 · 1H at 1.91x" (Underdog has no rotation numbers)
+  function underdogLinkView(row) {
+    if (!row.book || row.book.name !== UNDERDOG_BOOK_NAME) return null;
+    return {
+      url: `${UNDERDOG_LEAGUE_URL}${UNDERDOG_LEAGUE_PATHS[row.league] || UNDERDOG_FALLBACK_PATH}`,
+      lookFor: `${underdogPickText(row)} at ${underdogMultiplierText(row)}`,
+    };
+  }
+
   const api = {
     EDGES_POLL_MS, BETS_POLL_MS, EDGES_STALE_MS,
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
@@ -503,7 +543,7 @@
     scannerText, booksText, banners, freshnessText, betItemView, betsTabView, applyDismissals,
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
-    fmtDollars, fmtAmerican, cardMoreText,
+    fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, UNDERDOG_BOOK_NAME,
   };
 
   if (inNode) {

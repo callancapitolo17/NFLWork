@@ -246,3 +246,25 @@ test("cardMoreText: the card's other Edges lines and their books, never a book c
   assert.equal(phoneView.cardMoreText({ others: [novig, novig] }), "+2 more lines at Novig · tap to see");
   assert.equal(phoneView.cardMoreText({ others: [novig, kalshi, novig] }), "+3 more lines at 2 books · tap to see");
 });
+
+// Open at Underdog: an Underdog Ticket links to its league's Underdog page and
+// names the multiplier to look for; every other book gets nothing.
+test("underdogLinkView: league page and the multiplier Underdog shows", () => {
+  const underdogRow = {
+    book: { id: 0, name: phoneView.UNDERDOG_BOOK_NAME }, league: "nfl", sideLabel: "Cincinnati Bengals",
+    betType: "Moneyline", period: "FG", isAlt: false, rotation: null, price: -175, sourceFormat: 1, sourcePrice: null,
+  };
+  assert.deepEqual(phoneView.underdogLinkView(underdogRow), {
+    url: "https://app.underdogsports.com/pick-em/higher-lower/all/NFL",
+    lookFor: "Cincinnati Bengals ML at 1.57x",
+  });
+  // Unabated's own decimal wins over the rounded American price.
+  const decimalRow = { ...underdogRow, league: "cbb", price: -176, sourceFormat: 2, sourcePrice: 1.57 };
+  assert.equal(phoneView.underdogLinkView(decimalRow).lookFor, "Cincinnati Bengals ML at 1.57x");
+  assert.equal(phoneView.underdogLinkView(decimalRow).url, "https://app.underdogsports.com/pick-em/higher-lower/all/CBB");
+  // Soccer leagues share Underdog's FIFA page; a league Underdog has no chip for opens Featured.
+  assert.equal(phoneView.underdogLinkView({ ...underdogRow, sideLabel: "Over 47.5", betType: "Total", period: "1H", price: -110 }).lookFor, "Over 47.5 \u00b7 1H at 1.91x");
+  assert.match(phoneView.underdogLinkView({ ...underdogRow, league: "soccer" }).url, /\/all\/FIFA$/);
+  assert.match(phoneView.underdogLinkView({ ...underdogRow, league: "wnba" }).url, /\/all\/featured$/);
+  assert.equal(phoneView.underdogLinkView({ ...underdogRow, book: { id: 1, name: "Novig" } }), null);
+});
