@@ -2250,6 +2250,26 @@ test("live prices: a Polymarket US line is priced off the stream's book with the
   runner.stop();
 });
 
+test("live prices: a Polymarket US line's market is remembered past its event list's reuse, so later passes read no event list", async () => {
+  const poly = polymarketFetch();
+  const clock = { now: TAKER_NOW };
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS, "/polymarket_books.json": polymarketStreamBooks });
+  const runner = runnerLib.createRunner({
+    fetchImpl: polymarketUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY, betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.livePricePass();
+  // Past the 5 min an event list is reused: the line's market is still known.
+  clock.now += 6 * 60 * 1000;
+  await runner.livePricePass();
+  assert.equal(poly.calls.filter((url) => url.startsWith(`${POLY_GATEWAY}/v1/events`)).length, 1);
+  const read = Object.values(runner.livePricesPayload().reads).find((entry) => entry.venue === "polymarket_us");
+  assert.equal(read.readAtMs, clock.now);
+  assert.equal(runner.health().livePrices.byVenue.polymarket_us.live, 1);
+  runner.stop();
+});
+
 test("live prices: without the stream a Polymarket US line stays unchecked and the gateway's /book is not read", async () => {
   const poly = polymarketFetch();
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS });
