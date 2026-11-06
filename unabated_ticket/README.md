@@ -2452,6 +2452,27 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   closing fair per bet, UPSERTed only forward in time (`DO UPDATE ... WHERE
   excluded.fair_observed_at >` the stored one), never pruned, served for the
   window's bets.
+  **Stored fair ladders (issue #264, epic #263; NFL, CFB, CBB).** Its own
+  file, `ladders.duckdb` (`LADDER_DB_PATH`), so the writes never wait on
+  `bets.duckdb`'s lock. The runner (`server/laddersnapshot.js`, every 30 s)
+  POSTs (loopback only) `/ladders.json` with Unabated's full-game moneyline,
+  spread and total ladder of every game still to start: per (side, number)
+  Unabated's raw fair, the most common across the board's lines there
+  (blurred lines and the ±999900 clamp left out), with how many lines carried
+  one and how many agreed. `ladder_readings` (primary key `reading`,
+  `event_id`, `period_type_id`, `bet_type_id`, plus `league_id`,
+  `event_name`, team ids, `event_start`, `observed_at` = when the league
+  snapshot landed, Unabated's own main points and fair per side `_0` / `_1`,
+  `rung_count`, `rungs_json` = `[[side, points, fair, books, agreeing], ...]`,
+  side 0 away/Over, `received_at`): `opener` is INSERTed once and never
+  overwritten (a game already on the board when storing began has its first
+  sighting, not Unabated's opener); `close` is UPSERTed only forward in time
+  and always before the start, re-sent on every change and every 10 min
+  unchanged, so the row left at kickoff is the last pregame ladder (whether
+  it was near enough to the start is for the analysis). Raw: deep rungs can
+  carry junk fairs (an NFL total at 7.5 priced -265651); filter in analysis.
+  Never pruned; nothing reads it back. The runner always loads CBB for this,
+  outside the Edges settings (it never reaches the list or the bots).
   `bet_exclusions` (primary key `bet_id`, plus `venue`, `excluded_at`) holds
   the bets removed from the Bet Tracker; Restore deletes the row, and the bet
   in `bets` is never touched.
@@ -2566,7 +2587,7 @@ A Node process runs the panel's own Edges scan with no browser and serves
 the list as JSON for the phone page. It `require`s the extension's pure
 modules unchanged — `scanner.js` (the same loop and cadence: the settings'
 leagues plus NFL and CFB, which the panel always loads for its Teasers tab,
-each league again every 60 s / 2 min / 5 min by snapshot size, a full
+plus CBB, whose fair ladders the runner stores (issue #264), each league again every 60 s / 2 min / 5 min by snapshot size, a full
 resync every 10 min, never paused), `edgerows.js` (the list's selection,
 conditional-Kelly sizing against your open bets and open BFA teasers, the
 stake capped at liquidity, the Min liq to win / min edge / max line age /
@@ -3099,7 +3120,7 @@ the "nothing public listens" check: `deploy/README.md`.
   (pull `main`, rebuild, recreate, then PASS/FAIL checks of `/health`,
   `/` and `/edges.json` with the tailnet `Host`, and a 403 for a foreign one).
 - **Writable data dir** (`UNABATED_DATA_DIR` → `/data`): `bets.duckdb`
-  (`BETS_DB_PATH`), `taker.duckdb` (`TAKER_DB_PATH`), the bot's Kalshi key `kalshi_taker.pem` and its stop file `taker.stop`, `novig_token.json` (rotates), `logs/`
+  (`BETS_DB_PATH`), `taker.duckdb` (`TAKER_DB_PATH`), `ladders.duckdb` (`LADDER_DB_PATH`), the bot's Kalshi key `kalshi_taker.pem` and its stop file `taker.stop`, `novig_token.json` (rotates), `logs/`
   (`BETS_SERVICE_LOG_PATH`; `BETS_SERVICE_LOG_CONSOLE=1` also logs to
   stderr for `docker compose logs`). Off the server all three keep their
   defaults next to the package.
@@ -3956,8 +3977,8 @@ line. `runner.test.js` drives `server/runner.js` with the slice behind an
 injected fetch and a scripted bets service: `/edges.json` equals what
 `edgerows.js` lists for the same state and settings (with and without the
 teaser), a flat list and the settings row's minimum edge and sort, the
-defaults and named errors while the service is down, NFL and CFB always
-scanned, a league change restarting the scan, the tau pool (loaded from a
+defaults and named errors while the service is down, NFL, CFB and CBB always
+scanned, the fair ladders' opener / close POSTs, a league change restarting the scan, the tau pool (loaded from a
 scripted `GET /tau_samples.json` at start or on a later POST pass, read by
 the header and `/tau.json`, the fallback until then), and the HTTP Host /
 verb / path guards. `bets_service/tests/test_edge_settings.py`
