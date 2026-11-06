@@ -26,6 +26,13 @@ test("a football game in progress shows its score, quarter and clock", () => {
   assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 3 }), "cbb", NOW), line({ period: "2nd half" }));
 });
 
+test("an NBA game shows its quarter and halftime (read live 2026-11-06)", () => {
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 5 }), "nba", NOW), line());
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 6 }), "nba", NOW), line({ period: "Q3" }));
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 2, gameClock: "00:00" }), "nba", NOW), line({ period: "1st half", clock: "00:00" }));
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 3 }), "nba", NOW), line({ period: null }));
+});
+
 test("a period number not checked for the league shows no name, the clock still does", () => {
   assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 10 }), "nhl", NOW), line({ period: null }));
   assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 9 }), "nfl", NOW), line({ period: null }));
