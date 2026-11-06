@@ -46,11 +46,11 @@
     // (Kalshi 2026-11-04; Novig, Polymarket US and ProphetX 2026-11-06, Cal:
     // every venue but BFA); the bets service finds the line on the runner's
     // live board and refuses a fair the panel has not seen ready lately.
-    // liveBetTypeIds: the bet types a venue lists in game, when fewer
-    // (Polymarket US showed only its moneyline open in play, recon 2026-11-06).
+    // Which markets are open in game is the venue's own market state, read at
+    // the click (a closed market refuses), never a list kept here.
     [KALSHI_BOOK_ID]: { venue: "kalshi", name: "Kalshi", path: "/place_kalshi.json", betTypeIds: [1, 2, 3], live: true },
     [NOVIG_BOOK_ID]: { venue: "novig", name: "Novig", path: "/place_novig.json", betTypeIds: [1, 2, 3], live: true },
-    [POLYMARKET_US_BOOK_ID]: { venue: "polymarket_us", name: "Polymarket US", path: "/place_polymarket.json", betTypeIds: [1, 2, 3], live: true, liveBetTypeIds: [1] },
+    [POLYMARKET_US_BOOK_ID]: { venue: "polymarket_us", name: "Polymarket US", path: "/place_polymarket.json", betTypeIds: [1, 2, 3], live: true },
     [PROPHETX_BOOK_ID]: { venue: "prophetx", name: "ProphetX", path: "/place_prophetx.json", betTypeIds: [1, 2, 3], live: true },
     // BFA takes whole dollars and books a straight whole or not at all.
     [BFA_BOOK_ID]: { venue: "bfa", name: "BFA", path: "/place_bfa.json", betTypeIds: [1, 2, 3], wholeDollars: true, fullGameOnly: true, mainLinesOnly: true },
@@ -70,7 +70,7 @@
 
   // Does the venue place this bet type live?
   function placesLive(venue, betTypeId) {
-    return venue.live === true && (venue.liveBetTypeIds || venue.betTypeIds).includes(betTypeId);
+    return venue.live === true && venue.betTypeIds.includes(betTypeId);
   }
 
   // Does this Ticket get a Place button: a line of a Place venue; a live
@@ -136,7 +136,7 @@
     const venue = venueOf(line.bookId);
     if (!venue) return { error: "this book has no Place button" };
     if (line.live && !placesLive(venue, line.betTypeId)) {
-      return { error: venue.live === true ? `${venue.name} lists only some markets in game, not this one` : `${venue.name} does not place live yet` };
+      return { error: `${venue.name} does not place live yet` };
     }
     if (line.live && typeof liveFairReadAtMs !== "number") {
       return { error: "the in-game fair is not ready on the Unabated tab now (the break ended, or the tab stopped reading)" };

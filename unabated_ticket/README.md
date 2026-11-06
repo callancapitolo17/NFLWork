@@ -3496,11 +3496,11 @@ FROM manual_orders ORDER BY placed_at DESC;
 #### Live Place at a break (Kalshi 0.39.0, all four exchanges 0.42.0, 2026-11-06)
 
 A live Ticket (a price clicked in the Live block, priced off Unabated's
-in-game fair) gets Place at Kalshi, Novig, ProphetX and Polymarket US
-(moneyline only), panel only (the phone has no live edges). BFA stays
-pregame. `place.js` `VENUES[..].live` / `liveBetTypeIds` say which; any
-other live Ticket reads "X does not place live yet" or "X lists only some
-markets in game, not this one". Pregame Place is unchanged at every venue.
+in-game fair) gets Place at Kalshi, Novig, ProphetX and Polymarket US,
+panel only (the phone has no live edges). BFA stays pregame. `place.js`
+`VENUES[..].live` says which; a live BFA Ticket reads "BFA does not place
+live yet". Which markets a venue has open in game is its own market state
+at the click, never a list kept here. Pregame Place is unchanged at every venue.
 
 - **Only while there is a number.** The button shows only when the Ticket
   can be sized (`liveTicketBlock` empty: the fair is still ready, still the
@@ -3543,8 +3543,9 @@ markets in game, not this one". Pregame Place is unchanged at every venue.
   the Ticket. Whether Unabated's live Novig price already includes that fee
   is unverified, so Place may refuse more often than it would pregame.
   ProphetX: event status `live` and `live_disabled` false. Polymarket US:
-  the event must say `live: true`, and only the full-game moneyline is open
-  in play.
+  the event must say `live: true` and the market's own book state open
+  (the 2026-11-06 recon read only the event list's default market, the
+  moneyline, so its spreads and totals in play are untested).
 - Every other rule is unchanged: the live all-in at most 0.1c worse than the
   Ticket's, the other side held, an unseen earlier Place, the cash pot.
 

@@ -10,12 +10,12 @@ const PROPHETX_LINE = { ...LINE, bookId: 66, price: -115, sourceFormat: 1, sourc
 const BFA_LINE = { ...LINE, bookId: 59, price: -110, sourceFormat: 1, sourcePrice: -110 };
 const READS = { kalshi: "2026-10-16T21:00:00Z", novig: "2026-10-16T21:00:10Z", polymarket_us: "2026-10-16T21:00:05Z", prophetx: "2026-10-16T21:00:20Z", bfa: "2026-10-16T21:00:30Z" };
 
-test("every pregame Kalshi or Novig line gets the button, moneylines included; a live line at every venue but BFA (Polymarket US moneylines only); other books never", () => {
+test("every pregame Kalshi or Novig line gets the button, moneylines included; a live line at every venue but BFA; other books never", () => {
   const ids = { eventId: 1, periodTypeId: 1, betTypeId: 3, sideIndex: 0 };
   assert.equal(place.canPlace({ ...ids, bookId: 105, live: null }), true);
   assert.equal(place.canPlace({ ...ids, bookId: 105, live: { period: 2 } }), true);
-  for (const bookId of [89, 66]) assert.equal(place.canPlace({ ...ids, bookId, live: { period: 2 } }), true, `book ${bookId} live`);
-  for (const bookId of [111, 59]) assert.equal(place.canPlace({ ...ids, bookId, live: { period: 2 } }), false, `book ${bookId} live total`);
+  for (const bookId of [89, 66, 111]) assert.equal(place.canPlace({ ...ids, bookId, live: { period: 2 } }), true, `book ${bookId} live`);
+  assert.equal(place.canPlace({ ...ids, bookId: 59, live: { period: 2 } }), false, "BFA live total");
   assert.equal(place.canPlace({ ...ids, betTypeId: 1, bookId: 111, live: { period: 2 } }), true, "a live Polymarket US moneyline");
   assert.equal(place.canPlace({ ...ids, betTypeId: 1, bookId: 59, live: { period: 2 } }), false, "never live at BFA");
   assert.equal(place.canPlace({ ...ids, bookId: 100, live: null }), false);
@@ -153,8 +153,9 @@ test("a live Kalshi request says so and carries when the Unabated tab last saw t
     /in-game fair is not ready/);
   const novigLive = place.placeRequestOf({ line: { ...NOVIG_LINE, live: liveLine.live }, stakeInput: "50", readAts: READS, clickId: "abc12345", liveFairReadAtMs: readAt });
   assert.deepEqual([novigLive.path, novigLive.body.live], ["/place_novig.json", true]);
-  assert.match(place.placeRequestOf({ line: { ...POLY_LINE, live: liveLine.live, betTypeId: 2 }, stakeInput: "50", readAts: READS, clickId: "abc12345", liveFairReadAtMs: readAt }).error,
-    /Polymarket US lists only some markets in game/);
+  // Polymarket US spreads go live too: its own market state at the click decides.
+  const polySpreadLive = place.placeRequestOf({ line: { ...POLY_LINE, live: liveLine.live, betTypeId: 2 }, stakeInput: "50", readAts: READS, clickId: "abc12345", liveFairReadAtMs: readAt });
+  assert.deepEqual([polySpreadLive.path, polySpreadLive.body.live], ["/place_polymarket.json", true]);
   assert.match(place.placeRequestOf({ line: { ...BFA_LINE, live: liveLine.live }, stakeInput: "50", readAts: READS, clickId: "abc12345", liveFairReadAtMs: readAt }).error,
     /BFA does not place live yet/);
   // A pregame request carries neither field.
