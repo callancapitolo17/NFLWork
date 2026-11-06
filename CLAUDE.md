@@ -28,7 +28,7 @@ The full quantitative reference — market-efficiency concepts, EV/Kelly/Poisson
 
 Both hooks always exit 0 and can never block a tool call.
 
-**Skills** (`.claude/skills/`, auto-load on relevance): `quant-edge-framework` (the +EV / market-efficiency / Kelly / devig reference) and `mlb-dashboard-worktree-testing` (how to test the dashboard from a worktree). Domain reference and occasional procedures live in skills, not this file, so they don't load every session.
+**Skills** (`.claude/skills/`, auto-load on relevance): `quant-edge-framework` (the +EV / market-efficiency / Kelly / devig reference), `mlb-dashboard-worktree-testing` (how to test the dashboard from a worktree), and `pre-pr-review` (the pre-merge review; a repo copy of the user-level skill so cloud threads have it). Domain reference and occasional procedures live in skills, not this file, so they don't load every session.
 
 ## Implementation Philosophy
 
@@ -185,7 +185,7 @@ architecture.
 - Every implementation plan must include a **documentation section**: list which README.md and CLAUDE.md files need updating based on the changes. Update docs after code changes are finalized and reviewed, in the same merge to `main`.
 
 **Pre-merge review (REQUIRED):**
-- Before merging any feature branch to `main`, run the `pre-pr-review` skill on the full diff. `REVIEW.md` at the root holds this repo's checks, High-tier paths, and what failure looks like in each area.
+- Before calling any PR ready, and before merging any feature branch to `main`, run the `pre-pr-review` skill (`.claude/skills/pre-pr-review/`) on the full diff, including its 4 reviewer agents and verifier. `REVIEW.md` at the root holds this repo's checks, High-tier paths, and what failure looks like in each area. Fill in the `## Pre-merge review` section of `.github/pull_request_template.md`; a PR with it empty is not ready.
 - A bug that reaches `main` past this review becomes a line in `REVIEW.md`
 
 **Approval required:**
