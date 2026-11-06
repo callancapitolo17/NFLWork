@@ -226,6 +226,10 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .game-head > div { display: flex; align-items: baseline; gap: 10px; }
 .game-teams { font-weight: 650; font-size: 15px; }
 .game-body { padding: 12px 18px 16px; display: flex; flex-direction: column; gap: 14px; }
+.score { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.score-pts { font-size: 18px; font-weight: 650; }
+.score-clock { font-size: 13px; }
+.score-clock.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--neg); margin-right: 6px; vertical-align: 1px; }
 .bet-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .bet-chip { background: var(--chip); border-radius: 6px; padding: 4px 9px; font-size: 13px; }
 .bet-chip.off { border: 1px dashed var(--line); background: transparent; }

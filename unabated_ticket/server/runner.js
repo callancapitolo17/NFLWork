@@ -481,9 +481,10 @@ function createRunner(deps) {
   let held = { records: [], crosswalk: [], pins: [], fillFairs: [] };
   // Bet ids the tracker's Bets page removed (not Cal's): never on a card.
   let excludedBetIds = new Set();
-  // eventId -> {row, lines, oddsAt}: each game's board row and its lines as
-  // of the last snapshot before it started (lines null when the runner never
-  // saw it pregame). The Live tab's chances are these kickoff odds.
+  // eventId -> {row, lines, oddsAt, gameState}: each game's board row and its
+  // lines as of the last snapshot before it started (lines null when the
+  // runner never saw it pregame), and its score and clock as of the newest
+  // snapshot that carried it. The Live tab's chances are these kickoff odds.
   const kickoffMemo = new Map();
   let fillFairIndex = new Map();
   // {betId: startMs} of the board game each open bet last matched (the
@@ -634,14 +635,28 @@ function createRunner(deps) {
         if (typeof row.eventStartMs !== "number") continue;
         const pregame = row.eventStartMs > at;
         const known = kickoffMemo.get(row.eventId);
-        if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at });
-        else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null });
+        const gameState = gameStateWithAbbreviations(row);
+        if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at, gameState });
+        else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null, gameState });
+        else known.gameState = gameState;
       }
     }
     for (const leagueId of kickoffLeagueVersions.keys()) if (!leagueIds.includes(leagueId)) kickoffLeagueVersions.delete(leagueId);
     for (const [eventId, entry] of kickoffMemo) {
       if (at - entry.row.eventStartMs > KICKOFF_MEMO_HOURS * HOUR_MS) kickoffMemo.delete(eventId);
     }
+  }
+
+  // The game's latest score and clock (feed.gameStateOf) plus its teams' short
+  // names for the Live card's score line, or null when the feed has no event.
+  function gameStateWithAbbreviations(row) {
+    const event = feedState && feedState.events[row.eventId];
+    if (!event || !event.gameState) return null;
+    const abbreviationOf = (teamId) => {
+      const team = teamId == null ? null : feedState.teamIndex[teamId];
+      return team ? team.abbreviation ?? null : null;
+    };
+    return { ...event.gameState, awayAbbr: abbreviationOf(row.awayTeamId), homeAbbr: abbreviationOf(row.homeTeamId) };
   }
 
   // One league's lines by game, regrouped only when its snapshot landed again.
@@ -2568,7 +2583,7 @@ function createRunner(deps) {
         if (!ladders.has(key)) ladders.set(key, ladderLib.buildLadder(entry.lines, { periodTypeId, axis }));
         return ladders.get(key);
       };
-      return { row: entry.row, ladderOf, oddsAt: entry.oddsAt };
+      return { row: entry.row, ladderOf, oddsAt: entry.oddsAt, gameState: entry.gameState };
     });
     const records = held.records.filter((record) => !excludedBetIds.has(record.id));
     return {

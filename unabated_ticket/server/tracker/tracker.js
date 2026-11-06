@@ -1003,6 +1003,24 @@
     return count + " " + kind + (count === 1 ? "" : "s");
   }
 
+  /** The game's latest score and clock off Unabated's feed (gamescore.js), or why there is none. */
+  function scoreLine(game) {
+    const score = game.score;
+    if (!score) return null;
+    if (score.status === "stale" || !Number.isFinite(score.awayScore) || !Number.isFinite(score.homeScore)) {
+      const why = score.status === "stale" ? "No score from Unabated in the last 5 min" : "No score from Unabated yet";
+      return el("div", { className: "score" }, [el("span", { className: "note", text: why })]);
+    }
+    const away = score.awayAbbr || game.awayTeam || "Away";
+    const home = score.homeAbbr || game.homeTeam || "Home";
+    const clockWords = score.status === "final" ? "Final" : [score.period, score.clock].filter(Boolean).join(" · ");
+    return el("div", { className: "score" }, [
+      el("span", { className: "score-pts num", text: away + " " + score.awayScore + " – " + score.homeScore + " " + home }),
+      clockWords ? el("span", { className: "score-clock" + (score.status === "live" ? " live" : ""), text: clockWords }) : null,
+      el("span", { className: "note", text: "as of " + ago(score.readAt) }),
+    ]);
+  }
+
   /** One game in progress: its bets, then one outcome ladder per market and period. */
   function gameCard(game) {
     const placedBets = game.bets.map((bet) => el("span", { className: "bet-chip" + (bet.reason ? " off" : ""), title: bet.reason ? "Not on the ladder: " + bet.reason : "" }, [
@@ -1034,6 +1052,7 @@
         el("span", { className: "note", text: "Started " + startLabel(new Date(game.startMs).toISOString()) }),
       ]),
       el("div", { className: "game-body" }, [
+        scoreLine(game),
         el("div", { className: "bet-chips" }, placedBets.concat(legChips)),
         el("div", { className: "ladders" }, game.groups.map(outcomeLadder)),
         game.groups.length ? summary : null,
