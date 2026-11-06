@@ -356,7 +356,7 @@ button, select, input { font: inherit; color: inherit; }
 .kp-amount input { width: 7em; min-height: 40px; font: 600 16px var(--figure); padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--ground); color: var(--ink); font-variant-numeric: tabular-nums; }
 .kp-buttons { display: inline-flex; gap: 8px; margin-left: auto; }
 .venue-place .tk-place-msg { display: block; margin-top: 8px; }
-/* Open at Underdog: the pick to tap and a link to the league's Underdog page (no order is sent). */
+/* Open at Underdog / BetOnline: the pick to find and a link to the league's page there (no order is sent). */
 .venue-link { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
 .venue-link-look { flex: 1 1 12em; font: 600 15px var(--figure); color: var(--ink); font-variant-numeric: tabular-nums; }
 .venue-link .btn { text-decoration: none; display: inline-flex; align-items: center; }

@@ -268,3 +268,32 @@ test("underdogLinkView: league page and the multiplier Underdog shows", () => {
   assert.match(phoneView.underdogLinkView({ ...underdogRow, league: "wnba" }).url, /\/all\/featured$/);
   assert.equal(phoneView.underdogLinkView({ ...underdogRow, book: { id: 1, name: "Novig" } }), null);
 });
+
+// Open at BetOnline: a BetOnline Ticket links to its league's BetOnline page and
+// leads with the rotation BetOnline lists the game under.
+test("betonlineLinkView: league page, rotation, side and American price", () => {
+  const betonlineRow = {
+    book: { id: 9, name: "BetOnline" }, league: "nfl", sideLabel: "Seattle Seahawks +3",
+    betType: "Spread", period: "FG", isAlt: false, rotation: 273, price: -110, sourceFormat: 1, sourcePrice: null,
+  };
+  assert.deepEqual(phoneView.betonlineLinkView(betonlineRow), {
+    url: "https://www.betonline.ag/sportsbook/football/nfl",
+    lookFor: "273 Seattle Seahawks +3 at -110",
+  });
+  assert.equal(phoneView.betonlineLinkView({ ...betonlineRow, sideLabel: "Seattle Seahawks", betType: "Moneyline", price: 140 }).lookFor, "273 Seattle Seahawks ML at +140");
+  assert.equal(phoneView.betonlineLinkView({ ...betonlineRow, sideLabel: "Under 47.5", betType: "Total", period: "1H", rotation: 274, price: -105 }).lookFor, "274 Under 47.5 · 1H at -105");
+  // No rotation on the row: the side alone.
+  assert.equal(phoneView.betonlineLinkView({ ...betonlineRow, rotation: null }).lookFor, "Seattle Seahawks +3 at -110");
+  assert.equal(phoneView.betonlineLinkView({ ...betonlineRow, league: "cbb" }).url, "https://www.betonline.ag/sportsbook/basketball/ncaa");
+  // BetOnline Direct is the same site; a league with no known path opens the sportsbook home.
+  assert.ok(phoneView.betonlineLinkView({ ...betonlineRow, book: { id: 1, name: "BetOnline Direct" } }));
+  assert.equal(phoneView.betonlineLinkView({ ...betonlineRow, league: "lg99" }).url, "https://www.betonline.ag/sportsbook");
+  assert.equal(phoneView.betonlineLinkView({ ...betonlineRow, book: { id: 1, name: "Novig" } }), null);
+});
+
+test("venueLinkView: one Open link per venue, none for other books", () => {
+  const base = { league: "nfl", sideLabel: "Over 47.5", betType: "Total", period: "FG", rotation: 273, price: -110, sourceFormat: 1, sourcePrice: null };
+  assert.equal(phoneView.venueLinkView({ ...base, book: { name: "BetOnline" } }).buttonText, "Open at BetOnline");
+  assert.equal(phoneView.venueLinkView({ ...base, book: { name: phoneView.UNDERDOG_BOOK_NAME } }).buttonText, "Open at Underdog");
+  assert.equal(phoneView.venueLinkView({ ...base, book: { name: "Kalshi" } }), null);
+});

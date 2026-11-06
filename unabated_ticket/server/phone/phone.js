@@ -90,7 +90,7 @@
     ticketBook: el("ticket-book"), ticketPrice: el("ticket-price"), ticketFair: el("ticket-fair"), ticketFairSub: el("ticket-fair-sub"),
     ticketEdge: el("ticket-edge"), ticketEdgeSub: el("ticket-edge-sub"), ticketEdgeMove: el("ticket-edge-move"),
     ticketStakeLabel: el("ticket-stake-label"), ticketStake: el("ticket-stake"), ticketContracts: el("ticket-contracts"), ticketUncapped: el("ticket-uncapped"),
-    ticketUnderdog: el("ticket-underdog"), ticketUnderdogLook: el("ticket-underdog-look"), ticketUnderdogOpen: el("ticket-underdog-open"),
+    ticketVenueLink: el("ticket-venue-link"), ticketVenueLinkLook: el("ticket-venue-link-look"), ticketVenueLinkOpen: el("ticket-venue-link-open"),
     ticketExposure: el("ticket-exposure"), ticketPayoutRow: el("ticket-payout-row"), ticketToWin: el("ticket-to-win"), ticketPayout: el("ticket-payout"),
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"), ticketRelatedCount: el("ticket-related-count"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
@@ -652,7 +652,7 @@
     view.ticketToWin.textContent = block.toWin || "";
     view.ticketPayout.textContent = block.payout || "";
     renderPlace(row, block.acted, Boolean(found));
-    renderUnderdogLink(row, Boolean(found));
+    renderVenueLink(row, Boolean(found));
 
     renderTicketRelated(row);
 
@@ -662,14 +662,16 @@
     view.ticketOthers.replaceChildren(...others.map((other) => otherLineEl(other, row.sideLabel, card.key, now)));
   }
 
-  // Open at Underdog: the pick to tap and a link to its league's page; the stake
-  // is the one shown above. Gone once the row leaves the list (its price is stale).
-  function renderUnderdogLink(row, onList) {
-    const link = onList ? phoneView.underdogLinkView(row) : null;
-    view.ticketUnderdog.hidden = !link;
+  // Open at Underdog / BetOnline: the pick to find and a link to its league's
+  // page; the stake is the one shown above (no order is sent). Gone once the
+  // row leaves the list (its price is stale).
+  function renderVenueLink(row, onList) {
+    const link = onList ? phoneView.venueLinkView(row) : null;
+    view.ticketVenueLink.hidden = !link;
     if (!link) return;
-    view.ticketUnderdogLook.textContent = link.lookFor;
-    view.ticketUnderdogOpen.href = link.url;
+    view.ticketVenueLinkLook.textContent = link.lookFor;
+    view.ticketVenueLinkOpen.textContent = link.buttonText;
+    view.ticketVenueLinkOpen.href = link.url;
   }
 
   // ---- Place on Kalshi, Novig or Polymarket US (place.js) -----------------
