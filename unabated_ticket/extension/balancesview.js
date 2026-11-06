@@ -8,9 +8,11 @@
 //   {generatedAt, balances: {venue: {cash, inBets, available, creditLimit, fetchedAt, error, failedAt?}}}
 // with dollars or null; a venue never read has cash null.
 // Output: viewOf() -> {loaded, items: [{label, text, stale, why}], error}; fillLine
-// lays it out as one line: "Available  Kalshi $4,872  Novig $24  Place $1,018  Poly $980".
+// lays it out as one line: "Available  Kalshi $4,872  Novig $24  Place $1,018  Poly $980  ProphetX $500".
 // Cal 2026-10-31: money he can bet now only (no in-bets, no total, no bot
 // accounts); Novig's Place sub-account as its own item, labelled just "Place".
+// ProphetX added 2026-11-05 (Cal): the service already reads it after each
+// ProphetX poll, so the line costs no extra ProphetX request.
 
 (function (root) {
   "use strict";
@@ -22,6 +24,7 @@
     { venue: "novig", label: "Novig" },
     { venue: "novig_place", label: "Place" },
     { venue: "polymarket_us", label: "Poly" },
+    { venue: "prophetx", label: "ProphetX" },
   ];
   // A reading older than this, or one whose last read failed, is amber.
   const STALE_AFTER_MS = 5 * 60 * 1000;

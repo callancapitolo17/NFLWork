@@ -17,13 +17,14 @@ function textOf(view) {
   return view.items.map((item) => `${item.label} ${item.text}`);
 }
 
-test("Kalshi, Novig, Place, Poly in that order; bots and other books left out", () => {
+test("Kalshi, Novig, Place, Poly, ProphetX in that order; bots and other books left out", () => {
   const payload = { balances: {
     polymarket_us: readingOf(980.3), novig_bot: readingOf(157.36), kalshi: readingOf(4872.23),
     wagerzon: readingOf(500), kalshi_bot: readingOf(955.58), novig: readingOf(24.29), novig_place: readingOf(1018.23),
+    prophetx: readingOf(500.4),
   } };
   const view = balancesView.viewOf(payload, null, NOW);
-  assert.deepEqual(textOf(view), ["Kalshi $4,872", "Novig $24", "Place $1,018", "Poly $980"]);
+  assert.deepEqual(textOf(view), ["Kalshi $4,872", "Novig $24", "Place $1,018", "Poly $980", "ProphetX $500"]);
   assert.ok(view.items.every((item) => !item.stale));
 });
 
