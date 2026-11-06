@@ -3807,6 +3807,23 @@ price and types the stake shown above it. The link goes when the line leaves
 the Edges list. Phone page only; the panel and the bets service are unchanged,
 and Underdog bets are not read into `/bets.json`.
 
+### Open at BetOnline on the phone Ticket (`server/phone/phoneview.js`, 2026-11-06)
+
+The same link for BetOnline (book names `BetOnline` and `BetOnline Direct`).
+Nothing places there: the BetOnline source only reads the bet-history report,
+and Unabated's feed carries no BetOnline game or market id, so there is no
+per-game link. BetOnline lists every game by rotation number, so the line leads
+with the side's rotation (away / Over odd, home / Under even) and gives the
+American price: `273 Seattle Seahawks +3 at -110`, `274 Under 47.5 · 1H at -105`.
+**Open at BetOnline** goes to `https://www.betonline.ag/sportsbook/<path>`:
+`football/nfl`, `football/ncaa`, `basketball/nba`, `basketball/ncaa`,
+`basketball/wnba`, `baseball/mlb`, `hockey/nhl`, `soccer`; any other league opens
+`/sportsbook`. These paths were not checked from code (betonline.ag is
+unreachable from the cloud and from Claude in Chrome), so tap-test each. Cal
+types the stake shown above it; the bet comes back into `/bets.json` through the
+BetOnline source as usual. Both links share one Ticket block
+(`phoneview.venueLinkView`, `#ticket-venue-link`).
+
 ### A Place reads its venue before it answers (`bets_service/service.py`, 2026-10-29)
 
 Each of the Ticket's Place routes, once its order may hold contracts (`filled`,

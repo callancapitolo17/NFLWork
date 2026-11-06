@@ -519,8 +519,8 @@
     return `${decimal.toFixed(2)}x`;
   }
 
-  // The side as Cal will spot it on Underdog: "Cincinnati Bengals ML", "Over 47.5 · 1H".
-  function underdogPickText(row) {
+  // The side as Cal will spot it on Underdog or BetOnline: "Cincinnati Bengals ML", "Over 47.5 · 1H".
+  function venuePickText(row) {
     const moneyline = row.betType === "Moneyline" ? " ML" : "";
     const period = row.period && row.period !== "FG" ? ` \u00b7 ${row.period}` : "";
     return `${row.sideLabel}${moneyline}${period}`;
@@ -532,8 +532,46 @@
     if (!row.book || row.book.name !== UNDERDOG_BOOK_NAME) return null;
     return {
       url: `${UNDERDOG_LEAGUE_URL}${UNDERDOG_LEAGUE_PATHS[row.league] || UNDERDOG_FALLBACK_PATH}`,
-      lookFor: `${underdogPickText(row)} at ${underdogMultiplierText(row)}`,
+      lookFor: `${venuePickText(row)} at ${underdogMultiplierText(row)}`,
     };
+  }
+
+  // ---- Open at BetOnline (2026-11-06) ----------------------------------------------
+  // Nothing places at BetOnline (its source only reads the bet-history report),
+  // and Unabated carries no BetOnline game id, so a BetOnline Ticket links to the
+  // league's BetOnline page. BetOnline lists every game by rotation number, so
+  // the line leads with the rotation Cal scans for. Unabated's rotation is the
+  // side's: away / Over odd, home / Under even, as BetOnline numbers them.
+  // "BetOnline Direct" is Unabated's second feed of the same book and site.
+  const BETONLINE_BOOK_NAMES = ["BetOnline", "BetOnline Direct"];
+  const BETONLINE_SPORTSBOOK_URL = "https://www.betonline.ag/sportsbook";
+  // The row's league path (feed.LEAGUES path) -> BetOnline's sport/league path.
+  // Unverified from here (betonline.ag is unreachable from every tool): Cal
+  // tap-tests each one; a wrong path lands on BetOnline's sportsbook home.
+  const BETONLINE_LEAGUE_PATHS = {
+    nfl: "football/nfl", cfb: "football/ncaa", nba: "basketball/nba", cbb: "basketball/ncaa",
+    wnba: "basketball/wnba", mlb: "baseball/mlb", nhl: "hockey/nhl", soccer: "soccer",
+  };
+
+  // null for any other book; else {url, lookFor}:
+  //   lookFor "273 Seattle Seahawks +3 at -110", "274 Under 47.5 · 1H at -105"
+  function betonlineLinkView(row) {
+    if (!row.book || !BETONLINE_BOOK_NAMES.includes(row.book.name)) return null;
+    const leaguePath = BETONLINE_LEAGUE_PATHS[row.league];
+    const rotation = row.rotation != null ? `${row.rotation} ` : "";
+    return {
+      url: leaguePath ? `${BETONLINE_SPORTSBOOK_URL}/${leaguePath}` : BETONLINE_SPORTSBOOK_URL,
+      lookFor: `${rotation}${venuePickText(row)} at ${fmtAmerican(row.price)}`,
+    };
+  }
+
+  // The Ticket's one "Open at <venue>" link, or null when the row's book has none.
+  function venueLinkView(row) {
+    const underdog = underdogLinkView(row);
+    if (underdog) return { ...underdog, buttonText: "Open at Underdog" };
+    const betonline = betonlineLinkView(row);
+    if (betonline) return { ...betonline, buttonText: "Open at BetOnline" };
+    return null;
   }
 
   const api = {
@@ -543,7 +581,7 @@
     scannerText, booksText, banners, freshnessText, betItemView, betsTabView, applyDismissals,
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
-    fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, UNDERDOG_BOOK_NAME,
+    fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
   };
 
   if (inNode) {
