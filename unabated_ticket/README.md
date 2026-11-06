@@ -783,12 +783,25 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   gateway's `/book`, whose 429s refused Place, 2026-11-05), at most 60 a pass. ProphetX (Cal, 2026-11-05):
   the runner names every game with a ProphetX line in `POST
   /prophetx_live.json` and gets back the bets service's last read of each at
-  once (`bets_service/prophetx_live.py`); a thread there reads one game's
-  `get_markets` every 2 s on a second key pair of its own,
+  once (`bets_service/prophetx_live.py`), on a second key pair of its own,
   `PROPHETX_LIVE_ACCESS_KEY` / `PROPHETX_LIVE_SECRET_KEY` in
-  `bets_service/.env` (ProphetX allows 1 request a second per key, so the bet
-  source and Place keep `PROPHETX_*` whole; half the key's rate because
-  ProphetX's CloudFront once banned a VM address that read it hard). The game
+  `bets_service/.env`. Since 2026-11-06 it streams (Cal, option B): ProphetX's
+  1 request a second held across both key pairs from one VM (a Place
+  `get_markets` got a 429 while this reader polled a game every 2 s), so each
+  wanted game is read ONCE (`get_markets`, at most one REST call every 2 s,
+  again every 10 min or when a frame names a strike the read lacks) and then
+  followed on ProphetX's market websocket: one Pusher socket, the game's
+  `event` channel registered (`POST /v4/mm/websocket`, 500 channels a socket,
+  a new socket past 450), each `v2.market_selections` frame replacing one
+  strike pair's top-of-book (no snapshot on subscribe, so frames between the
+  subscribe and the seed are held and applied only when newer than the seed's
+  offers). A reconnect drops every book and seeds again; a silent stream (no
+  frame or health_check for 30 s) reads as an error, never a stale price.
+  The ProphetX Place desk reads the game's event and markets off the stream
+  first (`streamed_game`) and calls ProphetX itself only when the stream holds
+  no current book of it; its log line says `book from stream|rest`.
+  `/health` `prophetxLive` shows `streamLive`, `subscribed`, `seeded`,
+  `frames`, `channelCount` / `channelLimit`. The game
   is found and its teams checked the way Place does
   (`prophetx_place.event_of_line`, `teams_mismatch`; home and away swapped
   keeps totals only), each row matched to the one side reading as its line,

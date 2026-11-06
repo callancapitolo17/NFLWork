@@ -193,9 +193,10 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     {reader, games: {gameKey: {readAt, prophetxEventId,
                                     totalsOnly, lines: [{betType, period, side, points,
                                     strikeId, price, depth}]} | {readAt, error} | null}}: the
-                                    games marked wanted and each one's last read, never
-                                    waiting; a thread reads one game's markets every 2 s on
-                                    the PROPHETX_LIVE_* key pair (prophetx_live.py; reads
+                                    games marked wanted and each one's current book, never
+                                    waiting; each game is read once and then followed on
+                                    ProphetX's market websocket on the PROPHETX_LIVE_* key
+                                    pair, which Place reads first too (prophetx_live.py; reads
                                     only). Loopback only (the runner); 503 {error} with that
                                     key pair unset
            PUT /settings.json       body {settings: {<any of those fields>: value or null}} ->
@@ -2310,9 +2311,10 @@ def open_prophetx_order_stream(sources: list[Source]) -> ProphetXOrderStream | N
     return ProphetXOrderStream(source.client) if source is not None else None
 
 
-def open_prophetx_place_desk(store: BetsStore, sources: list[Source],
-                             order_stream: ProphetXOrderStream | None = None) -> tuple[ManualProphetXDesk | None, str]:
+def open_prophetx_place_desk(store: BetsStore, sources: list[Source], order_stream: ProphetXOrderStream | None = None,
+                             live_books: ProphetXLiveBooks | None = None) -> tuple[ManualProphetXDesk | None, str]:
     """(the Place button's ProphetX desk on Cal's main account, "") or (None, why).
+    `live_books`: the live price stream, read first for the game's book.
     It trades on the prophetx source's own client (one key pair, one session),
     proven to log in by one balance read; the stake counts that source's read,
     so the source must be registered."""
@@ -2331,7 +2333,7 @@ def open_prophetx_place_desk(store: BetsStore, sources: list[Source],
         # A server-level refusal says nothing about the key, and lifts on its own:
         # the desk opens, and each click refuses with the block until it does.
         log.warning("prophetx place: on, but ProphetX is refusing this server for now: %s", error)
-        return _prophetx_desk(client, store, order_stream), ""
+        return _prophetx_desk(client, store, order_stream, live_books), ""
     except (OSError, ProphetXError) as error:
         reason = f"the PROPHETX_* key pair could not be used: {error}"
         log.error("prophetx place: %s, the ProphetX Place button is off", reason)
@@ -2341,17 +2343,18 @@ def open_prophetx_place_desk(store: BetsStore, sources: list[Source],
         log.error("prophetx place: %s, the ProphetX Place button is off", reason)
         return None, reason
     log.info("prophetx place: on, trading with access key %s on the main account", client.access_key[:8])
-    return _prophetx_desk(client, store, order_stream), ""
+    return _prophetx_desk(client, store, order_stream, live_books), ""
 
 
-def _prophetx_desk(client: ProphetXClient, store: BetsStore,
-                   order_stream: ProphetXOrderStream | None = None) -> ManualProphetXDesk:
+def _prophetx_desk(client: ProphetXClient, store: BetsStore, order_stream: ProphetXOrderStream | None = None,
+                   live_books: ProphetXLiveBooks | None = None) -> ManualProphetXDesk:
     return ManualProphetXDesk(client, store,
                               lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_PROPHETX_QUOTE_PATH,
                                                              RUNNER_PROPHETX_QUOTE_TIMEOUT_SEC),
                               lambda league, away, home: read_runner_team_keys(config.RUNNER_URL, PROPHETX_VENUE, league,
                                                                                away, home),
-                              order_stream=order_stream)
+                              order_stream=order_stream,
+                              streamed_game=live_books.streamed_game if live_books is not None else None)
 
 
 def open_taker_store(db_path: Path) -> TakerStore | None:
@@ -2382,13 +2385,14 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
     prophetx_order_stream = open_prophetx_order_stream(sources)
-    prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources, prophetx_order_stream)
-    novig_book_stream = open_novig_book_stream()
-    polymarket_book_stream = open_polymarket_book_stream()
-    novig_catalog_reads = open_novig_catalog_reads()
     prophetx_live = prophetx_live_reader_if_configured(
         config.PROPHETX_LIVE_ACCESS_KEY, config.PROPHETX_LIVE_SECRET_KEY, config.PROPHETX_BASE_URL,
         lambda league, away, home: read_runner_team_keys(config.RUNNER_URL, PROPHETX_VENUE, league, away, home))
+    prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources, prophetx_order_stream,
+                                                                              prophetx_live)
+    novig_book_stream = open_novig_book_stream()
+    polymarket_book_stream = open_polymarket_book_stream()
+    novig_catalog_reads = open_novig_catalog_reads()
     source_reader = SourceReader(sources, store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
                                                             teaser_placer=teaser_placer_for(sources),
