@@ -2859,11 +2859,14 @@ visible. Its one write is the Bets page's Remove / Restore.
   the same free league snapshot the runner already reads (no new request;
   `feed.gameStateOf` keeps `eventTeams[].score`, `gameClock`,
   `eventPeriodTypeId`, `statusId` 1 upcoming / 2 in progress / 3 final, read
-  live 2026-11-06). A game no snapshot carried in 5 min reads "No score from
-  Unabated in the last 5 min", never an old score. The period's name shows
-  only for numbers checked against a live game in that sport
-  (`server/gamescore.js` `PERIOD_NAMES`, empty until each sport is checked);
-  an unchecked number shows the clock alone. Started bets the runner could not place on a game
+  live 2026-11-06). A game no snapshot carried in 5 min reads "No recent
+  score from Unabated", never an old score. The period's name shows
+  only for numbers checked against live games (`server/gamescore.js`
+  `NAMED_PERIOD_IDS`, live.js's names: NFL and CFB quarters and halftime,
+  NCAAB halves; NBA, NHL, MLB and the rest still to check); an unchecked
+  number shows the clock alone. A copy the tracker kept through a failed
+  refresh also turns to "No recent score" at its `staleAt`. Started bets the
+  runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
   **Not on a game card**; when `/scenarios.json` cannot be read the tab says
   why and lists every live bet there. Built by `server/scenarios.js` (pure,

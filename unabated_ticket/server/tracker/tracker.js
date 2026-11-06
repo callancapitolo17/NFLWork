@@ -1007,8 +1007,12 @@
   function scoreLine(game) {
     const score = game.score;
     if (!score) return null;
-    if (score.status === "stale" || !Number.isFinite(score.awayScore) || !Number.isFinite(score.homeScore)) {
-      const why = score.status === "stale" ? "No score from Unabated in the last 5 min" : "No score from Unabated yet";
+    // A copy kept through a failed refresh ages here too (staleAt).
+    const stale = score.status === "stale" || !(Date.parse(score.staleAt) > Date.now());
+    const shown = !stale && (score.status === "live" || score.status === "final")
+      && Number.isFinite(score.awayScore) && Number.isFinite(score.homeScore);
+    if (!shown) {
+      const why = stale ? "No recent score from Unabated" : "No live score from Unabated yet";
       return el("div", { className: "score" }, [el("span", { className: "note", text: why })]);
     }
     const away = score.awayAbbr || game.awayTeam || "Away";

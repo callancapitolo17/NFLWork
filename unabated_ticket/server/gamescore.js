@@ -3,47 +3,58 @@
 // Pure: no DOM, no fetch, no disk.
 //
 // Input  gameState {statusId, awayScore, homeScore, gameClock, periodId,
-//        overtimeNumber, snapshotAtMs, awayAbbr, homeAbbr} or null, the league path ("nfl", ...),
-//        now ms
-// Output {status, awayAbbr, homeAbbr, awayScore, homeScore, clock, period, readAt} or
-//        {status: "stale", readAt} when no snapshot in STALE_AFTER_MS carried
-//        the game, or null when the runner has never read one.
+//        snapshotAtMs, awayAbbr, homeAbbr} or null, the league path ("nfl",
+//        ...), now ms
+// Output {status, awayAbbr, homeAbbr, awayScore, homeScore, clock, period,
+//        readAt, staleAt}: status "live" / "final" / "other" (upcoming or a
+//        status not seen yet: no score is shown for it); staleAt is when the
+//        reading stops counting, so the tracker can age a copy it kept.
+//        {status: "stale"} once no snapshot in STALE_AFTER_MS carried the
+//        game; null when the runner never read one.
 // Side effects: none.
 //
-// Period names: eventPeriodTypeId is a bare per-sport number. Only numbers
-// checked against a live game in that sport go in PERIOD_NAMES; a number not
-// in it shows no period name (the clock and score still show), never a guess.
+// Period names: eventPeriodTypeId is a per-sport number, named only for the
+// leagues whose numbers were checked against live games; any other league or
+// number shows no period name (the clock and score still show), never a guess.
 
 "use strict";
 
-// Read live 2026-11-06 (NFL, CFB, NCAAB, NHL in progress, NCAAB final).
-const STATUS_UPCOMING = 1;
+const live = require("../extension/live.js");
+
+// Read live 2026-11-06 (NFL, CFB, NCAAB, NHL in progress, NCAAB final); the
+// extension's own between-quarters reader (page.js) uses 3 as final too.
 const STATUS_IN_PROGRESS = 2;
 const STATUS_FINAL = 3;
 // A score older than this reads as missing, not as the current score.
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
-// league path -> {eventPeriodTypeId: name}. Each sport's entries are added by
-// its own check of a live game; none are verified yet.
-const PERIOD_NAMES = {};
+// League path -> the eventPeriodTypeIds named there, with live.js's names
+// (Q1-Q4 = 4-7, halves 2 / 3). Football: live.js reads these at every NFL
+// break; on 2026-11-06 an NFL game went 5 (10-3, 6:43) to 6 (17-3, 13:59)
+// and CFB games sat at 2 with 00:00 (halftime). NCAAB: 3 with minutes left
+// and at the final the same night. Other sports are added once their own
+// live games are read.
+const NAMED_PERIOD_IDS = {
+  nfl: [2, 4, 5, 6, 7],
+  cfb: [2, 4, 5, 6, 7],
+  cbb: [2, 3],
+};
 
 function periodNameOf(league, periodId) {
-  const names = PERIOD_NAMES[league];
-  if (!names || periodId === null) return null;
-  return names[periodId] ?? null;
+  const ids = NAMED_PERIOD_IDS[league];
+  if (!ids || !ids.includes(periodId)) return null;
+  return live.PERIOD_ENDED[periodId] ?? null;
 }
 
 function statusOf(statusId) {
   if (statusId === STATUS_IN_PROGRESS) return "live";
   if (statusId === STATUS_FINAL) return "final";
-  if (statusId === STATUS_UPCOMING) return "upcoming";
-  return "unknown";
+  return "other";
 }
 
 function scoreLineOf(gameState, league, now) {
   if (!gameState) return null;
-  const readAt = gameState.snapshotAtMs === null ? null : new Date(gameState.snapshotAtMs).toISOString();
-  if (gameState.snapshotAtMs === null || now - gameState.snapshotAtMs > STALE_AFTER_MS) return { status: "stale", readAt };
+  if (gameState.snapshotAtMs === null || now - gameState.snapshotAtMs > STALE_AFTER_MS) return { status: "stale" };
   const status = statusOf(gameState.statusId);
   return {
     status,
@@ -54,8 +65,9 @@ function scoreLineOf(gameState, league, now) {
     // A final game's clock is the feed's end marker ("E", "00:00"), not a time.
     clock: status === "live" ? gameState.gameClock : null,
     period: status === "live" ? periodNameOf(league, gameState.periodId) : null,
-    readAt,
+    readAt: new Date(gameState.snapshotAtMs).toISOString(),
+    staleAt: new Date(gameState.snapshotAtMs + STALE_AFTER_MS).toISOString(),
   };
 }
 
-module.exports = { STALE_AFTER_MS, PERIOD_NAMES, periodNameOf, scoreLineOf };
+module.exports = { STALE_AFTER_MS, scoreLineOf };

@@ -2418,9 +2418,24 @@ test("scenarios: a game under way carries the score of the newest snapshot, its 
   await runner.scanner.resync();
   const [card] = runner.scenariosPayload().games;
   assert.equal(card.oddsAt, NOW, "the kickoff chances are still the pregame ones");
-  assert.deepEqual([card.score.status, card.score.awayScore, card.score.homeScore, card.score.clock], ["live", 10, 3, "6:43"]);
-  assert.deepEqual([card.score.awayAbbr, card.score.homeAbbr], ["CHI", "CAR"], "the teams' short names off the feed's team list");
+  const readAt = Date.parse(live.snapshotAt);
+  assert.deepEqual(card.score, {
+    status: "live", awayAbbr: "CHI", homeAbbr: "CAR", awayScore: 10, homeScore: 3, clock: "6:43", period: "Q2",
+    readAt: new Date(readAt).toISOString(), staleAt: new Date(readAt + 5 * 60 * 1000).toISOString(),
+  });
   clock.ms += 10 * 60 * 1000;
-  assert.equal(runner.scenariosPayload().games[0].score.status, "stale", "no newer snapshot in ten minutes");
+  assert.deepEqual(runner.scenariosPayload().games[0].score, { status: "stale" }, "no newer snapshot in ten minutes");
   runner.stop();
+
+  // A runner (re)started mid-game has no kickoff odds but still the score.
+  const restarted = runnerLib.createRunner({
+    fetchImpl: unabatedFetch(body), betsServiceUrl: SERVICE_URL, now: () => clock.ms, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS } }),
+  });
+  live.snapshotAt = new Date(clock.ms - 20 * 1000).toISOString();
+  await restarted.start();
+  const [midGame] = restarted.scenariosPayload().games;
+  assert.equal(midGame.oddsAt, null);
+  assert.deepEqual([midGame.score.status, midGame.score.awayScore, midGame.score.homeScore, midGame.score.readAt], ["live", 10, 3, live.snapshotAt]);
+  restarted.stop();
 });

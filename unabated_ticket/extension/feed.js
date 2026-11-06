@@ -149,8 +149,8 @@
   // and NHL games in progress: statusId 1 upcoming, 2 in progress, 3 final;
   // eventTeams[0|1].score the away / home score; gameClock "m:ss" ("E" or
   // "00:00" seen at the end); eventPeriodTypeId a per-sport number whose
-  // meaning is NOT verified (server/gamescore.js names it per league);
-  // overtimeNumber null in regulation. snapshotAtMs is when the file was cut.
+  // meaning is checked per sport (server/gamescore.js names it per league).
+  // snapshotAtMs is when the file was cut.
   function gameStateOf(row, snapshotAtMs) {
     const teams = row.eventTeams || {};
     return {
@@ -159,7 +159,6 @@
       homeScore: teams[1] ? numberOrNull(teams[1].score) : null,
       gameClock: typeof row.gameClock === "string" && row.gameClock ? row.gameClock : null,
       periodId: numberOrNull(row.eventPeriodTypeId),
-      overtimeNumber: numberOrNull(row.overtimeNumber),
       snapshotAtMs: snapshotAtMs ?? null,
     };
   }
