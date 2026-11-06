@@ -2853,8 +2853,20 @@ visible. Its one write is the Bets page's Remove / Restore.
   ride on it ("in 4 teasers · $800"), and the tickets are listed under
   **Parlays and teasers riding**. **The chance is Unabated's fair at
   kickoff** (the median fair ladder from the last snapshot before the
-  start, the ladder the Edges sizing reads before kickoff), not the live score: no scores
-  feed is wired yet. Started bets the runner could not place on a game
+  start, the ladder the Edges sizing reads before kickoff), not the live score.
+  **Score line (2026-11-06):** each card shows the game's latest score and
+  clock ("JAX 10 – 3 BAL · 6:43 · as of 1 min ago", "Final" once over) off
+  the same free league snapshot the runner already reads (no new request;
+  `feed.gameStateOf` keeps `eventTeams[].score`, `gameClock`,
+  `eventPeriodTypeId`, `statusId` 1 upcoming / 2 in progress / 3 final, read
+  live 2026-11-06). A game no snapshot carried in 5 min reads "No recent
+  score from Unabated", never an old score. The period's name shows
+  only for numbers checked against live games (`server/gamescore.js`
+  `NAMED_PERIOD_IDS`, live.js's names: NFL and CFB quarters and halftime,
+  NCAAB halves; NBA, NHL, MLB and the rest still to check); an unchecked
+  number shows the clock alone. A copy the tracker kept through a failed
+  refresh also turns to "No recent score" at its `staleAt`. Started bets the
+  runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
   **Not on a game card**; when `/scenarios.json` cannot be read the tab says
   why and lists every live bet there. Built by `server/scenarios.js` (pure,

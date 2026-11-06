@@ -25,7 +25,10 @@
   const FAIR_READY = "ready";
   const STORAGE_PREFIX = "liveEdges:";
 
-  // eventPeriodTypeId on a live row -> the part of the game that just ended.
+  // eventPeriodTypeId on a live row -> the part of the game that just ended
+  // (at a break; during play it is the period being played, as the NCAAB
+  // feed showed 2026-11-06: 3 with minutes left and 3 at the final).
+  // server/gamescore.js names the Live tab's periods off it too.
   const PERIOD_ENDED = { 2: "1st half", 3: "2nd half", 4: "Q1", 5: "Q2", 6: "Q3", 7: "Q4" };
   // eventPeriodTypeId -> the periods (feed.PERIODS names) decided by then: a
   // bet on one is settled, not a live position, whatever its venue still
@@ -241,7 +244,7 @@
   }
 
   const api = {
-    LIVE_STALE_MS, LIVE_STALE_HIDDEN_MS, LIVE_DROP_MS, STORAGE_PREFIX,
+    LIVE_STALE_MS, LIVE_STALE_HIDDEN_MS, LIVE_DROP_MS, STORAGE_PREFIX, PERIOD_ENDED,
     storageKeyOf, checkpointLabel, settledPeriods, liveView, selectLiveEdges, liveFairState, hasReadyFair, liveAlertKey,
   };
 

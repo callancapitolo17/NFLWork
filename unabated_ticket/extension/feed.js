@@ -144,6 +144,25 @@
     return Number.isFinite(ms) ? ms : null;
   }
 
+  // A game's live state off one of its snapshot rows (event-level fields, the
+  // same on every row of the event). Read live 2026-11-06 on NFL, CFB, NCAAB
+  // and NHL games in progress: statusId 1 upcoming, 2 in progress, 3 final;
+  // eventTeams[0|1].score the away / home score; gameClock "m:ss" ("E" or
+  // "00:00" seen at the end); eventPeriodTypeId a per-sport number whose
+  // meaning is checked per sport (server/gamescore.js names it per league).
+  // snapshotAtMs is when the file was cut.
+  function gameStateOf(row, snapshotAtMs) {
+    const teams = row.eventTeams || {};
+    return {
+      statusId: numberOrNull(row.statusId),
+      awayScore: teams[0] ? numberOrNull(teams[0].score) : null,
+      homeScore: teams[1] ? numberOrNull(teams[1].score) : null,
+      gameClock: typeof row.gameClock === "string" && row.gameClock ? row.gameClock : null,
+      periodId: numberOrNull(row.eventPeriodTypeId),
+      snapshotAtMs: snapshotAtMs ?? null,
+    };
+  }
+
   function sideIndexOf(sideKey) {
     const match = /^si(\d)/.exec(sideKey || "");
     return match ? Number(match[1]) : null;
@@ -383,7 +402,7 @@
     };
   }
 
-  function ingestSnapshotRow(state, row, leagueId, periodTypeId, counts) {
+  function ingestSnapshotRow(state, row, leagueId, periodTypeId, counts, snapshotAtMs) {
     const rowKey = typeof row.key === "string" ? GAME_ROW_KEY.exec(row.key) : null;
     // Only pregame moneyline/spread/total game rows; team totals (bt4), props and
     // live rows share the structure but are not what the scanner lists.
@@ -409,6 +428,7 @@
         awayRotation: teams[0] ? teams[0].rotationNumber ?? null : null,
         homeRotation: teams[1] ? teams[1].rotationNumber ?? null : null,
         venueIds: emptyVenueIds(),
+        gameState: gameStateOf(row, snapshotAtMs),
       };
       noteEventNameSpellings(state, row);
     }
@@ -472,13 +492,14 @@
         hasLiquidity: source.hasLiquidity === true,
       };
     }
+    const snapshotAtMs = parseEventStart(json.snapshotStartedAtUtc);
     let leagueKeysSeen = 0;
     for (const [leagueKey, rows] of Object.entries(json.odds)) {
       const parsed = parseLeagueKey(leagueKey);
       if (!parsed || parsed.leagueId !== leagueId) continue;
       leagueKeysSeen += 1;
       if (parsed.phase !== "pregame" || !Array.isArray(rows)) continue;
-      for (const row of rows) ingestSnapshotRow(state, row, leagueId, parsed.periodTypeId, counts);
+      for (const row of rows) ingestSnapshotRow(state, row, leagueId, parsed.periodTypeId, counts, snapshotAtMs);
     }
     // No lg<id> key while other leagues' keys exist is the wrong file or a
     // schema change; an empty `odds` map (Serie B off-season, 2026-09-10) or
@@ -749,7 +770,7 @@
     LEAGUES, SPORTS, leagueIdsOfSport, BET_TYPES, PERIODS, UNABATED_LINE_BOOK_ID, ALT_MIN_PROB, isClampedFair, altWithinDepthCap, flatFairRungKeys, rungKeyOf,
     kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
-    parseSnapshot, mergeStates,
+    parseSnapshot, mergeStates, gameStateOf,
     describeLine, selectEdges, groupEdges, groupKeyOf, countLines, countAltLines,
   };
 

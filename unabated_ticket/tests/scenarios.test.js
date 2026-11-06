@@ -237,3 +237,18 @@ test("an MLB moneyline card: two results off the moneyline rungs", () => {
   assert.deepEqual(bandRows(card.groups[0]), [["New York Yankees win", -100], ["Seattle Mariners win", 135]]);
   nearly(card.groups[0].bands[1].prob, probOf(135));
 });
+
+test("a card carries the game's latest score line; a game the feed gave no state has none", () => {
+  const records = [straightBet("bills")];
+  const withScore = gamesOf(billsChiefs()).map((game) => ({
+    ...game,
+    gameState: { statusId: 2, awayScore: 14, homeScore: 7, gameClock: "2:01", periodId: 5, snapshotAtMs: NOW - 30 * 1000, awayAbbr: "BUF", homeAbbr: "KC" },
+  }));
+  const [card] = scenarios.buildScenarios({ records, games: withScore, now: NOW }).games;
+  assert.deepEqual(card.score, {
+    status: "live", awayAbbr: "BUF", homeAbbr: "KC", awayScore: 14, homeScore: 7, clock: "2:01", period: "Q2",
+    readAt: new Date(NOW - 30 * 1000).toISOString(), staleAt: new Date(NOW - 30 * 1000 + 5 * 60 * 1000).toISOString(),
+  });
+  const [bare] = scenarios.buildScenarios({ records, games: gamesOf(billsChiefs()), now: NOW }).games;
+  assert.equal(bare.score, null);
+});

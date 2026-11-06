@@ -13,10 +13,12 @@
 //             `ladderOf(period, axis)` the event's fair ladder as of `oddsAt`
 //             (ladder.js shape) or null when the runner never saw the game
 //             before it started, `oddsAt` ms (when its league's last
-//             snapshot before kickoff landed) or null
+//             snapshot before kickoff landed) or null, `gameState` the
+//             game's latest feed.gameStateOf (score, clock) or null
 //   now       ms
 // Output {games: [game], coveredBetIds} — `game` = {eventId, league,
-//   awayTeam, homeTeam, startMs, oddsAt, groups, bets, legs}; each group is
+//   awayTeam, homeTeam, startMs, oddsAt, score, groups, bets, legs}; `score`
+//   is gamescore.scoreLineOf (latest score and clock, or stale, or null); each group is
 //   one (period, axis) ladder: {key, period, axis, title, bands, ev, best,
 //   worst} and each band {label, low, high, prob, pnl, legs}. `low` / `high`
 //   are the half-point cuts the band sits between (null = open-ended); `prob`
@@ -36,6 +38,7 @@
 const betsLib = require("../extension/bets.js");
 const condkelly = require("../extension/condkelly.js");
 const ladderLib = require("../extension/ladder.js");
+const gamescore = require("./gamescore.js");
 
 const AXIS_MARGIN = betsLib.AXIS_MARGIN;
 const AXIS_TOTAL = betsLib.AXIS_TOTAL;
@@ -237,7 +240,7 @@ function legView(record, extra) {
 
 // One game card from the matches on its row: straights placed on their
 // groups, legs placed on theirs, the rest named with their reason.
-function gameCard(game, matches) {
+function gameCard(game, matches, now) {
   const { row } = game;
   const info = { league: row.league, awayTeam: row.awayTeam, homeTeam: row.homeTeam };
   const byGroup = new Map();
@@ -270,6 +273,7 @@ function gameCard(game, matches) {
     .sort(groupOrder);
   return {
     eventId: row.eventId, ...info, startMs: row.eventStartMs, oddsAt: game.oddsAt ?? null,
+    score: gamescore.scoreLineOf(game.gameState ?? null, row.league, now),
     groups, bets, legs,
   };
 }
@@ -289,7 +293,7 @@ function buildScenarios({ records, games, now }) {
   live.forEach((game, index) => {
     const matches = flags[index].matches;
     if (matches.length === 0) return;
-    const card = gameCard(game, matches);
+    const card = gameCard(game, matches, now);
     for (const bet of card.bets) covered.add(bet.id);
     for (const leg of card.legs) covered.add(leg.id);
     cards.push(card);

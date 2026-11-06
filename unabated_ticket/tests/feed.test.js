@@ -577,3 +577,24 @@ test("groupEdges: alts off collapses the four main-line edges to two cards; empt
   const ranked = feed.groupEdges(rows, (row) => (row.book.id === 99 ? null : row.edgePct));
   assert.equal(ranked[ranked.length - 1].best.book.id, 99);
 });
+
+test("snapshot: each event keeps its live score, clock and period off its row", () => {
+  const json = snapshotJson();
+  json.snapshotStartedAtUtc = "2026-09-13T18:10:05.1234567Z";
+  const rows = json.odds["lg1:pt1:pregame"];
+  // The shape read live 2026-11-06 on an NFL game in progress.
+  for (const row of rows) Object.assign(row, { statusId: 2, gameClock: "6:43", eventPeriodTypeId: 5 });
+  for (const row of rows) { row.eventTeams[0].score = 10; row.eventTeams[1].score = 3; }
+  const state = feed.parseSnapshot(json, { leagueId: NFL });
+  const event = state.events[rows[0].eventId];
+  assert.deepEqual(event.gameState, {
+    statusId: 2, awayScore: 10, homeScore: 3, gameClock: "6:43", periodId: 5,
+    snapshotAtMs: Date.parse("2026-09-13T18:10:05.123Z"),
+  });
+});
+
+test("gameStateOf: missing fields read null, never zero", () => {
+  assert.deepEqual(feed.gameStateOf({ eventTeams: { 0: { id: 1 }, 1: { id: 2 } } }, null), {
+    statusId: null, awayScore: null, homeScore: null, gameClock: null, periodId: null, snapshotAtMs: null,
+  });
+});
