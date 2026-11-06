@@ -801,6 +801,12 @@
     const nameEl = document.createElement("span");
     nameEl.className = "nm";
     nameEl.textContent = entry.name;
+    if (entry.lineText) {
+      const numEl = document.createElement("span");
+      numEl.className = "num";
+      numEl.textContent = entry.lineText;
+      nameEl.append(numEl);
+    }
     const liqEl = document.createElement("span");
     liqEl.className = "liq";
     liqEl.textContent = entry.liquidity == null ? "" : `${entry.kind === "thin" ? "thin " : ""}${fmtWholeDollars(entry.liquidity)}`;
@@ -850,8 +856,9 @@
   // The Ticket's other books: the tile (the tag in a few words) and every
   // book at the priced number in two columns (pricecheck.comparePrice, same
   // rules as the Edges tag), the worst of the worse folded, and a Skip button
-  // when a book beats you. Hidden for a live ticket (the feed is pregame) or
-  // when no other book posts the number.
+  // when a book beats you. When no other book posts the number, the tile reads
+  // "Only book at N" and the box lists each book's nearest line, for
+  // reference. Hidden for a live ticket (the feed is pregame).
   function renderOtherBooks(ticket, line) {
     view.othersTile.hidden = true;
     view.othersBlock.hidden = true;
@@ -870,7 +877,7 @@
     view.othersSub.textContent = tile.sub;
     view.othersTile.hidden = false;
 
-    view.othersLabel.textContent = betsView.otherBooksLabel(ticket.betType, line.points);
+    view.othersLabel.textContent = betsView.otherBooksLabel(ticket.betType, line.points, check);
     // Open only while the default cap would fold something: books leaving the feed close it.
     const folded = betsView.otherBookRows(check, ticket.book.name, line.price).folded;
     const open = folded.length > 0 && ticketBooksOpenAt === ticket.capturedAt;
@@ -1694,7 +1701,7 @@
 
   // The other-books tag (pricecheck.priceCheckTag), with every book at the
   // number in its tooltip; null when no other book posts it (or a live row).
-  const PRICE_CHECK_TAG_CLASS = { best: "check-best", better: "check-better", skip: "check-skip", outlier: "check-outlier" };
+  const PRICE_CHECK_TAG_CLASS = { only: "", best: "check-best", better: "check-better", skip: "check-skip", outlier: "check-outlier" };
   function priceCheckTagEl(check) {
     const tag = pricecheck.priceCheckTag(check);
     if (!tag) return null;
@@ -1736,7 +1743,11 @@
     if (check.same) parts.push(`${check.same} at the same price`);
     if (check.worse.length) parts.push(`worse: ${list(check.worse)}`);
     if (check.thin && check.thin.length) parts.push(`too thin to count: ${list(check.thin)}`);
-    parts.push("same number only");
+    if (check.onlyBook && check.nearest && check.nearest.length) {
+      parts.push(`no other book at ${check.numberText}; nearest lines, for reference: ${check.nearest.map((entry) => `${entry.bookName} ${entry.lineText} ${fmtAmerican(entry.price)}`).join(", ")}`);
+    } else {
+      parts.push("same number only");
+    }
     return parts.join(" · ");
   }
 

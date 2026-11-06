@@ -856,7 +856,14 @@ still count apart (Cal, 2026-10-13). Another number is never compared.
 | `N books better` (amber) | 2 or more books beat it (`BOOKS_BETTER_TO_SKIP`) |
 | `outlier, check · next best X` (red) | it beats every other book by more than 10 probability points (`OUTLIER_PROB_GAP`): more likely a bad price than a gift (the 2026-10-03 Jackson St ML at Novig +300 on a -309 fair). Tagged; no Skip, since no book beats it |
 
-No tag when no other book posts the number. Tap the tag (▸) to open every
+**Only book at the number (0.41.0, Cal 2026-11-06):** when no other book
+counts at your number, the tag reads `only book at 160` (`only book on this
+line` for a moneyline), never "best", and brings no Skip. Opened, and on the
+Ticket, it lists each other book's line on your side nearest your number
+(both when a book sits as near above as below), nearest first, with its
+number (`Fanatics u159 -110`): reference only, a different number is never
+called better or worse (`pricecheck.nearestLines`). The taker's check is
+unchanged. Tap the tag (▸) to open every
 book at the number under the row, best first, yours in its place; the
 tooltip lists them too. A line above the list counts outliers ("1 outlier to
 check"). The Ticket lists every book at the number (see **The Ticket's
@@ -885,7 +892,10 @@ were set, and Cal has not moved it onto the bot.
   in cents — `4.0¢ under fair` — and the edge-move tag), **Other books** (the
   tag in a few words, `Best of 11` / `1 book better` / `Outlier, check`, and
   the book that sets it, `next Kalshi +100` / `best Pinnacle +108`;
-  `betsview.otherBooksTile`). No tile when no other book posts the number.
+  `betsview.otherBooksTile`). When no other book posts the number the tile
+  reads `Only book at 160 · nearest Fanatics u159 -110` and the box under it,
+  *Nearest line at each other book*, lists every book's nearest line, never
+  folded.
 - *Other books at 47.5*: every book at the number in two columns filled top
   to bottom (one column under 360 px on the panel, under 480 px on the
   phone): books that beat you, yours, books at your price, worse books, thin

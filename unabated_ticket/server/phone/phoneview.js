@@ -194,8 +194,8 @@
   }
 
   // Everything the ticket sheet shows for one row: the bet card, the Fair /
-  // Edge / Other books tiles (othersTile null when no other book posts the
-  // number) and the stake block.
+  // Edge / Other books tiles (othersTile null when the price could not be
+  // checked) and the stake block.
   function ticketView(row, now) {
     const bookProb = kelly.bookProbOf({ bookPrice: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice });
     const fairProb = row.fair == null ? null : kelly.bookProbOf({ bookPrice: row.fair, sourceFormat: SOURCE_FORMAT_AMERICAN, sourcePrice: null });
@@ -212,7 +212,7 @@
       fairCents: fairProb == null ? "" : `${(fairProb * 100).toFixed(1)}¢`,
       edge: fmtEdgePct(row.edgePct),
       edgeSub: fairProb == null ? "" : betsView.centsFromFairText(bookProb, fairProb),
-      othersLabel: betsView.otherBooksLabel(row.betType, row.points),
+      othersLabel: betsView.otherBooksLabel(row.betType, row.points, row.priceCheck),
       othersTile: row.priceCheck ? betsView.otherBooksTile(row.priceCheck, row.priceCheckTag) : null,
       stakeBlock: stakeBlockView(row),
     };

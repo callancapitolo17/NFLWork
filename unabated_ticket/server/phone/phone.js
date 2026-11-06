@@ -57,7 +57,7 @@
   const RUNNER_SETTINGS_LAG_MS = 11 * 1000;
   const RELATED_LINES_ON_A_ROW = 3;
   const MOVE_TAG_CLASS = { fair_to_you: "move-fair", book_away: "move-book", fair_against: "move-against" };
-  const PRICE_CHECK_TAG_CLASS = { best: "check-best", better: "", skip: "check-skip", outlier: "check-outlier" };
+  const PRICE_CHECK_TAG_CLASS = { only: "", best: "check-best", better: "", skip: "check-skip", outlier: "check-outlier" };
   // How many worse books the ticket lists before folding the rest into "N more".
   // The panel offers full game and first half; a stored other period is shown too.
   const OFFERED_PERIODS = [1, 2];
@@ -404,7 +404,9 @@
   function bookRowEl(entry) {
     const liq = entry.liquidity == null ? "" : `${entry.kind === "thin" ? "thin " : ""}$${Math.floor(entry.liquidity).toLocaleString("en-US")}`;
     const div = makeEl("div", entry.kind);
-    div.append(makeEl("span", "nm", entry.name), makeEl("span", "liq", liq), makeEl("span", "px", phoneView.fmtAmerican(entry.price)));
+    const name = makeEl("span", "nm", entry.name);
+    if (entry.lineText) name.append(makeEl("span", "num", entry.lineText));
+    div.append(name, makeEl("span", "liq", liq), makeEl("span", "px", phoneView.fmtAmerican(entry.price)));
     return div;
   }
 

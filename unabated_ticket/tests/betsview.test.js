@@ -724,6 +724,23 @@ test("otherBooksTile: the tag in a few words and the book that sets it", () => {
   assert.deepEqual(view.otherBooksTile({ ...base, outlier: { nextBest: book("Kalshi", 425) } }, { kind: "outlier" }), { kind: "outlier", head: "Outlier, check", sub: "next best Kalshi +425" });
 });
 
+test("only book at the number: the tile says so, the box lists each book's nearest line, never folded", () => {
+  const near = (bookName, lineText, price, thin = false) => ({ bookName, price, liquidity: thin ? 10 : null, points: 0, lineText, thin });
+  const check = {
+    better: [], sameAs: [], same: 0, worse: [], thin: [], bookCount: 1, outlier: null, onlyBook: true, numberText: "160", yourLineText: "u160",
+    nearest: [near("Kalshi", "u159.5", -105, true), near("Fanatics", "u159", -110), near("Bookmaker", "u158.5", -110)],
+  };
+  assert.deepEqual(view.otherBooksTile(check, { kind: "only", label: "only book at 160" }),
+    { kind: "only", head: "Only book at 160", sub: "nearest Fanatics u159 -110" });
+  const { rows, folded } = view.otherBookRows(check, "BetOnline", -110, 2);
+  assert.deepEqual(rows.map((row) => `${row.name} ${row.lineText} ${row.kind}`),
+    ["BetOnline (you) u160 yours", "Kalshi u159.5 thin", "Fanatics u159 near", "Bookmaker u158.5 near"]);
+  assert.deepEqual(folded, []);
+  assert.equal(view.otherBooksLabel("Total", 160, check), "Nearest line at each other book");
+  assert.deepEqual(view.otherBooksTile({ ...check, nearest: [] }, { kind: "only", label: "only book at 160" }),
+    { kind: "only", head: "Only book at 160", sub: "no other book on this side" });
+});
+
 test("otherBooksLabel: a total's number bare, a spread's signed, a moneyline none", () => {
   assert.equal(view.otherBooksLabel("Total", 39.5), "Other books at 39.5");
   assert.equal(view.otherBooksLabel("Spread", 3.5), "Other books at +3.5");

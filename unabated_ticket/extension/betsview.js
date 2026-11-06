@@ -848,9 +848,13 @@
   // beat you, yours, books at your price, worse books, then books too thin to
   // count (pricecheck.isThin). Past `maxRows` the worst of the worse books
   // fold away, never just one.
-  //   {rows, folded}: [{name, price, liquidity, kind: better|yours|same|worse|thin}]
+  // When no other book counts at the number (check.onlyBook), the rows are
+  // yours and then each other book's nearest line (kind near, or thin), each
+  // with its number in lineText, never folded: reference only.
+  //   {rows, folded}: [{name, price, liquidity, kind: better|yours|same|worse|thin|near, lineText}]
   function otherBookRows(check, yourBookName, yourPrice, maxRows = OTHER_BOOK_ROWS_SHOWN) {
     const entry = (kind) => (book) => ({ name: book.bookName, price: book.price, liquidity: book.liquidity ?? null, kind });
+    if (check.onlyBook && check.nearest && check.nearest.length) return nearestBookRows(check, yourBookName, yourPrice);
     const better = check.better.map(entry("better"));
     const yours = [{ name: `${yourBookName} (you)`, price: yourPrice, liquidity: null, kind: "yours" }];
     const same = (check.sameAs || []).map(entry("same"));
@@ -866,12 +870,29 @@
     };
   }
 
+  // Yours at your number, each other book's nearest line, thin books at your
+  // number greyed last.
+  function nearestBookRows(check, yourBookName, yourPrice) {
+    const yours = { name: `${yourBookName} (you)`, price: yourPrice, liquidity: null, kind: "yours", lineText: check.yourLineText };
+    const near = check.nearest.map((book) => ({
+      name: book.bookName, price: book.price, liquidity: book.liquidity ?? null, kind: book.thin ? "thin" : "near", lineText: book.lineText,
+    }));
+    const thin = (check.thin || []).map((book) => ({ name: book.bookName, price: book.price, liquidity: book.liquidity ?? null, kind: "thin", lineText: check.yourLineText }));
+    return { rows: [yours, ...near, ...thin], folded: [] };
+  }
+
   // The Ticket's "Other books" tile: the tag in a few words and the book
   // that sets it. `tag` is pricecheck.priceCheckTag(check); null without one.
-  //   {kind, head, sub}  kind: best | better | skip | outlier
+  //   {kind, head, sub}  kind: only | best | better | skip | outlier
   function otherBooksTile(check, tag) {
     if (!check || !tag) return null;
     const book = (entry) => `${entry.bookName} ${fmtSigned(entry.price)}`;
+    if (tag.kind === "only") {
+      const nearestLines = check.nearest || [];
+      const nearest = nearestLines.find((entry) => !entry.thin) || nearestLines[0] || null;
+      const head = tag.label.charAt(0).toUpperCase() + tag.label.slice(1);
+      return { kind: tag.kind, head, sub: nearest ? `nearest ${nearest.bookName} ${nearest.lineText} ${fmtSigned(nearest.price)}` : "no other book on this side" };
+    }
     if (tag.kind === "outlier") return { kind: tag.kind, head: "Outlier, check", sub: `next best ${book(check.outlier.nextBest)}` };
     if (tag.kind === "best") {
       const sameAs = check.sameAs || [];
@@ -887,7 +908,8 @@
 
   // The heading over the Ticket's books: "Other books at 39.5" / "at +3.5";
   // a moneyline has no number (even when the feed sends it one).
-  function otherBooksLabel(betType, points) {
+  function otherBooksLabel(betType, points, check) {
+    if (check && check.onlyBook && check.nearest && check.nearest.length) return "Nearest line at each other book";
     if (betType === "Moneyline" || points == null) return "Other books on this line";
     return `Other books at ${betType === "Total" || points <= 0 ? points : `+${points}`}`;
   }
