@@ -297,3 +297,9 @@ test("venueLinkView: one Open link per venue, none for other books", () => {
   assert.equal(phoneView.venueLinkView({ ...base, book: { name: phoneView.UNDERDOG_BOOK_NAME } }).buttonText, "Open at Underdog");
   assert.equal(phoneView.venueLinkView({ ...base, book: { name: "Kalshi" } }), null);
 });
+
+test("place toasts: the placing line names stake, bet and venue; only a fill fades", () => {
+  assert.equal(phoneView.placeToastPlacingText(150, "Chiefs -2.5", "Kalshi"), "Placing $150.00 on Chiefs -2.5 at Kalshi…");
+  assert.equal(phoneView.placeToastHideAfterMs("ok"), 8000);
+  for (const tone of ["wait", "refused", "warn", "bad"]) assert.equal(phoneView.placeToastHideAfterMs(tone), null);
+});
