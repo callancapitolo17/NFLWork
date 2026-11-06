@@ -2169,7 +2169,8 @@ function edgeRowsOf(payload) {
 }
 
 test("live prices: Kalshi and Novig lines on edges.json are priced off the exchanges' own books once their markets check out", async () => {
-  const { runner, service } = liveRunner();
+  const novig = novigFetch();
+  const { runner, service } = liveRunner({ novig });
   await runner.start();
   await runner.livePricePass();
   const served = runner.livePricesPayload();
@@ -2191,6 +2192,50 @@ test("live prices: Kalshi and Novig lines on edges.json are priced off the excha
   const asks = service.posts.filter((post) => post.route === "/novig_books.json").map((post) => post.body);
   assert.deepEqual(asks, [{ marketIds: [NOVIG_MARKET], waitMs: 0, priority: false, background: true }]);
   assert.equal(runner.health().livePrices.byVenue.kalshi.live >= 1, true);
+  assert.equal(novig.calls.some((call) => call.url.endsWith("/book")), false, "a stream book needs no keyed REST read");
+  runner.stop();
+});
+
+test("live prices: a Novig market the stream has not reached yet is read off the keyed REST book, so the line is live, not unchecked", async () => {
+  const novig = novigFetch();
+  const waiting = (body) => ({
+    stream: { connected: true, lastFrameAgeMs: 900, error: null },
+    books: Object.fromEntries(body.marketIds.map((marketId) => [marketId, { error: `waiting for Novig's stream snapshot of market ${marketId}` }])),
+  });
+  const { runner } = liveRunner({ novig, streamBooks: waiting });
+  await runner.start();
+  await runner.livePricePass();
+  const novigRow = edgeRowsOf(runner.edgesPayload()).find((row) => row.book.id === 89);
+  assert.equal(novigRow.liveCheck, "live");
+  assert.equal(novigRow.sourcePrice, 0.555);
+  assert.equal(novigRow.liquidity, 2775);
+  assert.equal(novig.calls.filter((call) => call.url.endsWith(`/markets/${NOVIG_MARKET}/book`)).length, 1);
+  assert.equal(runner.health().livePrices.byVenue.novig.unchecked, 0);
+  runner.stop();
+});
+
+test("live prices: a Novig market the stream saw go live reads no keyed REST book and the line drops", async () => {
+  const novig = novigFetch();
+  const { runner } = liveRunner({ novig, streamBooks: novigStreamBooks({ started: true }) });
+  await runner.start();
+  await runner.livePricePass();
+  assert.equal(edgeRowsOf(runner.edgesPayload()).some((row) => row.book.id === 89), false);
+  assert.equal(novig.calls.some((call) => call.url.endsWith("/book")), false);
+  runner.stop();
+});
+
+test("live prices: an unreadable keyed REST book leaves the Novig line unchecked, naming the market", async () => {
+  const novig = novigFetch();
+  const impl = async (url, init) => (url.endsWith("/book") ? response({ status: 429, body: JSON.stringify({ code: "RATE_LIMIT_EXCEEDED" }) }) : novig(url, init));
+  impl.calls = novig.calls;
+  const { runner } = liveRunner({ novig: impl, streamBooks: () => ({ books: {} }) });
+  await runner.start();
+  await runner.livePricePass();
+  const novigRow = edgeRowsOf(runner.edgesPayload()).find((row) => row.book.id === 89);
+  assert.equal(novigRow.liveCheck, "unchecked");
+  const counts = runner.health().livePrices.byVenue.novig;
+  assert.equal(counts.unchecked, 1);
+  assert.match(counts.lastError, new RegExp(`keyed book of market ${NOVIG_MARKET} unread: HTTP 429 RATE_LIMIT_EXCEEDED`));
   runner.stop();
 });
 

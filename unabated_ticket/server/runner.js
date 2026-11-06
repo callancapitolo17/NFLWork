@@ -95,7 +95,10 @@
 //       once per ticker per 10 min and /markets/<ticker>/orderbook (at most
 //       LIVE_KALSHI_READS_PER_PASS a pass, two at a time), POST <bets
 //       service>/novig_books.json with background: true (subscribed behind
-//       the bot's and Place's markets, no wait), Polymarket US's GET
+//       the bot's and Place's markets, no wait) and, for a market the stream
+//       has no book of yet, POST <bets service>/novig_read.json for its keyed
+//       /v3/catalog/markets/<id>/book (at most LIVE_NOVIG_REST_READS_PER_PASS
+//       a pass, one at a time, stopping at the first failure), Polymarket US's GET
 //       /v1/events (reused 5 min per game, at most
 //       LIVE_POLYMARKET_EVENT_READS_PER_PASS fresh a pass) and POST <bets
 //       service>/polymarket_books.json with background: true (the books off
@@ -264,6 +267,13 @@ const POLYMARKET_STREAM_READ_TIMEOUT_MS = POLYMARKET_STREAM_WAIT_MS + 3000;
 // passes), so up to ~4x this many lines stay read at each venue.
 const LIVE_KALSHI_READS_PER_PASS = 120;
 const LIVE_POLYMARKET_READS_PER_PASS = 60;
+// Novig's stream adds only ~15 markets a minute (16 tokens a subscribe,
+// refilling 4 a second), so on a big slate, and after every restart, most
+// Novig lines would wait many minutes for a stream book (2026-11-06: 3 of 218
+// read 7 min after a deploy). A market without one is read off the keyed REST
+// /book instead, at most this many a pass (~2 reads/s at a pass every 30 s,
+// of the key's 16/s read budget the bot and Place share), oldest read first.
+const LIVE_NOVIG_REST_READS_PER_PASS = 60;
 // A live all-in price is kept to 6 decimals (Polymarket US's fee math rounds there).
 const LIVE_PRICE_DECIMALS = 1e6;
 // The venue name the overlay's ProphetX reads carry, and the most games one
@@ -1388,7 +1398,8 @@ function createRunner(deps) {
   // best edge first), each venue's book read and kept. Kalshi and Polymarket
   // US are read per market at a few at a time, at most LIVE_*_READS_PER_PASS
   // a pass, so the taker's and Place's reads keep their room; Novig's books
-  // come off the stream, subscribed behind the bot's and Place's markets.
+  // come off the stream, subscribed behind the bot's and Place's markets, and
+  // off the keyed REST /book for a market the stream has not reached yet.
   async function livePricePass() {
     const board = feedState;
     if (liveBusy || !board || !scannerStatus || scannerStatus.phase !== "live") return;
@@ -1504,9 +1515,13 @@ function createRunner(deps) {
       const read = await readStreamBooks(marketIds.slice(start, start + NOVIG_BOOK_MARKETS_PER_ASK), false, true);
       for (const [marketId, view] of read) books.set(marketId, view);
     }
+    const restBooks = await readNovigRestBooks(marketIds.filter((marketId) => {
+      const read = books.get(marketId);
+      return !read || (read.error && !read.final);
+    }));
     const readAt = now();
     for (const { row, contract } of wanted) {
-      const read = books.get(contract.marketId);
+      const read = restBooks.get(contract.marketId) || books.get(contract.marketId);
       if (!read) {
         noteUnchecked(counts, `${contract.marketId}: no stream answer`);
       } else if (read.error) {
@@ -1522,6 +1537,28 @@ function createRunner(deps) {
       }
     }
     return counts;
+  }
+
+  // The keyed REST books (novig_read.json) of the first
+  // LIVE_NOVIG_REST_READS_PER_PASS markets the stream has no book of:
+  // marketId -> {book} | {error}. The rest wait a pass (the stream may have
+  // them by then). The catalog the rows were matched on lists only open
+  // pregame markets, read at most NOVIG_CATALOG_REUSE_MS ago.
+  //
+  // One read at a time, so of novig_read.json's four sessions three stay free
+  // for the taker's catalog read and a Place quote's market and event; the
+  // first failed read (a 429, a slow service) stops the rest of the pass.
+  async function readNovigRestBooks(marketIds) {
+    const books = new Map();
+    for (const marketId of marketIds.slice(0, LIVE_NOVIG_REST_READS_PER_PASS)) {
+      try {
+        books.set(marketId, { book: await getNovigJson(`${novigMarketPath(marketId)}/book`) });
+      } catch (error) {
+        books.set(marketId, { error: `Novig's keyed book of market ${marketId} unread: ${error.message}` });
+        break;
+      }
+    }
+    return books;
   }
 
   // Polymarket US's live prices: each row's contract found once in its event

@@ -773,7 +773,12 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   (the taker's `marketMismatch`) and `/markets/<ticker>/orderbook`, at most
   120 a pass, two at a time. Novig: the bets service's book stream
   (`POST /novig_books.json` with `background: true`, subscribed behind the
-  bot's and Place's markets, no wait), each market checked against Novig's
+  bot's and Place's markets, no wait); a market the stream has no book of
+  yet is read off the keyed REST `/v3/catalog/markets/<id>/book` through
+  `POST /novig_read.json` instead, at most 60 a pass, one at a time, the
+  first failed read ending that pass's reads (Cal,
+  2026-11-06: the stream adds only ~15 markets a minute, so 215 of 218 Novig
+  lines were still `unchecked` 7 min after a restart); each market checked against Novig's
   catalog listing first (`taker.novigSideMismatch`: outcome, type, period,
   strike, the outcome's name). Polymarket US: the contract found in its own
   event list the way Place finds it (event list reused 5 min per game, at
