@@ -2748,9 +2748,13 @@ node unabated_ticket/server/runner.js                     # must be running too 
   bets service unreachable since …, scanner errors, settings fallback) sit at
   the top. A read whose body does not arrive whole inside the page's 10 s
   timeout (a slow connection; `/bets.json` is the big one) reads "download
-  cut off", not as an empty reply. A Place result stays on the ticket after
-  the line leaves the Edges list (a fill often takes it off), with the amount
-  box and buttons gone.
+  cut off", not as an empty reply. The confirm tap on a venue Place
+  (Kalshi, Novig, Polymarket US, ProphetX, BFA) closes the Ticket at once and
+  follows the order in a toast above the tab bar (`Placing $X on <bet> at
+  <venue>…`, then the service's reply), so several Places can run while you
+  browse; a fill fades after 8 s, a refusal or an unsure reply stays until ✕.
+  A toast lives in the open page only: leave Safari mid-Place and the bet still
+  goes through, but its result shows on Bets, not as a toast.
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
   (the runner adds `betsService.unmatched`, `bets.unmatchedReasons` over
   its board, to `/edges.json`), venue freshness, open bets; Attach, Undo,

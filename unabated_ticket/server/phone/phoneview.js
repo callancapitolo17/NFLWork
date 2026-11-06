@@ -574,6 +574,21 @@
     return null;
   }
 
+  // ---- Place toasts (phone.js) ----------------------------------------------
+  // A venue Place runs in a toast so the Ticket can close at once: "Placing…"
+  // turns into the bets service's own reply. A fill fades on its own; a refusal
+  // or an unsure reply stays until Cal closes it, so it is never missed.
+  const PLACE_TOAST_FILLED_HIDE_MS = 8000;
+
+  function placeToastPlacingText(stakeDollars, sideLabel, venueName) {
+    return `Placing ${fmtDollars(stakeDollars)} on ${sideLabel} at ${venueName}\u2026`;
+  }
+
+  // tone: place.js replyTone ("ok" | "refused" | "warn" | "bad") or "wait" while placing.
+  function placeToastHideAfterMs(tone) {
+    return tone === "ok" ? PLACE_TOAST_FILLED_HIDE_MS : null;
+  }
+
   const api = {
     EDGES_POLL_MS, BETS_POLL_MS, EDGES_STALE_MS,
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
@@ -582,6 +597,7 @@
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
+    placeToastPlacingText, placeToastHideAfterMs,
   };
 
   if (inNode) {
