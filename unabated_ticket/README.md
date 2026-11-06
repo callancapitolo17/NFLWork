@@ -2863,7 +2863,8 @@ visible. Its one write is the Bets page's Remove / Restore.
   score from Unabated", never an old score. The period's name shows
   only for numbers checked against live games (`server/gamescore.js`
   `NAMED_PERIOD_IDS`, live.js's names: NFL and CFB quarters and halftime,
-  NCAAB halves; NBA, NHL, MLB and the rest still to check); an unchecked
+  NCAAB halves; NHL periods 8 / 9 / 10 as P1 / P2 / P3, overtime not yet
+  seen; NBA, MLB and the rest still to check); an unchecked
   number shows the clock alone. A copy the tracker kept through a failed
   refresh also turns to "No recent score" at its `staleAt`. Started bets the
   runner could not place on a game

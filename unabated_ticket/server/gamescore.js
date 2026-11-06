@@ -21,7 +21,7 @@
 
 const live = require("../extension/live.js");
 
-// Read live 2026-11-06 (NFL, CFB, NCAAB, NHL in progress, NCAAB final); the
+// Read live 2026-11-06 (NFL, CFB, NCAAB, NHL in progress, NCAAB and NHL final); the
 // extension's own between-quarters reader (page.js) uses 3 as final too.
 const STATUS_IN_PROGRESS = 2;
 const STATUS_FINAL = 3;
@@ -40,7 +40,17 @@ const NAMED_PERIOD_IDS = {
   cbb: [2, 3],
 };
 
+// Hockey's own period numbers, which live.js does not name. Read live
+// 2026-11-06 (league 6): games started 00:00Z were at 10 with the clock
+// counting down in the 3rd at 02:08Z and final at 10 by 03:46Z; a 01:00Z
+// game sat at 8 with 00:00 at 02:08Z (end of the 1st); a 02:30Z game was at
+// 9 with 14:10 left at 03:46Z. The feed's own market periods are pt8 / pt9 /
+// pt10 for the same league. Overtime and the shootout were not seen, so they
+// stay unnamed.
+const HOCKEY_PERIOD_NAMES = { 8: "P1", 9: "P2", 10: "P3" };
+
 function periodNameOf(league, periodId) {
+  if (league === "nhl") return HOCKEY_PERIOD_NAMES[periodId] ?? null;
   const ids = NAMED_PERIOD_IDS[league];
   if (!ids || !ids.includes(periodId)) return null;
   return live.PERIOD_ENDED[periodId] ?? null;

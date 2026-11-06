@@ -26,8 +26,16 @@ test("a football game in progress shows its score, quarter and clock", () => {
   assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 3 }), "cbb", NOW), line({ period: "2nd half" }));
 });
 
+test("a hockey game names its period 8 / 9 / 10 as P1 / P2 / P3", () => {
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 8 }), "nhl", NOW), line({ period: "P1" }));
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 9 }), "nhl", NOW), line({ period: "P2" }));
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 10 }), "nhl", NOW), line({ period: "P3" }));
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 10 }), "nba", NOW), line({ period: null }));
+});
+
 test("a period number not checked for the league shows no name, the clock still does", () => {
-  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 10 }), "nhl", NOW), line({ period: null }));
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 11 }), "nhl", NOW), line({ period: null }));
+  assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 5 }), "nhl", NOW), line({ period: null }));
   assert.deepEqual(gamescore.scoreLineOf(gameState({ periodId: 9 }), "nfl", NOW), line({ period: null }));
   assert.deepEqual(gamescore.scoreLineOf(gameState({ gameClock: null, periodId: null }), "mlb", NOW), line({ clock: null, period: null }));
 });
