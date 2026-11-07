@@ -247,7 +247,8 @@ def test_every_rfq_gets_one_decision_row(tmp_path):
         "SELECT rfq_id, decision, reason FROM rfq_decisions"))
     assert rows == {"r1": ("would_quote", None), "r2": ("decline", "same_game"),
                     "r3": ("would_quote", None), "r5": ("decline", "no_legs")}
-    assert dlog.query("SELECT count(*) FROM rfq_legs")[0][0] == 6
+    # Leg rows only for RFQs that reached the pricer (r1, r3).
+    assert dlog.query("SELECT count(*) FROM rfq_legs")[0][0] == 4
     assert dlog.query("SELECT reason_detail FROM rfq_decisions WHERE rfq_id='r5'"
                       )[0][0] == "market_fetch_failed"
     door = dlog.query("SELECT logged, other_league, below_floor, feed_mode "
@@ -257,4 +258,87 @@ def test_every_rfq_gets_one_decision_row(tmp_path):
     line = dlog.query("SELECT line->>'league' FROM rfq_legs "
                       "WHERE rfq_id='r1' AND leg_idx=0")[0][0]
     assert line == "NFL"
+    dlog.close()
+
+
+def test_caching_pricer_prices_each_leg_once_per_ttl():
+    t = [0.0]
+    inner = fixed_pricer({NFL_SPREAD: 0.5, NBA_ML: 0.4, CBB_TOTAL: 0.3})
+    cp = pricer.CachingPricer(inner, ttl_sec=3, backoff_sec=5, clock=lambda: t[0])
+    a = cp("r1", [(NFL_SPREAD, "yes"), (NBA_ML, "no")])
+    b = cp("r2", [(NBA_ML, "no"), (CBB_TOTAL, "yes")])
+    assert [l["fair"] for l in a.legs] == [0.5, 0.4]
+    assert [l["market_ticker"] for l in b.legs] == [NBA_ML, CBB_TOTAL]
+    assert inner.calls[1] == ("r2", [(CBB_TOTAL, "yes")])   # only the new leg
+    cp("r3", [(NFL_SPREAD, "yes"), (NBA_ML, "no")])
+    assert len(inner.calls) == 2 and cp.cache_hits == 3
+    t[0] = 3.5                                              # expired
+    cp("r4", [(NFL_SPREAD, "yes")])
+    assert inner.calls[-1] == ("r4", [(NFL_SPREAD, "yes")])
+
+
+def test_caching_pricer_backs_off_after_failure():
+    t = [0.0]
+    calls = []
+
+    def failing(rid, legs):
+        calls.append(rid)
+        raise pricer.PricerError("http_404")
+    cp = pricer.CachingPricer(failing, ttl_sec=3, backoff_sec=5, clock=lambda: t[0])
+    with pytest.raises(pricer.PricerError, match="http_404"):
+        cp("r1", [(NFL_SPREAD, "yes")])
+    with pytest.raises(pricer.PricerError, match="backoff after http_404"):
+        cp("r2", [(NFL_SPREAD, "yes")])
+    t[0] = 6
+    with pytest.raises(pricer.PricerError, match="http_404"):
+        cp("r3", [(NFL_SPREAD, "yes")])
+    assert calls == ["r1", "r3"]
+
+
+def test_full_backlog_logs_pricer_backlog_without_pricing(tmp_path):
+    dlog = DecisionLog(tmp_path / "q.duckdb")
+    fn = fixed_pricer({NFL_SPREAD: 0.5, NBA_ML: 0.4})
+    src = FakeSource([rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]),
+                      rfq("r2", [leg(NFL_SPREAD), leg(NFL_TOTAL_SAME)])])
+    q = Quoter(src, dlog, price_fn=fn, workers=1, max_backlog=0)
+    assert q.tick() == 2
+    q.shutdown()
+    dlog.flush()
+    rows = dict(dlog.query("SELECT rfq_id, reason FROM rfq_decisions"))
+    assert rows == {"r1": "pricer_backlog", "r2": "same_game"}
+    assert fn.calls == [] and q.door_row(datetime.now(timezone.utc))["backlog"] == 0
+    dlog.close()
+
+
+def test_existing_db_gains_detail_column(tmp_path):
+    import duckdb
+    from kalshi_parlay_quoter import db as dbmod
+    path = tmp_path / "old.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute(dbmod.SCHEMA_SQL.split("-- Added after")[0])  # the #288 schema
+    assert "detail" not in [r[0] for r in con.execute("DESCRIBE rfq_legs").fetchall()]
+    con.close()
+    dlog = DecisionLog(path)
+    row, legs = decide.decide(rfq(), [leg(NFL_SPREAD), leg(NBA_ML)],
+                              fixed_pricer({NFL_SPREAD: .5, NBA_ML: .4}))
+    legs[0]["detail"] = "on rung"
+    dlog.add(row, legs)
+    dlog.flush()
+    assert dlog.query("SELECT detail FROM rfq_legs WHERE leg_idx=0")[0][0] == "on rung"
+    dlog.close()
+
+
+def test_contract_sized_rfqs_meet_the_floor(tmp_path):
+    dlog = DecisionLog(tmp_path / "q.duckdb")
+    small = rfq("small", [leg(NFL_SPREAD), leg(NBA_ML)], cost="0")
+    small["contracts_fp"] = "20.00"           # pays at most $20 < $50
+    big = rfq("big", [leg(NFL_SPREAD), leg(NBA_ML)], cost="0")
+    big["contracts_fp"] = "205.00"
+    q = Quoter(FakeSource([small, big]), dlog, workers=1, min_cost_usd=50,
+               price_fn=fixed_pricer({NFL_SPREAD: .5, NBA_ML: .4}))
+    assert q.tick() == 1
+    q.shutdown()
+    dlog.flush()
+    assert [r[0] for r in dlog.query("SELECT rfq_id FROM rfq_decisions")] == ["big"]
+    assert q.door_row(datetime.now(timezone.utc))["below_floor"] == 1
     dlog.close()

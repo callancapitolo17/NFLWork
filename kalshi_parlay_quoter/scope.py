@@ -29,6 +29,9 @@ SERIES: dict[str, tuple[str, str]] = {
 }
 # Door prefixes for the WS source: anything that could be one of SERIES.
 LEAGUE_PREFIXES: tuple[str, ...] = tuple(LEAGUES)
+# Decline reasons evaluate() can return (no pricing happened).
+SCOPE_REASONS = frozenset({"no_legs", "unsupported_leg", "bad_side",
+                           "single_leg", "same_game"})
 
 
 @dataclass(frozen=True)
