@@ -69,6 +69,12 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     -> {ok, saved} (loopback only: Unabated's pregame fair
                                     ladders, server/laddersnapshot.js -> ladders.duckdb; 503
                                     when that file is not open)
+           POST /edge_segments.json body {rows: [{lineKey, segmentStart, lastSeen, eventId,
+                                    leagueId, periodTypeId, bookId, betTypeId, sideIndex, points, isAlt,
+                                    eventStart, price, sourcePrice, sourceFormat, fairAmerican,
+                                    edge, liquidity}]} -> {ok, saved} (loopback only: every
+                                    NFL / CFB / CBB full-game edge's life to kickoff,
+                                    server/edgelog.js -> ladders.duckdb; 503 as /ladders.json)
            POST /closing_fairs.json body {rows: [{betId, lineKey, points, fairAmerican,
                                     fairObservedAt, eventStart}]} -> {ok, saved}
                                     (the server runner's pre-start read of each open bet's
@@ -275,6 +281,8 @@ taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb)
 POST /ladders.json (loopback only, the runner's) INSERTs each game's opener and
 UPSERTs its newest pregame close into ladders.duckdb::ladder_readings
 (ladder_store.py; its own file, config.LADDER_DB_PATH; issue #264).
+POST /edge_segments.json (loopback only, the runner's) INSERTs each new edge
+segment and moves a known one's last_seen forward in ladders.duckdb::edge_segments.
 POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /
 UPDATEs bets.duckdb::manual_orders (manual_orders.py).
 POST /place_novig.json places a Novig order from Place's own sub-account (money)
@@ -1122,6 +1130,63 @@ def validate_ladder_rows(body: object) -> list[dict] | str:
     return _validate_rows(body, _validate_ladder_row)
 
 
+def _validate_edge_segment_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /edge_segments.json body in the store's shape (times
+    parsed), or what was expected and what was found: first seen no later than
+    last seen, both before the game's start."""
+    where = f"rows[{index}]"
+    if not isinstance(raw, dict):
+        return f"{where} must be an object, got {type(raw).__name__}"
+    line_key = raw.get("lineKey")
+    if not _non_empty_string(line_key):
+        return f"{where}.lineKey must be a non-empty string, got {line_key!r}"
+    # edgelog.js logs the ladders' leagues, period, bet types and sides.
+    for field, allowed in (("leagueId", LADDER_LEAGUE_IDS), ("periodTypeId", LADDER_PERIOD_TYPE_IDS),
+                           ("betTypeId", LADDER_BET_TYPE_IDS), ("sideIndex", LADDER_SIDES)):
+        if not _is_int(raw.get(field)) or raw[field] not in allowed:
+            return f"{where}.{field} must be one of {list(allowed)}, got {raw.get(field)!r}"
+    for field in ("eventId", "bookId"):
+        if not _is_int(raw.get(field)):
+            return f"{where}.{field} must be an integer, got {raw.get(field)!r}"
+    points = raw.get("points")
+    if raw["betTypeId"] == LADDER_BET_TYPE_MONEYLINE and points is not None:
+        return f"{where}.points must be null on a moneyline, got {points!r}"
+    if raw["betTypeId"] != LADDER_BET_TYPE_MONEYLINE and not _is_number(points):
+        return f"{where}.points must be a number, got {points!r}"
+    if not isinstance(raw.get("isAlt"), bool):
+        return f"{where}.isAlt must be true or false, got {raw.get('isAlt')!r}"
+    times = {field: _iso_ms(raw.get(field)) for field in ("segmentStart", "lastSeen", "eventStart")}
+    for field, ms in times.items():
+        if ms is None:
+            return f"{where}.{field} must be an ISO time, got {raw.get(field)!r}"
+    if not times["segmentStart"] <= times["lastSeen"] < times["eventStart"]:
+        return (f"{where} must have segmentStart <= lastSeen < eventStart (an edge is read pregame), "
+                f"got {raw['segmentStart']}, {raw['lastSeen']}, {raw['eventStart']}")
+    for field in ("price", "fairAmerican"):
+        if not _is_whole_american(raw.get(field)):
+            return f"{where}.{field} must be a whole American price, got {raw.get(field)!r}"
+    if not _is_number(raw.get("edge")):
+        return f"{where}.edge must be a number, got {raw.get('edge')!r}"
+    for field in ("sourcePrice", "liquidity"):
+        if not _number_or_none(raw.get(field)):
+            return f"{where}.{field} must be a number or null, got {raw.get(field)!r}"
+    if raw.get("sourceFormat") is not None and not _is_int(raw["sourceFormat"]):
+        return f"{where}.sourceFormat must be an integer or null, got {raw['sourceFormat']!r}"
+    as_datetime = {field: datetime.fromtimestamp(ms / 1000, timezone.utc) for field, ms in times.items()}
+    return {
+        "lineKey": line_key, **as_datetime, "eventId": raw["eventId"], "leagueId": raw["leagueId"],
+        "periodTypeId": raw["periodTypeId"], "bookId": raw["bookId"],
+        "betTypeId": raw["betTypeId"], "sideIndex": raw["sideIndex"], "points": points, "isAlt": raw["isAlt"],
+        "price": raw["price"], "sourcePrice": raw.get("sourcePrice"), "sourceFormat": raw.get("sourceFormat"),
+        "fairAmerican": raw["fairAmerican"], "edge": raw["edge"], "liquidity": raw.get("liquidity"),
+    }
+
+
+def validate_edge_segment_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /edge_segments.json body, or an error naming the first bad row (the whole request is refused)."""
+    return _validate_rows(body, _validate_edge_segment_row)
+
+
 def _is_tau_sample_key(value: object) -> bool:
     """The shape the runner's pool reads a rung off: "<bookId>|<rungKey>|<sideIndex>"
     (tailflex.js rungOfSampleKey). A stored key of another shape would make
@@ -1548,7 +1613,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/place_prophetx.json", "/place_bfa.json", "/taker_decisions.json", "/ladders.json",
-                                "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json",
+                                "/edge_segments.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json",
                                 "/prophetx_live.json", "/polymarket_books.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
@@ -1614,7 +1679,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/place_bfa.json":
                 self._place_bfa(body)
                 return
-            if (url.path in ("/taker_decisions.json", "/ladders.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
+            if (url.path in ("/taker_decisions.json", "/ladders.json", "/edge_segments.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
                              "/novig_read.json", "/prophetx_live.json", "/polymarket_books.json")
                     and self._refused_non_loopback()):
                 return
@@ -1638,6 +1703,12 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                     self._send_json(503, {"error": "the ladder store is not open on this service"})
                     return
                 self._save_rows(validate_ladder_rows(body), ladder_store.save_readings)
+                return
+            if url.path == "/edge_segments.json":
+                if ladder_store is None:
+                    self._send_json(503, {"error": "the ladder store is not open on this service"})
+                    return
+                self._save_rows(validate_edge_segment_rows(body), ladder_store.save_edge_segments)
                 return
             if url.path == "/taker/order.json":
                 self._place_taker_order(body)

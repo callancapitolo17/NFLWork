@@ -518,6 +518,82 @@ test("ladders: every NFL game's three ladders POSTed as opener + close, unchange
   runner.stop();
 });
 
+test("edge segments: every NFL edge POSTed once, held while unchanged, a failed POST retried, none after kickoff", async () => {
+  let clock = NOW;
+  const posts = [];
+  let answer = { status: 503, body: { error: "the ladder store is not open on this service" } };
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/edge_segments.json") {
+      posts.push(JSON.parse(init.body).rows);
+      assert.equal(init.method, "POST");
+      return response({ status: answer.status, body: JSON.stringify(answer.body) });
+    }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet });
+  await runner.start();
+  await runner.postEdgeSegments();
+  assert.equal(posts.length, 1);
+  assert.match(runner.health().edgeLog.error, /HTTP 503/);
+  const sent = posts[0].length;
+  assert.ok(sent > 5, "the slice's edges are sent");
+  assert.equal(runner.health().edgeLog.unsent, sent, "the refused rows are held");
+  answer = { status: 200, body: { ok: true, saved: sent } };
+  await runner.postEdgeSegments();
+  assert.equal(posts.length, 2, "the refused rows are sent again");
+  assert.deepEqual(posts[1], posts[0]);
+  assert.ok(posts[1].every((row) => row.leagueId === 1 && row.lastSeen === new Date(NOW).toISOString()
+    && row.eventStart === new Date(KICKOFF_MS).toISOString() && !("signature" in row) && !("observedMs" in row)));
+  assert.deepEqual([runner.health().edgeLog.error, runner.health().edgeLog.rowsSent, runner.health().edgeLog.unsent,
+    runner.health().edgeLog.openSegments], [null, sent, 0, sent]);
+  await runner.postEdgeSegments();
+  assert.equal(posts.length, 2, "unchanged edges off the same snapshot are not resent");
+  clock = KICKOFF_MS + 1000;
+  await runner.postEdgeSegments();
+  assert.equal(posts.length, 2, "every segment was sent as last seen: kickoff ends them with nothing new");
+  assert.equal(runner.health().edgeLog.openSegments, 0);
+  runner.stop();
+});
+
+test("edge segments: a 400 drops only the row it names and sends the rest; past the cap the oldest go, logged and counted", async () => {
+  const posts = [];
+  const warnings = [];
+  let refuseIndex = 2;
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/edge_segments.json") {
+      const rows = JSON.parse(init.body).rows;
+      posts.push(rows);
+      if (refuseIndex !== null) {
+        const index = refuseIndex;
+        refuseIndex = null;
+        return response({ status: 400, body: JSON.stringify({ error: `rows[${index}].price must be a whole American price, got 1` }) });
+      }
+      return response({ body: JSON.stringify({ ok: true, saved: rows.length }) });
+    }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW,
+    timers: noTimers, logInfo: () => {}, logWarning: (message) => warnings.push(message), edgeSegmentMaxUnsent: 4 });
+  await runner.start();
+  await runner.postEdgeSegments();
+  const [first, second] = posts;
+  assert.equal(first.length, 4, "only the newest 4 rows were held");
+  assert.deepEqual(second, [...first.slice(0, 2), ...first.slice(3)], "the refused row is dropped, the rest sent again at once");
+  const health = runner.health().edgeLog;
+  const overCap = health.dropped - 1;
+  assert.ok(overCap > 0, "the slice has more than 4 edges");
+  assert.deepEqual([health.error, health.unsent, health.rowsSent], [null, 0, 3]);
+  assert.ok(warnings.some((message) => message.includes(`dropped the ${overCap} oldest unsent rows (more than 4 held)`)));
+  assert.ok(warnings.some((message) => message.includes("dropped 1 row(s) the service refused")));
+  runner.stop();
+});
+
 test("close snapshots: every book's two sides at the bet's number, sent with the closing fair, never after kickoff", async () => {
   let clock = NOW;
   const posts = [];
