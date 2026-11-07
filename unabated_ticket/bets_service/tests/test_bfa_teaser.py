@@ -77,10 +77,12 @@ def recorded_pick(event_id, fixture_id, side, contestant_id, line, price, sport)
     return {"EventId": event_id, "FixtureId": fixture_id, "MarketType": 2, "PeriodNumber": 0, "Side": side,
             "Index": 0, "ContestantId": contestant_id, "Line": line, "TeaserPoints": 6.0, "Price": price,
             "Amount": 200.0, "PointsPurchased": 0.0, "PitcherAction": 0, "RoundRobinCombinations": 0,
-            "UseFreePlay": False, "RiskOrWinType": 1, "IdGameType": 1, "IdSport": sport}
+            "UseFreePlay": False, "RiskOrWinType": 2, "IdGameType": 1, "IdSport": sport}
 
 
-# What the site POSTed for ticket 356323496 (decoded from the recording, 2026-10-03).
+# What the site POSTed for ticket 356323496 (decoded from the recording, 2026-10-03), except
+# RiskWin / RiskOrWinType: the recording sent 1 (Amount is the to-win), which BFA honours since
+# 2026-11-07; 2 is what the site sends when the risk is typed (bfa_teaser.RISK_OR_WIN_RISK).
 RECORDED_BODY = [{
     "IdTransaction": TRANSACTION_ID, "IdPlayer": 315172, "FillIdWager": -1, "WagerType": 2, "OpenSpots": 0,
     "Picks": [
@@ -89,7 +91,7 @@ RECORDED_BODY = [{
         recorded_pick(3167701, 18443731, 1, 64424692, -7.0, -115, "NFL"),
         recorded_pick(3179927, 18548061, 2, 64817450, 2.5, -110, "CFB"),
     ],
-    "RiskWin": 1, "AcceptChanges": 0, "IdWagerType": 117608, "IsLive": False, "PhoneLine": None, "UserId": None,
+    "RiskWin": 2, "AcceptChanges": 0, "IdWagerType": 117608, "IsLive": False, "PhoneLine": None, "UserId": None,
 }]
 
 

@@ -4,13 +4,13 @@ BFA IS Buckeye. One wager is one JSON POST, recorded 2026-10-03 off a ticket Cal
 hand (ticket 356323496) — POST api.bfagaming.com/wagering/api/v1/wager?playerId=<id> with the
 account's Keycloak bearer token and a ONE-element array:
   [{IdTransaction <uuid: the idempotency key>, IdPlayer, FillIdWager -1, WagerType 2 (teaser),
-    OpenSpots 0, RiskWin 1 (the amount is the risk), AcceptChanges 0 (BFA refuses a moved number
+    OpenSpots 0, RiskWin 2 (the amount is the risk; see RISK_OR_WIN_RISK), AcceptChanges 0 (BFA refuses a moved number
     rather than taking the new one), IdWagerType <the account's own teaser type>, IsLive false,
     PhoneLine null, UserId null,
     Picks: [{EventId, FixtureId, MarketType 2 spread | 3 total, PeriodNumber 0, Side, Index 0,
              ContestantId (null on a total), Line <the UNTEASED number>, TeaserPoints 6,
              Price <BFA's juice>, Amount <the ticket stake, on every pick>, PointsPurchased 0,
-             PitcherAction 0, RoundRobinCombinations 0, UseFreePlay false, RiskOrWinType 1,
+             PitcherAction 0, RoundRobinCombinations 0, UseFreePlay false, RiskOrWinType 2,
              IdGameType, IdSport}]}]
 No preflight call and no captcha. The reply is only {"state": 0} — taken for processing; the
 outcome reaches the site ~1 s later on a SignalR hub this module does not speak, so it reads the
@@ -119,6 +119,12 @@ FULL_GAME_LABEL = "FG"
 # A +300 ticket returns 3 dollars of profit per dollar risked.
 TICKET_NET_ODDS = TICKET_PAYOUT_AMERICAN / 100
 MONEY_TOLERANCE = 0.005
+# RiskWin on the wager and RiskOrWinType on each pick: which side of the ticket Amount is. From
+# the site's own code (its Blazor betslip, read 2026-11-07): 2 = Amount is the risk (you typed the
+# risk), 1 = Amount is the to-win, 0 = the base amount (the smaller side). The 2026-10-03 recording
+# sent 1 and BFA booked Amount as the risk through 2026-11-01; from 2026-11-07 BFA honours the 1
+# (seven $200 tickets, 359110156..359114763, risked $66.67 to win $200). 2 risks the stake at any price.
+RISK_OR_WIN_RISK = 2
 MAX_ERROR_TEXT = 300
 
 STATUS_PLACED = "placed"
@@ -363,7 +369,7 @@ def pick_of(match: dict, stake: int) -> dict:
         "PitcherAction": 0,
         "RoundRobinCombinations": 0,
         "UseFreePlay": False,
-        "RiskOrWinType": 1,
+        "RiskOrWinType": RISK_OR_WIN_RISK,
         "IdGameType": odds["dGtId"],
         "IdSport": odds["dSpId"],
     }
@@ -378,7 +384,7 @@ def wager_body(transaction_id: str, player_id: str, wager_type_id: int, picks: l
         "WagerType": WAGER_TYPE_TEASER,
         "OpenSpots": 0,
         "Picks": picks,
-        "RiskWin": 1,
+        "RiskWin": RISK_OR_WIN_RISK,
         "AcceptChanges": 0,
         "IdWagerType": wager_type_id,
         "IsLive": False,
