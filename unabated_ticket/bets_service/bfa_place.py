@@ -52,7 +52,8 @@ from datetime import datetime, timezone
 
 from unabated_ticket.bets_service.bfa_teaser import (
     CONTESTANT_SIDES, FULL_GAME_LABEL, FULL_GAME_PERIOD, HTTP_CLIENT_ERRORS, HTTP_TIMEOUT_SEC, MAIN_LINE_INDEX,
-    MARKET_OPEN, MONEY_TOLERANCE, ODDS_OPEN, RISK_OR_WIN_RISK, START_WINDOW_SEC, TOTAL_SIDES, WAGER_URL, games_with_rotation,
+    MARKET_OPEN, MONEY_TOLERANCE, ODDS_OPEN, RISK_OR_WIN_RISK, START_WINDOW_SEC, TOTAL_SIDES, WAGER_URL,
+    games_with_rotation,
     is_number, main_market, one_line, parse_iso, read_account_metadata, read_board, short_text, spread_side_problem,
     ticket_of,
 )

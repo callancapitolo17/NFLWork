@@ -169,8 +169,18 @@ def test_a_to_win_a_cent_off_from_the_rounding_still_reads_back_as_sent():
                            risk=17.0, to_win=15.46)
     want = {"rotations": {258}, "betType": "spread", "side": "home", "points": 2.5, "price": -110}
     assert straight_mismatches(kansas, want, 17) == []
-    # The ticket that booked the wrong size reads as different.
+    # The ticket that booked the wrong size reads as different, and so does a cent off on the risk.
     assert straight_mismatches({**kansas, "riskAmount": 18.7, "winAmount": 17.0}, want, 17) != []
+    assert straight_mismatches({**kansas, "riskAmount": 16.99}, want, 17) != []
+
+
+@pytest.mark.parametrize("price", [-110, 120])
+def test_the_pick_sends_the_stake_as_the_risk_at_a_minus_or_a_plus_price(price):
+    # Type 1 (to-win) would book $100 at +120 as risk $83.33 to win $100.
+    match = {"game": {"id": 1}, "fixture": {"id": 2}, "market": {"type": 2},
+             "odds": {"side": 1, "contestantId": 3, "line": 2.5, "price": price, "dGtId": 1, "dSpId": "NFL"}}
+    pick = bfa_place.straight_pick_of(match, 17)
+    assert (pick["Amount"], pick["RiskOrWinType"]) == (17.0, 2)
 
 
 def test_the_same_click_twice_sends_once(store):

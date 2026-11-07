@@ -603,6 +603,10 @@ def test_a_ticket_short_a_leg_or_off_on_the_money_is_named():
     paying_less = open_teaser(356323496, PLACED_LEGS, to_win=500.0)
     assert bfa_teaser.leg_mismatches(paying_less, expected_for(), 200) == [
         "BFA's ticket risks 200.0 to win 500.0, $200 to win $600 was sent"]
+    # 2026-11-07: BFA read the amount as the to-win (tickets 359110156..359114763).
+    a_third = open_teaser(356323496, PLACED_LEGS, risk=66.67, to_win=200.0)
+    assert bfa_teaser.leg_mismatches(a_third, expected_for(), 200) == [
+        "BFA's ticket risks 66.67 to win 200.0, $200 to win $600 was sent"]
 
 
 def test_a_total_leg_is_checked_on_its_side_and_its_number_after_the_teaser():
