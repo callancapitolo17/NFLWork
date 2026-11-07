@@ -133,9 +133,15 @@ _EDGE_SEGMENT_COLUMNS = ("line_key, segment_start, last_seen, event_id, league_i
                          "points, is_alt, event_start, price_american, source_price, source_format, fair_american, edge, "
                          "liquidity, received_at")
 
-_UPSERT_EDGE_SEGMENT = f"""
+_EDGE_SEGMENT_ROW_PLACEHOLDERS = f"({_placeholders(_EDGE_SEGMENT_COLUMNS)})"
+
+
+def _upsert_edge_segments_sql(row_count: int) -> str:
+    """One INSERT of `row_count` rows: a new segment is inserted, a known one
+    only moves last_seen (and received_at) forward."""
+    return f"""
 INSERT INTO edge_segments ({_EDGE_SEGMENT_COLUMNS})
-VALUES ({_placeholders(_EDGE_SEGMENT_COLUMNS)})
+VALUES {", ".join([_EDGE_SEGMENT_ROW_PLACEHOLDERS] * row_count)}
 ON CONFLICT (line_key, segment_start) DO UPDATE SET last_seen = excluded.last_seen, received_at = excluded.received_at
 WHERE excluded.last_seen > edge_segments.last_seen
 """
@@ -172,16 +178,26 @@ class LadderStore:
 
     def save_edge_segments(self, rows: list[dict], received_at: datetime) -> int:
         """INSERT each new segment and move a known one's last_seen forward
-        (never back). `rows` are service.validate_edge_segment_rows' output
-        (times already datetimes). Returns how many rows were written."""
-        written = 0
+        (never back), in one statement: a statement per row costs ~3 ms, and
+        the runner sends up to 500 rows a request. `rows` are
+        service.validate_edge_segment_rows' output (times already datetimes);
+        two rows of one segment keep the later last_seen (one statement cannot
+        update a row twice). Returns how many rows were written."""
+        newest: dict[tuple, dict] = {}
+        for row in rows:
+            key = (row["lineKey"], row["segmentStart"])
+            if key not in newest or row["lastSeen"] > newest[key]["lastSeen"]:
+                newest[key] = row
+        if not newest:
+            return 0
+        params = []
+        for row in newest.values():
+            params.extend([
+                row["lineKey"], row["segmentStart"], row["lastSeen"], row["eventId"], row["leagueId"],
+                row["periodTypeId"], row["bookId"], row["betTypeId"], row["sideIndex"], row["points"], row["isAlt"],
+                row["eventStart"], row["price"], row["sourcePrice"], row["sourceFormat"], row["fairAmerican"], row["edge"],
+                row["liquidity"], received_at,
+            ])
         with self._lock:
-            for row in rows:
-                [count] = self._con.execute(_UPSERT_EDGE_SEGMENT, [
-                    row["lineKey"], row["segmentStart"], row["lastSeen"], row["eventId"], row["leagueId"],
-                    row["periodTypeId"], row["bookId"],
-                    row["betTypeId"], row["sideIndex"], row["points"], row["isAlt"], row["eventStart"], row["price"],
-                    row["sourcePrice"], row["sourceFormat"], row["fairAmerican"], row["edge"], row["liquidity"], received_at,
-                ]).fetchone()
-                written += count
+            [written] = self._con.execute(_upsert_edge_segments_sql(len(newest)), params).fetchone()
         return written

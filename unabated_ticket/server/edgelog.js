@@ -53,11 +53,15 @@ const LAST_SEEN_CONFIRM_MS = 5 * 60 * 1000;
 // observedMs, signature}]. `signature` is what starts a new segment when it
 // changes (a main line keeps its key when the book moves its number).
 //   leagueId    the league to read
+//   lines       that league's lines (scanner.getLeagueLines)
 //   state       the scanner's feed state
 //   observedMs  when the league's snapshot landed (scanner leagueLoadedAt)
-function leagueEdgeLines({ leagueId, state, observedMs }) {
+function leagueEdgeLines({ leagueId, lines, state, observedMs }) {
   if (!state || !Number.isFinite(observedMs)) return [];
-  const rows = feed.selectEdges(state, {
+  // selectEdges walks every line it is given, and an alt's main is in its own
+  // league, so it reads this league's lines alone, not the whole board.
+  const leagueState = { ...state, lines: Object.fromEntries(lines.map((line) => [line.key, line])) };
+  const rows = feed.selectEdges(leagueState, {
     leagueIds: new Set([leagueId]), periods: new Set([FULL_GAME_PERIOD_ID]), betTypes: new Set(LOGGED_BET_TYPE_IDS),
     minEdge: MIN_LOGGED_EDGE, includeAlts: true, now: observedMs, maxLineAgeMs: taker.MAX_LINE_AGE_MS, minLiquidityToWin: null,
   });

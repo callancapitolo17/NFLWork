@@ -22,7 +22,7 @@ function sliceState() {
 }
 
 function sliceEdgeLines(state, observedMs = OBSERVED_MS) {
-  return edgelog.leagueEdgeLines({ leagueId: NFL, state, observedMs });
+  return edgelog.leagueEdgeLines({ leagueId: NFL, lines: Object.values(state.lines), state, observedMs });
 }
 
 test("leagueEdgeLines: every field off the Edges tab's own rows at a 1% floor, every live book, alts included, full game", () => {

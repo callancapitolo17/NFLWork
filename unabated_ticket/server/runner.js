@@ -55,8 +55,8 @@
 //       unchanged; ladders.duckdb keeps the first opener and the newest
 //       pregame close (issue #264). Stored only, nothing reads it back.
 //   POST <bets service>/edge_segments.json every 30 s — every NFL / CFB / CBB
-//       full-game line showing a 1%+ edge, as segments at one number, price
-//       and fair from first sighting to the edge's end or kickoff
+//       full-game line showing a 1%+ edge, as segments at one number, price,
+//       fair and start from first sighting to the edge's end or kickoff
 //       (server/edgelog.js), into ladders.duckdb: whether an edge seen early
 //       was still there later. Stored only, nothing reads it back.
 //   GET <bets service>/tau_samples.json once on start and POST /tau_samples.json
@@ -1222,7 +1222,9 @@ function createRunner(deps) {
       const version = scanner.getLeagueVersion(leagueId);
       let cached = edgeLineCache.get(leagueId);
       if (!cached || cached.version !== version) {
-        cached = { version, edgeLines: edgelog.leagueEdgeLines({ leagueId, state: feedState, observedMs: loadedAt[leagueId] }) };
+        cached = { version, edgeLines: edgelog.leagueEdgeLines({
+          leagueId, lines: scanner.getLeagueLines(leagueId), state: feedState, observedMs: loadedAt[leagueId],
+        }) };
         edgeLineCache.set(leagueId, cached);
       }
       edgeLines.push(...cached.edgeLines);
