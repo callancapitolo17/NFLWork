@@ -55,9 +55,12 @@ def test_a_segment_is_inserted_once_and_its_last_seen_only_moves_forward(stores)
 def test_two_rows_of_one_segment_in_one_request_keep_the_later_last_seen(stores):
     _, ladder_store = stores
     later = {**SPREAD_SEGMENT, "lastSeen": "2026-09-13T12:05:00.000Z"}
-    assert save(ladder_store, [later, SPREAD_SEGMENT]) == 1
+    assert save(ladder_store, [SPREAD_SEGMENT, later]) == 1
     assert save(ladder_store, []) == 0
-    assert [row[2] for row in stored(ladder_store)] == ["2026-09-13 12:05:00+00"]
+    assert stored(ladder_store) == [
+        ("289357360:ms105:si0:tid6", "2026-09-13 12:00:00+00", "2026-09-13 12:05:00+00", 125807, 1, 1, 105, 2, 0, -2.5,
+         False, "2026-09-13 17:00:00+00", 110, 0.47, 2, -105, 0.0712, 250.0, "2026-09-13 12:00:05+00"),
+    ]
 
 
 def test_a_new_segment_start_on_the_same_line_is_its_own_row(stores):
