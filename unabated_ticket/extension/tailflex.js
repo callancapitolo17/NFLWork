@@ -565,7 +565,7 @@
 
   const api = {
     C_FALLBACK, TAU_FALLBACK, TAU_POOL_WINDOW_MS, MIN_RUNGS, TRIM_TOP_SHARE, MIN_DIST_SD, IMPLIED_SUM_MIN, IMPLIED_SUM_MAX,
-    dnorm, pnorm, qnorm, impliedProbOf, devigProbitTwoWay, marketKeyOf,
+    dnorm, pnorm, qnorm, impliedProbOf, devigProbitTwoWay, marketKeyOf, sideKeyOf,
     cOfRungs, tauSamplesOfRungs, tauOfSamples, tauByMarketOf, createTauPool, measureTailFlex, withPooledTau,
     cOf, isMeasured, tauOf, isTauMeasured, edgeUncertainty, shrinkFactor, shrinkOfRow, rankScoreOf, liveRankScoreOf,
   };

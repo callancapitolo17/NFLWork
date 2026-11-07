@@ -1127,8 +1127,9 @@ test("taker: each order carries its market's Kalshi cash pot (exchange_index), n
 });
 
 // ---- GET /rfq_price.json: RFQ legs priced off Unabated (#282, places nothing) ----
-test("rfq_price: legs in request order, each priced or declined; Kalshi's market read once a minute, its book every 2 s", async () => {
-  const { runner, kalshi, service } = await quoteRunner();
+test("rfq_price: legs in request order, each priced or declined; Kalshi's market re-read after 10 s, its book after 2 s, a failed read next time", async () => {
+  let clock = TAKER_NOW;
+  const { runner, kalshi, service } = await quoteRunner({}, { now: () => clock });
   const legs = `${TAKER_TICKER}:yes,KXNCAAFTOTAL-26SEP19DUQWSU-53:no,KXNFL1HSPREAD-26NOV09KCDEN-KC4:yes`;
   const out = await runner.rfqPrice(new URLSearchParams({ rfq_id: "r1", legs }));
   assert.deepEqual([out.rfq_id, out.priced_at_ms], ["r1", TAKER_NOW]);
@@ -1138,14 +1139,23 @@ test("rfq_price: legs in request order, each priced or declined; Kalshi's market
   assert.ok(spread.sigma > 0, "an alt 3 points off the main carries tail-flex uncertainty");
   assert.deepEqual([spread.line.team, spread.line.number, spread.kickoff_ms], ["Washington State", -35.5, Date.parse(WSU_UNABATED_START)]);
   assert.deepEqual([spread.kalshi_status, spread.kalshi_yes_ask], ["active", 0.57]);
+  assert.equal(typeof spread.fair_age_ms, "number", "the league's snapshot time reaches the leg");
   // The fake Kalshi lists no total market: priced off Unabated, but never answered unchecked.
   assert.deepEqual([total.ok, total.reason, total.line.over_under], [false, "kalshi_unread", "under"]);
   assert.ok(total.fair > 0.4 && total.fair < 0.6);
   assert.deepEqual([half.ok, half.reason], [false, "unsupported_series"]);
   assert.ok(!kalshi.calls.some((url) => url.includes("KXNFL1H")), "an unsupported leg reads nothing");
   const reads = kalshi.calls.length;
+  const readsOf = (suffix) => kalshi.calls.filter((url) => url === `https://kalshi.test/v2/markets/${TAKER_TICKER}${suffix}`).length;
   await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:no` }));
   assert.equal(kalshi.calls.length, reads, "the same market within its TTLs is not read again");
+  clock += 3000;
+  await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:no,KXNCAAFTOTAL-26SEP19DUQWSU-53:no` }));
+  assert.deepEqual([readsOf(""), readsOf("/orderbook")], [1, 2], "past 2 s the book is read again, the market is not");
+  assert.equal(kalshi.calls.filter((url) => url.endsWith("/markets/KXNCAAFTOTAL-26SEP19DUQWSU-53")).length, 2, "a failed read is not held");
+  clock += 10 * 1000;
+  await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:no` }));
+  assert.deepEqual([readsOf(""), readsOf("/orderbook")], [2, 3], "past 10 s the market is read again");
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
   runner.stop();
 });

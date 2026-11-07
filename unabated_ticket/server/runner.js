@@ -319,12 +319,17 @@ const TAKER_MAX_HELD_AGE_MS = 5 * 60 * 1000;
 // Kalshi's start for a game (GET /milestones) is read once per event this
 // often; a read that failed is retried sooner. Starts move by days, not minutes.
 const KALSHI_START_TTL_MS = 10 * 60 * 1000;
-// /rfq_price.json's Kalshi reads (rfqCachedRead): a market's status and
-// strike change rarely, its book is a check beside Unabated's fair, not a
-// price to trade at, so a couple of seconds old is fine.
-const RFQ_MARKET_TTL_MS = 60 * 1000;
+// /rfq_price.json's Kalshi reads (rfqCachedRead). A market's strike never
+// changes and its status rarely (the started gate covers kickoff); its book
+// is a check beside Unabated's fair, not a price to trade at.
+const RFQ_MARKET_TTL_MS = 10 * 1000;
 const RFQ_BOOK_TTL_MS = 2 * 1000;
 const RFQ_CACHE_MAX = 500;
+// Each read gives up after this, inside the quoter's 1.5 s budget (#283); the leg is then kalshi_unread.
+const RFQ_KALSHI_READ_TIMEOUT_MS = 1000;
+// Reads in flight for RFQs at once, beside the taker's KALSHI_BOOK_READS_AT_ONCE,
+// under Kalshi's 20 reads/s basic limit; the caches above keep a repeated leg off it.
+const RFQ_KALSHI_READS_AT_ONCE = 4;
 const KALSHI_START_RETRY_MS = 60 * 1000;
 // The desk sends, cancels and reads fills, each up to 10 s at Kalshi.
 const TAKER_ORDER_TIMEOUT_MS = 45 * 1000;
@@ -440,10 +445,12 @@ function nodeFetch(url, options) {
 
 // One JSON GET of the bets service. Node's fetch says only "fetch failed" for
 // a refused or reset connection; the reason is in its cause, so it is named.
+//   init.timeoutMs  overrides SERVICE_TIMEOUT_MS (an RFQ answer has a 1.5 s budget)
 async function getServiceJson(fetchImpl, url, init = {}) {
+  const { timeoutMs = SERVICE_TIMEOUT_MS, ...fetchInit } = init;
   let response;
   try {
-    response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS) });
+    response = await fetchImpl(url, { ...fetchInit, signal: AbortSignal.timeout(timeoutMs) });
   } catch (error) {
     const reason = error.cause ? ` (${error.cause.code || error.cause.message})` : "";
     throw new Error(`${url}: ${error.message}${reason}`, { cause: error });
@@ -1322,8 +1329,8 @@ function createRunner(deps) {
 
   // One Kalshi orderbook, parsed (taker.parseKalshiOrderbook). Throws naming
   // the ticker and what went wrong; a 404 is a ticker Kalshi does not list.
-  async function readKalshiBook(ticker) {
-    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}/orderbook`);
+  async function readKalshiBook(ticker, init) {
+    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}/orderbook`, init);
     return taker.parseKalshiOrderbook(body);
   }
 
@@ -2136,16 +2143,28 @@ function createRunner(deps) {
     };
   }
 
-  // Kalshi reads for /rfq_price.json, shared across RFQs: one RFQ names up
-  // to a dozen legs and the quoter asks per RFQ, so the same market is read
-  // again within seconds. A market's status and strike are held
-  // RFQ_MARKET_TTL_MS, its book RFQ_BOOK_TTL_MS; a failed read is not held.
+  // Kalshi reads for /rfq_price.json, shared across RFQs: the quoter asks per
+  // RFQ and the same legs come back within seconds. Each read waits for one
+  // of RFQ_KALSHI_READS_AT_ONCE slots and gives up after
+  // RFQ_KALSHI_READ_TIMEOUT_MS; a failed read is not held.
+  let rfqReadsInFlight = 0;
+  const rfqReadQueue = [];
+  async function rfqKalshiRead(read) {
+    if (rfqReadsInFlight >= RFQ_KALSHI_READS_AT_ONCE) await new Promise((resolve) => rfqReadQueue.push(resolve));
+    rfqReadsInFlight += 1;
+    try {
+      return await read({ timeoutMs: RFQ_KALSHI_READ_TIMEOUT_MS });
+    } finally {
+      rfqReadsInFlight -= 1;
+      if (rfqReadQueue.length) rfqReadQueue.shift()();
+    }
+  }
   function rfqCachedRead(cache, ttlMs, ticker, read) {
     const at = now();
     const held = cache.get(ticker);
     if (held && at < held.expiresAt) return held.promise;
     if (cache.size > RFQ_CACHE_MAX) for (const [key, entry] of cache) if (at >= entry.expiresAt) cache.delete(key);
-    const promise = read(ticker);
+    const promise = rfqKalshiRead((init) => read(ticker, init));
     cache.set(ticker, { promise, expiresAt: at + ttlMs });
     promise.catch(() => {
       if (cache.get(ticker) && cache.get(ticker).promise === promise) cache.delete(ticker);
@@ -2157,26 +2176,29 @@ function createRunner(deps) {
   const rfqMarketOf = (ticker) => rfqCachedRead(rfqMarkets, RFQ_MARKET_TTL_MS, ticker, readKalshiMarket);
   const rfqBookOf = (ticker) => rfqCachedRead(rfqBooks, RFQ_BOOK_TTL_MS, ticker, readKalshiBook);
 
-  // GET /rfq_price.json (#282): each Kalshi RFQ leg's Unabated fair, its
-  // tail-flex sigma and Kalshi's live market, in request order
-  // (server/rfqprice.js). Places nothing, writes nothing. Each leg's market,
-  // book and start are read at once; a leg whose read fails is declined
-  // (kalshi_unread), never priced unchecked. A malformed legs param is a 400.
+  // When a league's fairs are from: Unabated's build of its last snapshot, else when it landed.
+  function fairAsOfLeague(leagueId) {
+    const builtAt = scanner.getLeagueBuiltAt(leagueId);
+    if (typeof builtAt === "number") return builtAt;
+    return (scannerStatus && scannerStatus.leagueLoadedAt && scannerStatus.leagueLoadedAt[leagueId]) ?? null;
+  }
+
+  // GET /rfq_price.json (#282; header above, server/rfqprice.js). Only a leg
+  // resolved to a game in a fresh league reads Kalshi (market, book, start).
   //   params  URLSearchParams {legs: "TICKER:yes,TICKER:no", rfq_id?}
   async function rfqPriceNow(params) {
     const legs = rfqprice.parseLegsParam(params.get("legs"));
+    if (typeof legs === "string") throw httpError(400, legs);
     const pricedAt = now();
     const board = feedState;
-    const measurement = board ? tailFlexMeasurement() : null;
     const context = {
-      board, measurement, now: pricedAt,
-      linesOfEvent: (eventId) => linesOfEventNow(eventId),
+      board, measurement: board ? tailFlexMeasurement() : null, now: pricedAt, ladderOf: ladderReaderOf,
       staleReasonOf: (leagueId) => (scannerStatus ? staleSnapshotReason(leagueId, pricedAt) : "the scanner has not reported yet"),
-      leagueLoadedAt: (leagueId) => (scannerStatus && scannerStatus.leagueLoadedAt && scannerStatus.leagueLoadedAt[leagueId]) ?? null,
+      fairAsOf: fairAsOfLeague,
     };
     const priced = await Promise.all(legs.map(async (leg) => {
       const resolved = rfqprice.resolveLeg(leg.marketTicker, board);
-      if (resolved.reason && (!resolved.event || resolved.reason === "no_board")) return rfqprice.priceLeg(leg, resolved, context, {});
+      if (!rfqprice.needsKalshi(resolved, context)) return rfqprice.priceLeg(leg, resolved, context, {});
       const kalshi = {};
       try {
         [kalshi.market, kalshi.book, kalshi.startMs] = await Promise.all([
@@ -2565,8 +2587,8 @@ function createRunner(deps) {
   }
 
   // Kalshi's market object for a ticker (public GET /markets/<ticker>).
-  async function readKalshiMarket(ticker) {
-    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}`);
+  async function readKalshiMarket(ticker, init) {
+    const body = await getServiceJson(kalshiFetch, `${kalshiBaseUrl}/markets/${encodeURIComponent(ticker)}`, init);
     if (!body || typeof body.market !== "object" || body.market === null) throw new Error(`Kalshi market ${ticker}: no market object`);
     return body.market;
   }

@@ -10,6 +10,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const feed = require("../extension/feed.js");
 const tailflex = require("../extension/tailflex.js");
+const edgeRows = require("../extension/edgerows.js");
 const taker = require("../server/taker.js");
 const rfqprice = require("../server/rfqprice.js");
 const { moveLine } = require("./helpers.js");
@@ -29,9 +30,8 @@ function bookOf(yesBid, noBid) {
 
 function contextOf(board, extra = {}) {
   return {
-    board, now: NOW, measurement: null,
-    linesOfEvent: (eventId) => Object.values(board.lines).filter((line) => line.eventId === eventId),
-    staleReasonOf: () => null, leagueLoadedAt: () => NOW - 30 * 1000, ...extra,
+    board, now: NOW, measurement: null, ladderOf: edgeRows.createLadderReaders(board),
+    staleReasonOf: () => null, fairAsOf: () => NOW - 30 * 1000, ...extra,
   };
 }
 
@@ -66,14 +66,14 @@ function cfbBoard() {
   return state;
 }
 
-test("legs param: TICKER:side in order; anything malformed is a 400, never a shorter answer", () => {
+test("legs param: TICKER:side in order; anything malformed says why (the runner's 400), never a shorter answer", () => {
   assert.deepEqual(rfqprice.parseLegsParam("KXNFLSPREAD-26NOV09KCDEN-KC7:yes,KXNFLTOTAL-26NOV09KCDEN-45:NO"),
     [{ marketTicker: "KXNFLSPREAD-26NOV09KCDEN-KC7", side: "yes" }, { marketTicker: "KXNFLTOTAL-26NOV09KCDEN-45", side: "no" }]);
   for (const bad of [null, "", "KXNFLSPREAD-26NOV09KCDEN-KC7", "KXNFLSPREAD-26NOV09KCDEN-KC7:maybe", "KXNFLSPREAD-26NOV09KCDEN-KC7:yes,", "bad ticker:yes"]) {
-    assert.throws(() => rfqprice.parseLegsParam(bad), (error) => error.status === 400, `expected a 400 for ${bad}`);
+    assert.equal(typeof rfqprice.parseLegsParam(bad), "string", `expected a refusal for ${bad}`);
   }
   const many = Array.from({ length: rfqprice.MAX_LEGS + 1 }, () => "KXNFLGAME-26NOV09KCDEN-KC:yes").join(",");
-  assert.throws(() => rfqprice.parseLegsParam(many), /at most/);
+  assert.match(rfqprice.parseLegsParam(many), /at most/);
 });
 
 test("ticker shapes: each league's full-game moneyline, spread and total; anything else is unsupported_series", () => {
@@ -85,7 +85,7 @@ test("ticker shapes: each league's full-game moneyline, spread and total; anythi
   assert.equal(rfqprice.parseTicker("KXNCAAMBGAME-26NOV10DUKEUNC-DUKE").leagueId, 4);
   assert.equal(rfqprice.parseTicker("KXMLBSPREAD-26APR091905NYYBOS-NYY2").number, 1.5);
   assert.equal(rfqprice.parseTicker("KXNCAAFGAME-26SEP19DUQWSU-WSU").leagueId, 2);
-  for (const ticker of ["KXNFL1HSPREAD-26NOV09KCDEN-KC4", "KXMLBF5TOTAL-26APR091905NYYBOS-5", "KXMVECROSSCATEGORY-S2026ABC-XYZ", "KXNFLGAME-26NOV09KCDEN", "KXNFLTOTAL-26NOV09KCDEN-KC", "KXNFLSPREAD-26NOV09KCDEN-45"]) {
+  for (const ticker of ["KXNFL1HSPREAD-26NOV09KCDEN-KC4", "KXMLBF5TOTAL-26APR091905NYYBOS-5", "KXMVECROSSCATEGORY-S2026ABC-XYZ", "KXNFLGAME-26NOV09KCDEN", "KXNFLTOTAL-26NOV09KCDEN-KC", "KXNFLTOTAL-26NOV09KCDEN-0", "KXNFLSPREAD-26NOV09KCDEN-45", "KXNFLSPREAD-26NOV09KCDEN-KC0", "KXMLBRFI-26APR091905NYYBOS-1"]) {
     assert.equal(rfqprice.parseTicker(ticker).reason, "unsupported_series", ticker);
   }
 });
@@ -94,12 +94,17 @@ test("CFB alt rung: WSU wins by over 35.5 is Unabated's -35.5 fair; NO is its co
   const board = cfbBoard();
   const ticker = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
   const yes = price(board, ticker, "yes", { floorStrike: 35.5, kalshi: { book: bookOf(0.58, 0.40) } });
-  assert.equal(yes.ok, true, yes.detail);
-  near(yes.fair, 0.6);
-  assert.deepEqual([yes.fair_lo, yes.fair_hi, yes.bracketed], [yes.fair, yes.fair, false]);
-  assert.deepEqual(yes.line, { league: "CFB", market: "spread", period: "FG", team: "Washington State", over_under: null, number: -35.5, unabated_event_id: 123742, event_name: "Duquesne Dukes - DUQ @ Washington State Cougars - WST" });
-  assert.deepEqual([yes.kalshi_status, yes.kalshi_yes_bid, yes.kalshi_yes_ask, yes.kalshi_no_ask], ["active", 0.58, 0.6, 0.42]);
-  assert.deepEqual([yes.kickoff_ms, yes.fair_age_ms], [CFB_START_MS, 30 * 1000]);
+  // The whole leg, so a field that drifts from the quoter's contract (#283) fails here.
+  assert.deepEqual(yes, {
+    market_ticker: ticker, side: "yes", ok: true, reason: null, detail: null,
+    fair: 0.6, fair_lo: 0.6, fair_hi: 0.6, bracketed: false,
+    // 3 points off the -38.5 main, measured from even money (no measurement passed): tail flex at the fallback c.
+    sigma: Math.round(tailflex.edgeUncertainty({ decimal: 1, fairProb: 0.6, zMain: 0, c: tailflex.C_FALLBACK }) * 1e6) / 1e6,
+    c: tailflex.C_FALLBACK, tau: tailflex.TAU_FALLBACK,
+    line: { league: "CFB", market: "spread", period: "FG", team: "Washington State", over_under: null, number: -35.5, unabated_event_id: 123742, event_name: "Duquesne Dukes - DUQ @ Washington State Cougars - WST" },
+    kickoff_ms: CFB_START_MS, fair_age_ms: 30 * 1000,
+    kalshi_status: "active", kalshi_yes_bid: 0.58, kalshi_yes_ask: 0.6, kalshi_no_ask: 0.42,
+  });
   const no = price(board, ticker, "no", { floorStrike: 35.5 });
   near(no.fair, 0.4);
   assert.deepEqual([no.line.team, no.line.number], ["Duquesne", 35.5]);
@@ -126,7 +131,7 @@ test("CFB between rungs: WSU38 is bracketed by -38.5 and -35.5, fair the midpoin
   assert.match(past.detail, /outside the margin ladder/);
 });
 
-test("CFB moneyline: YES on WSU is Unabated's -2000; NO (DUQ or a tie) is the complement", () => {
+test("CFB moneyline: YES on WSU is Unabated's -2000; NO is the complement (overtime: a CFB game cannot end level)", () => {
   const board = cfbBoard();
   const yes = price(board, "KXNCAAFGAME-26SEP19DUQWSU-WSU", "yes");
   assert.equal(yes.ok, true, yes.detail);
@@ -156,7 +161,9 @@ test("declines: stale feed, no game, two games, started, Kalshi unread, market c
   const board = cfbBoard();
   const ticker = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
   assert.equal(price(board, ticker, "yes", { floorStrike: 35.5, context: { staleReasonOf: () => "league 2 snapshot landed 400 s ago" } }).reason, "stale_feed");
-  assert.equal(price(board, "KXNCAAFSPREAD-26SEP20AAABBB-AAA4", "yes", { floorStrike: 3.5 }).reason, "no_event");
+  const noEvent = price(board, "KXNCAAFSPREAD-26SEP20AAABBB-AAA4", "yes", { floorStrike: 3.5 });
+  assert.deepEqual([noEvent.reason, noEvent.fair, noEvent.line, noEvent.fair_age_ms], ["no_event", null,
+    { league: "CFB", market: "spread", period: "FG", team: null, over_under: null, number: null, unabated_event_id: null, event_name: null }, 30 * 1000]);
   assert.equal(price(board, "KXNFLSPREAD-26SEP19DUQWSU-WSU36", "yes", { floorStrike: 35.5 }).reason, "no_event", "a suffix matches only in its own league");
   const twice = cfbBoard();
   twice.events[999] = { ...twice.events[123742], eventId: 999 };
@@ -167,6 +174,15 @@ test("declines: stale feed, no game, two games, started, Kalshi unread, market c
   const early = price(board, ticker, "yes", { floorStrike: 35.5, kalshi: { startMs: NOW - 1 } });
   assert.deepEqual([early.reason, early.kickoff_ms], ["started", NOW - 1]);
   assert.equal(price(board, ticker, "yes", { kalshi: { error: "Kalshi 503" } }).reason, "kalshi_unread");
+  // No start anywhere: the game may be under way, so it is never priced as pregame.
+  const noStart = cfbBoard();
+  noStart.events[123742].eventStart = null;
+  assert.equal(price(noStart, ticker, "yes", { floorStrike: 35.5 }).reason, "no_start");
+  assert.equal(price(noStart, ticker, "yes", { floorStrike: 35.5, kalshi: { startMs: CFB_START_MS } }).ok, true);
+  const stale = price(board, ticker, "yes", { floorStrike: 35.5, context: { staleReasonOf: () => "stale build" } });
+  assert.deepEqual([stale.reason, stale.line.league, stale.fair], ["stale_feed", "CFB", null]);
+  assert.equal(rfqprice.needsKalshi(rfqprice.resolveLeg(ticker, board), contextOf(board, { staleReasonOf: () => "stale build" })), false, "a stale league reads no Kalshi");
+  assert.equal(rfqprice.needsKalshi(rfqprice.resolveLeg(ticker, board), contextOf(board)), true);
   assert.equal(price(board, ticker, "yes", { floorStrike: 36.5 }).reason, "market_mismatch");
   const closed = price(board, ticker, "yes", { kalshi: { market: { ticker, status: "closed", floor_strike: 35.5 } } });
   assert.deepEqual([closed.reason, closed.kalshi_status], ["market_mismatch", "closed"]);
@@ -241,12 +257,24 @@ for (const shape of LEAGUE_SHAPES) {
     for (const [ticker, side, floorStrike, fair, number, who] of cases) {
       const leg = price(board, ticker, side, { floorStrike });
       assert.equal(leg.ok, true, `${ticker} ${side}: ${leg.reason} ${leg.detail}`);
-      near(leg.fair, fair, `${ticker} ${side}`);
+      if (shape.leagueId === 1 && ticker.includes("GAME")) {
+        // An NFL game can end level: YES is bracketed down by the tie ceiling, NO up.
+        near(leg.fair_hi, fair, `${ticker} ${side}`);
+        near(leg.fair_lo, fair * (1 - rfqprice.NFL_TIE_PROB_MAX), `${ticker} ${side}`);
+        assert.equal(leg.bracketed, true);
+      } else {
+        near(leg.fair, fair, `${ticker} ${side}`);
+      }
       assert.equal(leg.line.league, shape.label);
       assert.equal(leg.line.number, number, ticker);
       assert.equal(leg.line.team ?? leg.line.over_under, who, ticker);
     }
     assert.equal(price(board, spread("HOM21"), "yes", { floorStrike: 20.5 }).reason, "past_ladder");
     assert.equal(price(board, spread("XYZ4"), "yes", { floorStrike: 3.5 }).reason, "no_team");
+    if (shape.leagueId === 1) {
+      const no = price(board, `${shape.series}GAME-${shape.suffix}-HOM`, "no");
+      near(no.fair_lo, 0.4);
+      near(no.fair_hi, 1 - 0.6 * (1 - rfqprice.NFL_TIE_PROB_MAX));
+    }
   });
 }
