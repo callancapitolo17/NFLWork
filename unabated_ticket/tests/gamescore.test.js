@@ -40,7 +40,6 @@ test("a period number not checked for the league shows no name, the clock still 
 });
 
 test("overtime is named off overtimeNumber where read, else no name (never the regulation period)", () => {
-  // As read 2026-11-07: NCAAB stays at period 3 through overtime.
   const ot = (fields) => gameState({ periodId: 3, gameClock: "4:02", ...fields });
   assert.deepEqual(gamescore.scoreLineOf(ot({ overtimeNumber: 1 }), "cbb", NOW), line({ period: "OT", clock: "4:02" }));
   assert.deepEqual(gamescore.scoreLineOf(ot({ overtimeNumber: 2 }), "cbb", NOW), line({ period: "2OT", clock: "4:02" }));

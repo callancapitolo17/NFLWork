@@ -16,7 +16,6 @@
 // Period names: eventPeriodTypeId is a per-sport number, named only for the
 // leagues whose numbers were checked against live games; any other league or
 // number shows no period name (the clock and score still show), never a guess.
-// Overtime the same way, off overtimeNumber (NAMED_OVERTIMES).
 
 "use strict";
 
