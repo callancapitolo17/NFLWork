@@ -2473,6 +2473,26 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   carry junk fairs (an NFL total at 7.5 priced -265651); filter in analysis.
   Never pruned; nothing reads it back. The runner always loads CBB for this,
   outside the Edges settings (it never reaches the list or the bots).
+  **Every edge's life to kickoff (2026-11-07, "Decide when to place bets").**
+  Same file. Is an edge seen early still there later, and at what price? The
+  runner (`server/edgelog.js`, every 30 s) POSTs (loopback only)
+  `/edge_segments.json` with every NFL / CFB / CBB full-game board line at a
+  live book showing Unabated's edge >= 1% under the Edges tab's own line rules
+  (alts inside the depth cap, no flat-lined tails, blurred and clamped lines
+  out, no liquidity floor), as segments: a run of league snapshots at one
+  number, price and fair. `edge_segments` (primary key `line_key`,
+  `segment_start`, plus `last_seen`, `event_id`, `league_id`, `book_id`,
+  `bet_type_id`, `side_index`, `points`, `is_alt`, `event_start`,
+  `price_american`, `source_price`, `source_format`, `fair_american`, `edge`
+  (a fraction), `liquidity` at the start, `received_at`): a new segment is
+  INSERTed, a later row only moves `last_seen` forward; it is re-sent every
+  5 min while open and once when it ends, so `last_seen` trails by at most
+  5 min. A runner restart splits a segment (join a line's back-to-back
+  segments at the same number, price and fair). Unabated's prices as shown,
+  not the exchanges' live books. Score each against the kickoff fair in
+  `ladder_readings`. Never pruned; nothing reads it back. `/health`'s
+  `edgeLog` shows `okAt`, `error`, `rowsSent`, `openSegments`, `unsent` and
+  `dropped` (rows over 50,000 held while the service is down).
   `bet_exclusions` (primary key `bet_id`, plus `venue`, `excluded_at`) holds
   the bets removed from the Bet Tracker; Restore deletes the row, and the bet
   in `bets` is never touched.

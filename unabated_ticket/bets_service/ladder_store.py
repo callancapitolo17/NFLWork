@@ -1,5 +1,7 @@
 """DuckDB store of Unabated's full-game fair ladders before kickoff (issue #264,
-part of the alt-spread model epic #263).
+part of the alt-spread model epic #263), and of every edge's life to kickoff
+(server/edgelog.js, 2026-11-07: whether an edge seen early is still there
+later, scored against these ladders' closes).
 
 Owns ladders.duckdb (config.LADDER_DB_PATH; /data/ladders.duckdb on the VM),
 apart from bets.duckdb so the runner's ladder writes never wait on the lock
@@ -24,6 +26,18 @@ Table:
                (raw, never devigged), how many board lines carried a fair
                there and how many agreed on it. A moneyline's points are null.
                Never pruned (a few thousand rows a week).
+  edge_segments  one row per (line_key, segment_start), POSTed by the runner to
+               /edge_segments.json: a run of league snapshots in which one NFL /
+               CFB / CBB full-game board line showed Unabated's edge >= 1% at
+               the same number, price and fair. INSERT on its first row; a later
+               row of the same segment only moves last_seen forward (UPSERT,
+               kept when newer). last_seen is the last snapshot the line was
+               seen as that edge, at most 5 min behind while the segment is
+               open; a runner restart splits a segment in two (join back-to-back
+               segments of a line at the same number, price and fair). Price
+               and fair are Unabated's as shown (raw American, never devigged);
+               liquidity is the resting amount at the segment's start.
+               Never pruned.
 
 The connection is shared by the HTTP handler threads behind one lock (DuckDB
 connections are not thread-safe).
@@ -84,11 +98,48 @@ WHERE excluded.observed_at > ladder_readings.observed_at
 """
 
 
+_EDGE_SEGMENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS edge_segments (
+    line_key        VARCHAR NOT NULL,      -- the feed's board line key (book, market, side; an alt's number)
+    segment_start   TIMESTAMPTZ NOT NULL,  -- the league snapshot it was first seen as this edge
+    last_seen       TIMESTAMPTZ NOT NULL,  -- the last snapshot it was seen as this edge
+    event_id        BIGINT NOT NULL,
+    league_id       INTEGER NOT NULL,      -- 1 NFL, 2 CFB, 4 CBB
+    book_id         INTEGER NOT NULL,
+    bet_type_id     INTEGER NOT NULL,      -- 1 moneyline, 2 spread, 3 total (full game)
+    side_index      INTEGER NOT NULL,      -- 0 away / Over, 1 home / Under
+    points          DOUBLE,                -- null on a moneyline
+    is_alt          BOOLEAN NOT NULL,
+    event_start     TIMESTAMPTZ NOT NULL,
+    price_american  INTEGER NOT NULL,      -- the book's price as Unabated shows it
+    source_price    DOUBLE,                -- the book's own price (e.g. an exchange's cents)
+    source_format   INTEGER,
+    fair_american   INTEGER NOT NULL,      -- Unabated's fair for this side at this number
+    edge            DOUBLE NOT NULL,       -- Unabated's edge, a fraction (0.0156 = 1.56%)
+    liquidity       DOUBLE,                -- resting at the start (exchanges); null elsewhere
+    received_at     TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (line_key, segment_start)
+)
+"""
+
+_EDGE_SEGMENT_COLUMNS = ("line_key, segment_start, last_seen, event_id, league_id, book_id, bet_type_id, side_index, "
+                         "points, is_alt, event_start, price_american, source_price, source_format, fair_american, edge, "
+                         "liquidity, received_at")
+
+_UPSERT_EDGE_SEGMENT = f"""
+INSERT INTO edge_segments ({_EDGE_SEGMENT_COLUMNS})
+VALUES ({", ".join("?" for _ in _EDGE_SEGMENT_COLUMNS.split(","))})
+ON CONFLICT (line_key, segment_start) DO UPDATE SET last_seen = excluded.last_seen, received_at = excluded.received_at
+WHERE excluded.last_seen > edge_segments.last_seen
+"""
+
+
 class LadderStore:
     def __init__(self, db_path: str | Path):
         self._lock = threading.Lock()
         self._con = duckdb.connect(str(db_path))
         self._con.execute(_SCHEMA)
+        self._con.execute(_EDGE_SEGMENT_SCHEMA)
 
     def close(self) -> None:
         with self._lock:
@@ -108,6 +159,21 @@ class LadderStore:
                     row["eventName"], row["awayTeamId"], row["homeTeamId"], row["eventStart"], row["observedAt"],
                     row["mainPoints0"], row["mainFair0"], row["mainPoints1"], row["mainFair1"], len(row["rungs"]),
                     json.dumps(row["rungs"], separators=(",", ":")), received_at,
+                ]).fetchone()
+                written += count
+        return written
+
+    def save_edge_segments(self, rows: list[dict], received_at: datetime) -> int:
+        """INSERT each new segment and move a known one's last_seen forward
+        (never back). `rows` are service.validate_edge_segment_rows' output
+        (times already datetimes). Returns how many rows were written."""
+        written = 0
+        with self._lock:
+            for row in rows:
+                [count] = self._con.execute(_UPSERT_EDGE_SEGMENT, [
+                    row["lineKey"], row["segmentStart"], row["lastSeen"], row["eventId"], row["leagueId"], row["bookId"],
+                    row["betTypeId"], row["sideIndex"], row["points"], row["isAlt"], row["eventStart"], row["price"],
+                    row["sourcePrice"], row["sourceFormat"], row["fairAmerican"], row["edge"], row["liquidity"], received_at,
                 ]).fetchone()
                 written += count
         return written

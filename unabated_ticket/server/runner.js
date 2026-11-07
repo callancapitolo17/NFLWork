@@ -54,6 +54,11 @@
 //       market, then the close whenever the ladder changes or every 10 min
 //       unchanged; ladders.duckdb keeps the first opener and the newest
 //       pregame close (issue #264). Stored only, nothing reads it back.
+//   POST <bets service>/edge_segments.json every 30 s — every NFL / CFB / CBB
+//       full-game line showing a 1%+ edge, as segments at one number, price
+//       and fair from first sighting to the edge's end or kickoff
+//       (server/edgelog.js), into ladders.duckdb: whether an edge seen early
+//       was still there later. Stored only, nothing reads it back.
 //   GET <bets service>/tau_samples.json once on start and POST /tau_samples.json
 //       every 30 s with the readings that changed (an unchanged one hourly;
 //       each pass absorbs the board's current refresh first): the tail
@@ -201,6 +206,7 @@ const closefair = require("./closefair.js");
 const fillbooks = require("./fillbooks.js");
 const edgesnapshot = require("./edgesnapshot.js");
 const laddersnapshot = require("./laddersnapshot.js");
+const edgelog = require("./edgelog.js");
 const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
 const teasersPayload = require("./teasers_payload.js");
@@ -343,6 +349,12 @@ const CLOSE_SNAPSHOT_ROWS_PER_POST = 25;
 // Ladder rows per POST /ladders.json: a CBB spread ladder is a few KB, so 40
 // stay far under the service's 1 MB body cap.
 const LADDER_ROWS_PER_POST = 40;
+// Edge segment rows are ~400 bytes: 500 to a POST is ~200 KB, under the
+// service's 1 MB body cap and its 1000-row limit.
+const EDGE_SEGMENT_ROWS_PER_POST = 500;
+// Edge segment rows held while the service is down; past this the oldest go
+// (counted in /health), so an outage cannot grow the runner without bound.
+const EDGE_SEGMENT_MAX_UNSENT = 50000;
 const HTTP_BAD_REQUEST = 400;
 
 function log(message) {
@@ -456,7 +468,7 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 //          polymarketFetch (Polymarket US's public gateway, default serviceFetch), polymarketGatewayUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
-// Returns {start, stop, pollBets, pollSettings, postLadders, scanLoaded, learn, takerPass,
+// Returns {start, stop, pollBets, pollSettings, postLadders, postEdgeSegments, scanLoaded, learn, takerPass,
 //          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
 //          scenariosPayload, takerPayload, health, scanner, boardLines (the
 //          board's rows, read by the tests)}.
@@ -562,6 +574,14 @@ function createRunner(deps) {
   const sentLadders = new Map();
   let laddersBusy = false;
   const ladderStatus = { okAt: null, error: null, rowsSent: 0 };
+  // Every edge's life to kickoff (edgelog.js): leagueId -> {version,
+  // edgeLines} as of the league's last snapshot, lineKey -> its open segment,
+  // segment key -> the newest row the service has not taken yet.
+  const edgeLineCache = new Map();
+  const edgeSegments = new Map();
+  const unsentEdgeRows = new Map();
+  let edgeLogBusy = false;
+  const edgeLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
   // The tail flex's rolling tau pool (tailflex.createTauPool): every refresh's
   // two-sided exchange rungs where two or more exchanges quote both sides,
   // kept 24 h, loaded from the bets service on start (GET /tau_samples.json)
@@ -1185,6 +1205,70 @@ function createRunner(deps) {
       ladderStatus.error = error.message;
     } finally {
       laddersBusy = false;
+    }
+  }
+
+  // Each logged league's edge lines, rebuilt only when its snapshot landed
+  // again; a stale league is not read (its segments stay open, unchanged).
+  function currentEdgeLines() {
+    const staleLeagues = new Set(scannerStatus.staleLeagues || []);
+    const loadedAt = scannerStatus.leagueLoadedAt || {};
+    const edgeLines = [];
+    const readLeagueIds = [];
+    for (const leagueId of edgelog.EDGE_LOG_LEAGUE_IDS) {
+      if (!boardLeagueIds().includes(leagueId) || staleLeagues.has(leagueId)) continue;
+      const version = scanner.getLeagueVersion(leagueId);
+      let cached = edgeLineCache.get(leagueId);
+      if (!cached || cached.version !== version) {
+        cached = { version, edgeLines: edgelog.leagueEdgeLines({
+          lines: scanner.getLeagueLines(leagueId), state: feedState, observedMs: loadedAt[leagueId],
+        }) };
+        edgeLineCache.set(leagueId, cached);
+      }
+      edgeLines.push(...cached.edgeLines);
+      readLeagueIds.push(leagueId);
+    }
+    return { edgeLines, readLeagueIds };
+  }
+
+  function queueEdgeRows(rows) {
+    for (const row of rows) unsentEdgeRows.set(edgelog.segmentKeyOf(row), row);
+    for (const key of unsentEdgeRows.keys()) {
+      if (unsentEdgeRows.size <= EDGE_SEGMENT_MAX_UNSENT) break;
+      unsentEdgeRows.delete(key);
+      edgeLogStatus.dropped += 1;
+    }
+  }
+
+  // Advance the edge segments and POST the rows the service has not taken,
+  // EDGE_SEGMENT_ROWS_PER_POST to a request. A failed request keeps its rows
+  // (and the rest) for the next pass; a 400 (a row the service refuses)
+  // drops only its own rows. Stored only: nothing reads the segments back.
+  async function postEdgeSegments() {
+    if (edgeLogBusy || !feedState || !scannerStatus) return;
+    edgeLogBusy = true;
+    try {
+      const { edgeLines, readLeagueIds } = currentEdgeLines();
+      queueEdgeRows(edgelog.advanceSegments({ edgeLines, readLeagueIds, segments: edgeSegments, now: now() }));
+      while (unsentEdgeRows.size) {
+        const chunk = Array.from(unsentEdgeRows.entries()).slice(0, EDGE_SEGMENT_ROWS_PER_POST);
+        try {
+          await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/edge_segments.json`, "POST", { rows: chunk.map(([, row]) => row) });
+          if (edgeLogStatus.error) logInfo("edge segments saving again");
+          Object.assign(edgeLogStatus, { okAt: now(), error: null, rowsSent: edgeLogStatus.rowsSent + chunk.length });
+        } catch (error) {
+          if (edgeLogStatus.error !== error.message) logWarning(`edge segments POST failed: ${error.message}`);
+          edgeLogStatus.error = error.message;
+          if (error.status !== HTTP_BAD_REQUEST) return;
+        }
+        // Taken, or refused: a row the service refuses would be refused again.
+        for (const [key, row] of chunk) if (unsentEdgeRows.get(key) === row) unsentEdgeRows.delete(key);
+      }
+    } catch (error) {
+      if (edgeLogStatus.error !== error.message) logWarning(`edge segment pass failed: ${error.stack || error.message}`);
+      edgeLogStatus.error = error.message;
+    } finally {
+      edgeLogBusy = false;
     }
   }
 
@@ -2626,6 +2710,7 @@ function createRunner(deps) {
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
       timers.setInterval(() => postLadders(), CLOSING_FAIRS_POST_MS),
+      timers.setInterval(() => postEdgeSegments(), CLOSING_FAIRS_POST_MS),
       // The live price pass right after each taker pass, so the lines the taker just read are not read again.
       timers.setInterval(async () => {
         await takerPass();
@@ -2759,6 +2844,7 @@ function createRunner(deps) {
       closingFairs: { ...closingStatus },
       closeSnapshots: { ...closeSnapshotStatus },
       ladders: { ...ladderStatus, tracked: sentLadders.size },
+      edgeLog: { ...edgeLogStatus, openSegments: edgeSegments.size, unsent: unsentEdgeRows.size },
       tauPool: { ...tauStatus, size: tauPool.size(), unsent: tauUnsent.size },
       livePrices: liveStatus(),
       taker: {
@@ -2770,7 +2856,7 @@ function createRunner(deps) {
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
+    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postEdgeSegments, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
     edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
