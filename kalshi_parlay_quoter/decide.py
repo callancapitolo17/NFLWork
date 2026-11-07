@@ -14,9 +14,9 @@ import time
 from datetime import datetime, timezone
 
 from kalshi_parlay_quoter import scope
-from kalshi_parlay_quoter.pricer import PricerError, PriceResult
+from kalshi_parlay_quoter.pricer import PricerBacklog, PricerError, PriceResult
 
-LEG_FIELDS = ("ok", "reason", "fair", "fair_lo", "fair_hi", "bracketed",
+LEG_FIELDS = ("ok", "reason", "detail", "fair", "fair_lo", "fair_hi", "bracketed",
               "sigma", "c", "tau", "line", "kickoff_ms", "fair_age_ms",
               "kalshi_status", "kalshi_yes_bid", "kalshi_yes_ask",
               "kalshi_no_ask")
@@ -88,6 +88,9 @@ def decide(rfq: dict, legs: list[dict] | None, price_fn, *,
     try:
         res: PriceResult = price_fn(row["rfq_id"],
                                     [(l.market_ticker, l.side) for l in verdict.legs])
+    except PricerBacklog as e:
+        row.update(reason="pricer_backlog", reason_detail=str(e)[:500] or None)
+        return row, leg_rows
     except PricerError as e:
         row.update(reason="pricer_error", reason_detail=str(e)[:500])
         return row, leg_rows

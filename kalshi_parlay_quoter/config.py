@@ -39,8 +39,17 @@ DB_PATH = Path(_get("PARLAY_QUOTER_DB_PATH",
 RUNNER_URL = _get("UNABATED_RUNNER_URL", "http://127.0.0.1:8095").rstrip("/")
 PRICER_TIMEOUT_SEC = float(_get("PARLAY_PRICER_TIMEOUT_SEC", "1.5"))
 PRICER_WORKERS = int(_get("PARLAY_PRICER_WORKERS", "4"))
+# Each (ticker, side) is priced at most once per this many seconds; RFQs
+# re-ask the same legs constantly (~100 in-league RFQs/s, 2026-11-07).
+PRICE_CACHE_SEC = float(_get("PARLAY_PRICE_CACHE_SEC", "3"))
+# After a runner failure, skip calls for this long (logged pricer_error).
+PRICER_BACKOFF_SEC = float(_get("PARLAY_PRICER_BACKOFF_SEC", "5"))
+# In-scope RFQs waiting for a pricer worker beyond this are logged as
+# pricer_backlog instead of queueing without bound.
+MAX_BACKLOG = int(_get("PARLAY_MAX_BACKLOG", "200"))
 
-# Door: RFQs below this dollar size are counted per minute, not logged as
+# Door: RFQs below this dollar size (or, when sized in contracts, with fewer
+# contracts than this many dollars) are counted per minute, not logged as
 # rows (the firehose is mostly ~$10 algorithmic spam). 0 logs every size.
 MIN_RFQ_TARGET_COST_USD = float(_get("PARLAY_MIN_RFQ_TARGET_COST_USD", "50"))
 

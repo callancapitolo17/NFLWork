@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS rfq_legs (
     kalshi_no_ask   DOUBLE,
     PRIMARY KEY (rfq_id, leg_idx)
 );
+-- Added after the first VM deploy (2026-11-07): the runner's per-leg detail.
+ALTER TABLE rfq_legs ADD COLUMN IF NOT EXISTS detail VARCHAR;
 CREATE TABLE IF NOT EXISTS door_counts (
     minute          TIMESTAMPTZ PRIMARY KEY,
     logged          BIGINT,
@@ -92,7 +94,7 @@ LEG_COLS = [
     "rfq_id", "leg_idx", "market_ticker", "side", "series", "league", "market",
     "game_key", "ok", "reason", "fair", "fair_lo", "fair_hi", "bracketed",
     "sigma", "c", "tau", "line", "kickoff_ms", "fair_age_ms", "kalshi_status",
-    "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask"]
+    "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask", "detail"]
 DOOR_COLS = ["minute", "logged", "other_league", "below_floor",
              "too_many_legs", "malformed", "backlog", "feed_mode"]
 
