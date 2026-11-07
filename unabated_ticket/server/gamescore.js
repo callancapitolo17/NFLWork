@@ -3,8 +3,8 @@
 // Pure: no DOM, no fetch, no disk.
 //
 // Input  gameState {statusId, awayScore, homeScore, gameClock, periodId,
-//        snapshotAtMs, awayAbbr, homeAbbr} or null, the league path ("nfl",
-//        ...), now ms
+//        overtimeNumber, snapshotAtMs, awayAbbr, homeAbbr} or null, the
+//        league path ("nfl", ...), now ms
 // Output {status, awayAbbr, homeAbbr, awayScore, homeScore, clock, period,
 //        readAt, staleAt}: status "live" / "final" / "other" (upcoming or a
 //        status not seen yet: no score is shown for it); staleAt is when the
@@ -62,7 +62,17 @@ const SCORE_PERIOD_NAMES = {
   nhl: { 8: "P1", 9: "P2", 10: "P3" },
 };
 
-function periodNameOf(league, periodId) {
+// League path -> overtimeNumber -> its name. Overtime is not a period id:
+// while overtimeNumber is set, eventPeriodTypeId stays at the last regulation
+// period (NCAAB read 2026-11-07: 3 into OT, overtimeNumber null -> 1 -> 2), so
+// an unchecked league or count shows no name, never the regulation period's
+// (football, NBA and NHL overtime unread).
+const NAMED_OVERTIMES = {
+  cbb: { 1: "OT", 2: "2OT" },
+};
+
+function periodNameOf(league, periodId, overtimeNumber) {
+  if (overtimeNumber > 0) return NAMED_OVERTIMES[league]?.[overtimeNumber] ?? null;
   return SCORE_PERIOD_NAMES[league]?.[periodId] ?? null;
 }
 
@@ -84,7 +94,7 @@ function scoreLineOf(gameState, league, now) {
     homeScore: gameState.homeScore,
     // A final game's clock is the feed's end marker ("E", "00:00"), not a time.
     clock: status === "live" ? gameState.gameClock : null,
-    period: status === "live" ? periodNameOf(league, gameState.periodId) : null,
+    period: status === "live" ? periodNameOf(league, gameState.periodId, gameState.overtimeNumber) : null,
     readAt: new Date(gameState.snapshotAtMs).toISOString(),
     staleAt: new Date(gameState.snapshotAtMs + STALE_AFTER_MS).toISOString(),
   };

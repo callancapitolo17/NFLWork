@@ -151,6 +151,7 @@
   // eventTeams[0|1].score the away / home score; gameClock "m:ss" ("E" or
   // "00:00" seen at the end); eventPeriodTypeId a per-sport number whose
   // meaning is checked per sport (server/gamescore.js names it per league).
+  // overtimeNumber null in regulation, 1 / 2 in the first / second overtime.
   // snapshotAtMs is when the file was cut.
   function gameStateOf(row, snapshotAtMs) {
     const teams = row.eventTeams || {};
@@ -160,6 +161,7 @@
       homeScore: teams[1] ? numberOrNull(teams[1].score) : null,
       gameClock: typeof row.gameClock === "string" && row.gameClock ? row.gameClock : null,
       periodId: numberOrNull(row.eventPeriodTypeId),
+      overtimeNumber: numberOrNull(row.overtimeNumber),
       snapshotAtMs: snapshotAtMs ?? null,
     };
   }

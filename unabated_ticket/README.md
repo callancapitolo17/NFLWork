@@ -2891,7 +2891,11 @@ visible. Its one write is the Bets page's Remove / Restore.
   NCAAB halves, NBA quarters and halftime; NHL periods 8 / 9 / 10 as
   P1 / P2 / P3, overtime and shootout not yet seen, and Olympic hockey,
   which shares the `nhl` path, unread; MLB and the rest still to check); an unchecked
-  number shows the clock alone. A copy the tracker kept through a failed
+  number shows the clock alone. Overtime is not a period number: the feed
+  keeps the last regulation period and sets `overtimeNumber` (1, 2, ...);
+  `NAMED_OVERTIMES` names it "OT" / "2OT" where read (NCAAB 1 and 2, read
+  2026-11-07), and any other league or count shows the clock alone, never
+  the regulation period's name. A copy the tracker kept through a failed
   refresh also turns to "No recent score" at its `staleAt`. Started bets the
   runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
