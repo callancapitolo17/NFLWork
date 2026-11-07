@@ -14,7 +14,10 @@ Rules, in order, for every request (validate_prophetx_place_request's shape):
      ids (GET /v4/mm/get_strikes names their game), else by the two teams and
      the start among ProphetX's listed games, refusing on zero or two;
   3. the game is listed and not started (the earlier of Unabated's and
-     ProphetX's start), and its away and home teams are the board's: ProphetX's
+     ProphetX's start); a live click (`live`, a Ticket at a break) instead
+     needs the line on Unabated's live board, ProphetX's game "live" and not
+     live_disabled, and the panel's in-game fair read within 90 s
+     (manual_orders.start_refusal); and its away and home teams are the board's: ProphetX's
      two names resolve to Unabated team ids through the runner (GET
      /team_keys.json, teams.js + the crosswalk, as bet matching does) and equal
      the board line's ids (a swapped or unresolved team refuses: the side
@@ -64,7 +67,7 @@ from datetime import datetime, timedelta, timezone
 from unabated_ticket.bets_service.manual_orders import (
     CLICK_ID_PATTERN, PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED,
     STATUS_UNFILLED, STATUS_UNKNOWN, VENUE_PROPHETX, _cents, _is_number, _iso_time, filled_bet_message, optional_read_at,
-    unseen_manual_fill,
+    start_refusal, unseen_manual_fill, validate_live_fields,
 )
 from unabated_ticket.bets_service.prophetx_client import (
     FINAL_ORDER_STATUSES, MAX_STRIKES_PER_READ, ProphetXClient, ProphetXError,
@@ -105,6 +108,8 @@ START_TOLERANCE = timedelta(minutes=30)
 # A stake ProphetX takes: whole cents, at least a dollar (its minimum is unpublished).
 MIN_STAKE_DOLLARS = 1.0
 PROPHETX_EVENT_NOT_STARTED = "not_started"
+# A game in play (seen 2026-11-06 on JAX @ BAL); `live_disabled` true means ProphetX takes no in-play order.
+PROPHETX_EVENT_LIVE = "live"
 
 
 def validate_prophetx_place_request(body: object) -> dict | str:
@@ -145,7 +150,10 @@ def validate_prophetx_place_request(body: object) -> dict | str:
         if isinstance(read_at, str):
             return read_at
         read_ats[field] = read_at
-    return {"click_id": click_id, **whole, "points": None if points is None else float(points),
+    live = validate_live_fields(body)
+    if isinstance(live, str):
+        return live
+    return {"click_id": click_id, **whole, "points": None if points is None else float(points), **live,
             "stake": round(float(stake), 2), "ticket_all_in": float(ticket_all_in), "prophetx_read_at": prophetx_read_at,
             "kalshi_read_at": read_ats["kalshiReadAt"], "novig_read_at": read_ats["novigReadAt"],
             "polymarket_read_at": read_ats["polymarketReadAt"], "bfa_read_at": read_ats["bfaReadAt"]}
@@ -280,7 +288,7 @@ class ManualProphetXDesk:
         client_order_id = f"{PROPHETX_ORDER_ID_PREFIX}{request['click_id']}"
         quote = self._quote_reader({"eventId": request["eventId"], "periodTypeId": request["periodTypeId"],
                                     "betTypeId": request["betTypeId"], "sideIndex": request["sideIndex"],
-                                    "points": request["points"]})
+                                    "points": request["points"], "live": request["live"]})
         target = self._target(quote, str(request["eventId"]))
         if isinstance(target, str):
             return {"status": STATUS_REFUSED, "message": f"Not placed: {target}"}
@@ -359,6 +367,7 @@ class ManualProphetXDesk:
         return {"strike_id": target["strike_id"], "price": offer["price"], "depth": offer["depth"],
                 "probability": round(american_to_probability(offer["price"]), 6), "marketId": target["marketId"],
                 "eventStart": min(starts) if starts else None, "eventStatus": event.get("status"),
+                "liveDisabled": event.get("live_disabled"), "live": quote.get("live"),
                 "otherStrikeId": target["otherStrikeId"], "prophetxEventId": event["event_id"],
                 "bookFrom": "stream" if streamed is not None else "rest"}
 
@@ -369,11 +378,19 @@ class ManualProphetXDesk:
 
     def _refusal(self, request: dict, target: dict) -> str | None:
         """Why this click must not become an order, in words, or None."""
-        start = target["eventStart"]
-        if start is None:
-            return "the game's start time is unknown."
-        if start <= self._now() or target.get("eventStatus") not in (None, PROPHETX_EVENT_NOT_STARTED):
-            return "the game has started."
+        if request["live"]:
+            clock = start_refusal(request, target, self._now())
+            if clock:
+                return clock
+            if target.get("eventStatus") != PROPHETX_EVENT_LIVE or target.get("liveDisabled") is True:
+                return (f"ProphetX shows the game {target.get('eventStatus')!r}"
+                        f"{' with in-play betting off' if target.get('liveDisabled') is True else ''}, not live.")
+        else:
+            start = target["eventStart"]
+            if start is None:
+                return "the game's start time is unknown."
+            if start <= self._now() or target.get("eventStatus") not in (None, PROPHETX_EVENT_NOT_STARTED):
+                return "the game has started."
         if target["probability"] > request["ticket_all_in"] + PRICE_TOLERANCE:
             return (f"ProphetX is at {target['price']:+d} now ({_cents(target['probability'])}), more than 0.1¢ worse "
                     f"than the Ticket's {_cents(request['ticket_all_in'])}.")

@@ -76,6 +76,13 @@
     const timers = (deps && deps.timers) || { setInterval: (f, ms) => root.setInterval(f, ms), clearInterval: (id) => root.clearInterval(id) };
     const onChange = (deps && deps.onChange) || (() => {});
     const maxRefreshMs = deps && typeof deps.maxRefreshMs === "number" && deps.maxRefreshMs > 0 ? deps.maxRefreshMs : Infinity;
+    // keepLive: also parse each snapshot's in-game rows into a separate live
+    // board per league (the server runner's live Place; the panel reads live
+    // lines off the Unabated tab instead and leaves it off). Never merged into
+    // `state`: a live line must not reach the Edges list or the bot.
+    const keepLive = Boolean(deps && deps.keepLive);
+    // leagueId -> {state, loadedAt}: that league's live board from its last snapshot.
+    const liveBoards = new Map();
 
     let state = feed.emptyState();
     // leagueId -> the keys of its lines in state.lines, its event ids in
@@ -201,7 +208,8 @@
       const builtAt = lastModified ? Date.parse(lastModified) : NaN;
       const contentLength = response.headers && response.headers.get ? Number(response.headers.get("content-length")) : NaN;
       const bytes = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : UNKNOWN_SIZE_BYTES;
-      return { state: feed.parseSnapshot(json, { leagueId }), builtAt: Number.isFinite(builtAt) ? builtAt : null, bytes };
+      const liveState = keepLive ? feed.parseSnapshot(json, { leagueId, phase: "live" }) : null;
+      return { state: feed.parseSnapshot(json, { leagueId }), liveState, builtAt: Number.isFinite(builtAt) ? builtAt : null, bytes };
     }
 
     function loadOrder(leagueIds) {
@@ -315,6 +323,7 @@
         // In place, full load or refresh alike: the list never collapses to
         // one league while the others are still downloading.
         const dropped = mergeInto(state, loaded.state);
+        if (loaded.liveState) liveBoards.set(leagueId, { state: loaded.liveState, loadedAt: leagueMeta[leagueId].loadedAt });
         recordSnapshot(loaded.state, dropped);
         markLeagueObserved(leagueId, previousLoadAt, loaded.bytes);
         status.leaguesLoaded = Array.from(new Set(state.leagues)).sort((a, b) => a - b);
@@ -411,6 +420,7 @@
       leagueLineKeys = new Map();
       leagueEventIds = new Map();
       leagueLineCounts = new Map();
+      liveBoards.clear();
       history = {};
       status.observingSince = null;
       status.leagueObservingSince = {};
@@ -457,6 +467,13 @@
     }
 
     // Back from hidden: top up the leagues that are due if the board is recent, else resync.
+    // The league whose live board holds this game, or null (keepLive off, or
+    // the game is not in play on any loaded snapshot).
+    function liveLeagueOfEvent(eventId) {
+      for (const [leagueId, board] of liveBoards) if (board.state.events[eventId]) return leagueId;
+      return null;
+    }
+
     async function resume() {
       if (!paused) return;
       paused = false;
@@ -470,6 +487,8 @@
       getState: () => state,
       getLeagueLines: leagueLines,
       getLeagueVersion: (leagueId) => leagueVersions.get(leagueId) ?? null,
+      getLiveBoard: (leagueId) => liveBoards.get(leagueId) || null,
+      liveLeagueOfEvent,
       getHistory: () => history,
       getStatus: () => ({ ...status }),
       refreshEveryMs,

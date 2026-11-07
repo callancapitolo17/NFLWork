@@ -2452,6 +2452,27 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   closing fair per bet, UPSERTed only forward in time (`DO UPDATE ... WHERE
   excluded.fair_observed_at >` the stored one), never pruned, served for the
   window's bets.
+  **Stored fair ladders (issue #264, epic #263; NFL, CFB, CBB).** Its own
+  file, `ladders.duckdb` (`LADDER_DB_PATH`), so the writes never wait on
+  `bets.duckdb`'s lock. The runner (`server/laddersnapshot.js`, every 30 s)
+  POSTs (loopback only) `/ladders.json` with Unabated's full-game moneyline,
+  spread and total ladder of every game still to start: per (side, number)
+  Unabated's raw fair, the most common across the board's lines there
+  (blurred lines and the ±999900 clamp left out), with how many lines carried
+  one and how many agreed. `ladder_readings` (primary key `reading`,
+  `event_id`, `period_type_id`, `bet_type_id`, plus `league_id`,
+  `event_name`, team ids, `event_start`, `observed_at` = when the league
+  snapshot landed, Unabated's own main points and fair per side `_0` / `_1`,
+  `rung_count`, `rungs_json` = `[[side, points, fair, books, agreeing], ...]`,
+  side 0 away/Over, `received_at`): `opener` is INSERTed once and never
+  overwritten (a game already on the board when storing began has its first
+  sighting, not Unabated's opener); `close` is UPSERTed only forward in time
+  and always before the start, re-sent on every change and every 10 min
+  unchanged, so the row left at kickoff is the last pregame ladder (whether
+  it was near enough to the start is for the analysis). Raw: deep rungs can
+  carry junk fairs (an NFL total at 7.5 priced -265651); filter in analysis.
+  Never pruned; nothing reads it back. The runner always loads CBB for this,
+  outside the Edges settings (it never reaches the list or the bots).
   `bet_exclusions` (primary key `bet_id`, plus `venue`, `excluded_at`) holds
   the bets removed from the Bet Tracker; Restore deletes the row, and the bet
   in `bets` is never touched.
@@ -2566,7 +2587,7 @@ A Node process runs the panel's own Edges scan with no browser and serves
 the list as JSON for the phone page. It `require`s the extension's pure
 modules unchanged — `scanner.js` (the same loop and cadence: the settings'
 leagues plus NFL and CFB, which the panel always loads for its Teasers tab,
-each league again every 60 s / 2 min / 5 min by snapshot size, a full
+plus CBB, whose fair ladders the runner stores (issue #264), each league again every 60 s / 2 min / 5 min by snapshot size, a full
 resync every 10 min, never paused), `edgerows.js` (the list's selection,
 conditional-Kelly sizing against your open bets and open BFA teasers, the
 stake capped at liquidity, the Min liq to win / min edge / max line age /
@@ -2748,9 +2769,13 @@ node unabated_ticket/server/runner.js                     # must be running too 
   bets service unreachable since …, scanner errors, settings fallback) sit at
   the top. A read whose body does not arrive whole inside the page's 10 s
   timeout (a slow connection; `/bets.json` is the big one) reads "download
-  cut off", not as an empty reply. A Place result stays on the ticket after
-  the line leaves the Edges list (a fill often takes it off), with the amount
-  box and buttons gone.
+  cut off", not as an empty reply. The confirm tap on a venue Place
+  (Kalshi, Novig, Polymarket US, ProphetX, BFA) closes the Ticket at once and
+  follows the order in a toast above the tab bar (`Placing $X on <bet> at
+  <venue>…`, then the service's reply), so several Places can run while you
+  browse; a fill fades after 8 s, a refusal or an unsure reply stays until ✕.
+  A toast lives in the open page only: leave Safari mid-Place and the bet still
+  goes through, but its result shows on Bets, not as a toast.
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
   (the runner adds `betsService.unmatched`, `bets.unmatchedReasons` over
   its board, to `/edges.json`), venue freshness, open bets; Attach, Undo,
@@ -2863,8 +2888,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   score from Unabated", never an old score. The period's name shows
   only for numbers checked against live games (`server/gamescore.js`
   `PERIOD_NAMES`, live.js's names: NFL and CFB quarters and halftime,
-  NCAAB halves; NHL periods 8 / 9 / 10 as P1 / P2 / P3, overtime and
-  shootout not yet seen; NBA, MLB and the rest still to check); an unchecked
+  NCAAB halves, NBA quarters and halftime; NHL periods 8 / 9 / 10 as
+  P1 / P2 / P3, overtime and shootout not yet seen; MLB and the rest still
+  to check); an unchecked
   number shows the clock alone. A copy the tracker kept through a failed
   refresh also turns to "No recent score" at its `staleAt`. Started bets the
   runner could not place on a game
@@ -3096,7 +3122,7 @@ the "nothing public listens" check: `deploy/README.md`.
   (pull `main`, rebuild, recreate, then PASS/FAIL checks of `/health`,
   `/` and `/edges.json` with the tailnet `Host`, and a 403 for a foreign one).
 - **Writable data dir** (`UNABATED_DATA_DIR` → `/data`): `bets.duckdb`
-  (`BETS_DB_PATH`), `taker.duckdb` (`TAKER_DB_PATH`), the bot's Kalshi key `kalshi_taker.pem` and its stop file `taker.stop`, `novig_token.json` (rotates), `logs/`
+  (`BETS_DB_PATH`), `taker.duckdb` (`TAKER_DB_PATH`), `ladders.duckdb` (`LADDER_DB_PATH`), the bot's Kalshi key `kalshi_taker.pem` and its stop file `taker.stop`, `novig_token.json` (rotates), `logs/`
   (`BETS_SERVICE_LOG_PATH`; `BETS_SERVICE_LOG_CONSOLE=1` also logs to
   stderr for `docker compose logs`). Off the server all three keep their
   defaults next to the package.
@@ -3493,6 +3519,62 @@ Every click is a row in `bets.duckdb::manual_orders` (inserted before the send):
 SELECT placed_at, label, ticker, contract_side, ticket_all_in, all_in_price, stake, count_requested, count_filled, cost_filled, status, error
 FROM manual_orders ORDER BY placed_at DESC;
 ```
+
+#### Live Place at a break (Kalshi 0.39.0, all four exchanges 0.42.0, 2026-11-06)
+
+A live Ticket (a price clicked in the Live block, priced off Unabated's
+in-game fair) gets Place at Kalshi, Novig, ProphetX and Polymarket US,
+panel only (the phone has no live edges). BFA stays pregame. `place.js`
+`VENUES[..].live` says which; a live BFA Ticket reads "BFA does not place
+live yet". Which markets a venue has open in game is its own market state
+at the click, never a list kept here. Pregame Place is unchanged at every venue.
+
+- **Only while there is a number.** The button shows only when the Ticket
+  can be sized (`liveTicketBlock` empty: the fair is still ready, still the
+  one it was captured at, and the open bets could be sized against). The
+  box is the live sized stake.
+- **The panel's word, checked for age.** The VM cannot see the Unabated tab,
+  so the request says `live: true` and `liveFairReadAt`, when the tab last
+  said this exact fair (its `producedUtc`) was ready
+  (`live.liveFairReadAtMs`; null, so no request, once the panel itself
+  stops trusting the tab: 10 s visible, 75 s hidden). Every desk refuses one
+  over 90 s old (`manual_orders.validate_live_fields` / `start_refusal`,
+  `LIVE_FAIR_READ_MAX_AGE_SEC`: the hidden-tab window plus the round trip).
+- **The live board.** The runner's scanner (`keepLive`) also parses each
+  snapshot's in-game rows (`feed.parseSnapshot(.., {phase: "live"})`) into
+  a separate board per league, never merged into the pregame board, so the
+  Edges list, the phone and the bot never see a live line. Each venue's
+  quote (`/<venue>_quote.json?..&live=1`) finds the line there (`not_live`
+  when the game is on no live board) and answers `live: true`; a desk
+  accepts a started game only for such a quote.
+- **Venue ids remembered from pregame (`server/liveboard.js`).** Unabated's
+  live rows carry no Kalshi or Novig ids and no alternate lines (recon of
+  JAX @ BAL, 2026-11-06, `bets_service/live_recon.py`). So the runner keeps
+  each game's venue ids from its last pregame snapshot (`pregameVenueMemo`,
+  pruned with the kickoff odds) and re-points each id at the live main line
+  of the same period, market, side and book (`liveQuoteBoard`; ids a live
+  line carries itself win). A game the runner never saw pregame (a restart
+  mid-game) has no ids and refuses. Kalshi derives its tickers from these as
+  pregame; a live full-game spread off the live number falls back to the
+  team code (`taker.derivedSpreadFromTeamCodes`). Novig's in-game markets
+  are new markets created after kickoff, so the runner also remembers the
+  game's Novig event, market types and side names from the pregame catalog
+  (`novigEventMemo`, `taker.novigEventMemoryOf`) and finds the live outcome
+  by type, strike and side on the in-game catalog (`taker.novigLiveContract`).
+- **Per venue.** Kalshi: the market must still be active at the strike.
+  Novig: event `OPEN_INGAME`, market `OPEN`, the book read over keyed REST
+  (the stream covers pregame only), and the live fee counted: Novig charges
+  `coefficient × p × (1−p)` per contract in game (`fee.charged` `WHEN_LIVE`,
+  coefficient 0.06 on the recon; `taker.novigFeeRateOf`, an unknown shape
+  refuses, the desk refuses a rate over 0.1), compared as the all-in with
+  the Ticket. Whether Unabated's live Novig price already includes that fee
+  is unverified, so Place may refuse more often than it would pregame.
+  ProphetX: event status `live` and `live_disabled` false. Polymarket US:
+  the event must say `live: true` and the market's own book state open
+  (the 2026-11-06 recon read only the event list's default market, the
+  moneyline, so its spreads and totals in play are untested).
+- Every other rule is unchanged: the live all-in at most 0.1c worse than the
+  Ticket's, the other side held, an unseen earlier Place, the cash pot.
 
 ### Place on Novig from the Ticket (`extension/place.js`, `bets_service/novig_place.py`)
 
@@ -3897,8 +3979,8 @@ line. `runner.test.js` drives `server/runner.js` with the slice behind an
 injected fetch and a scripted bets service: `/edges.json` equals what
 `edgerows.js` lists for the same state and settings (with and without the
 teaser), a flat list and the settings row's minimum edge and sort, the
-defaults and named errors while the service is down, NFL and CFB always
-scanned, a league change restarting the scan, the tau pool (loaded from a
+defaults and named errors while the service is down, NFL, CFB and CBB always
+scanned, the fair ladders' opener / close POSTs, a league change restarting the scan, the tau pool (loaded from a
 scripted `GET /tau_samples.json` at start or on a later POST pass, read by
 the header and `/tau.json`, the fallback until then), and the HTTP Host /
 verb / path guards. `bets_service/tests/test_edge_settings.py`

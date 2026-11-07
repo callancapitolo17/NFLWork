@@ -31,10 +31,13 @@ const STALE_AFTER_MS = 5 * 60 * 1000;
 // League path -> {eventPeriodTypeId: name} for the numbers checked against
 // live games; other sports are added once their own live games are read.
 //
-// Football and NCAAB use live.js's names (Q1-Q4 = 4-7, halves 2 / 3): live.js
-// reads these at every NFL break; on 2026-11-06 an NFL game went 5 (10-3,
-// 6:43) to 6 (17-3, 13:59), CFB games sat at 2 with 00:00 (halftime), and
-// NCAAB was at 3 with minutes left and at the final the same night.
+// Football, NCAAB and NBA use live.js's names (Q1-Q4 = 4-7, halves 2 / 3):
+// live.js reads these at every NFL break; on 2026-11-06 an NFL game went 5
+// (10-3, 6:43) to 6 (17-3, 13:59), CFB games sat at 2 with 00:00
+// (halftime), and NCAAB was at 3 with minutes left and at the final the same
+// night. NBA, read 2026-11-06 every 30 s: one game went 5 (36-33, 8:53) to 2
+// with 00:00 at halftime (53-53) to 6 at 12:00, another 6 (65-91, 1:54) to 7
+// (75-96, 11:45). NBA overtime is unread, so it shows no name.
 //
 // Hockey (league 6) read live 2026-11-06: games started 00:00Z were at 10
 // with the clock counting down in the 3rd at 02:08Z and final at 10 by
@@ -50,6 +53,7 @@ const PERIOD_NAMES = {
   nfl: namesOf([2, 4, 5, 6, 7]),
   cfb: namesOf([2, 4, 5, 6, 7]),
   cbb: namesOf([2, 3]),
+  nba: namesOf([2, 4, 5, 6, 7]),
   nhl: { 8: "P1", 9: "P2", 10: "P3" },
 };
 

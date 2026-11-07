@@ -33,8 +33,9 @@ function response({ status = 200, body = "", headers = {} }) {
   };
 }
 
-// The scanner always loads NFL and CFB (the panel's Teasers leagues) on top of the settings' leagues.
-const NFL_AND_CFB = [SNAPSHOT_BASE_URL(1), SNAPSHOT_BASE_URL(2)];
+// The scanner always loads NFL and CFB (the panel's Teasers leagues) and CBB
+// (its fair ladders are stored with theirs, laddersnapshot.js) on top of the settings' leagues.
+const ALWAYS_LOADED = [SNAPSHOT_BASE_URL(1), SNAPSHOT_BASE_URL(2), SNAPSHOT_BASE_URL(4)];
 
 // Unabated's CDN: the NFL slice (or `body`, a string or a function of none)
 // for league 1, a 404 for anything else.
@@ -174,12 +175,12 @@ function panelCards(state, serviceSettings, bets) {
 
 test("edges.json lists exactly what the panel's modules list for the same settings, sized against the held bet", async () => {
   const { runner, fetchImpl } = await startedRunner({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: "2026-10-01T12:00:00Z" } });
-  assert.deepEqual(fetchImpl.calls, NFL_AND_CFB);
+  assert.deepEqual(fetchImpl.calls.slice().sort(), ALWAYS_LOADED.slice().sort());
   const payload = runner.edgesPayload();
   assert.equal(payload.generatedAt, new Date(NOW).toISOString());
   assert.deepEqual([payload.settings.source, payload.settings.error, payload.settings.updatedAt], ["service", null, "2026-10-01T12:00:00Z"]);
   assert.equal(payload.settings.edges.bookIds, null);
-  assert.deepEqual([payload.scanner.phase, payload.scanner.leagues, payload.scanner.leaguesLoaded], ["live", [1, 2], [1]]);
+  assert.deepEqual([payload.scanner.phase, payload.scanner.leagues, payload.scanner.leaguesLoaded], ["live", [1, 2, 4], [1]]);
   assert.deepEqual([payload.betsService.openBets, payload.betsService.error], [1, null]);
   assert.deepEqual([payload.books.mode, payload.books.ids, payload.books.liveCount], ["all", null, 5]);
   assert.deepEqual([payload.grouped, payload.unit, payload.total, payload.maxShown], [true, "cards", 4, 200]);
@@ -254,18 +255,18 @@ test("a settings change of leagues restarts the scan; a failed settings poll kee
   const service = serviceFetch({ "/bets.json": betsBody([]), "/settings.json": () => settingsBody });
   const runner = runnerLib.createRunner({ fetchImpl, serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
   await runner.start();
-  assert.deepEqual(fetchImpl.calls, NFL_AND_CFB);
+  assert.deepEqual(fetchImpl.calls.slice().sort(), ALWAYS_LOADED.slice().sort());
   await runner.pollSettings(); // unchanged leagues: no reload
-  assert.deepEqual(fetchImpl.calls, NFL_AND_CFB);
+  assert.deepEqual(fetchImpl.calls.slice().sort(), ALWAYS_LOADED.slice().sort());
   // Ticking CFB changes the list, not the scan: the scanner holds NFL and CFB anyway.
   settingsBody = { settings: { ...OPEN_SETTINGS, leagues: [1, 2] }, updatedAt: null };
   await runner.pollSettings();
-  assert.deepEqual(fetchImpl.calls, NFL_AND_CFB);
+  assert.deepEqual(fetchImpl.calls.slice().sort(), ALWAYS_LOADED.slice().sort());
   settingsBody = { settings: { ...OPEN_SETTINGS, leagues: [1, 3] }, updatedAt: null };
   await runner.pollSettings();
   await runner.scanLoaded();
-  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 3]);
-  assert.deepEqual(fetchImpl.calls.slice(2).sort(), [SNAPSHOT_BASE_URL(1), SNAPSHOT_BASE_URL(2), SNAPSHOT_BASE_URL(3)].sort());
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 3, 4]);
+  assert.deepEqual(fetchImpl.calls.slice(3).sort(), [...ALWAYS_LOADED, SNAPSHOT_BASE_URL(3)].sort());
   settingsBody = { nope: true };
   await runner.pollSettings();
   const payload = runner.edgesPayload();
@@ -273,16 +274,16 @@ test("a settings change of leagues restarts the scan; a failed settings poll kee
   assert.deepEqual(payload.settings.edges.leagues, [1, 3]);
 });
 
-test("scannerLeaguesOf: the settings' leagues plus NFL and CFB, sorted, once each", () => {
-  assert.deepEqual(runnerLib.scannerLeaguesOf([]), [1, 2]);
-  assert.deepEqual(runnerLib.scannerLeaguesOf([5, 1]), [1, 2, 5]);
+test("scannerLeaguesOf: the settings' leagues plus NFL, CFB and CBB, sorted, once each", () => {
+  assert.deepEqual(runnerLib.scannerLeaguesOf([]), [1, 2, 4]);
+  assert.deepEqual(runnerLib.scannerLeaguesOf([5, 1, 4]), [1, 2, 4, 5]);
   // The open bets' leagues load too, for their closing fairs.
-  assert.deepEqual(runnerLib.scannerLeaguesOf([1], [5, 12]), [1, 2, 5, 12]);
+  assert.deepEqual(runnerLib.scannerLeaguesOf([1], [5, 12]), [1, 2, 4, 5, 12]);
 });
 
 test("Football unticked: the scan still holds NFL for the teasers, the list shows none of it", async () => {
   const { runner, fetchImpl } = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: { ...OPEN_SETTINGS, leagues: [3] }, updatedAt: null } });
-  assert.deepEqual(fetchImpl.calls.sort(), [...NFL_AND_CFB, SNAPSHOT_BASE_URL(3)].sort());
+  assert.deepEqual(fetchImpl.calls.sort(), [...ALWAYS_LOADED, SNAPSHOT_BASE_URL(3)].sort());
   const payload = runner.edgesPayload();
   assert.deepEqual([payload.scanner.leaguesLoaded, payload.total, payload.tailFlex], [[1], 0, ""]);
 });
@@ -479,6 +480,44 @@ test("closing fairs: the open bet's fair on its own line, POSTed once, again onl
   runner.stop();
 });
 
+test("ladders: every NFL game's three ladders POSTed as opener + close, unchanged ones held, a failed POST retried, none after kickoff", async () => {
+  let clock = NOW;
+  const posts = [];
+  let answer = { status: 200, body: { ok: true, saved: 6 } };
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/ladders.json") {
+      posts.push(JSON.parse(init.body).rows);
+      assert.equal(init.method, "POST");
+      return response({ status: answer.status, body: JSON.stringify(answer.body) });
+    }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet });
+  await runner.start();
+  answer = { status: 503, body: { error: "the ladder store is not open on this service" } };
+  await runner.postLadders();
+  assert.equal(posts.length, 1);
+  assert.match(runner.health().ladders.error, /HTTP 503/);
+  answer = { status: 200, body: { ok: true, saved: 6 } };
+  await runner.postLadders();
+  assert.equal(posts.length, 2, "the refused rows are sent again");
+  assert.deepEqual(posts[1].map((row) => [row.reading, row.leagueId, row.betTypeId]),
+    [["opener", 1, 1], ["close", 1, 1], ["opener", 1, 2], ["close", 1, 2], ["opener", 1, 3], ["close", 1, 3]]);
+  const spread = posts[1][3];
+  assert.deepEqual([spread.eventId, spread.observedAt, spread.eventStart, spread.mainPoints0, spread.mainFair0, "signature" in spread],
+    [125807, new Date(NOW).toISOString(), new Date(KICKOFF_MS).toISOString(), -3, -103, false]);
+  assert.deepEqual([runner.health().ladders.error, runner.health().ladders.rowsSent, runner.health().ladders.tracked], [null, 6, 3]);
+  await runner.postLadders();
+  assert.equal(posts.length, 2, "an unchanged ladder off the same snapshot is not resent");
+  clock = KICKOFF_MS + 1000;
+  await runner.postLadders();
+  assert.equal(posts.length, 2, "after kickoff the stored close stands");
+  runner.stop();
+});
+
 test("close snapshots: every book's two sides at the bet's number, sent with the closing fair, never after kickoff", async () => {
   let clock = NOW;
   const posts = [];
@@ -573,13 +612,13 @@ test("an open bet's league is loaded for its close, and stays loaded after the b
   const service = serviceFetch({ "/bets.json": () => betsBody(bets), "/settings.json": { settings: { ...OPEN_SETTINGS, leagues: [1] }, updatedAt: null } });
   const runner = runnerLib.createRunner({ fetchImpl, serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
   await runner.start();
-  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 5, 12]);
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 4, 5, 12]);
   const loads = fetchImpl.calls.length;
   bets = [{ ...mlbBet, status: "won" }];
   await runner.pollBets();
   await runner.scanLoaded();
   assert.equal(fetchImpl.calls.length, loads, "no restart when the last MLB bet settles");
-  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 5, 12]);
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 4, 5, 12]);
   runner.stop();
 });
 
@@ -1048,6 +1087,91 @@ test("kalshi_quote: the quote's eventStart is Kalshi's when earlier, so Place re
   assert.deepEqual({ eventStart: fallback.eventStart, kalshiStart: fallback.kalshiStart }, { eventStart: WSU_UNABATED_START, kalshiStart: null });
 });
 
+// The same game in play: Unabated's file moves its row from pregame to live.
+function liveVenueFetch() {
+  const json = JSON.parse(takerVenueSlice());
+  const pregame = json.odds["lg2:pt1:pregame"];
+  const index = pregame.findIndex((row) => row.key === "pt1:pregame:bt2:e123742");
+  const [row] = pregame.splice(index, 1);
+  json.odds["lg2:pt1:live"] = [{ ...row, key: "pt1:live:bt2:e123742", live: true }];
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("kalshi_quote live=1: a game in play is found on the live board, marked live; the pregame board and the Edges list never see it", async () => {
+  const { runner } = await quoteRunner({}, { fetchImpl: liveVenueFetch() });
+  const liveQuote = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  const pregameQuote = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  const pregameLines = Object.values(runner.scanner.getState().lines).filter((line) => line.eventId === 123742 && line.betTypeId === 2);
+  runner.stop();
+  assert.deepEqual({ ok: liveQuote.ok, live: liveQuote.live, ticker: liveQuote.ticker, side: liveQuote.side, ask: liveQuote.ask },
+    { ok: true, live: true, ticker: TAKER_TICKER, side: "yes", ask: 0.57 });
+  assert.deepEqual({ ok: pregameQuote.ok, reason: pregameQuote.reason }, { ok: false, reason: "no_line" });
+  assert.equal(pregameLines.length, 0, "the live spread row never reaches the pregame board");
+});
+
+// The game as Unabated's file shows it once in play (recon 2026-11-06): every
+// pregame row of it gone, its live spread row with no alternate lines and no
+// venue ids, the main at WSU -35.5. The runner saw it pregame first.
+function phasedUnabatedFetch() {
+  const pregameBody = takerVenueSlice();
+  const json = JSON.parse(pregameBody);
+  const pregame = json.odds["lg2:pt1:pregame"];
+  const spreadRow = pregame.find((row) => row.key === "pt1:pregame:bt2:e123742");
+  json.odds["lg2:pt1:pregame"] = pregame.filter((row) => row.eventId !== 123742);
+  const liveRow = JSON.parse(JSON.stringify({ ...spreadRow, key: "pt1:live:bt2:e123742", live: true }));
+  for (const [sideKey, books] of Object.entries(liveRow.sides)) {
+    for (const book of Object.values(books)) {
+      Object.assign(book, { alternateLines: null, sourceKey: null, sourceData: null, points: sideKey === "si1:tid717" ? -35.5 : 35.5 });
+    }
+  }
+  json.odds["lg2:pt1:live"] = [liveRow];
+  const liveBody = JSON.stringify(json);
+  const state = { live: false };
+  const impl = async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) {
+      return response({ body: state.live ? liveBody : pregameBody, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    }
+    return response({ status: 404, body: "not found" });
+  };
+  impl.goLive = () => { state.live = true; };
+  return impl;
+}
+
+test("kalshi_quote live=1: a live line with no venue ids finds its contract off the game's remembered pregame rungs", async () => {
+  const unabated = phasedUnabatedFetch();
+  const { runner } = await quoteRunner({}, { fetchImpl: unabated });
+  unabated.goLive();
+  await runner.scanner.start([2]);
+  const quote = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, live: quote.live, ticker: quote.ticker, side: quote.side, ask: quote.ask },
+    { ok: true, live: true, ticker: TAKER_TICKER, side: "yes", ask: 0.57 });
+});
+
+test("kalshi_quote live=1: a live game the runner never saw pregame names no contract, and says so", async () => {
+  const unabated = phasedUnabatedFetch();
+  unabated.goLive();
+  const { runner } = await quoteRunner({}, { fetchImpl: unabated });
+  const quote = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, reason: quote.reason }, { ok: false, reason: "no_ticker" });
+});
+
+test("kalshi_quote live=1: a game not in play is not_live, and live must be 0 or 1", async () => {
+  const { runner } = await quoteRunner();
+  const quote = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  await assert.rejects(() => runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "yes" })), /live must be 0 or 1/);
+  const pregame = await runner.kalshiQuote(new URLSearchParams({ ...WSU_36_LINE, live: "0" }));
+  runner.stop();
+  assert.deepEqual({ ok: quote.ok, reason: quote.reason }, { ok: false, reason: "not_live" });
+  assert.match(quote.detail, /game 123742 is not on Unabated's live board/);
+  assert.deepEqual({ ok: pregame.ok, live: pregame.live }, { ok: true, live: false });
+});
+
 test("kalshi_quote: a closed market, a number the board lacks and bad params are refused", async () => {
   const { runner } = await quoteRunner({ WSU36: { status: "closed" } });
   const closed = await runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
@@ -1244,6 +1368,54 @@ function moneylineUnabatedFetch() {
     return response({ status: 404, body: "not found" });
   };
 }
+
+// Novig before and after kickoff: the pregame catalog, then the in-game one
+// (eventStatus OPEN_INGAME) with the event in game and the fee charged.
+function phasedNovigFetch() {
+  const pregame = novigFetch();
+  const inGame = novigFetch();
+  const state = { live: false, queries: [] };
+  const impl = async (url, init) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === "/v3/catalog/markets") state.queries.push(parsed.searchParams.get("eventStatus"));
+    if (state.live && parsed.pathname === `/v3/catalog/events/${NOVIG_EVENT}`) {
+      return response({ body: JSON.stringify({ eventId: NOVIG_EVENT, status: "OPEN_INGAME" }) });
+    }
+    return (state.live ? inGame : pregame)(url, init);
+  };
+  impl.goLive = () => { state.live = true; };
+  impl.state = state;
+  return impl;
+}
+
+test("novig_quote live=1: the game's remembered Novig event names the in-game market; its fee rate rides on the quote", async () => {
+  const unabated = phasedUnabatedFetch();
+  const novig = phasedNovigFetch();
+  const { runner } = await quoteRunner({}, { fetchImpl: unabated, novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test" });
+  const pregame = await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  unabated.goLive();
+  novig.goLive();
+  await runner.scanner.start([2]);
+  const live = await runner.novigQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  runner.stop();
+  assert.deepEqual({ ok: pregame.ok, feeRate: pregame.feeRate, live: pregame.live }, { ok: true, feeRate: 0, live: false });
+  assert.deepEqual({ ok: live.ok, live: live.live, outcomeId: live.outcomeId, otherOutcomeId: live.otherOutcomeId, price: live.price, feeRate: live.feeRate },
+    { ok: true, live: true, outcomeId: NOVIG_WSU_OUTCOME, otherOutcomeId: NOVIG_DUQ_OUTCOME, price: 0.555, feeRate: 0.06 });
+  assert.ok(novig.state.queries.includes("OPEN_INGAME"), "the in-game catalog is read");
+});
+
+test("novig_quote live=1: an event Novig still shows pregame is refused live, naming it", async () => {
+  const unabated = phasedUnabatedFetch();
+  const novig = phasedNovigFetch();
+  const { runner } = await quoteRunner({}, { fetchImpl: unabated, novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test" });
+  await runner.novigQuote(new URLSearchParams(WSU_36_LINE));
+  unabated.goLive();
+  await runner.scanner.start([2]);
+  const live = await runner.novigQuote(new URLSearchParams({ ...WSU_36_LINE, live: "1" }));
+  runner.stop();
+  assert.deepEqual({ ok: live.ok, reason: live.reason }, { ok: false, reason: "market_mismatch" });
+  assert.match(live.detail, /not in game/);
+});
 
 test("novig_quote: a moneyline is found in Novig's catalog off the game's spread rung and checked by its team's name", async () => {
   const moneyId = "0f0f0f0f-1111-4222-8333-111111111111";
@@ -1989,6 +2161,39 @@ test("polymarket_quote: the board's Polymarket US line is found in Polymarket US
   assert.equal(poly.calls.filter((url) => url.endsWith("/book")).length, 1);
 });
 
+// The Polymarket US spread row moved to Unabated's live board (no pregame row of the game left).
+function livePolymarketUnabatedFetch() {
+  const json = JSON.parse(takerVenueSlice());
+  json.marketSources.push({ ...json.marketSources[0], id: 111, name: "Polymarket US", sortOrder: 111 });
+  const pregame = json.odds["lg2:pt1:pregame"];
+  const spreadRow = pregame.find((row) => row.key === "pt1:pregame:bt2:e123742");
+  spreadRow.sides["si1:tid717"].ms111 = {
+    ...spreadRow.sides["si1:tid717"].ms89, americanPrice: -179, price: -179, sourceFormat: 1, sourcePrice: -179, statusId: 1,
+    sequenceNumber: TAKER_NOW - 60000, alternateLines: null,
+  };
+  json.odds["lg2:pt1:pregame"] = pregame.filter((row) => row.eventId !== 123742);
+  json.odds["lg2:pt1:live"] = [{ ...spreadRow, key: "pt1:live:bt2:e123742", live: true }];
+  const body = JSON.stringify(json);
+  return async (url) => {
+    if (url.split("?")[0] === SNAPSHOT_BASE_URL(2)) return response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } });
+    return response({ status: 404, body: "not found" });
+  };
+}
+
+test("polymarket_quote live=1: a live line is found the same way and passes only while Polymarket US shows the game live", async () => {
+  const quoteWith = async (eventFields) => {
+    const poly = polymarketFetch([polymarketEvent(eventFields)]);
+    const { runner } = await quoteRunner({}, { fetchImpl: livePolymarketUnabatedFetch(), polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY });
+    const quote = await runner.polymarketQuote(new URLSearchParams({ ...POLY_LINE_PARAMS, live: "1" }));
+    runner.stop();
+    return quote;
+  };
+  const live = await quoteWith({ live: true, ended: false });
+  const notLive = await quoteWith({ live: false, ended: false });
+  assert.deepEqual({ ok: live.ok, live: live.live, slug: live.slug, side: live.side }, { ok: true, live: true, slug: POLY_SLUG, side: "no" });
+  assert.deepEqual({ ok: notLive.ok, reason: notLive.reason }, { ok: false, reason: "not_live" });
+});
+
 test("polymarket_quote: the stream's book prices Place, and the gateway's /book is never read", async () => {
   const poly = polymarketFetch();
   const { runner } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(), polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY },
@@ -2344,6 +2549,24 @@ function prophetxUnabatedFetch(lineFields = {}) {
     return response({ status: 404, body: "not found" });
   };
 }
+
+test("prophetx_quote live=1: a live ProphetX line is quoted off the live board and marked live; the pregame board no longer has it", async () => {
+  const json = await (await prophetxUnabatedFetch()(`${SNAPSHOT_BASE_URL(2)}?t=0`)).json();
+  const pregame = json.odds["lg2:pt1:pregame"];
+  const spreadRow = pregame.find((row) => row.key === "pt1:pregame:bt2:e123742");
+  json.odds["lg2:pt1:pregame"] = pregame.filter((row) => row.eventId !== 123742);
+  json.odds["lg2:pt1:live"] = [{ ...spreadRow, key: "pt1:live:bt2:e123742", live: true }];
+  const body = JSON.stringify(json);
+  const fetchImpl = async (url) => (url.split("?")[0] === SNAPSHOT_BASE_URL(2)
+    ? response({ body, headers: { "content-length": "1000", "last-modified": new Date(TAKER_NOW - 20000).toUTCString() } })
+    : response({ status: 404, body: "not found" }));
+  const { runner } = await quoteRunner({}, { fetchImpl });
+  const live = runner.prophetxQuote(new URLSearchParams({ ...POLY_LINE_PARAMS, live: "1" }));
+  const pregameQuote = runner.prophetxQuote(new URLSearchParams(POLY_LINE_PARAMS));
+  runner.stop();
+  assert.deepEqual({ ok: live.ok, live: live.live, side: live.line.side, points: live.line.points }, { ok: true, live: true, side: "home", points: -35.5 });
+  assert.deepEqual({ ok: pregameQuote.ok, reason: pregameQuote.reason }, { ok: false, reason: "no_line" });
+});
 
 function prophetxLiveRunner(reads) {
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS, ...(reads ? { "/prophetx_live.json": reads } : {}) });

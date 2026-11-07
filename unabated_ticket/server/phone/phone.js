@@ -97,6 +97,7 @@
     ticketMoved: el("ticket-moved"),
     ticketVenuePlace: el("ticket-venue-place"), ticketVenueRow: el("ticket-venue-row"), ticketVenueStake: el("ticket-venue-stake"),
     ticketVenueButtons: el("ticket-venue-buttons"), ticketVenueMsg: el("ticket-venue-msg"), ticketFoot: el("ticket-foot"),
+    toasts: el("toasts"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
     teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
     teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
@@ -678,7 +679,7 @@
   // The ticket's own Place button: one order per second tap, sent by the bets
   // service on its key at that venue (POST /place_kalshi.json,
   // /place_novig.json or /place_polymarket.json). Its state belongs to one open row: {rowKey,
-  // venueName, phase: null | "confirm" | "placing" | "done", armedAt,
+  // venueName, phase: null | "confirm", armedAt,
   // message, tone, edited (Cal typed in the box)}.
   // sizedOn: edges.json's betsService.sources when the box last took the stake (the reads it was sized on).
   let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null };
@@ -692,13 +693,8 @@
   }
 
   // `onList` false: the row has left the Edges list, so nothing is placed off its last price.
-  // A Place sent on this row keeps its result in view (a fill often takes the line off the list).
+  // A sent Place lives on in its toast, not here: the Ticket closes on the confirm tap.
   function renderPlace(row, acted, onList) {
-    if (!onList && placeState.rowKey === row.key && (placeState.phase === "placing" || placeState.phase === "done")) {
-      renderPlaceResultOnly();
-      return;
-    }
-    view.ticketVenueRow.hidden = false;
     view.ticketVenuePlace.hidden = !onList || !venuePlace.canPlace(venuePlaceLine(row));
     // The foot says nothing here places a bet: true everywhere but a Place-able ticket (place.js VENUES).
     view.ticketFoot.hidden = !view.ticketVenuePlace.hidden;
@@ -709,23 +705,11 @@
         tone: null, edited: false, sizedOn: null };
     }
     // The box follows the stake until Cal types in it, and holds still once Place is pressed.
-    const settled = placeState.phase === "confirm" || placeState.phase === "placing";
-    if (!placeState.edited && !settled && document.activeElement !== view.ticketVenueStake) {
+    if (!placeState.edited && placeState.phase !== "confirm" && document.activeElement !== view.ticketVenueStake) {
       view.ticketVenueStake.value = venuePlace.stakeText(acted, row.book ? row.book.id : null);
       placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
     }
     renderPlaceControls();
-  }
-
-  // The line has left the list after a Place on it: the result stays, the amount box and buttons go.
-  function renderPlaceResultOnly() {
-    view.ticketVenuePlace.hidden = false;
-    view.ticketFoot.hidden = true;
-    view.ticketVenueRow.hidden = true;
-    const { message, tone } = placeState;
-    view.ticketVenueMsg.hidden = false;
-    view.ticketVenueMsg.className = `tk-place-msg ${tone || ""}`;
-    view.ticketVenueMsg.textContent = `${message} The line has since left the Edges list.`;
   }
 
   function renderPlaceControls() {
@@ -733,7 +717,7 @@
     view.ticketVenueMsg.hidden = !message;
     view.ticketVenueMsg.className = `tk-place-msg ${tone || ""}`;
     view.ticketVenueMsg.textContent = message || "";
-    view.ticketVenueStake.disabled = phase === "confirm" || phase === "placing";
+    view.ticketVenueStake.disabled = phase === "confirm";
     const button = (className, text, action) => {
       const element = makeEl("button", className, text);
       element.type = "button";
@@ -744,10 +728,6 @@
       const stake = venuePlace.parseStake(view.ticketVenueStake.value);
       view.ticketVenueButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
         button("btn sm primary", `Bet ${phoneView.fmtDollars(stake)} at ${placeState.venueName}`, "confirm"));
-    } else if (phase === "placing") {
-      const waiting = button("btn sm", "Placing\u2026", "none");
-      waiting.disabled = true;
-      view.ticketVenueButtons.replaceChildren(waiting);
     } else {
       view.ticketVenueButtons.replaceChildren(button("btn sm", "Place", "arm"));
     }
@@ -787,6 +767,8 @@
 
   // POST the open row's order to the bets service. An HTTP error is the
   // service refusing before the venue; no answer at all may still have reached it.
+  // Once sent, the Ticket closes and the order is followed in its own toast, so
+  // Cal can keep browsing and send more; each Place is independent of the others.
   async function placeOnVenue() {
     const { rowKey, venueName } = placeState;
     const found = state.ticket ? findTicketRow(state.ticket) : null;
@@ -801,8 +783,10 @@
       renderPlaceControls();
       return;
     }
-    Object.assign(placeState, { phase: "placing", message: `Placing at ${venueName}\u2026`, tone: "wait" });
-    renderPlaceControls();
+    const sideLabel = phoneView.ticketView(found.row, Date.now()).sideLabel;
+    const toast = showToast(phoneView.placeToastPlacingText(venuePlace.parseStake(view.ticketVenueStake.value), sideLabel, venueName), "wait");
+    placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null };
+    closeTicket();
     let next;
     try {
       const reply = await requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
@@ -813,10 +797,35 @@
         ? { message: `Not placed: ${error.message}`, tone: "refused" }
         : { message: `No answer from the bets service (${error.message}). Check ${venueName} before placing again.`, tone: "warn" };
     }
-    if (placeState.rowKey !== rowKey) return;
-    Object.assign(placeState, { phase: "done", ...next });
-    renderPlaceControls();
+    setToast(toast, next.message, next.tone);
     if (next.tone === "ok") await pollBets();
+  }
+
+  // ---- Place toasts ---------------------------------------------------------
+  // One per Place, stacked above the tab bar and over the Ticket sheet. Tone is
+  // "wait" while placing, then place.js replyTone's; only a fill fades on its own.
+  function showToast(text, tone) {
+    const toast = makeEl("div", "toast");
+    view.toasts.append(toast);
+    setToast(toast, text, tone);
+    return toast;
+  }
+
+  function setToast(toast, text, tone) {
+    toast.className = `toast ${tone}`;
+    toast.setAttribute("role", tone === "wait" ? "status" : "alert");
+    const body = makeEl("span", "toast-text", text);
+    if (tone === "wait") {
+      toast.replaceChildren(makeEl("span", "toast-spin"), body);
+    } else {
+      const close = makeEl("button", "toast-close", "\u2715");
+      close.type = "button";
+      close.setAttribute("aria-label", "Dismiss");
+      close.addEventListener("click", () => toast.remove());
+      toast.replaceChildren(body, close);
+    }
+    const hideAfterMs = phoneView.placeToastHideAfterMs(tone);
+    if (hideAfterMs != null) setTimeout(() => toast.remove(), hideAfterMs);
   }
 
   // Another line of the same card: rung, book and price, its edge and standalone stake. Tap to open it.

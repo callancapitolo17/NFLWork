@@ -617,7 +617,7 @@
       view.payoutRow.hidden = false;
     }
     renderContracts(acted, line, ticket.book.name);
-    renderPlace(ticket, line, acted);
+    renderPlace(ticket, line, acted, liveBlock);
 
     show("ticket");
   }
@@ -640,9 +640,11 @@
     };
   }
 
-  function renderPlace(ticket, line, acted) {
+  // A live Ticket that cannot be sized (liveBlock: the break ended, a newer
+  // fair, a declined calc) gets no Place: there is no number to act on.
+  function renderPlace(ticket, line, acted, liveBlock) {
     const placeLine = venuePlaceLine(ticket, line);
-    view.venuePlace.hidden = !venuePlace.canPlace(placeLine);
+    view.venuePlace.hidden = !venuePlace.canPlace(placeLine) || Boolean(liveBlock);
     if (view.venuePlace.hidden) return;
     if (placeState.ticketAt !== ticket.capturedAt) {
       placeState = { ticketAt: ticket.capturedAt, phase: null, armedAt: 0, message: null, tone: null, edited: false };
@@ -723,6 +725,13 @@
     return venue ? venue.name : "the venue";
   }
 
+  // A live Ticket: when the Unabated tab last said the fair it was captured
+  // at is still ready (null when it does not now); a pregame one, null.
+  function placeLiveFairReadAtMs(ticket) {
+    if (!ticket.live) return null;
+    return live.liveFairReadAtMs(livePayloads(), ticket.eventId, Date.now(), ticket.live.producedUtc);
+  }
+
   // The bets payload's read times by venue: what the Ticket's stake counted.
   function placeReadAts() {
     const payload = state.betsService && state.betsService.payload;
@@ -737,7 +746,7 @@
     const venueName = placeVenueName();
     const request = ticket ? venuePlace.placeRequestOf({
       line: venuePlaceLine(ticket, pricedLine(ticket)), stakeInput: view.venuePlaceStake.value,
-      readAts: placeReadAts(), clickId: crypto.randomUUID(),
+      readAts: placeReadAts(), clickId: crypto.randomUUID(), liveFairReadAtMs: placeLiveFairReadAtMs(ticket),
     }) : { error: "the Ticket is gone" };
     if (request.error) {
       Object.assign(placeState, { phase: null, message: `Not placed: ${request.error}.`, tone: "refused" });

@@ -121,7 +121,7 @@ def test_a_click_sends_one_ioc_buy_counted_at_the_all_in_price(store):
     client = ScriptedPolymarket()
     desk = desk_with(store, client)
     result = desk.place(request())
-    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5}]
+    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5, "live": False}]
     # floor(50 / 0.643986) = 77 contracts, at NO's own 63c.
     assert client.calls == [(SLUG, "no", 0.63, 77)]
     assert result["status"] == "filled"
@@ -364,3 +364,27 @@ def test_the_service_arms_place_only_on_a_key_that_signs_with_the_read_in_place(
     answer = armed._quote_reader({"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5})
     assert answer["reason"] == "runner"
     assert [(url.split("?")[0].endswith("/polymarket_quote.json"), timeout) for url, timeout in opened] == [(True, 30)]
+
+
+# ---- live Place (a Ticket at a break) -------------------------------------------
+
+LIVE_POLY_QUOTE = {**QUOTE, "eventStart": "2026-10-22T13:00:00.000Z", "live": True}
+LIVE_FIELDS = {"live": True, "liveFairReadAt": "2026-10-22T14:59:50Z"}
+
+
+def test_live_place_sends_on_a_started_game_on_the_live_board_and_asks_for_the_live_line(store):
+    client = ScriptedPolymarket()
+    desk = desk_with(store, client, quote=LIVE_POLY_QUOTE)
+    result = desk.place(request(**LIVE_FIELDS))
+    assert desk.quotes[0]["live"] is True
+    assert result["status"] == "filled", result
+
+
+def test_live_place_refuses_a_stale_fair_and_a_line_off_the_live_board_and_pregame_still_refuses_a_started_game(store):
+    stale = desk_with(store, ScriptedPolymarket(), quote=LIVE_POLY_QUOTE).place(
+        request(live=True, liveFairReadAt="2026-10-22T14:57:00Z"))
+    assert "in-game fair was last seen ready" in stale["message"]
+    off_board = desk_with(store, ScriptedPolymarket(), quote={**LIVE_POLY_QUOTE, "live": False}).place(request(**LIVE_FIELDS))
+    assert "not on Unabated's live board" in off_board["message"]
+    pregame = desk_with(store, ScriptedPolymarket(), quote=LIVE_POLY_QUOTE).place(request())
+    assert pregame == {"status": "refused", "message": "Not placed: the game has started."}

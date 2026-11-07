@@ -122,6 +122,11 @@ const PRICE_DECIMALS = 1e4;
 const NOVIG_QTY_PER_DOLLAR = 100;
 const NOVIG_MARKET_OPEN = "OPEN";
 const NOVIG_EVENT_PREGAME = "OPEN_PREGAME";
+// A game in play (live recon, JAX @ BAL 2026-11-06): its markets stay OPEN.
+const NOVIG_EVENT_INGAME = "OPEN_INGAME";
+// fee.charged values a live Place pays at the market's coefficient; NEVER pays none.
+const NOVIG_FEE_CHARGED_LIVE = new Set(["ALWAYS", "WHEN_LIVE"]);
+const NOVIG_FEE_NEVER = "NEVER";
 // A market whose fee is charged ALWAYS charges a pregame taker; WHEN_LIVE charges only in-game.
 const NOVIG_FEE_ALWAYS = "ALWAYS";
 // Novig's market types: the full game's carry the bare name (docs.novig.com GET /v3/types/markets).
@@ -289,6 +294,30 @@ function derivedMoneylineContract(row, feedState) {
   if (!code) return { reason: "no_ticker", detail: `no spread rung names side ${row.sideIndex}'s team code` };
   if (read.codes[1 - row.sideIndex] === code) return { reason: "no_ticker", detail: `both sides read as ${code}` };
   return { ticker: `${read.series}GAME-${read.eventSuffix}-${code}`, side: "yes", sourceKey: null, derived: true };
+}
+
+// A full-game spread's contract off the game's team codes alone, for a live
+// Place: in game the favorite can change, and the line's own pregame ladder
+// may then hold no rung on the live number's side of zero to derive it from
+// (derivedMainNumberContract). YES on "<team> wins by over X" is the
+// favorite's side: a negative row buys YES on its own team's code, a positive
+// row NO on the other team's (Kalshi names X.5 as X+1). `derived`: the
+// market read before any order checks ticker, strike, side and team.
+//   {ticker, side, sourceKey: null, derived: true} or {reason, detail}
+function derivedSpreadFromTeamCodes(row, feedState) {
+  if (row.betTypeId !== BET_TYPE_SPREAD || row.periodTypeId !== PERIOD_FULL_GAME) {
+    return { reason: "no_ticker", detail: "only a full-game spread derives from the team codes" };
+  }
+  if (!(row.points !== 0 && Number.isInteger(Math.abs(row.points) + 0.5))) {
+    return { reason: "no_ticker", detail: `spread ${row.points} is not a half point off zero` };
+  }
+  const read = spreadTeamCodes(row, feedState);
+  if (read.reason) return read;
+  const favoriteSide = row.points < 0 ? row.sideIndex : 1 - row.sideIndex;
+  const code = read.codes[favoriteSide];
+  if (!code) return { reason: "no_ticker", detail: `no spread rung names side ${favoriteSide}'s team code` };
+  if (read.codes[1 - favoriteSide] === code) return { reason: "no_ticker", detail: `both sides read as ${code}` };
+  return { ticker: `${read.series}SPREAD-${read.eventSuffix}-${code}${Math.abs(row.points) + 0.5}`, side: row.points < 0 ? "yes" : "no", sourceKey: null, derived: true };
 }
 
 function resolveKalshiContract(row, feedState) {
@@ -913,14 +942,115 @@ function novigHeldOtherSide(matches, contract) {
 // game's), and its strike the row's number (a spread's strike is the home
 // side's handicap; a total's is the total). Read before every order.
 //   market  GET /v3/catalog/markets/<id>; event  GET .../events/<id>
-function novigMarketMismatch(market, event, row, contract) {
+//   live  a live Place: the event must be in game, and the fee is paid (novigFeeRateOf), not refused
+function novigMarketMismatch(market, event, row, contract, { live = false } = {}) {
   if (!market || typeof market !== "object") return "no market object";
   if (market.marketId !== contract.marketId) return `Novig answered market ${market.marketId} for ${contract.marketId}`;
   if (market.status !== NOVIG_MARKET_OPEN) return `market status "${market.status}"`;
   if (!event || event.eventId !== market.eventId) return `no event ${market.eventId} read`;
+  if (live) {
+    if (event.status !== NOVIG_EVENT_INGAME) return `event status "${event.status}", not in game`;
+    if (novigFeeRateOf(market, true) === null) return `the market's fee (${JSON.stringify(market.fee)}) is not one Place can price`;
+    return novigSideMismatch(market, row, contract);
+  }
   if (event.status !== NOVIG_EVENT_PREGAME) return `event status "${event.status}"`;
   if (!market.fee || market.fee.charged === NOVIG_FEE_ALWAYS) return `the market charges a taker fee pregame (${market.fee && market.fee.charged})`;
   return novigSideMismatch(market, row, contract);
+}
+
+// The taker fee per contract as a rate r (fee = r x p x (1 - p), Novig's
+// coefficient), or null when the market's fee cannot be read. Pregame a free
+// market is 0 (novigMarketMismatch refuses one that charges); in game a
+// market charged ALWAYS or WHEN_LIVE pays its own `fee.coefficient`
+// (0.06 on 2026-11-06).
+function novigFeeRateOf(market, live) {
+  const fee = market && market.fee;
+  if (!fee) return null;
+  if (!live) return fee.charged === NOVIG_FEE_ALWAYS ? null : 0;
+  if (fee.charged === NOVIG_FEE_NEVER) return 0;
+  if (!NOVIG_FEE_CHARGED_LIVE.has(fee.charged)) return null;
+  const rate = Number(fee.coefficient);
+  return Number.isFinite(rate) && rate >= 0 && rate < 1 ? rate : null;
+}
+
+// ---- live Place on Novig (never the bot's) -------------------------------------
+
+// What a pregame catalog read tells about one board game's Novig event, for a
+// live Place once the game is in play (its live lines carry no Novig id):
+// {novigEventId, marketTypes: {"<periodTypeId>:<betTypeId>": Novig marketType},
+// sideNames: [away, home] as Novig's spread outcomes name them (null when no
+// spread rung names one)}, or null when no rung of the game is in the index or
+// the rungs disagree.
+//   event  the board's event (venueIds.novigOutcomes); feedState  the board, for each rung's main line
+function novigEventMemoryOf(event, feedState, index) {
+  const outcomes = (event && event.venueIds && event.venueIds.novigOutcomes) || {};
+  const rungs = Object.entries(outcomes)
+    .map(([outcomeId, target]) => ({ outcomeId, target, listed: index.get(outcomeId), line: feedState.lines[target.mainKey] }))
+    .filter((rung) => rung.listed && rung.line);
+  if (rungs.length === 0) return null;
+  const eventIds = new Set(rungs.map((rung) => rung.listed.market.eventId));
+  if (eventIds.size !== 1) return null;
+  const marketTypes = {};
+  for (const { listed, line } of rungs) {
+    const key = `${line.periodTypeId}:${line.betTypeId}`;
+    if (marketTypes[key] !== undefined && marketTypes[key] !== listed.market.marketType) return null;
+    marketTypes[key] = listed.market.marketType;
+  }
+  const sideNames = novigSideNamesOf(rungs);
+  if (sideNames.reason) return null;
+  const [novigEventId] = eventIds;
+  return { novigEventId, marketTypes, sideNames: sideNames.names };
+}
+
+// A live row's Novig outcome in the in-game catalog listing, off the game's
+// remembered event (novigEventMemoryOf): the one open market of that event,
+// of the market type the game's pregame rungs of this period and market had,
+// at the row's strike (a spread's is the home side's handicap). The outcome
+// is picked by its number (or Over/Under) and the side's Novig team name; a
+// full-game moneyline's by its team name. novigMarketMismatch reads the market
+// again before any order.
+//   {outcomeId, marketId, otherOutcomeId, teamText?, derived: true} or {reason: "no_outcome", detail}
+function novigLiveContract(row, index, memory) {
+  const refuse = (detail) => ({ reason: "no_outcome", detail });
+  if (!memory) return refuse("the runner saw no pregame Novig read of this game to find its Novig event");
+  const moneyline = row.betTypeId === BET_TYPE_MONEYLINE;
+  if (moneyline && row.periodTypeId !== PERIOD_FULL_GAME) return refuse(HALF_MONEYLINE_REFUSAL);
+  const marketType = moneyline ? NOVIG_MARKET_TYPE_OF_BET_TYPE[BET_TYPE_MONEYLINE] : memory.marketTypes[`${row.periodTypeId}:${row.betTypeId}`];
+  if (!marketType) return refuse(`the game's pregame Novig rungs name no market type for ${row.period} ${row.betType}`);
+  const strike = moneyline ? null : novigStrikeOf(row);
+  const candidates = new Map();
+  for (const listed of index.values()) {
+    const market = listed.market;
+    if (market.eventId !== memory.novigEventId || market.marketType !== marketType) continue;
+    if (!moneyline && Number(market.strike) !== strike) continue;
+    candidates.set(market.marketId, market);
+  }
+  const where = moneyline ? `on event ${memory.novigEventId}` : `at strike ${strike} on event ${memory.novigEventId}`;
+  if (candidates.size !== 1) return refuse(`${candidates.size} open in-game Novig ${marketType} markets ${where}`);
+  const [market] = candidates.values();
+  const marketOutcomes = market.outcomes || [];
+  if (marketOutcomes.length !== 2) return refuse(`market ${market.marketId} has ${marketOutcomes.length} outcomes, expected 2`);
+  let chosenIndex;
+  if (moneyline) {
+    const sides = marketOutcomes.map((outcome) => novigMoneylineSideOf(outcome, row, memory.sideNames));
+    if (!sides.includes(0) || !sides.includes(1)) {
+      return refuse(`market ${market.marketId}'s outcomes (${marketOutcomes.map((outcome) => `"${outcome.name}"`).join(", ")}) do not name ${row.awayTeam} and ${row.homeTeam} one each`);
+    }
+    chosenIndex = sides.indexOf(row.sideIndex);
+  } else {
+    const sideName = row.betTypeId === BET_TYPE_SPREAD ? memory.sideNames[row.sideIndex] : null;
+    if (row.betTypeId === BET_TYPE_SPREAD && !sideName) return refuse(`no pregame Novig spread rung named side ${row.sideIndex}'s team`);
+    const named = marketOutcomes.map((outcome, at) => ({ outcome, at }))
+      .filter(({ outcome }) => novigOutcomeNamesRow(outcome, row) && (sideName === null || novigOutcomeTeamText(outcome) === sideName));
+    if (named.length !== 1) {
+      return refuse(`${named.length} outcomes of market ${market.marketId} name the row's side (${marketOutcomes.map((outcome) => `"${outcome.name}"`).join(", ")})`);
+    }
+    chosenIndex = named[0].at;
+  }
+  const chosen = marketOutcomes[chosenIndex];
+  const other = marketOutcomes[1 - chosenIndex];
+  const contract = { outcomeId: chosen.outcomeId, marketId: market.marketId, otherOutcomeId: other.outcomeId, derived: true };
+  return moneyline ? { ...contract, teamText: novigOutcomeTeamText(chosen) } : contract;
 }
 
 // Why Novig's market is not the row's line (the outcome on it, its type the
@@ -1048,13 +1178,13 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, NOVIG_MARKET_OPEN, NOVIG_QTY_PER_DOLLAR, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, NOVIG_EVENT_INGAME, NOVIG_MARKET_OPEN, NOVIG_QTY_PER_DOLLAR, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
   MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
-  contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, resolveKalshiContract,
+  contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, derivedSpreadFromTeamCodes, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, kalshiYesTeamSide, marketMismatch, clientOrderIdOf,
   heldOtherSide, unpricedHolding, kalshiStartMsOf, earliestStartMs, eventTickerOf,
   novigMoneylineContract, kalshiMoneylineEventOf, kalshiMoneylineFromMarkets,
-  resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigStreamBookRead, novigHeldOtherSide, novigMarketMismatch, novigSideMismatch,
+  resolveNovigOutcome, novigOutcomeIndex, novigContractOf, novigQuoteOf, novigStreamBookRead, novigHeldOtherSide, novigMarketMismatch, novigSideMismatch, novigFeeRateOf, novigEventMemoryOf, novigLiveContract,
   novigClientIdOf, novigLineOf,
 };

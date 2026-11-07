@@ -393,3 +393,18 @@ test("hasReadyFair: the game's fair is ready in a payload not yet dropped; expir
   assert.equal(live.hasReadyFair([payload({ at: NOW - live.LIVE_DROP_MS - 1 })], 125807, NOW), false);
   assert.equal(live.hasReadyFair([], 125807, NOW), false);
 });
+
+test("liveFairReadAtMs: the newest trusted post with this fair ready; null once it is stale, expired or another fair", () => {
+  const produced = game().producedUtc;
+  const visible = payload({ visible: true, at: NOW - 3000 });
+  assert.equal(live.liveFairReadAtMs([visible], 125807, NOW, produced), NOW - 3000);
+  // A hidden tab is trusted for LIVE_STALE_HIDDEN_MS, a visible one for LIVE_STALE_MS.
+  const hidden = payload({ visible: false, at: NOW - 60 * 1000 });
+  assert.equal(live.liveFairReadAtMs([hidden], 125807, NOW, produced), NOW - 60 * 1000);
+  assert.equal(live.liveFairReadAtMs([payload({ visible: true, at: NOW - live.LIVE_STALE_MS - 1 })], 125807, NOW, produced), null);
+  assert.equal(live.liveFairReadAtMs([payload({ visible: false, at: NOW - live.LIVE_STALE_HIDDEN_MS - 1 })], 125807, NOW, produced), null);
+  assert.equal(live.liveFairReadAtMs([payload({ games: [game({ fairStatus: "expired" })] })], 125807, NOW, produced), null);
+  assert.equal(live.liveFairReadAtMs([visible], 125807, NOW, "2026-09-28T01:30:00.000"), null, "a newer fair is another fair");
+  assert.equal(live.liveFairReadAtMs([visible], 999, NOW, produced), null);
+  assert.equal(live.liveFairReadAtMs([hidden, visible], 125807, NOW, produced), NOW - 3000, "the newest post wins");
+});

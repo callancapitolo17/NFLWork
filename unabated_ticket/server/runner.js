@@ -10,8 +10,9 @@
 // scan loop the panel runs while it is open and visible: a snapshot per
 // league on start — the settings' leagues plus NFL and CFB, which the panel
 // always loads for its Teasers tab and whose open BFA teasers size the Edges
-// rows, plus the leagues of open straight bets, whose closing fairs it saves —
-// each league re-downloaded on its own size-based cadence, a full
+// rows, plus CBB, whose fair ladders it stores with NFL's and CFB's
+// (server/laddersnapshot.js), plus the leagues of open straight bets, whose
+// closing fairs it saves — each league re-downloaded on its own size-based cadence, a full
 // resync every 10 min (scanner.js). It never pauses — the panel pauses when
 // hidden; this is a panel that is always in view.
 //
@@ -47,6 +48,12 @@
 //   POST <bets service>/close_snapshots.json every 30 s with the closing
 //       fairs — every book's two sides at each open bet's number before its
 //       game starts; the service keeps the newest pre-start one.
+//   POST <bets service>/ladders.json every 30 s — Unabated's full-game fair
+//       ladder (spread, total, moneyline) of every NFL / CFB / CBB game still
+//       to start (server/laddersnapshot.js): an opener once per game and
+//       market, then the close whenever the ladder changes or every 10 min
+//       unchanged; ladders.duckdb keeps the first opener and the newest
+//       pregame close (issue #264). Stored only, nothing reads it back.
 //   GET <bets service>/tau_samples.json once on start and POST /tau_samples.json
 //       every 30 s with the readings that changed (an unchanged one hourly;
 //       each pass absorbs the board's current refresh first): the tail
@@ -193,6 +200,7 @@ const edgesPayload = require("./edges_payload.js");
 const closefair = require("./closefair.js");
 const fillbooks = require("./fillbooks.js");
 const edgesnapshot = require("./edgesnapshot.js");
+const laddersnapshot = require("./laddersnapshot.js");
 const ladderLib = require("../extension/ladder.js");
 const scenarios = require("./scenarios.js");
 const teasersPayload = require("./teasers_payload.js");
@@ -201,6 +209,7 @@ const pricecheck = require("../extension/pricecheck.js");
 const taker = require("./taker.js");
 const polymarket = require("./polymarket.js");
 const prophetx = require("./prophetx.js");
+const liveboard = require("./liveboard.js");
 const feedLib = require("../extension/feed.js");
 const boardThread = require("./board_thread.js");
 const livePrices = require("../extension/liveprices.js");
@@ -209,6 +218,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8095;
 // A moneyline has no number: the Place button's line matches on side alone.
 const MONEYLINE_BET_TYPE_ID = 1;
+const SPREAD_BET_TYPE_ID = 2;
 // Unabated's book id for Buckeye, which is BFA (teaser.js BUCKEYE_BOOK_ID).
 const BUCKEYE_BOOK_ID = 59;
 const DEFAULT_BETS_SERVICE_URL = "http://127.0.0.1:8094";
@@ -330,6 +340,9 @@ const SERVICE_WRITE_RETRY_MS = 60 * 1000;
 // Close snapshots per POST: each carries every book's two sides (a few KB),
 // so a full slate of open bets stays far under the service's 1 MB body cap.
 const CLOSE_SNAPSHOT_ROWS_PER_POST = 25;
+// Ladder rows per POST /ladders.json: a CBB spread ladder is a few KB, so 40
+// stay far under the service's 1 MB body cap.
+const LADDER_ROWS_PER_POST = 40;
 const HTTP_BAD_REQUEST = 400;
 
 function log(message) {
@@ -383,10 +396,14 @@ function hostAllowed(hostHeader, allowed) {
 // The leagues the scanner loads: the Edges list's, plus NFL and CFB, as the
 // panel's scannerLeaguesOf does — the board the open teasers and the bets are
 // matched against must be the panel's, or the stakes would differ — plus the
-// open bets' leagues, so each has a closing fair. A league outside the
-// settings never reaches the Edges list (edgerows.js leagueIds).
+// open bets' leagues, so each has a closing fair, plus the leagues whose fair
+// ladders are stored (laddersnapshot.js: NFL, CFB, CBB). A league outside the
+// settings never reaches the Edges list (edgerows.js leagueIds) or the taker
+// (taker.js leagueIds), and tail flex measures per league, so loading CBB for
+// its ladders changes no other league's rows or stakes.
 function scannerLeaguesOf(edgeLeagues, betLeagueIds = []) {
-  return Array.from(new Set([...edgeLeagues, ...teaser.TEASER_LEAGUE_IDS, ...betLeagueIds])).sort((a, b) => a - b);
+  return Array.from(new Set([...edgeLeagues, ...teaser.TEASER_LEAGUE_IDS, ...laddersnapshot.LADDER_LEAGUE_IDS, ...betLeagueIds]))
+    .sort((a, b) => a - b);
 }
 
 // scanner.js passes the browser's fetch options ({cache: "no-cache",
@@ -439,7 +456,7 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 //          polymarketFetch (Polymarket US's public gateway, default serviceFetch), polymarketGatewayUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
 //          logInfo / logWarning (message) -> void, default stdout / stderr}
-// Returns {start, stop, pollBets, pollSettings, scanLoaded, learn, takerPass,
+// Returns {start, stop, pollBets, pollSettings, postLadders, scanLoaded, learn, takerPass,
 //          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
 //          scenariosPayload, takerPayload, health, scanner, boardLines (the
 //          board's rows, read by the tests)}.
@@ -486,6 +503,10 @@ function createRunner(deps) {
   // runner never saw it pregame), and its score and clock as of the newest
   // snapshot that carried it. The Live tab's chances are these kickoff odds.
   const kickoffMemo = new Map();
+  // eventId -> the game's venue ids as its last pregame snapshot carried them
+  // (liveboard.rememberPregameVenueIds), for a live Place quote: Unabated's
+  // live lines carry none. Kept and pruned with kickoffMemo.
+  const pregameVenueMemo = new Map();
   let fillFairIndex = new Map();
   // {betId: startMs} of the board game each open bet last matched (the
   // panel's knownStarts): a bet with no start of its own whose game has
@@ -534,6 +555,13 @@ function createRunner(deps) {
   // betId -> what was last POSTed to /close_snapshots.json (edgesnapshot.unsentCloseRows).
   const sentCloseSnapshots = new Map();
   const closeSnapshotStatus = { okAt: null, error: null, rowsSent: 0 };
+  // The stored fair ladders (laddersnapshot.js): leagueId -> {version,
+  // ladders} as of the league's last snapshot, ladderKey -> what the service
+  // took (laddersnapshot.markSent), and the last pass's outcome.
+  const ladderCache = new Map();
+  const sentLadders = new Map();
+  let laddersBusy = false;
+  const ladderStatus = { okAt: null, error: null, rowsSent: 0 };
   // The tail flex's rolling tau pool (tailflex.createTauPool): every refresh's
   // two-sided exchange rungs where two or more exchanges quote both sides,
   // kept 24 h, loaded from the bets service on start (GET /tau_samples.json)
@@ -565,6 +593,12 @@ function createRunner(deps) {
   let novigDeskStatus = "not asked yet";
   // Novig's catalog as last read: {leagues: Set, readAt, index (novigOutcomeIndex)}.
   let novigCatalog = null;
+  // The same for Novig's in-game markets (a live Place reads it, nothing else).
+  let novigLiveCatalog = null;
+  // Unabated eventId -> its Novig event as the last pregame catalog read
+  // showed it (taker.novigEventMemoryOf), for a live Place: in game the
+  // board's lines carry no Novig id. Kept until kickoffMemo lets the game go.
+  const novigEventMemo = new Map();
   // The live price overlay (extension/liveprices.js): lineKey -> the last read
   // of that line's exchange book, {venue, points, allIn, depthDollars,
   // readAtMs} or {venue, points, empty: true, readAtMs}; ticker -> Kalshi's
@@ -599,7 +633,7 @@ function createRunner(deps) {
   }
 
   const scanner = scannerLib.createScanner({
-    fetchImpl: deps.fetchImpl, now, timers, maxRefreshMs: TAKER_SNAPSHOT_REFRESH_MS,
+    fetchImpl: deps.fetchImpl, now, timers, maxRefreshMs: TAKER_SNAPSHOT_REFRESH_MS, keepLive: true,
     onChange: (status, state, lineHistory) => {
       if (status.error && (!scannerStatus || scannerStatus.error !== status.error)) logWarning(`scanner: ${status.error}`);
       if (status.phase === "live" && (!scannerStatus || scannerStatus.phase !== "live")) {
@@ -636,8 +670,12 @@ function createRunner(deps) {
         const pregame = row.eventStartMs > at;
         const known = kickoffMemo.get(row.eventId);
         const gameState = gameStateWithAbbreviations(row);
-        if (pregame) kickoffMemo.set(row.eventId, { row, lines: linesByEvent.get(row.eventId) || [], oddsAt: at, gameState });
-        else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null, gameState });
+        if (pregame) {
+          const lines = linesByEvent.get(row.eventId) || [];
+          kickoffMemo.set(row.eventId, { row, lines, oddsAt: at, gameState });
+          const venueIds = liveboard.rememberPregameVenueIds(feedState.events[row.eventId], lines);
+          if (venueIds) pregameVenueMemo.set(row.eventId, venueIds);
+        } else if (!known) kickoffMemo.set(row.eventId, { row, lines: null, oddsAt: null, gameState });
         else known.gameState = gameState;
       }
     }
@@ -645,6 +683,7 @@ function createRunner(deps) {
     for (const [eventId, entry] of kickoffMemo) {
       if (at - entry.row.eventStartMs > KICKOFF_MEMO_HOURS * HOUR_MS) kickoffMemo.delete(eventId);
     }
+    for (const eventId of pregameVenueMemo.keys()) if (!kickoffMemo.has(eventId)) pregameVenueMemo.delete(eventId);
   }
 
   // The game's latest score and clock (feed.gameStateOf) plus its teams' short
@@ -1092,6 +1131,60 @@ function createRunner(deps) {
         }
         return;
       }
+    }
+  }
+
+  // Each stored league's ladders, rebuilt only when its snapshot landed again;
+  // a stale league (a CDN copy built long ago) is not read, as closefair does.
+  function currentLadders() {
+    const staleLeagues = new Set(scannerStatus.staleLeagues || []);
+    const loadedAt = scannerStatus.leagueLoadedAt || {};
+    const ladders = [];
+    for (const leagueId of laddersnapshot.LADDER_LEAGUE_IDS) {
+      if (!boardLeagueIds().includes(leagueId) || staleLeagues.has(leagueId)) continue;
+      const version = scanner.getLeagueVersion(leagueId);
+      let cached = ladderCache.get(leagueId);
+      if (!cached || cached.version !== version) {
+        cached = { version, ladders: laddersnapshot.leagueLadders({
+          leagueId, linesByEvent: leagueLinesByEvent(leagueId), events: feedState.events, observedMs: loadedAt[leagueId],
+        }) };
+        ladderCache.set(leagueId, cached);
+      }
+      ladders.push(...cached.ladders);
+    }
+    return ladders;
+  }
+
+  // POST the ladder rows the service has not taken, LADDER_ROWS_PER_POST to
+  // a request. A failed request keeps its rows (and the rest) for the next
+  // pass; a 400 (a row the service refuses) drops only its own rows. Stored
+  // only: nothing reads the ladders back.
+  async function postLadders() {
+    if (laddersBusy || !feedState || !scannerStatus) return;
+    laddersBusy = true;
+    try {
+      const at = now();
+      laddersnapshot.forgetStarted(sentLadders, at);
+      const rows = laddersnapshot.unsentRows(currentLadders(), sentLadders, at);
+      for (let start = 0; start < rows.length; start += LADDER_ROWS_PER_POST) {
+        const chunk = rows.slice(start, start + LADDER_ROWS_PER_POST);
+        try {
+          await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/ladders.json`, "POST", { rows: chunk.map(laddersnapshot.wireRow) });
+          laddersnapshot.markSent(chunk, sentLadders);
+          if (ladderStatus.error) logInfo("ladders saving again");
+          Object.assign(ladderStatus, { okAt: now(), error: null, rowsSent: ladderStatus.rowsSent + chunk.length });
+        } catch (error) {
+          if (ladderStatus.error !== error.message) logWarning(`ladders POST failed: ${error.message}`);
+          ladderStatus.error = error.message;
+          if (error.status !== HTTP_BAD_REQUEST) return;
+          laddersnapshot.markSent(chunk, sentLadders);
+        }
+      }
+    } catch (error) {
+      if (ladderStatus.error !== error.message) logWarning(`ladder pass failed: ${error.stack || error.message}`);
+      ladderStatus.error = error.message;
+    } finally {
+      laddersBusy = false;
     }
   }
 
@@ -1804,17 +1897,44 @@ function createRunner(deps) {
     const readAt = now();
     const index = taker.novigOutcomeIndex(await readNovigMarkets(rows));
     novigCatalog = { leagues: new Set(leagues), readAt, index };
+    rememberNovigEvents(index);
     return { index, readAt, reused: false };
   }
 
-  // Every open pregame Novig market in the rows' leagues, every page (never a partial list).
-  async function readNovigMarkets(rows) {
+  // The in-game Novig catalog of one live row's league, reused for maxAgeMs (a live Place only).
+  async function novigLiveCatalogFor(row, maxAgeMs) {
+    const league = NOVIG_LEAGUE_OF[row.league];
+    const cached = novigLiveCatalog;
+    if (maxAgeMs > 0 && league && cached && now() - cached.readAt <= maxAgeMs && cached.leagues.has(league)) {
+      return { index: cached.index, readAt: cached.readAt, reused: true };
+    }
+    const readAt = now();
+    const index = taker.novigOutcomeIndex(await readNovigMarkets([row], taker.NOVIG_EVENT_INGAME));
+    novigLiveCatalog = { leagues: new Set(league ? [league] : []), readAt, index };
+    return { index, readAt, reused: false };
+  }
+
+  // Each board game's Novig event off a fresh pregame catalog read, kept for a
+  // live Place once the game starts (its last pregame reading wins).
+  function rememberNovigEvents(index) {
+    if (!feedState) return;
+    for (const [eventId, event] of Object.entries(feedState.events)) {
+      const outcomes = event.venueIds && event.venueIds.novigOutcomes;
+      if (!outcomes || Object.keys(outcomes).length === 0) continue;
+      const memory = taker.novigEventMemoryOf(event, feedState, index);
+      if (memory) novigEventMemo.set(Number(eventId), memory);
+    }
+    for (const eventId of novigEventMemo.keys()) if (!kickoffMemo.has(eventId) && !(feedState.events[eventId])) novigEventMemo.delete(eventId);
+  }
+
+  // Every open Novig market of `eventStatus` (pregame by default) in the rows' leagues, every page (never a partial list).
+  async function readNovigMarkets(rows, eventStatus = taker.NOVIG_EVENT_PREGAME) {
     const leagues = Array.from(new Set(rows.map((row) => NOVIG_LEAGUE_OF[row.league]).filter(Boolean))).sort();
     if (!leagues.length) return [];
     const markets = [];
     let after = null;
     for (let page = 0; page < NOVIG_MARKETS_MAX_PAGES; page += 1) {
-      const query = { league: leagues.join(","), eventStatus: taker.NOVIG_EVENT_PREGAME, limit: String(NOVIG_MARKETS_PAGE_LIMIT) };
+      const query = { league: leagues.join(","), eventStatus, limit: String(NOVIG_MARKETS_PAGE_LIMIT) };
       if (after) query.after = after;
       const body = await getNovigJson(NOVIG_CATALOG_MARKETS_PATH, query);
       if (!body || !Array.isArray(body.items)) throw new Error("Novig markets: no items list");
@@ -1823,6 +1943,20 @@ function createRunner(deps) {
       if (!after) return markets;
     }
     throw new Error(`Novig markets: more than ${NOVIG_MARKETS_MAX_PAGES} pages`);
+  }
+
+  // The board a Place quote finds its line on: the pregame board, or for a
+  // live Place (spec.live) the live board of the league whose last snapshot
+  // has the game in play (scanner keepLive; its rows never reach the Edges
+  // list or the bot). {board} or {board: null, reason, detail}.
+  function quoteBoardOf(spec) {
+    if (!spec.live) {
+      return feedState ? { board: feedState } : { board: null, reason: "no_board", detail: "the board has not loaded yet" };
+    }
+    const leagueId = scanner.liveLeagueOfEvent(spec.eventId);
+    const live = leagueId == null ? null : scanner.getLiveBoard(leagueId);
+    if (!live) return { board: null, reason: "not_live", detail: `game ${spec.eventId} is not on Unabated's live board` };
+    return { board: liveboard.liveQuoteBoard(live.state, spec.eventId, pregameVenueMemo.get(spec.eventId) || null) };
   }
 
   // The Ticket's Place button (bets_service/manual_orders.py asks, Cal
@@ -1835,8 +1969,8 @@ function createRunner(deps) {
   //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
   async function kalshiQuoteNow(params) {
     const spec = kalshiLineSpecOf(params);
-    const board = feedState;
-    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const { board, reason, detail } = quoteBoardOf(spec);
+    if (!board) return { ok: false, reason, detail };
     const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.KALSHI_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
@@ -1844,8 +1978,8 @@ function createRunner(deps) {
       return { ok: false, reason: "no_line", detail: `the board holds ${found.length} Kalshi lines for game ${spec.eventId} at that market, side and number` };
     }
     const row = feedLib.describeLine(found[0], board);
-    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
-    const contract = await kalshiPlaceContractOf(row, board);
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName, live: spec.live };
+    const contract = await kalshiPlaceContractOf(row, board, spec.live);
     if (contract.reason) return { ok: false, ...fields, reason: contract.reason, detail: contract.detail };
     const position = { ...fields, ticker: contract.ticker, side: contract.side, derivedTicker: contract.derived === true };
     let book;
@@ -1874,8 +2008,13 @@ function createRunner(deps) {
   // for a moneyline whose team code no full-game spread rung gives (a game
   // without one, a half), Kalshi's own market list for the game's winner
   // event (taker.kalshiMoneylineEventOf / kalshiMoneylineFromMarkets).
-  async function kalshiPlaceContractOf(row, board) {
+  async function kalshiPlaceContractOf(row, board, live = false) {
     const contract = taker.resolveKalshiContract(row, board);
+    // Live, the favorite may have changed sides of zero since the pregame ladder the ids came from.
+    if (contract.reason && live && row.betTypeId === SPREAD_BET_TYPE_ID) {
+      const derived = taker.derivedSpreadFromTeamCodes(row, board);
+      return derived.reason ? { reason: derived.reason, detail: `${contract.detail}; ${derived.detail}` } : derived;
+    }
     if (!contract.reason || row.betTypeId !== MONEYLINE_BET_TYPE_ID) return contract;
     const event = taker.kalshiMoneylineEventOf(row);
     if (event.reason) return { reason: event.reason, detail: `${contract.detail}; ${event.detail}` };
@@ -1924,8 +2063,8 @@ function createRunner(deps) {
 
   // {answer: novigQuoteNow's answer, catalog: {reused, readAt, readsMs} for its log line once the outcome was found, else null}.
   async function novigQuoteOfSpec(spec) {
-    const board = feedState;
-    if (!board) return { answer: { ok: false, reason: "no_board", detail: "the board has not loaded yet" }, catalog: null };
+    const { board, reason: boardReason, detail: boardDetail } = quoteBoardOf(spec);
+    if (!board) return { answer: { ok: false, reason: boardReason, detail: boardDetail }, catalog: null };
     const found = linesOfEvent(board, spec.eventId).filter((line) => line.bookId === taker.NOVIG_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
@@ -1933,18 +2072,20 @@ function createRunner(deps) {
       return { answer: { ok: false, reason: "no_line", detail: `the board holds ${found.length} Novig lines for game ${spec.eventId} at that market, side and number` }, catalog: null };
     }
     const row = feedLib.describeLine(found[0], board);
-    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName };
+    const fields = { eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(), eventName: row.eventName, live: spec.live };
     let catalog;
     let contract;
     try {
       // A moneyline has no Novig rung of its own: Place finds it off the game's other rungs (never the bot).
-      const contractOf = (index) => (row.betTypeId === MONEYLINE_BET_TYPE_ID
-        ? taker.novigMoneylineContract(row, index, board) : taker.novigContractOf(row, index));
-      catalog = await novigCatalogFor([row], NOVIG_CATALOG_REUSE_MS);
+      // Live, no line carries a Novig id: the game's remembered Novig event names the market (novigLiveContract).
+      const contractOf = (index) => (spec.live ? taker.novigLiveContract(row, index, novigEventMemo.get(row.eventId) || null)
+        : row.betTypeId === MONEYLINE_BET_TYPE_ID ? taker.novigMoneylineContract(row, index, board) : taker.novigContractOf(row, index));
+      const catalogFor = (maxAgeMs) => (spec.live ? novigLiveCatalogFor(row, maxAgeMs) : novigCatalogFor([row], maxAgeMs));
+      catalog = await catalogFor(NOVIG_CATALOG_REUSE_MS);
       contract = contractOf(catalog.index);
       // A market listed since the reused read: one fresh read before giving up.
       if (contract.reason && catalog.reused) {
-        catalog = await novigCatalogFor([row], 0);
+        catalog = await catalogFor(0);
         contract = contractOf(catalog.index);
       }
     } catch (error) {
@@ -1955,9 +2096,11 @@ function createRunner(deps) {
     // The book, the market and its event at once (the catalog names the event; the check confirms it is the market's).
     const listedEventId = catalog.index.get(contract.outcomeId).market.eventId;
     const readsStartedAt = now();
-    const [streamRead, mismatch] = await Promise.all([
-      readStreamBooks([contract.marketId], true).then((books) => books.get(contract.marketId)),
-      readNovigMarketMismatch(row, contract, listedEventId),
+    // The book stream drops a market once its game starts, so a live Place reads the book over keyed REST.
+    const [streamRead, { mismatch, market: checkedMarket }] = await Promise.all([
+      spec.live ? Promise.resolve({ error: "a live Place reads the book over keyed REST" })
+        : readStreamBooks([contract.marketId], true).then((books) => books.get(contract.marketId)),
+      readNovigMarketCheck(row, contract, listedEventId, spec.live),
     ]);
     // Without a stream book (the stream down or still subscribing) Place reads the book once over keyed REST;
     // the stream seeing the market live or not OPEN is final.
@@ -1976,7 +2119,9 @@ function createRunner(deps) {
     }
     if (mismatch) return { answer: { ok: false, ...position, reason: "market_mismatch", detail: mismatch }, catalog: timing };
     if (!quote) return { answer: { ok: false, ...position, reason: "no_book", detail: `nothing rests on the other side of Novig market ${contract.marketId}` }, catalog: timing };
-    return { answer: { ok: true, ...position, price: quote.ask, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) }, catalog: timing };
+    // The taker fee per contract the bets service adds to the price (0 pregame; novigFeeRateOf).
+    const feeRate = taker.novigFeeRateOf(checkedMarket, spec.live);
+    return { answer: { ok: true, ...position, price: quote.ask, feeRate, depth: quote.depth, novigBaseUrl, line: taker.novigLineOf(row) }, catalog: timing };
   }
 
   // The Ticket's Place button at Polymarket US (bets_service/polymarket_place.py
@@ -1995,8 +2140,8 @@ function createRunner(deps) {
   }
 
   async function polymarketQuoteOfSpec(spec) {
-    const board = feedState;
-    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const { board, reason: boardReason, detail: boardDetail } = quoteBoardOf(spec);
+    if (!board) return { ok: false, reason: boardReason, detail: boardDetail };
     const found = linesOfEvent(board, spec.eventId).filter((line) => polymarket.isPolymarketUsBook(board.books[line.bookId])
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
       && line.sideIndex === spec.sideIndex && (spec.betTypeId === MONEYLINE_BET_TYPE_ID || (line.points ?? null) === spec.points));
@@ -2008,6 +2153,10 @@ function createRunner(deps) {
     const foundContract = await polymarketContractOfRow(row, readPolymarketEvents);
     if (foundContract.reason) return { ok: false, ...fields, reason: foundContract.reason, detail: foundContract.detail };
     const { contract, event, startMs } = foundContract;
+    // Live, Polymarket US must itself show the game in play (its event's `live`, recon 2026-11-06).
+    if (spec.live && event.live !== true) {
+      return { ok: false, ...fields, reason: "not_live", detail: `Polymarket US shows ${event.slug} live=${JSON.stringify(event.live)}, ended=${JSON.stringify(event.ended)}` };
+    }
     if (foundContract.learnedRow) {
       const { learnedRow } = foundContract;
       logInfo(`polymarket quote ${row.eventId}: matched ${event.slug} by one team; "${learnedRow.venueTeamName}" is Unabated team ${learnedRow.unabatedTeamId}`);
@@ -2015,7 +2164,7 @@ function createRunner(deps) {
     }
     const eventStartMs = Math.min(startMs, Date.parse(event.startTime));
     const position = { ...fields, eventStart: new Date(eventStartMs).toISOString(), unabatedStart: row.eventStart,
-      polymarketStart: event.startTime, slug: contract.slug, side: contract.side, eventSlug: event.slug };
+      polymarketStart: event.startTime, slug: contract.slug, side: contract.side, eventSlug: event.slug, live: spec.live };
     const read = await polymarketPlaceBook(contract.slug);
     if (read.error) return { ok: false, ...position, reason: "no_book", detail: read.error };
     const { book } = read;
@@ -2042,8 +2191,8 @@ function createRunner(deps) {
   }
 
   function prophetxQuoteOfSpec(spec) {
-    const board = feedState;
-    if (!board) return { ok: false, reason: "no_board", detail: "the board has not loaded yet" };
+    const { board, reason: boardReason, detail: boardDetail } = quoteBoardOf(spec);
+    if (!board) return { ok: false, reason: boardReason, detail: boardDetail };
     const gameLines = linesOfEvent(board, spec.eventId);
     const found = gameLines.filter((line) => line.bookId === prophetx.PROPHETX_BOOK_ID
       && line.eventId === spec.eventId && line.periodTypeId === spec.periodTypeId && line.betTypeId === spec.betTypeId
@@ -2054,7 +2203,7 @@ function createRunner(deps) {
     const row = feedLib.describeLine(found[0], board);
     return {
       ok: true, eventId: row.eventId, eventStart: row.eventStart, label: `${row.sideLabel} ${row.period}`.trim(),
-      eventName: row.eventName, price: found[0].price, line: taker.novigLineOf(row), ...prophetx.strikeIdsOf(found[0], gameLines),
+      eventName: row.eventName, price: found[0].price, line: taker.novigLineOf(row), live: spec.live, ...prophetx.strikeIdsOf(found[0], gameLines),
     };
   }
 
@@ -2274,6 +2423,12 @@ function createRunner(deps) {
   //   listedEventId  the event the catalog listed the market under, when known:
   //                  then the market and the event are read at once
   async function readNovigMarketMismatch(row, contract, listedEventId = null) {
+    return (await readNovigMarketCheck(row, contract, listedEventId, false)).mismatch;
+  }
+
+  // {mismatch: why Novig's market is not the row's (null when it is), market: the market read, or null}.
+  //   live  a live Place: the event must be in game and the fee is priced (taker.novigMarketMismatch)
+  async function readNovigMarketCheck(row, contract, listedEventId, live) {
     const eventPath = (eventId) => `/v3/catalog/events/${encodeURIComponent(eventId)}`;
     let market;
     let event;
@@ -2285,10 +2440,10 @@ function createRunner(deps) {
         event = await getNovigJson(eventPath(market.eventId));
       }
     } catch (error) {
-      return `Novig market ${contract.marketId} unread: ${error.message}`;
+      return { mismatch: `Novig market ${contract.marketId} unread: ${error.message}`, market: null };
     }
-    const mismatch = taker.novigMarketMismatch(market, event, row, contract);
-    return mismatch === null ? null : `Novig market ${contract.marketId}: ${mismatch}`;
+    const mismatch = taker.novigMarketMismatch(market, event, row, contract, { live });
+    return { mismatch: mismatch === null ? null : `Novig market ${contract.marketId}: ${mismatch}`, market };
   }
 
   // The bot's order goes only when readNovigMarketMismatch finds nothing; else the decision reads market_mismatch.
@@ -2470,6 +2625,7 @@ function createRunner(deps) {
       timers.setInterval(() => pollBets(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
+      timers.setInterval(() => postLadders(), CLOSING_FAIRS_POST_MS),
       // The live price pass right after each taker pass, so the lines the taker just read are not read again.
       timers.setInterval(async () => {
         await takerPass();
@@ -2602,6 +2758,7 @@ function createRunner(deps) {
       settings: { source: settings.source, okAt: settings.okAt, error: settings.error },
       closingFairs: { ...closingStatus },
       closeSnapshots: { ...closeSnapshotStatus },
+      ladders: { ...ladderStatus, tracked: sentLadders.size },
       tauPool: { ...tauStatus, size: tauPool.size(), unsent: tauUnsent.size },
       livePrices: liveStatus(),
       taker: {
@@ -2613,7 +2770,7 @@ function createRunner(deps) {
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
+    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
     edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
@@ -2634,9 +2791,11 @@ function kalshiLineSpecOf(params) {
   const pointsText = params.get("points");
   const points = pointsText === null || pointsText === "" ? null : Number(pointsText);
   if (points !== null && !Number.isFinite(points)) throw httpError(400, `points must be a number, got ${JSON.stringify(pointsText)}`);
+  const liveText = params.get("live");
+  if (liveText !== null && liveText !== "0" && liveText !== "1") throw httpError(400, `live must be 0 or 1, got ${JSON.stringify(liveText)}`);
   return {
     eventId: whole("eventId"), periodTypeId: whole("periodTypeId"), betTypeId: whole("betTypeId", [1, 2, 3]),
-    sideIndex: whole("sideIndex", [0, 1]), points,
+    sideIndex: whole("sideIndex", [0, 1]), points, live: liveText === "1",
   };
 }
 

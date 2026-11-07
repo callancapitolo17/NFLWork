@@ -126,7 +126,7 @@ def test_a_click_sends_one_ioc_buy_at_the_live_price_in_1c_contracts(store):
     novig = ScriptedNovig()
     desk = desk_with(store, novig)
     result = desk.place(request())
-    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5}]
+    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 2, "sideIndex": 1, "points": -35.5, "live": False}]
     assert novig.calls == [(OUTCOME, 0.675, 7407, CLICK_ID)]
     assert result["status"] == "filled"
     assert result["cost"] == pytest.approx(49.99725)
@@ -136,7 +136,7 @@ def test_a_click_sends_one_ioc_buy_at_the_live_price_in_1c_contracts(store):
 def test_a_moneyline_click_asks_the_runner_with_no_number(store):
     desk = desk_with(store, ScriptedNovig())
     desk.place(request(betTypeId=1, points=None))
-    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 1, "sideIndex": 1, "points": None}]
+    assert desk.quotes == [{"eventId": EVENT_ID, "periodTypeId": 1, "betTypeId": 1, "sideIndex": 1, "points": None, "live": False}]
 
 
 def test_the_board_line_is_kept_so_places_subaccount_read_names_the_bet(store):
@@ -458,3 +458,41 @@ def test_what_an_order_never_read_final_writes(store, novig, row):
     status, count, cost, error = order_row(store, f"nman-{CLICK_ID}")
     assert (status, count, cost) == row[:3]
     assert (error or "").startswith(row[3] or "") and (row[3] is not None or error is None)
+
+
+# ---- live Place (a Ticket at a break) -------------------------------------------
+
+LIVE_QUOTE = {**QUOTE, "eventStart": "2026-10-16T19:30:00.000Z", "live": True, "price": 0.6, "feeRate": 0.06}
+LIVE_BODY = {"live": True, "liveFairReadAt": "2026-10-16T20:59:50Z"}
+
+
+def test_live_place_pays_novigs_in_game_fee_in_the_price_check_and_the_contract_count(store):
+    novig = ScriptedNovig()
+    all_in = round(0.6 + 0.06 * 0.6 * 0.4, 6)
+    desk = desk_with(store, novig, quote=LIVE_QUOTE)
+    result = desk.place(request(**LIVE_BODY, ticketAllIn=all_in))
+    assert desk.quotes[0]["live"] is True
+    assert result["status"] == "filled", result
+    # The limit is Novig's ask; the stake buys contracts at the all-in price.
+    assert novig.calls[0][1] == 0.6
+    assert novig.calls[0][2] == qty_for_stake(50, all_in)
+    stored = store._con.execute("SELECT ask_price, all_in_price FROM manual_orders").fetchall()
+    assert stored == [(0.6, all_in)]
+
+
+def test_live_place_refuses_an_all_in_over_the_ticket_a_stale_fair_and_a_line_off_the_live_board(store):
+    # The ask alone matches the Ticket, but the fee puts the all-in 1.4c over it.
+    over = desk_with(store, ScriptedNovig(), quote=LIVE_QUOTE).place(request(**LIVE_BODY, ticketAllIn=0.6))
+    assert over["status"] == "refused" and "all-in" in over["message"], over
+    stale = desk_with(store, ScriptedNovig(), quote=LIVE_QUOTE).place(
+        request(live=True, liveFairReadAt="2026-10-16T20:58:00Z", ticketAllIn=0.62))
+    assert "in-game fair was last seen ready" in stale["message"]
+    off_board = desk_with(store, ScriptedNovig(), quote={**LIVE_QUOTE, "live": False}).place(request(**LIVE_BODY, ticketAllIn=0.62))
+    assert "not on Unabated's live board" in off_board["message"]
+    odd_fee = desk_with(store, ScriptedNovig(), quote={**LIVE_QUOTE, "feeRate": 0.5}).place(request(**LIVE_BODY, ticketAllIn=0.62))
+    assert "fee rate" in odd_fee["message"]
+
+
+def test_a_pregame_click_on_a_started_game_still_refuses(store):
+    result = desk_with(store, ScriptedNovig(), quote={**QUOTE, "eventStart": "2026-10-16T19:30:00.000Z"}).place(request())
+    assert result == {"status": "refused", "message": "Not placed: the game has started."}

@@ -63,6 +63,12 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     -> {ok, saved} (every book's two sides at each open bet's
                                     number before its game starts, server/edgesnapshot.js; a
                                     row older than the stored one is ignored; same guard)
+           POST /ladders.json  body {rows: [{reading, eventId, leagueId, periodTypeId, betTypeId,
+                                    eventName, awayTeamId, homeTeamId, eventStart, observedAt,
+                                    mainPoints0, mainFair0, mainPoints1, mainFair1, rungs}]}
+                                    -> {ok, saved} (loopback only: Unabated's pregame fair
+                                    ladders, server/laddersnapshot.js -> ladders.duckdb; 503
+                                    when that file is not open)
            POST /closing_fairs.json body {rows: [{betId, lineKey, points, fairAmerican,
                                     fairObservedAt, eventStart}]} -> {ok, saved}
                                     (the server runner's pre-start read of each open bet's
@@ -266,6 +272,9 @@ leaves `bets` untouched — a dark source never blanks the list. PUT
 bets it read while confirming into bets.duckdb::bets, so the panel's next poll has the
 ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions to
 taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
+POST /ladders.json (loopback only, the runner's) INSERTs each game's opener and
+UPSERTs its newest pregame close into ladders.duckdb::ladder_readings
+(ladder_store.py; its own file, config.LADDER_DB_PATH; issue #264).
 POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /
 UPDATEs bets.duckdb::manual_orders (manual_orders.py).
 POST /place_novig.json places a Novig order from Place's own sub-account (money)
@@ -352,6 +361,7 @@ from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
 from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
                                                       validate_order_request)
 from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStore
+from unabated_ticket.bets_service.ladder_store import READINGS, LadderStore
 
 log = logging.getLogger(__name__)
 
@@ -1023,6 +1033,95 @@ def validate_close_snapshot_rows(body: object) -> list[dict] | str:
     return _validate_rows(body, _validate_close_snapshot_row)
 
 
+# laddersnapshot.js: NFL, CFB, CBB; full game; moneyline, spread, total; Unabated's two sides.
+LADDER_LEAGUE_IDS = (1, 2, 4)
+LADDER_PERIOD_TYPE_IDS = (1,)
+LADDER_BET_TYPE_IDS = (1, 2, 3)
+LADDER_BET_TYPE_MONEYLINE = 1
+LADDER_SIDES = (0, 1)
+# A ladder longer than this is not a ladder (a CBB spread ladder is ~150 rungs).
+MAX_LADDER_RUNGS = 1000
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_ladder_rung(where: str, raw: object, bet_type_id: int) -> str | None:
+    """None when one rung is [side, points, fair_american, books, agreeing], else what was wrong."""
+    if not isinstance(raw, list) or len(raw) != 5:
+        return f"{where} must be [side, points, fair, books, agreeing], got {raw!r}"
+    side, points, fair, books, agreeing = raw
+    if side not in LADDER_SIDES or not _is_int(side):
+        return f"{where}[0] (side) must be 0 or 1, got {side!r}"
+    if bet_type_id == LADDER_BET_TYPE_MONEYLINE and points is not None:
+        return f"{where}[1] (points) must be null on a moneyline, got {points!r}"
+    if bet_type_id != LADDER_BET_TYPE_MONEYLINE and not _is_number(points):
+        return f"{where}[1] (points) must be a number, got {points!r}"
+    if not _is_whole_american(fair):
+        return f"{where}[2] (fair) must be a whole American price, got {fair!r}"
+    if not _is_count(books) or books < 1 or not _is_count(agreeing) or not 1 <= agreeing <= books:
+        return f"{where}[3:5] (books, agreeing) must be counts with 1 <= agreeing <= books, got {books!r}, {agreeing!r}"
+    return None
+
+
+def _validate_ladder_row(index: int, raw: object) -> dict | str:
+    """One row of a POST /ladders.json body in the store's shape (times parsed),
+    or what was expected and what was found: read before its game's start."""
+    where = f"rows[{index}]"
+    if not isinstance(raw, dict):
+        return f"{where} must be an object, got {type(raw).__name__}"
+    if raw.get("reading") not in READINGS:
+        return f"{where}.reading must be one of {list(READINGS)}, got {raw.get('reading')!r}"
+    for field, allowed in (("leagueId", LADDER_LEAGUE_IDS), ("periodTypeId", LADDER_PERIOD_TYPE_IDS),
+                           ("betTypeId", LADDER_BET_TYPE_IDS)):
+        if not _is_int(raw.get(field)) or raw[field] not in allowed:
+            return f"{where}.{field} must be one of {list(allowed)}, got {raw.get(field)!r}"
+    if not _is_int(raw.get("eventId")):
+        return f"{where}.eventId must be an integer, got {raw.get('eventId')!r}"
+    for field in ("awayTeamId", "homeTeamId"):
+        if raw.get(field) is not None and not _is_int(raw[field]):
+            return f"{where}.{field} must be an integer or null, got {raw[field]!r}"
+    if raw.get("eventName") is not None and not isinstance(raw["eventName"], str):
+        return f"{where}.eventName must be a string or null, got {raw['eventName']!r}"
+    observed_ms = _iso_ms(raw.get("observedAt"))
+    start_ms = _iso_ms(raw.get("eventStart"))
+    if observed_ms is None:
+        return f"{where}.observedAt must be an ISO time, got {raw.get('observedAt')!r}"
+    if start_ms is None:
+        return f"{where}.eventStart must be an ISO time, got {raw.get('eventStart')!r}"
+    if observed_ms >= start_ms:
+        return (f"{where}.observedAt must be before eventStart (a ladder is read pregame), "
+                f"got {raw['observedAt']} at or after {raw['eventStart']}")
+    for field in ("mainPoints0", "mainPoints1"):
+        if not _number_or_none(raw.get(field)):
+            return f"{where}.{field} must be a number or null, got {raw.get(field)!r}"
+    for field in ("mainFair0", "mainFair1"):
+        if raw.get(field) is not None and not _is_whole_american(raw[field]):
+            return f"{where}.{field} must be a whole American price or null, got {raw[field]!r}"
+    rungs = raw.get("rungs")
+    if not isinstance(rungs, list) or not 1 <= len(rungs) <= MAX_LADDER_RUNGS:
+        return f"{where}.rungs must be a list of 1 to {MAX_LADDER_RUNGS} rungs, got {type(rungs).__name__}"
+    for rung_index, rung in enumerate(rungs):
+        problem = _validate_ladder_rung(f"{where}.rungs[{rung_index}]", rung, raw["betTypeId"])
+        if problem:
+            return problem
+    return {
+        "reading": raw["reading"], "eventId": raw["eventId"], "periodTypeId": raw["periodTypeId"],
+        "betTypeId": raw["betTypeId"], "leagueId": raw["leagueId"], "eventName": raw.get("eventName"),
+        "awayTeamId": raw.get("awayTeamId"), "homeTeamId": raw.get("homeTeamId"),
+        "eventStart": datetime.fromtimestamp(start_ms / 1000, timezone.utc),
+        "observedAt": datetime.fromtimestamp(observed_ms / 1000, timezone.utc),
+        "mainPoints0": raw.get("mainPoints0"), "mainFair0": raw.get("mainFair0"),
+        "mainPoints1": raw.get("mainPoints1"), "mainFair1": raw.get("mainFair1"), "rungs": rungs,
+    }
+
+
+def validate_ladder_rows(body: object) -> list[dict] | str:
+    """The rows of a POST /ladders.json body, or an error naming the first bad row (the whole request is refused)."""
+    return _validate_rows(body, _validate_ladder_row)
+
+
 def _is_tau_sample_key(value: object) -> bool:
     """The shape the runner's pool reads a rung off: "<bookId>|<rungKey>|<sideIndex>"
     (tailflex.js rungOfSampleKey). A stored key of another shape would make
@@ -1344,12 +1443,14 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  prophetx_order_stream: ProphetXOrderStream | None = None,
                  prophetx_live: ProphetXLiveBooks | None = None,
                  source_reader: SourceReader | None = None,
-                 polymarket_book_stream: PolymarketBookStream | None = None) -> type[BaseHTTPRequestHandler]:
+                 polymarket_book_stream: PolymarketBookStream | None = None,
+                 ladder_store: LadderStore | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
     Place button's (None: no BFA account is read, POST /place_teaser.json 503s).
     `taker_store` is the taker's decision log (None: POST /taker_decisions.json 503s).
+    `ladder_store` keeps Unabated's pregame fair ladders (None: POST /ladders.json 503s).
     `taker_desk` places the bot's orders (None: POST /taker/order.json 503s with `taker_desk_off_reason`).
     `kalshi_place_desk` places Cal's own Place-button orders (None: POST
     /place_kalshi.json 503s with `kalshi_place_off_reason`).
@@ -1446,7 +1547,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                 "/fill_snapshots.json", "/close_snapshots.json", "/tau_samples.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
                                 "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
-                                "/place_polymarket.json", "/place_prophetx.json", "/place_bfa.json", "/taker_decisions.json",
+                                "/place_polymarket.json", "/place_prophetx.json", "/place_bfa.json", "/taker_decisions.json", "/ladders.json",
                                 "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json",
                                 "/prophetx_live.json", "/polymarket_books.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
@@ -1513,7 +1614,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/place_bfa.json":
                 self._place_bfa(body)
                 return
-            if (url.path in ("/taker_decisions.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
+            if (url.path in ("/taker_decisions.json", "/ladders.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
                              "/novig_read.json", "/prophetx_live.json", "/polymarket_books.json")
                     and self._refused_non_loopback()):
                 return
@@ -1531,6 +1632,12 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/taker_decisions.json":
                 self._log_taker_decisions(body)
+                return
+            if url.path == "/ladders.json":
+                if ladder_store is None:
+                    self._send_json(503, {"error": "the ladder store is not open on this service"})
+                    return
+                self._save_rows(validate_ladder_rows(body), ladder_store.save_readings)
                 return
             if url.path == "/taker/order.json":
                 self._place_taker_order(body)
@@ -2368,6 +2475,17 @@ def open_taker_store(db_path: Path) -> TakerStore | None:
         return None
 
 
+def open_ladder_store(db_path: Path) -> LadderStore | None:
+    """The fair-ladder store, or None (logged) when its file cannot be opened:
+    it is research data, so a bad path must not take Cal's bets down with it;
+    the runner keeps its rows unsent and POST /ladders.json 503s."""
+    try:
+        return LadderStore(db_path)
+    except Exception as error:  # duckdb raises its own IOException family, not OSError
+        log.error("ladder store %s could not be opened, POST /ladders.json will 503: %s", db_path, error)
+        return None
+
+
 def serve(sources: list[Source], store: BetsStore, host: str, port: int,
           taker_store: TakerStore | None = None) -> None:
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM. The
@@ -2379,6 +2497,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     if taker_store is None:
         taker_store = open_taker_store(config.TAKER_DB_PATH)
     taker_desk, taker_desk_off_reason = open_taker_desk(taker_store)
+    ladder_store = open_ladder_store(config.LADDER_DB_PATH)
     novig_taker_desk, novig_taker_desk_off_reason = open_novig_taker_desk(
         taker_store, lambda: source_status(store, source_names))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
@@ -2415,7 +2534,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             prophetx_live=prophetx_live,
                                                             balance_book=balance_book,
                                                             source_reader=source_reader,
-                                                            polymarket_book_stream=polymarket_book_stream))
+                                                            polymarket_book_stream=polymarket_book_stream,
+                                                            ladder_store=ladder_store))
     server.daemon_threads = True
     pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book, source_reader),
                                 name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
@@ -2461,6 +2581,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
         store.close()
         if taker_store is not None:
             taker_store.close()
+        if ladder_store is not None:
+            ladder_store.close()
 
 
 # Venues polled only when their credentials are present; each factory returns

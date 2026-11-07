@@ -828,3 +828,38 @@ def test_a_rate_limited_order_is_not_sent_again():
                             clock=lambda: 1000.0, min_send_interval_sec=0)
     status, _reply = client.submit_fill_or_kill("c" * 32, -110, 10, "xman-1")
     assert status == 429 and len(sent) == 2
+
+
+# ---- live Place (a Ticket at a break) -------------------------------------------
+
+LIVE_EVENT = {**EVENT, "status": "live", "live_disabled": False}
+LIVE_PX_QUOTE = {**QUOTE, "live": True, "strikeIds": []}
+LIVE_FIELDS = {"live": True, "liveFairReadAt": "2026-11-01T14:59:50Z"}
+
+
+def live_request(**changes):
+    return validate_prophetx_place_request({**BODY, **LIVE_FIELDS, **changes})
+
+
+def test_live_place_finds_the_game_by_its_teams_and_sends_while_prophetx_shows_it_live(store):
+    client = ScriptedProphetX(events=[LIVE_EVENT])
+    result = desk_with(store, client, quote=LIVE_PX_QUOTE).place(live_request())
+    assert result["status"] == "filled", result
+    assert len(client.submits) == 1
+
+
+def test_live_place_refuses_a_game_prophetx_does_not_show_live_a_stale_fair_and_a_line_off_the_live_board(store):
+    not_live = desk_with(store, ScriptedProphetX(), quote=LIVE_PX_QUOTE).place(live_request())
+    assert not_live["status"] == "refused" and "not live" in not_live["message"], not_live
+    disabled = desk_with(store, ScriptedProphetX(events=[{**LIVE_EVENT, "live_disabled": True}]), quote=LIVE_PX_QUOTE).place(live_request())
+    assert "in-play betting off" in disabled["message"]
+    stale = desk_with(store, ScriptedProphetX(events=[LIVE_EVENT]), quote=LIVE_PX_QUOTE).place(
+        live_request(liveFairReadAt="2026-11-01T14:57:00Z"))
+    assert "in-game fair was last seen ready" in stale["message"]
+    off_board = desk_with(store, ScriptedProphetX(events=[LIVE_EVENT]), quote={**LIVE_PX_QUOTE, "live": False}).place(live_request())
+    assert "not on Unabated's live board" in off_board["message"]
+
+
+def test_a_pregame_click_still_refuses_a_game_prophetx_shows_live(store):
+    result = desk_with(store, ScriptedProphetX(events=[LIVE_EVENT])).place(validate_prophetx_place_request(BODY))
+    assert result == {"status": "refused", "message": "Not placed: the game has started."}

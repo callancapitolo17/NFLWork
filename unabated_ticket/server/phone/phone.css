@@ -535,3 +535,30 @@ button, select, input { font: inherit; color: inherit; }
 .balances-line .balances-label { color: var(--muted); }
 .balances-line .balances-item b { font: 600 12.5px var(--figure); color: var(--ink); }
 .balances-line .stale, .balances-line .balances-item.stale b { color: var(--warn-fg); }
+
+/* ---- Place toasts: one per Place, over everything but out of the tab bar's way ---- */
+.toasts {
+  position: fixed; left: 10px; right: 10px; z-index: 20;
+  bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px);
+  display: flex; flex-direction: column; gap: 6px; pointer-events: none;
+}
+.toast {
+  pointer-events: auto; display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 12px; border-radius: 12px; font-size: 13px; line-height: 1.35;
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); border-left: 4px solid var(--muted);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .3); overflow-wrap: anywhere;
+}
+.toast.ok { border-left-color: var(--edge-strong); }
+.toast.ok .toast-text { color: var(--edge-strong); font-weight: 600; }
+.toast.warn { border-left-color: var(--warn-fg); background: var(--warn-bg); color: var(--warn-fg); font-weight: 600; }
+.toast.refused, .toast.bad { border-left-color: var(--against-fg); background: var(--against-bg); color: var(--against-fg); }
+.toast-text { flex: 1; }
+.toast-close {
+  appearance: none; background: none; border: 0; color: inherit; opacity: .7; cursor: pointer;
+  font-size: 15px; min-width: 32px; min-height: 32px; margin: -6px -6px -6px 0;
+}
+.toast-spin {
+  flex: none; width: 12px; height: 12px; margin-top: 3px; border-radius: 50%;
+  border: 2px solid var(--muted); border-top-color: transparent; animation: toast-spin .8s linear infinite;
+}
+@keyframes toast-spin { to { transform: rotate(360deg); } }
