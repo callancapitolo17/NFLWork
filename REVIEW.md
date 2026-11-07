@@ -1,6 +1,6 @@
 # REVIEW.md
 
-What a reviewer of this repo looks for. The user-level `pre-pr-review` skill runs the procedure (evidence rules, tags, count-first report, round cap) and hands this file to every reviewer agent.
+What a reviewer of this repo looks for. The `pre-pr-review` skill (`.claude/skills/pre-pr-review/`, in the repo so cloud threads have it) runs the procedure (evidence rules, tags, count-first report, round cap) and hands this file to every reviewer agent.
 
 ## Diff base
 
