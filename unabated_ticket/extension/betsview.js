@@ -27,9 +27,9 @@
   // Every venue the plan registers a source for (#117 ProphetX still to come;
   // BFA, Wagerzon and Polymarket US added 2026-09-23; Bet105 2026-09-29 and
   // DraftKings 2026-10-10, read by the panel itself from Cal's own logins —
-  // bet105.js, draftkings.js). Listing them keeps
+  // bet105.js, draftkings.js; Underdog 2026-11-07). Listing them keeps
   // the Bets tab honest about coverage.
-  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105", "draftkings"];
+  const VENUES = ["kalshi", "betonline", "novig", "prophetx", "bfa", "wagerzon", "polymarket_us", "bet105", "draftkings", "underdog"];
   const FRESH_MS = 5 * 60 * 1000;
   const STALE_MS = 60 * 60 * 1000;
   // The venues Cal bets live at.

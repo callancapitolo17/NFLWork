@@ -88,7 +88,7 @@ def test_every_service_venue_is_checked(monkeypatch):
     monkeypatch.setattr(check_sources.service, "OPTIONAL_SOURCE_FACTORIES",
                         tuple((venue, lambda: None) for venue, _ in check_sources.service.OPTIONAL_SOURCE_FACTORIES))
     venues = [result.venue for result in check_sources.run_checks()]
-    assert venues == ["kalshi", "betonline", "novig", "bfa", "wagerzon", "polymarket_us", "prophetx", "unabated feed"]
+    assert venues == ["kalshi", "betonline", "novig", "bfa", "wagerzon", "polymarket_us", "prophetx", "underdog", "unabated feed"]
     assert built == [(0, 1)]  # the login check reads the bot's subaccount like the service does
 
 

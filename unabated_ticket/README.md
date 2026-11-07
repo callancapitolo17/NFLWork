@@ -3940,8 +3940,39 @@ spread, total and moneyline sit on one screen (Underdog has no per-game link):
 `https://app.underdogsports.com/pick-em/higher-lower/all/<NFL|CFB|NBA|CBB|MLB|NHL>`,
 every soccer league at `FIFA`, any other league at `featured`. Cal taps the
 price and types the stake shown above it. The link goes when the line leaves
-the Edges list. Phone page only; the panel and the bets service are unchanged,
-and Underdog bets are not read into `/bets.json`.
+the Edges list. Phone page only; the bet comes back into `/bets.json` through
+the Underdog source below.
+
+### Underdog source (`bets_service/sources/underdog.py`, `underdog_auth.py`, 2026-11-07)
+
+Underdog has no API for its prediction markets, so the bets service reads
+the private endpoints Underdog's own web app reads for its Live and Results
+pages, on a login of its own. Cal chose this knowing Underdog's terms ban
+scripted access: reads only, his own account, one poll a minute.
+
+- **Login:** `python -m unabated_ticket.bets_service.sources.underdog_auth connect`
+  once (on the VM: `deploy/README.md` step 15). Email and password at a prompt
+  go to Auth0's password grant on the web app's public client
+  (`login.underdogsports.com`, the grant the app itself uses); only the
+  refresh token is saved (`UNDERDOG_TOKEN_PATH`, 0600, gitignored), rewritten
+  when Auth0 rotates it. Its own chain, so the phone app and Chrome stay
+  logged in. Access tokens live 10 minutes; reads need no location headers.
+- **Reads:** every 60 s, `GET api.underdogfantasy.com/v10/user/active_entry_slips`
+  and `settled_entry_slips?page=N` (15 a page, newest made first) back 30 days,
+  and further until every slip the store holds open has been found.
+- **Records:** prediction slips only (product `prediction_markets`; pick'em
+  is skipped). One record per slip, `underdog:<slip id>`: stake = the entry
+  fee, toWin = the contracts it holds ($1 each) less the fee, price the
+  American price of that (1.23x on $1 is -435). Moneyline, spread (its sign
+  read off the pick, checked against the line) and total (Higher = Over), full
+  game, NFL/CFB/NBA/CBB/WNBA/MLB/NHL. A combo, a prop, a period market or
+  another league is unmatchable; a game line that does not read is flagged
+  as a code fix.
+- **Grades:** off what the slip paid, since no settled prediction slip had
+  been seen when this was built: nothing lost, its contracts won, its fee back
+  void, anything else a cash-out (`closed`, its payout in `raw.payout`). Check
+  the first few settled slips against the app.
+- **Bets tab / Tracker:** a venue row `underdog` and the name "Underdog".
 
 ### Open at BetOnline on the phone Ticket (`server/phone/phoneview.js`, 2026-11-06)
 

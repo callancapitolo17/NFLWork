@@ -61,6 +61,8 @@ services:
       BETS_SERVICE_LOG_PATH: /data/logs/bets_service.log
       BETS_SERVICE_LOG_CONSOLE: "1"
       NOVIG_TOKEN_PATH: /data/novig_token.json
+      # The Underdog source's own login, minted on this VM by `underdog_auth connect` (README § Underdog).
+      UNDERDOG_TOKEN_PATH: /data/underdog_token.json
       # Moved here from the Mac, never copied: its refresh token rotates (README step 10).
       BETS_BETONLINE_COOKIES_PATH: /data/recon_betonline_cookies.json
       KALSHI_PRIVATE_KEY_PATH: /run/secrets/kalshi.pem
