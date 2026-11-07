@@ -2959,7 +2959,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   key not proven locked), **Stopped** (a stop file), else **Running**, amber
   when the runner's last pass is over 2 min old, skipped for that venue, or
   Novig's location lapsed — money at risk (the desk's open cost against its
-  ceiling, $4,500 / $850), cash in its subaccount (`/balances.json`), open
+  ceiling, $6,000 / $850), cash in its subaccount (`/balances.json`), open
   orders and Kelly bankroll. **Activity** has its own range (Today, 7D, 30D,
   All, Custom; it includes today, since these are orders, not results): orders
   sent, filled, rejected by the venue, unconfirmed (no definite answer or
@@ -3143,8 +3143,8 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 
 | Rule | Value |
 |---|---|
-| Bankroll / Kelly | $7,500 at 0.25 (Cal, 2026-11-04; $5,000 from 2026-10-28, $2,000 from 2026-10-16), `KELLY_BANKROLL` in both `server/taker.js` and `taker_orders.py` (a test holds them equal), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
-| Ceiling | open bot cost (unsettled markets) never above 60% of the Kelly bankroll, $4,500 (`MAX_OPEN_COST_FRACTION`, Cal 2026-11-03; $3,000 on the $5,000 bankroll until 2026-11-04; 40% = $2,000 from 2026-11-02, 20% = $1,000 from 2026-10-28, a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
+| Bankroll / Kelly | $10,000 at 0.25 (Cal, 2026-11-06; $7,500 from 2026-11-04, $5,000 from 2026-10-28, $2,000 from 2026-10-16), `KELLY_BANKROLL` in both `server/taker.js` and `taker_orders.py` (a test holds them equal), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
+| Ceiling | open bot cost (unsettled markets) never above 60% of the Kelly bankroll, $6,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-11-03; $4,500 on the $7,500 bankroll until 2026-11-06; $3,000 on the $5,000 bankroll until 2026-11-04; 40% = $2,000 from 2026-11-02, 20% = $1,000 from 2026-10-28, a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
 | Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
 | Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |
@@ -3225,7 +3225,7 @@ A locked key's transfer can only name its own subaccount on both ends, so no
 money ever comes in from the primary account. Any doubt refuses the resend as
 `pot_short` (no pot named, a pot the bot is not on, an unreadable balance, both
 pots together short, a pot that reads as covering it after Kalshi said it does
-not, a failed or unfinished move). The $4,500 ceiling covers
+not, a failed or unfinished move). The $6,000 ceiling covers
 both pots together. The key needs `write::transfer`, so the setup's key has
 scopes `read` + `write::trade` + `write::transfer`. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
 (on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a

@@ -156,7 +156,7 @@ test("orderbook: the ask is 1 - the best opposite bid; legacy cents parse too", 
   assert.deepEqual(taker.quoteOf(legacy, "no"), { ask: 0.6, depth: 10 });
 });
 
-test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $7,500 in contracts", () => {
+test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly of $10,000 in contracts", () => {
   // Prophet Exchange and Novig sit at the same number at worse or no price; none is better than -143.
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   for (const key of Object.keys(state.lines)) {
@@ -167,10 +167,10 @@ test("at Unabated's own price, best at the number, a 5% edge bets quarter Kelly 
   assert.equal(decision.liveAsk, 0.57);
   // At Unabated's own all-in the live edge is Unabated's edge (the fair is read off its cheaper price).
   assert.ok(Math.abs(decision.liveEdge - 0.05) < 0.0005, String(decision.liveEdge));
-  // Quarter Kelly of $7,500 at a 5% edge on -143: $133.33, bought as 227 contracts at the 0.5872 all-in.
-  assert.equal(taker.KELLY_BANKROLL, 7500);
-  assert.equal(Math.round(decision.stake * 100) / 100, 133.33);
-  assert.deepEqual({ contracts: decision.contracts, cost: decision.cost, liveAllIn: decision.liveAllIn }, { contracts: 227, cost: 133.2846, liveAllIn: 0.5872 });
+  // Quarter Kelly of $10,000 at a 5% edge on -143: $177.78, bought as 302 contracts at the 0.5872 all-in.
+  assert.equal(taker.KELLY_BANKROLL, 10000);
+  assert.equal(Math.round(decision.stake * 100) / 100, 177.78);
+  assert.deepEqual({ contracts: decision.contracts, cost: decision.cost, liveAllIn: decision.liveAllIn }, { contracts: 302, cost: 177.3214, liveAllIn: 0.5872 });
 });
 
 test("depth cuts the contracts; none resting at the ask is no_book", () => {
@@ -355,13 +355,13 @@ test("a held bet on the row's axis the sizing math could not price refuses the s
   const otherMarket = decideHolding(WSU_ALT_KEY, [heldKalshi("KXNCAAFTOTAL-26SEP19DUQWSU-60", "over", "total", 59.5)]);
   assert.equal(otherMarket.reason, "bet", otherMarket.detail);
   // The same line held: conditional Kelly sizes it (here to nothing more), no refusal. The held amounts are
-  // the $2,000-bankroll ones scaled by 3.75 to the $7,500 bankroll: log growth is scale-free, so the stakes scale too.
-  const sameLine = decideHolding(WSU_ALT_KEY, [{ ...heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5), stake: 375, toWin: 93.75, contracts: 375 }]);
+  // the $2,000-bankroll ones scaled by 5 to the $10,000 bankroll: log growth is scale-free, so the stakes scale too.
+  const sameLine = decideHolding(WSU_ALT_KEY, [{ ...heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5), stake: 500, toWin: 125, contracts: 500 }]);
   assert.equal(sameLine.reason, "size_zero", sameLine.detail);
-  // A smaller same-line holding leaves room: $75 at -133 held, the bot adds 3.75 x the $15.04 it added at
+  // A smaller same-line holding leaves room: $100 at -133 held, the bot adds 5 x the $15.04 it added at
   // $2,000. At the old $500 bankroll this sized to $0 too, which is why the bot never bet a game Cal already held.
-  const topUp = decideHolding(WSU_ALT_KEY, [{ ...heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5), stake: 75, toWin: 56.25, contracts: 131.25, price: -133 }]);
-  assert.deepEqual({ reason: topUp.reason, stake: topUp.stake, contracts: topUp.contracts, cost: topUp.cost }, { reason: "bet", stake: 56.42, contracts: 96, cost: 56.3671 });
+  const topUp = decideHolding(WSU_ALT_KEY, [{ ...heldKalshi("KXNCAAFSPREAD-26SEP19DUQWSU-WSU36", "home", "spread", -35.5), stake: 100, toWin: 75, contracts: 175, price: -133 }]);
+  assert.deepEqual({ reason: topUp.reason, stake: topUp.stake, contracts: topUp.contracts, cost: topUp.cost }, { reason: "bet", stake: 75.22, contracts: 128, cost: 75.1561 });
 });
 
 test("the other side of the market held is never bet against, in either account: size_declined", () => {
@@ -462,14 +462,14 @@ test("the Min shrunk edge floor (issue #208): the shrunk live edge gates the row
   assert.ok(Math.abs(half.shrunkEdge - full.liveEdge / 2) < 1e-6);
   // Half the shrink, the SAME stake and contracts: the stake is on the raw live edge (Cal 2026-10-23).
   assert.deepEqual([half.stake, half.contracts, half.liveEdge], [full.stake, full.contracts, full.liveEdge]);
-  assert.equal(full.contracts, 227);
+  assert.equal(full.contracts, 302);
   // 5% x 0.15 = 0.75% shrunk: under the 1% floor, edge_short; the same row passes a 0.5% floor at the full stake.
   const deep = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.15 }));
   assert.equal(deep.reason, "edge_short");
   assert.match(deep.detail, /shrunk live edge 0\.7\d% under 1% \(shrink 0\.150\)/);
   assert.ok(Math.abs(deep.shrunkEdge - full.liveEdge * 0.15) < 1e-6);
   const lowFloor = decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.15, minShrunkEdgePct: 0.5 }));
-  assert.deepEqual([lowFloor.reason, lowFloor.contracts], ["bet", 227]);
+  assert.deepEqual([lowFloor.reason, lowFloor.contracts], ["bet", 302]);
   // A floor of 0 is off: every shrink passes.
   assert.equal(decide(state, WSU_ALT_KEY, taker.quoteOf(bookWithAsk("yes", 0.57, 100000), "yes"), sizing({ shrink: 0.01, minShrunkEdgePct: 0 })).reason, "bet");
   // No shrink at all (tailflex found no fair for the row) refuses this row, not the pass, while the floor is on;

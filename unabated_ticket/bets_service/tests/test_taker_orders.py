@@ -196,10 +196,10 @@ def test_the_ceiling_cuts_contracts_then_refuses(store, tmp_path, monkeypatch):
 
 
 def test_the_ceiling_is_three_fifths_of_the_kelly_bankroll_taker_js_sizes_on():
-    # Cal: $7,500 Kelly bankroll (2026-11-04), open cost capped at 60% of it (2026-11-03). The runner's
+    # Cal: $10,000 Kelly bankroll (2026-11-06), open cost capped at 60% of it (2026-11-03). The runner's
     # taker.js sizes every stake on its own KELLY_BANKROLL: the two must not drift apart.
-    assert taker_orders.KELLY_BANKROLL == 7500.0
-    assert taker_orders.MAX_OPEN_COST == pytest.approx(4500.0)
+    assert taker_orders.KELLY_BANKROLL == 10000.0
+    assert taker_orders.MAX_OPEN_COST == pytest.approx(6000.0)
     taker_js = (Path(__file__).resolve().parents[2] / "server" / "taker.js").read_text()
     declared = re.search(r"^const KELLY_BANKROLL = (\d+);$", taker_js, re.MULTILINE)
     assert declared, "taker.js no longer declares const KELLY_BANKROLL = <dollars>;"
