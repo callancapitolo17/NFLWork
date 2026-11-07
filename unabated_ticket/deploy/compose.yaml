@@ -112,3 +112,35 @@ services:
       - ../..:/app:ro
       - "${UNABATED_DATA_DIR:?set UNABATED_DATA_DIR in deploy/.env}:/data"
     logging: *rotated-logs
+
+  # Dry-run Kalshi parlay quoter (#283): reads the RFQ feed, prices in-scope
+  # parlays through the runner's /rfq_price.json, logs a decision per RFQ to
+  # /data/kalshi_parlay_quoter.duckdb. Sends NO quotes or orders. Behind a
+  # profile so deploy.sh's plain `up -d` leaves it alone; start it with
+  #   docker compose --profile parlay_quoter up -d parlay_quoter
+  # Signs with the read key (KALSHI_API_KEY_ID read from bets_service/.env,
+  # that one line only) and the same read-only .pem as the bets service.
+  parlay_quoter:
+    profiles: ["parlay_quoter"]
+    build:
+      context: ../..
+      dockerfile: unabated_ticket/deploy/parlay_quoter.Dockerfile
+    image: kalshi-parlay-quoter:local
+    network_mode: host
+    restart: unless-stopped
+    init: true
+    user: "${DEPLOY_UID:-1000}:${DEPLOY_GID:-1000}"
+    working_dir: /app
+    environment:
+      HOME: /tmp
+      KALSHI_BASE_URL: https://api.elections.kalshi.com/trade-api/v2
+      KALSHI_PRIVATE_KEY_PATH: /run/secrets/kalshi.pem
+      PARLAY_KALSHI_ENV_FILE: /app/unabated_ticket/bets_service/.env
+      PARLAY_QUOTER_DB_PATH: /data/kalshi_parlay_quoter.duckdb
+      PARLAY_STOP_PATH: /data/parlay_quoter.stop
+      UNABATED_RUNNER_URL: http://127.0.0.1:8095
+    volumes:
+      - ../..:/app:ro
+      - "${UNABATED_DATA_DIR:?set UNABATED_DATA_DIR in deploy/.env}:/data"
+      - "${KALSHI_PEM_PATH:?set KALSHI_PEM_PATH in deploy/.env}:/run/secrets/kalshi.pem:ro"
+    logging: *rotated-logs
