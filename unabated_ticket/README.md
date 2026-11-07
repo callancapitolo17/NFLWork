@@ -2887,8 +2887,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   live 2026-11-06). A game no snapshot carried in 5 min reads "No recent
   score from Unabated", never an old score. The period's name shows
   only for numbers checked against live games (`server/gamescore.js`
-  `NAMED_PERIOD_IDS`, live.js's names: NFL and CFB quarters and halftime,
-  NCAAB halves, NBA quarters and halftime; NHL, MLB and the rest still to check); an unchecked
+  `SCORE_PERIOD_NAMES`, live.js's names: NFL and CFB quarters and halftime,
+  NCAAB halves, NBA quarters and halftime; NHL periods 8 / 9 / 10 as
+  P1 / P2 / P3, overtime and shootout not yet seen, and Olympic hockey,
+  which shares the `nhl` path, unread; MLB and the rest still to check); an unchecked
   number shows the clock alone. Overtime is not a period number: the feed
   keeps the last regulation period and sets `overtimeNumber` (1, 2, ...);
   `NAMED_OVERTIMES` names it "OT" / "2OT" where read (NCAAB 1 and 2, read

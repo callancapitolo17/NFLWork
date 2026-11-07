@@ -21,42 +21,59 @@
 
 const live = require("../extension/live.js");
 
-// Read live 2026-11-06 (NFL, CFB, NCAAB, NHL in progress, NCAAB final); the
+// Read live 2026-11-06 (NFL, CFB, NCAAB, NHL in progress, NCAAB and NHL final); the
 // extension's own between-quarters reader (page.js) uses 3 as final too.
 const STATUS_IN_PROGRESS = 2;
 const STATUS_FINAL = 3;
 // A score older than this reads as missing, not as the current score.
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
-// League path -> the eventPeriodTypeIds named there, with live.js's names
-// (Q1-Q4 = 4-7, halves 2 / 3). Football: live.js reads these at every NFL
-// break; on 2026-11-06 an NFL game went 5 (10-3, 6:43) to 6 (17-3, 13:59)
-// and CFB games sat at 2 with 00:00 (halftime). NCAAB: 3 with minutes left
-// and at the final the same night. NBA, read 2026-11-06 every 30 s: one game
-// went 5 (36-33, 8:53) to 2 with 00:00 at halftime (53-53) to 6 at 12:00,
-// another 6 (65-91, 1:54) to 7 (75-96, 11:45). NBA overtime is unread, so it
-// shows no name. Other sports are added once their own live games are read.
-const NAMED_PERIOD_IDS = {
-  nfl: [2, 4, 5, 6, 7],
-  cfb: [2, 4, 5, 6, 7],
-  cbb: [2, 3],
-  nba: [2, 4, 5, 6, 7],
+// League path -> {eventPeriodTypeId: name} for the numbers checked against
+// live games; other sports are added once their own live games are read.
+//
+// Football, NCAAB and NBA use live.js's names (Q1-Q4 = 4-7, halves 2 / 3):
+// live.js reads these at every NFL break; on 2026-11-06 an NFL game went 5
+// (10-3, 6:43) to 6 (17-3, 13:59), CFB games sat at 2 with 00:00
+// (halftime), and NCAAB was at 3 with minutes left and at the final the same
+// night. NBA, read 2026-11-06 every 30 s: one game went 5 (36-33, 8:53) to 2
+// with 00:00 at halftime (53-53) to 6 at 12:00, another 6 (65-91, 1:54) to 7
+// (75-96, 11:45). NBA overtime is unread, so it shows no name.
+//
+// Hockey (league 6) read live 2026-11-06: games started 00:00Z were at 10
+// with the clock counting down in the 3rd at 02:08Z and final at 10 by
+// 03:46Z; a 01:00Z game sat at 8 with 00:00 at 02:08Z (end of the 1st); a
+// 02:30Z game was at 9 with 14:10 left at 03:46Z. The league's own market
+// periods are pt8 / pt9 / pt10. Overtime and the shootout were not seen, so
+// they stay unnamed. The "nhl" path also carries Olympic hockey (league 11),
+// not read live; no Olympic tournament before 2030.
+function namesOf(periodIds) {
+  return Object.fromEntries(periodIds.map((id) => {
+    const name = live.PERIOD_ENDED[id];
+    if (!name) throw new Error(`gamescore: live.PERIOD_ENDED has no name for period ${id}`);
+    return [id, name];
+  }));
+}
+const QUARTERS_AND_HALFTIME = namesOf([2, 4, 5, 6, 7]);
+const SCORE_PERIOD_NAMES = {
+  nfl: QUARTERS_AND_HALFTIME,
+  cfb: QUARTERS_AND_HALFTIME,
+  cbb: namesOf([2, 3]),
+  nba: QUARTERS_AND_HALFTIME,
+  nhl: { 8: "P1", 9: "P2", 10: "P3" },
 };
 
 // League path -> overtimeNumber -> its name. Overtime is not a period id:
 // while overtimeNumber is set, eventPeriodTypeId stays at the last regulation
 // period (NCAAB read 2026-11-07: 3 into OT, overtimeNumber null -> 1 -> 2), so
 // an unchecked league or count shows no name, never the regulation period's
-// (football and NBA overtime unread).
+// (football, NBA and NHL overtime unread).
 const NAMED_OVERTIMES = {
   cbb: { 1: "OT", 2: "2OT" },
 };
 
 function periodNameOf(league, periodId, overtimeNumber) {
   if (overtimeNumber > 0) return NAMED_OVERTIMES[league]?.[overtimeNumber] ?? null;
-  const ids = NAMED_PERIOD_IDS[league];
-  if (!ids || !ids.includes(periodId)) return null;
-  return live.PERIOD_ENDED[periodId] ?? null;
+  return SCORE_PERIOD_NAMES[league]?.[periodId] ?? null;
 }
 
 function statusOf(statusId) {
