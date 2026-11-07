@@ -165,7 +165,7 @@
     return null;
   }
 
-  const api = { AXIS_TOTAL, AXIS_MARGIN, REASON_NO_RUNG, REASON_FLAT, groupLinesByEvent, buildLadder, probAbove, probBounds, periodTypeIdOf };
+  const api = { AXIS_TOTAL, AXIS_MARGIN, REASON_NO_RUNG, REASON_FLAT, groupLinesByEvent, buildLadder, probAbove, usableRungs, probBounds, periodTypeIdOf };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
