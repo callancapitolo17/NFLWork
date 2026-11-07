@@ -588,13 +588,13 @@ test("snapshot: each event keeps its live score, clock and period off its row", 
   const state = feed.parseSnapshot(json, { leagueId: NFL });
   const event = state.events[rows[0].eventId];
   assert.deepEqual(event.gameState, {
-    statusId: 2, awayScore: 10, homeScore: 3, gameClock: "6:43", periodId: 5,
+    statusId: 2, awayScore: 10, homeScore: 3, gameClock: "6:43", periodId: 5, overtimeNumber: null,
     snapshotAtMs: Date.parse("2026-09-13T18:10:05.123Z"),
   });
 });
 
 test("gameStateOf: missing fields read null, never zero", () => {
   assert.deepEqual(feed.gameStateOf({ eventTeams: { 0: { id: 1 }, 1: { id: 2 } } }, null), {
-    statusId: null, awayScore: null, homeScore: null, gameClock: null, periodId: null, snapshotAtMs: null,
+    statusId: null, awayScore: null, homeScore: null, gameClock: null, periodId: null, overtimeNumber: null, snapshotAtMs: null,
   });
 });

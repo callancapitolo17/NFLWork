@@ -39,6 +39,17 @@ test("a period number not checked for the league shows no name, the clock still 
   assert.deepEqual(gamescore.scoreLineOf(gameState({ gameClock: null, periodId: null }), "mlb", NOW), line({ clock: null, period: null }));
 });
 
+test("overtime is named off overtimeNumber where read, else no name (never the regulation period)", () => {
+  // As read 2026-11-07: NCAAB stays at period 3 through overtime.
+  const ncaabOt = gameState({ periodId: 3, overtimeNumber: 1, gameClock: "4:02" });
+  assert.deepEqual(gamescore.scoreLineOf(ncaabOt, "cbb", NOW), line({ period: "OT", clock: "4:02" }));
+  assert.equal(gamescore.scoreLineOf(gameState({ periodId: 3, overtimeNumber: null }), "cbb", NOW).period, "2nd half");
+  assert.equal(gamescore.scoreLineOf(gameState({ periodId: 3, overtimeNumber: 2 }), "cbb", NOW).period, "2OT");
+  assert.equal(gamescore.scoreLineOf(gameState({ periodId: 3, overtimeNumber: 3 }), "cbb", NOW).period, null);
+  assert.equal(gamescore.scoreLineOf(gameState({ periodId: 7, overtimeNumber: 1 }), "nfl", NOW).period, null);
+  assert.equal(gamescore.scoreLineOf(gameState({ periodId: 7, overtimeNumber: 1 }), "nba", NOW).period, null);
+});
+
 test("a final game keeps its score and shows no clock (the feed's end marker is not a time)", () => {
   assert.deepEqual(gamescore.scoreLineOf(gameState({ statusId: 3, gameClock: "E" }), "nfl", NOW), line({ status: "final", clock: null, period: null }));
 });
