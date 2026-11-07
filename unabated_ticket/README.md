@@ -1881,7 +1881,12 @@ points (a spread +6 either side, an Over -6, an Under +6) and `(B+6)`, and the
 ticket must risk the stake to win 3x it; anything else turns the card red
 (2026-10-07, 0.19.1 — the first live ticket, 356677821, reads clean). The body
 is pinned by a test to the one the site sent
-for a ticket Cal placed by hand (356323496). Juice is not checked: in a
+for a ticket Cal placed by hand (356323496), except `RiskWin` / each pick's
+`RiskOrWinType`: the recording sent 1, which BFA's own betslip code reads as
+"Amount is the to-win"; BFA's server read it as the base amount (the risk, at
++300) until at least 2026-11-01 and as the to-win by 2026-11-07 (seven $200
+tickets, 359110156 to 359114763, risked $66.67 to win $200); the body now sends 2, "Amount is the risk",
+what the site sends when you type a risk. Juice is not checked: in a
 Buckeye teaser it does not change the payout.
 
 **Limits.** Unabated's fair at teaser numbers runs up to 3 points above the
@@ -3906,11 +3911,12 @@ board lists no alts or period lines); NFL, CFB, NBA, CBB and NHL boards are read
   `IdWagerType` the straight type and `TeaserPoints 0`, `AcceptChanges 0` (BFA
   refuses a moved price or number). **A straight bet has not been recorded off
   the site**: the shape is the teaser's with the straight codes the metadata
-  names. The first live click (2026-11-03, ticket 358850696) showed BFA reads
-  the pick's `Amount` as the **base amount**, the smaller of risk and to-win:
-  $17 at -110 booked risk $18.70 to win $17. So on a minus price the pick sends
-  the to-win that risks the stake ($15.45 for $17 at -110), on a plus price the
-  stake; the read-back allows a cent off on the risk. A 4xx is `rejected`; anything
+  names. The pick sends `Amount` = the stake with `RiskOrWinType` / `RiskWin`
+  2, "Amount is the risk" at any price, as BFA's own betslip does when you type
+  a risk (read off the site's code 2026-11-07; the first live click, ticket
+  358850696, had sent 1, "Amount is the to-win": $17 at -110 booked risk $18.70
+  to win $17); the read-back allows a cent off on the to-win. A
+  4xx is `rejected`; anything
   else is confirmed off the open bets (a new `STRAIGHT BET` on the game within
   20 s is `filled`, else `unknown`: check BFA before placing again). The placed
   ticket is read back (rotation, market, side, number, price, risk, to-win) and
