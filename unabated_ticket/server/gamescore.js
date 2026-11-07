@@ -47,18 +47,23 @@ const STALE_AFTER_MS = 5 * 60 * 1000;
 // they stay unnamed. The "nhl" path also carries Olympic hockey (league 11),
 // not read live; no Olympic tournament before 2030.
 function namesOf(periodIds) {
-  return Object.fromEntries(periodIds.map((id) => [id, live.PERIOD_ENDED[id]]));
+  return Object.fromEntries(periodIds.map((id) => {
+    const name = live.PERIOD_ENDED[id];
+    if (!name) throw new Error(`gamescore: live.PERIOD_ENDED has no name for period ${id}`);
+    return [id, name];
+  }));
 }
-const PERIOD_NAMES = {
-  nfl: namesOf([2, 4, 5, 6, 7]),
-  cfb: namesOf([2, 4, 5, 6, 7]),
+const QUARTERS_AND_HALFTIME = namesOf([2, 4, 5, 6, 7]);
+const SCORE_PERIOD_NAMES = {
+  nfl: QUARTERS_AND_HALFTIME,
+  cfb: QUARTERS_AND_HALFTIME,
   cbb: namesOf([2, 3]),
-  nba: namesOf([2, 4, 5, 6, 7]),
+  nba: QUARTERS_AND_HALFTIME,
   nhl: { 8: "P1", 9: "P2", 10: "P3" },
 };
 
 function periodNameOf(league, periodId) {
-  return PERIOD_NAMES[league]?.[periodId] ?? null;
+  return SCORE_PERIOD_NAMES[league]?.[periodId] ?? null;
 }
 
 function statusOf(statusId) {
