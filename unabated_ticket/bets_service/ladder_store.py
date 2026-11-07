@@ -29,12 +29,14 @@ Table:
   edge_segments  one row per (line_key, segment_start), POSTed by the runner to
                /edge_segments.json: a run of league snapshots in which one NFL /
                CFB / CBB full-game board line showed Unabated's edge >= 1% at
-               the same number, price and fair. INSERT on its first row; a later
-               row of the same segment only moves last_seen forward (UPSERT,
-               kept when newer). last_seen is the last snapshot the line was
-               seen as that edge, at most 5 min behind while the segment is
-               open; a runner restart splits a segment in two (join back-to-back
-               segments of a line at the same number, price and fair). Price
+               the same number, price (American and the book's own source
+               price), fair and scheduled start. INSERT on its first row; a
+               later row of the same segment only moves last_seen forward
+               (UPSERT, kept when newer). last_seen is the last snapshot the
+               line was seen as that edge, about 5 min plus one league refresh
+               behind while the segment is open; a runner restart splits a
+               segment in two (join back-to-back segments of a line that agree
+               on all of those fields). Price
                and fair are Unabated's as shown (raw American, never devigged);
                liquidity is the resting amount at the segment's start.
                Never pruned.
@@ -79,7 +81,11 @@ CREATE TABLE IF NOT EXISTS ladder_readings (
 _COLUMNS = ("reading, event_id, period_type_id, bet_type_id, league_id, event_name, away_team_id, home_team_id, "
             "event_start, observed_at, main_points_0, main_fair_0, main_points_1, main_fair_1, rung_count, rungs_json, "
             "received_at")
-_PLACEHOLDERS = ", ".join("?" for _ in _COLUMNS.split(","))
+def _placeholders(columns: str) -> str:
+    return ", ".join("?" for _ in columns.split(","))
+
+
+_PLACEHOLDERS = _placeholders(_COLUMNS)
 
 _INSERT_OPENER = f"""
 INSERT INTO ladder_readings ({_COLUMNS}) VALUES ({_PLACEHOLDERS})
@@ -105,6 +111,7 @@ CREATE TABLE IF NOT EXISTS edge_segments (
     last_seen       TIMESTAMPTZ NOT NULL,  -- the last snapshot it was seen as this edge
     event_id        BIGINT NOT NULL,
     league_id       INTEGER NOT NULL,      -- 1 NFL, 2 CFB, 4 CBB
+    period_type_id  INTEGER NOT NULL,      -- 1 = full game (ladder_readings' key)
     book_id         INTEGER NOT NULL,
     bet_type_id     INTEGER NOT NULL,      -- 1 moneyline, 2 spread, 3 total (full game)
     side_index      INTEGER NOT NULL,      -- 0 away / Over, 1 home / Under
@@ -122,13 +129,13 @@ CREATE TABLE IF NOT EXISTS edge_segments (
 )
 """
 
-_EDGE_SEGMENT_COLUMNS = ("line_key, segment_start, last_seen, event_id, league_id, book_id, bet_type_id, side_index, "
+_EDGE_SEGMENT_COLUMNS = ("line_key, segment_start, last_seen, event_id, league_id, period_type_id, book_id, bet_type_id, side_index, "
                          "points, is_alt, event_start, price_american, source_price, source_format, fair_american, edge, "
                          "liquidity, received_at")
 
 _UPSERT_EDGE_SEGMENT = f"""
 INSERT INTO edge_segments ({_EDGE_SEGMENT_COLUMNS})
-VALUES ({", ".join("?" for _ in _EDGE_SEGMENT_COLUMNS.split(","))})
+VALUES ({_placeholders(_EDGE_SEGMENT_COLUMNS)})
 ON CONFLICT (line_key, segment_start) DO UPDATE SET last_seen = excluded.last_seen, received_at = excluded.received_at
 WHERE excluded.last_seen > edge_segments.last_seen
 """
@@ -171,7 +178,8 @@ class LadderStore:
         with self._lock:
             for row in rows:
                 [count] = self._con.execute(_UPSERT_EDGE_SEGMENT, [
-                    row["lineKey"], row["segmentStart"], row["lastSeen"], row["eventId"], row["leagueId"], row["bookId"],
+                    row["lineKey"], row["segmentStart"], row["lastSeen"], row["eventId"], row["leagueId"],
+                    row["periodTypeId"], row["bookId"],
                     row["betTypeId"], row["sideIndex"], row["points"], row["isAlt"], row["eventStart"], row["price"],
                     row["sourcePrice"], row["sourceFormat"], row["fairAmerican"], row["edge"], row["liquidity"], received_at,
                 ]).fetchone()

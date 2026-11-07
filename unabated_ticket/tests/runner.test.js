@@ -558,6 +558,42 @@ test("edge segments: every NFL edge POSTed once, held while unchanged, a failed 
   runner.stop();
 });
 
+test("edge segments: a 400 drops only the row it names and sends the rest; past the cap the oldest go, logged and counted", async () => {
+  const posts = [];
+  const warnings = [];
+  let refuseIndex = 2;
+  const service = async (url, init = {}) => {
+    const route = url.slice(SERVICE_URL.length);
+    if (route === "/edge_segments.json") {
+      const rows = JSON.parse(init.body).rows;
+      posts.push(rows);
+      if (refuseIndex !== null) {
+        const index = refuseIndex;
+        refuseIndex = null;
+        return response({ status: 400, body: JSON.stringify({ error: `rows[${index}].price must be a whole American price, got 1` }) });
+      }
+      return response({ body: JSON.stringify({ ok: true, saved: rows.length }) });
+    }
+    if (route === "/bets.json") return response({ body: JSON.stringify(betsBody([])) });
+    if (route === "/settings.json") return response({ body: JSON.stringify({ settings: OPEN_SETTINGS, updatedAt: null }) });
+    return response({ status: 404, body: "{}" });
+  };
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW,
+    timers: noTimers, logInfo: () => {}, logWarning: (message) => warnings.push(message), edgeSegmentMaxUnsent: 4 });
+  await runner.start();
+  await runner.postEdgeSegments();
+  const [first, second] = posts;
+  assert.equal(first.length, 4, "only the newest 4 rows were held");
+  assert.deepEqual(second, [...first.slice(0, 2), ...first.slice(3)], "the refused row is dropped, the rest sent again at once");
+  const health = runner.health().edgeLog;
+  const overCap = health.dropped - 1;
+  assert.ok(overCap > 0, "the slice has more than 4 edges");
+  assert.deepEqual([health.error, health.unsent, health.rowsSent], [null, 0, 3]);
+  assert.ok(warnings.some((message) => message.includes(`dropped the ${overCap} oldest unsent rows (more than 4 held)`)));
+  assert.ok(warnings.some((message) => message.includes("dropped 1 row(s) the service refused")));
+  runner.stop();
+});
+
 test("close snapshots: every book's two sides at the bet's number, sent with the closing fair, never after kickoff", async () => {
   let clock = NOW;
   const posts = [];

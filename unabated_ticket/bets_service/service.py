@@ -70,7 +70,7 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     ladders, server/laddersnapshot.js -> ladders.duckdb; 503
                                     when that file is not open)
            POST /edge_segments.json body {rows: [{lineKey, segmentStart, lastSeen, eventId,
-                                    leagueId, bookId, betTypeId, sideIndex, points, isAlt,
+                                    leagueId, periodTypeId, bookId, betTypeId, sideIndex, points, isAlt,
                                     eventStart, price, sourcePrice, sourceFormat, fairAmerican,
                                     edge, liquidity}]} -> {ok, saved} (loopback only: every
                                     NFL / CFB / CBB full-game edge's life to kickoff,
@@ -1130,11 +1130,6 @@ def validate_ladder_rows(body: object) -> list[dict] | str:
     return _validate_rows(body, _validate_ladder_row)
 
 
-# edgelog.js logs the ladders' leagues, bet types and sides. A board line key
-# is ~40 characters; anything far longer is not one.
-MAX_LINE_KEY_LENGTH = 200
-
-
 def _validate_edge_segment_row(index: int, raw: object) -> dict | str:
     """One row of a POST /edge_segments.json body in the store's shape (times
     parsed), or what was expected and what was found: first seen no later than
@@ -1143,9 +1138,11 @@ def _validate_edge_segment_row(index: int, raw: object) -> dict | str:
     if not isinstance(raw, dict):
         return f"{where} must be an object, got {type(raw).__name__}"
     line_key = raw.get("lineKey")
-    if not isinstance(line_key, str) or not 1 <= len(line_key) <= MAX_LINE_KEY_LENGTH:
-        return f"{where}.lineKey must be a string of 1 to {MAX_LINE_KEY_LENGTH} characters, got {line_key!r}"
-    for field, allowed in (("leagueId", LADDER_LEAGUE_IDS), ("betTypeId", LADDER_BET_TYPE_IDS), ("sideIndex", LADDER_SIDES)):
+    if not _non_empty_string(line_key):
+        return f"{where}.lineKey must be a non-empty string, got {line_key!r}"
+    # edgelog.js logs the ladders' leagues, period, bet types and sides.
+    for field, allowed in (("leagueId", LADDER_LEAGUE_IDS), ("periodTypeId", LADDER_PERIOD_TYPE_IDS),
+                           ("betTypeId", LADDER_BET_TYPE_IDS), ("sideIndex", LADDER_SIDES)):
         if not _is_int(raw.get(field)) or raw[field] not in allowed:
             return f"{where}.{field} must be one of {list(allowed)}, got {raw.get(field)!r}"
     for field in ("eventId", "bookId"):
@@ -1177,7 +1174,8 @@ def _validate_edge_segment_row(index: int, raw: object) -> dict | str:
         return f"{where}.sourceFormat must be an integer or null, got {raw['sourceFormat']!r}"
     as_datetime = {field: datetime.fromtimestamp(ms / 1000, timezone.utc) for field, ms in times.items()}
     return {
-        "lineKey": line_key, **as_datetime, "eventId": raw["eventId"], "leagueId": raw["leagueId"], "bookId": raw["bookId"],
+        "lineKey": line_key, **as_datetime, "eventId": raw["eventId"], "leagueId": raw["leagueId"],
+        "periodTypeId": raw["periodTypeId"], "bookId": raw["bookId"],
         "betTypeId": raw["betTypeId"], "sideIndex": raw["sideIndex"], "points": points, "isAlt": raw["isAlt"],
         "price": raw["price"], "sourcePrice": raw.get("sourcePrice"), "sourceFormat": raw.get("sourceFormat"),
         "fairAmerican": raw["fairAmerican"], "edge": raw["edge"], "liquidity": raw.get("liquidity"),

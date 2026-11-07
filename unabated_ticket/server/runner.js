@@ -467,7 +467,8 @@ async function sendServiceJson(fetchImpl, url, method, body, timeoutMs = SERVICE
 //          default POST <bets service>/novig_read.json), novigBaseUrl,
 //          polymarketFetch (Polymarket US's public gateway, default serviceFetch), polymarketGatewayUrl,
 //          betsServiceUrl, now, timers {setInterval, clearInterval},
-//          logInfo / logWarning (message) -> void, default stdout / stderr}
+//          logInfo / logWarning (message) -> void, default stdout / stderr,
+//          edgeSegmentMaxUnsent (default EDGE_SEGMENT_MAX_UNSENT; tests)}
 // Returns {start, stop, pollBets, pollSettings, postLadders, postEdgeSegments, scanLoaded, learn, takerPass,
 //          postTakerDecisions, edgesPayload, teasersPayload, attachPayload,
 //          scenariosPayload, takerPayload, health, scanner, boardLines (the
@@ -582,6 +583,7 @@ function createRunner(deps) {
   const unsentEdgeRows = new Map();
   let edgeLogBusy = false;
   const edgeLogStatus = { okAt: null, error: null, rowsSent: 0, dropped: 0 };
+  const edgeSegmentMaxUnsent = deps.edgeSegmentMaxUnsent ?? EDGE_SEGMENT_MAX_UNSENT;
   // The tail flex's rolling tau pool (tailflex.createTauPool): every refresh's
   // two-sided exchange rungs where two or more exchanges quote both sides,
   // kept 24 h, loaded from the bets service on start (GET /tau_samples.json)
@@ -1220,9 +1222,7 @@ function createRunner(deps) {
       const version = scanner.getLeagueVersion(leagueId);
       let cached = edgeLineCache.get(leagueId);
       if (!cached || cached.version !== version) {
-        cached = { version, edgeLines: edgelog.leagueEdgeLines({
-          lines: scanner.getLeagueLines(leagueId), state: feedState, observedMs: loadedAt[leagueId],
-        }) };
+        cached = { version, edgeLines: edgelog.leagueEdgeLines({ leagueId, state: feedState, observedMs: loadedAt[leagueId] }) };
         edgeLineCache.set(leagueId, cached);
       }
       edgeLines.push(...cached.edgeLines);
@@ -1231,19 +1231,47 @@ function createRunner(deps) {
     return { edgeLines, readLeagueIds };
   }
 
+  // Queue the rows; a newer row of a segment replaces its unsent one and
+  // moves to the back. Past edgeSegmentMaxUnsent the oldest go, logged.
   function queueEdgeRows(rows) {
-    for (const row of rows) unsentEdgeRows.set(edgelog.segmentKeyOf(row), row);
-    for (const key of unsentEdgeRows.keys()) {
-      if (unsentEdgeRows.size <= EDGE_SEGMENT_MAX_UNSENT) break;
+    for (const row of rows) {
+      const key = edgelog.segmentKeyOf(row);
       unsentEdgeRows.delete(key);
-      edgeLogStatus.dropped += 1;
+      unsentEdgeRows.set(key, row);
     }
+    let dropped = 0;
+    for (const key of unsentEdgeRows.keys()) {
+      if (unsentEdgeRows.size <= edgeSegmentMaxUnsent) break;
+      unsentEdgeRows.delete(key);
+      dropped += 1;
+    }
+    if (!dropped) return;
+    edgeLogStatus.dropped += dropped;
+    logWarning(`edge segments: dropped the ${dropped} oldest unsent rows (more than ${edgeSegmentMaxUnsent} held)`);
+  }
+
+  function firstUnsentEdgeRows() {
+    const chunk = [];
+    for (const entry of unsentEdgeRows) {
+      if (chunk.length >= EDGE_SEGMENT_ROWS_PER_POST) break;
+      chunk.push(entry);
+    }
+    return chunk;
+  }
+
+  // The chunk index of the row a 400 names ("rows[N] ..."), or null.
+  function refusedRowIndex(error, chunkLength) {
+    const match = /rows\[(\d+)\]/.exec(error.message);
+    const index = match ? Number(match[1]) : null;
+    return index !== null && index < chunkLength ? index : null;
   }
 
   // Advance the edge segments and POST the rows the service has not taken,
   // EDGE_SEGMENT_ROWS_PER_POST to a request. A failed request keeps its rows
-  // (and the rest) for the next pass; a 400 (a row the service refuses)
-  // drops only its own rows. Stored only: nothing reads the segments back.
+  // (and the rest) for the next pass. A 400 drops only the row it names
+  // (the service refuses the whole request over one bad row, which would be
+  // refused again), logged and counted, and the rest are sent again; one that
+  // names no row drops its chunk. Stored only: nothing reads the segments back.
   async function postEdgeSegments() {
     if (edgeLogBusy || !feedState || !scannerStatus) return;
     edgeLogBusy = true;
@@ -1251,7 +1279,9 @@ function createRunner(deps) {
       const { edgeLines, readLeagueIds } = currentEdgeLines();
       queueEdgeRows(edgelog.advanceSegments({ edgeLines, readLeagueIds, segments: edgeSegments, now: now() }));
       while (unsentEdgeRows.size) {
-        const chunk = Array.from(unsentEdgeRows.entries()).slice(0, EDGE_SEGMENT_ROWS_PER_POST);
+        const chunk = firstUnsentEdgeRows();
+        // Taken, or refused: a row the service refuses would be refused again.
+        let finished = chunk;
         try {
           await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/edge_segments.json`, "POST", { rows: chunk.map(([, row]) => row) });
           if (edgeLogStatus.error) logInfo("edge segments saving again");
@@ -1260,9 +1290,12 @@ function createRunner(deps) {
           if (edgeLogStatus.error !== error.message) logWarning(`edge segments POST failed: ${error.message}`);
           edgeLogStatus.error = error.message;
           if (error.status !== HTTP_BAD_REQUEST) return;
+          const index = refusedRowIndex(error, chunk.length);
+          if (index !== null) finished = [chunk[index]];
+          edgeLogStatus.dropped += finished.length;
+          logWarning(`edge segments: dropped ${finished.length} row(s) the service refused`);
         }
-        // Taken, or refused: a row the service refuses would be refused again.
-        for (const [key, row] of chunk) if (unsentEdgeRows.get(key) === row) unsentEdgeRows.delete(key);
+        for (const [key, row] of finished) if (unsentEdgeRows.get(key) === row) unsentEdgeRows.delete(key);
       }
     } catch (error) {
       if (edgeLogStatus.error !== error.message) logWarning(`edge segment pass failed: ${error.stack || error.message}`);

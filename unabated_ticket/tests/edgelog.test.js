@@ -9,6 +9,8 @@ const path = require("node:path");
 const feed = require("../extension/feed.js");
 const edgelog = require("../server/edgelog.js");
 
+const taker = require("../server/taker.js");
+
 const NFL = 1;
 const KICKOFF_MS = Date.parse("2026-09-13T17:00:00Z");
 const OBSERVED_MS = KICKOFF_MS - 3600 * 1000;
@@ -20,21 +22,31 @@ function sliceState() {
 }
 
 function sliceEdgeLines(state, observedMs = OBSERVED_MS) {
-  return edgelog.leagueEdgeLines({ lines: Object.values(state.lines), state, observedMs });
+  return edgelog.leagueEdgeLines({ leagueId: NFL, state, observedMs });
 }
 
-test("leagueEdgeLines: the Edges tab's own lines at a 1% floor, every live book, alts included, full game", () => {
+test("leagueEdgeLines: every field off the Edges tab's own rows at a 1% floor, every live book, alts included, full game", () => {
   const state = sliceState();
   const logged = sliceEdgeLines(state);
   const edgesTab = feed.selectEdges(state, {
     minEdge: edgelog.MIN_LOGGED_EDGE, includeAlts: true, periods: new Set([1]), betTypes: new Set([1, 2, 3]), now: OBSERVED_MS,
-  }).filter((row) => row.isBlurred !== true);
+    maxLineAgeMs: taker.MAX_LINE_AGE_MS,
+  });
   assert.ok(logged.length > 5, "the slice has edges to log");
-  assert.deepEqual(logged.map((row) => row.lineKey).sort(), edgesTab.map((row) => row.key).sort());
   assert.ok(logged.some((row) => row.isAlt), "alt rungs are logged");
-  assert.ok(logged.every((row) => row.edge >= edgelog.MIN_LOGGED_EDGE && row.observedMs === OBSERVED_MS));
-  const moneyline = logged.find((row) => row.betTypeId === 1);
-  assert.equal(moneyline.points, null);
+  const expected = edgesTab.map((row) => {
+    const points = row.betTypeId === 1 ? null : row.points;
+    return {
+      lineKey: row.key, eventId: row.eventId, leagueId: NFL, periodTypeId: 1, bookId: row.book.id, betTypeId: row.betTypeId,
+      sideIndex: row.sideIndex, points, isAlt: row.isAlt === true, eventStartMs: KICKOFF_MS, price: row.price,
+      sourcePrice: row.sourcePrice, sourceFormat: row.sourceFormat, fairAmerican: row.fair, edge: state.lines[row.key].ge,
+      liquidity: row.liquidity ?? null, observedMs: OBSERVED_MS,
+      signature: JSON.stringify([points, row.price, row.sourcePrice, row.fair, KICKOFF_MS]),
+    };
+  });
+  const byKey = (a, b) => a.lineKey.localeCompare(b.lineKey);
+  assert.deepEqual([...logged].sort(byKey), expected.sort(byKey));
+  assert.ok(logged.every((row) => row.edge >= edgelog.MIN_LOGGED_EDGE));
 });
 
 test("leagueEdgeLines: nothing once the snapshot landed at or after the start, or with no snapshot time", () => {
@@ -52,9 +64,13 @@ test("leagueEdgeLines: blurred, clamped, Unabated's own, off-board and dead-book
       books: { ...state.books, [line.bookId]: { ...state.books[line.bookId], ...bookFields } } };
     return sliceEdgeLines(changed).some((row) => row.lineKey === line.key);
   };
+  const stale = new Date(OBSERVED_MS - taker.MAX_LINE_AGE_MS - 60 * 1000).toISOString();
   assert.equal(loggedWith({}), true);
   assert.equal(loggedWith({ isBlurred: true }), false);
   assert.equal(loggedWith({ bacr: 999900 }), false);
+  assert.equal(loggedWith({ bacr: 50 }), false, "a fair the service would refuse is not sent");
+  assert.equal(loggedWith({ modifiedOn: stale, modifiedMs: Date.parse(stale), sequenceNumber: Date.parse(stale) }), false,
+    "a line the book has not touched in a week is a dead feed, not an edge");
   assert.equal(loggedWith({ statusId: 2 }), false);
   assert.equal(loggedWith({ ge: 0.0099 }), false);
   assert.equal(loggedWith({ periodTypeId: 2 }), false);
@@ -63,7 +79,7 @@ test("leagueEdgeLines: blurred, clamped, Unabated's own, off-board and dead-book
 
 function edgeLine(fields = {}) {
   return {
-    lineKey: "m1:ms4:si0", eventId: 7, leagueId: NFL, bookId: 4, betTypeId: 2, sideIndex: 0, points: -3, isAlt: false,
+    lineKey: "m1:ms4:si0", eventId: 7, leagueId: NFL, periodTypeId: 1, bookId: 4, betTypeId: 2, sideIndex: 0, points: -3, isAlt: false,
     eventStartMs: KICKOFF_MS, price: 110, sourcePrice: 110, sourceFormat: 1, fairAmerican: -105, edge: 0.07, liquidity: null,
     observedMs: OBSERVED_MS, signature: "-3|110|110|-105", ...fields,
   };
@@ -78,7 +94,7 @@ test("advanceSegments: a new edge opens a segment, sent once, then again only ev
   const [opened] = advance(segments, [edgeLine()]);
   assert.deepEqual(opened, {
     lineKey: "m1:ms4:si0", segmentStart: new Date(OBSERVED_MS).toISOString(), lastSeen: new Date(OBSERVED_MS).toISOString(),
-    eventId: 7, leagueId: NFL, bookId: 4, betTypeId: 2, sideIndex: 0, points: -3, isAlt: false,
+    eventId: 7, leagueId: NFL, periodTypeId: 1, bookId: 4, betTypeId: 2, sideIndex: 0, points: -3, isAlt: false,
     eventStart: new Date(KICKOFF_MS).toISOString(), price: 110, sourcePrice: 110, sourceFormat: 1, fairAmerican: -105, edge: 0.07, liquidity: null,
   });
   assert.deepEqual(advance(segments, [edgeLine()]), [], "the same snapshot again sends nothing");
@@ -122,6 +138,20 @@ test("advanceSegments: kickoff ends every open segment, and a cached line of a s
   assert.equal(segments.size, 0);
   assert.deepEqual(advance(segments, [edgeLine()], KICKOFF_MS), []);
   assert.equal(segments.size, 0);
+});
+
+test("advanceSegments: a start moved later ends the old segment before the old start and opens one on the new start", () => {
+  const segments = new Map();
+  advance(segments, [edgeLine()]);
+  const delayedStartMs = KICKOFF_MS + 90 * MINUTE_MS;
+  const delayed = edgeLine({ observedMs: KICKOFF_MS + 10 * MINUTE_MS, eventStartMs: delayedStartMs,
+    signature: JSON.stringify([-3, 110, 110, -105, delayedStartMs]) });
+  const rows = advance(segments, [delayed], KICKOFF_MS + 10 * MINUTE_MS);
+  assert.deepEqual(rows.map((row) => [row.segmentStart, row.lastSeen, row.eventStart]), [
+    [new Date(KICKOFF_MS + 10 * MINUTE_MS).toISOString(), new Date(KICKOFF_MS + 10 * MINUTE_MS).toISOString(), new Date(delayedStartMs).toISOString()],
+  ], "the old segment was already sent as last seen; the new one carries the new start, last seen before it");
+  assert.ok(rows.every((row) => Date.parse(row.lastSeen) < Date.parse(row.eventStart)));
+  assert.equal(segments.size, 1);
 });
 
 test("segmentKeyOf: one key per line and segment start", () => {
