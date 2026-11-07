@@ -38,8 +38,11 @@ class ScriptedKalshi:
 
     def __init__(self, filled: float = 10, market_status: str = "active", post_status: int = 201,
                  delete_status: int = 200, resting=(), listed=(), exchange_index=None, fills_pages=None,
-                 remaining_count="0.00", pot_cash=None, transfer_status="complete", transfer_reply_status=200):
+                 remaining_count="0.00", pot_cash=None, transfer_status="complete", transfer_reply_status=200,
+                 insufficient_posts=0):
         self.calls = []
+        # The first N order POSTs are refused as Kalshi refuses a short cash pot.
+        self.insufficient_posts = insufficient_posts
         self.filled = filled
         # What the create reply says is still open; None leaves the field out (an older reply shape).
         self.remaining_count = remaining_count
@@ -78,6 +81,9 @@ class ScriptedKalshi:
             return 200, {"transfer": {"status": self.transfer_status}}
         self.calls.append((method, path, body))
         if method == "POST":
+            if self.insufficient_posts > 0:
+                self.insufficient_posts -= 1
+                return 400, {"error": {"code": "insufficient_balance", "message": "insufficient balance"}}
             if self.post_status != 201:
                 return self.post_status, {"error": "no"}
             # Create Order V2 answers flat: order_id, fill_count, remaining_count, ts_ms.
@@ -190,10 +196,10 @@ def test_the_ceiling_cuts_contracts_then_refuses(store, tmp_path, monkeypatch):
 
 
 def test_the_ceiling_is_three_fifths_of_the_kelly_bankroll_taker_js_sizes_on():
-    # Cal: $7,500 Kelly bankroll (2026-11-04), open cost capped at 60% of it (2026-11-03). The runner's
+    # Cal: $10,000 Kelly bankroll (2026-11-06), open cost capped at 60% of it (2026-11-03). The runner's
     # taker.js sizes every stake on its own KELLY_BANKROLL: the two must not drift apart.
-    assert taker_orders.KELLY_BANKROLL == 7500.0
-    assert taker_orders.MAX_OPEN_COST == pytest.approx(4500.0)
+    assert taker_orders.KELLY_BANKROLL == 10000.0
+    assert taker_orders.MAX_OPEN_COST == pytest.approx(6000.0)
     taker_js = (Path(__file__).resolve().parents[2] / "server" / "taker.js").read_text()
     declared = re.search(r"^const KELLY_BANKROLL = (\d+);$", taker_js, re.MULTILINE)
     assert declared, "taker.js no longer declares const KELLY_BANKROLL = <dollars>;"
@@ -752,18 +758,17 @@ def test_a_novig_bot_order_on_the_game_blocks_a_kalshi_add_until_it_is_held(stor
     assert desk.place(request(heldIds=["novig:nv-1:bot"]))["status"] == "filled"
 
 
-# ---- cash pots (Cal, 2026-11-03: option A2) -------------------------------------------
+# ---- cash pots (Cal, 2026-11-03: option A2; 2026-11-06: Kalshi checks first) ----------
 
-def test_a_pot_that_covers_the_order_moves_nothing(store, tmp_path):
-    kalshi = ScriptedKalshi()
-    assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "filled"
-    # The market's pot (0) is read in the bot's own subaccount; nothing moves.
-    assert kalshi.balance_reads == ["/portfolio/balance?exchange_index=0&subaccount=1"]
-    assert kalshi.transfers == []
+def test_no_pot_is_read_or_moved_before_the_send(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 0.0, 3: 0.0})
+    assert desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))["status"] == "filled"
+    # Kalshi checks the pot itself: no balance read to meet its rate limit, nothing moved.
+    assert kalshi.balance_reads == [] and kalshi.transfers == []
 
 
-def test_a_short_basketball_pot_gets_exactly_the_shortfall_from_the_bots_football_pot(store, tmp_path):
-    kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 1.25})
+def test_a_short_basketball_pot_gets_exactly_the_shortfall_then_one_resend(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 1.25}, insufficient_posts=1)
     result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
     assert result["status"] == "filled"
     # 10 contracts at 0.587157 all-in cost at most $5.88 (+1c fee rounding) = $5.89; the pot holds $1.25.
@@ -771,13 +776,25 @@ def test_a_short_basketball_pot_gets_exactly_the_shortfall_from_the_bots_footbal
                                  "source_exchange_shard": 0, "destination_exchange_shard": 3, "amount": 46_400,
                                  "source_subaccount": BOT_SUBACCOUNT, "destination_subaccount": BOT_SUBACCOUNT}]
     assert kalshi.pot_cash == {0: pytest.approx(995.36), 3: pytest.approx(5.89)}
-    assert kalshi.methods()[0] == "POST" and kalshi.calls[0][1] == taker_orders.ORDERS_PATH
+    posts = [call[2]["client_order_id"] for call in kalshi.calls if call[0] == "POST"]
+    first_id = REQUEST_BODY["clientOrderId"]
+    assert posts == [first_id, first_id + "-r"], "the resend carries a fresh id"
+    # The refused send stays on record as rejected, holding nothing; the resend holds the cost.
+    assert not any(order["client_order_id"] == first_id for order in store.open_orders())
+    assert order_row(store, first_id + "-r")["count_requested"] == 10
 
 
 def test_a_short_football_pot_draws_on_the_basketball_pot(store, tmp_path):
-    kalshi = ScriptedKalshi(pot_cash={0: 2.0, 3: 500.0})
+    kalshi = ScriptedKalshi(pot_cash={0: 2.0, 3: 500.0}, insufficient_posts=1)
     assert desk_for(store, kalshi, tmp_path).place(request())["status"] == "filled"
     assert [(move["source_exchange_shard"], move["destination_exchange_shard"]) for move in kalshi.transfers] == [(3, 0)]
+
+
+def test_a_second_insufficient_balance_is_not_resent_again(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 0.0}, insufficient_posts=2)
+    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
+    assert result["status"] == "rejected" and result["errorCode"] == "insufficient_balance"
+    assert kalshi.methods().count("POST") == 2 and len(kalshi.transfers) == 1
 
 
 @pytest.mark.parametrize("pot_cash, exchange_index, words", [
@@ -785,27 +802,60 @@ def test_a_short_football_pot_draws_on_the_basketball_pot(store, tmp_path):
     ({0: 1000.0}, 3, "pot balance is unreadable"),                # the subaccount is not set up on pot 3
     ({0: 1000.0, 3: 0.0}, 2, "is not set up on"),                 # a pot the bot does not use
     ({0: 1000.0, 3: 0.0}, None, "did not say which cash pot"),    # Kalshi's market carried no exchange_index
+    ({0: 1000.0, 3: 500.0}, 3, "yet the pot reads as covering it"),  # a resend would meet the same refusal
 ])
-def test_any_doubt_about_the_pots_refuses_before_anything_is_sent(store, tmp_path, pot_cash, exchange_index, words):
-    kalshi = ScriptedKalshi(pot_cash=pot_cash)
+def test_any_doubt_about_the_pots_refuses_the_resend(store, tmp_path, pot_cash, exchange_index, words):
+    kalshi = ScriptedKalshi(pot_cash=pot_cash, insufficient_posts=1)
     result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=exchange_index))
     assert result["status"] == "pot_short" and words in result["detail"], result
-    assert kalshi.transfers == [] and "POST" not in kalshi.methods()
-    assert not store.has_order(REQUEST_BODY["clientOrderId"])
+    assert kalshi.transfers == [] and kalshi.methods().count("POST") == 1
+    assert store.has_order(REQUEST_BODY["clientOrderId"]) and store.open_exposure() == 0
 
 
 @pytest.mark.parametrize("transfer_reply_status, transfer_status, words", [
     (403, "complete", "may not move money between its pots"),
     (200, "pending", "has not finished moving it"),
 ])
-def test_a_move_that_fails_or_does_not_finish_refuses_the_order(store, tmp_path, transfer_reply_status,
-                                                                 transfer_status, words):
+def test_a_move_that_fails_or_does_not_finish_refuses_the_resend(store, tmp_path, transfer_reply_status,
+                                                                  transfer_status, words):
     kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 0.0}, transfer_reply_status=transfer_reply_status,
-                            transfer_status=transfer_status)
+                            transfer_status=transfer_status, insufficient_posts=1)
     result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
     assert result["status"] == "pot_short" and words in result["detail"], result
     assert len(kalshi.transfers) == 1, "a move is never re-sent"
-    assert "POST" not in kalshi.methods()
+    assert kalshi.methods().count("POST") == 1
+
+
+def test_a_decision_that_aged_out_during_the_move_is_not_resent(store, tmp_path):
+    clock = {"now": NOW}
+
+    class SlowMoveKalshi(ScriptedKalshi):
+        def request(self, method, path, body=None):
+            if path == "/portfolio/intra_exchange_instance_transfer":
+                clock["now"] += timedelta(seconds=60)  # a slow Kalshi: the decision ages past 60 s
+            return super().request(method, path, body)
+
+    kalshi = SlowMoveKalshi(pot_cash={0: 1000.0, 3: 0.0}, insufficient_posts=1)
+    result = desk_for(store, kalshi, tmp_path, clock=lambda: clock["now"]).place(request(exchangeIndex=3))
+    assert result["status"] == "stale_decision" and kalshi.methods().count("POST") == 1
+
+
+def test_a_stop_file_put_down_during_the_move_stops_the_resend(store, tmp_path):
+    class StoppingKalshi(ScriptedKalshi):
+        def request(self, method, path, body=None):
+            if path == "/portfolio/intra_exchange_instance_transfer":
+                (tmp_path / "taker.stop").write_text("")
+            return super().request(method, path, body)
+
+    kalshi = StoppingKalshi(pot_cash={0: 1000.0, 3: 0.0}, insufficient_posts=1)
+    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
+    assert result["status"] == "stopped" and kalshi.methods().count("POST") == 1
+
+
+def test_retry_order_id_fits_kalshis_64_characters():
+    assert taker_orders.retry_order_id("ubot-abc") == "ubot-abc-r"
+    long_id = "ubot-" + "z" * 59
+    assert len(taker_orders.retry_order_id(long_id)) == 64
 
 
 def test_exchange_index_must_be_a_pot_number_or_null():

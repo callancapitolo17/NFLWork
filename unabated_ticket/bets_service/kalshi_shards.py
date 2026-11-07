@@ -18,7 +18,9 @@ that transfer until Kalshi says it is complete. Needs a key with transfer
 permission. Writes no database.
 
 The bot (taker_orders.py, Cal 2026-11-03: option A2) does the same inside its
-own subaccount: before an order, a short pot is topped up by exactly the
+own subaccount, but only after Kalshi refused an order `insufficient_balance`
+(Cal 2026-11-06: no read before every order, which met Kalshi's rate limit):
+the short pot is topped up by exactly the
 shortfall from the bot's other pot (top_up_bot_pot), with the bot's own key,
 which Kalshi lets move money only between that subaccount's own pots. No
 money ever comes in from the primary account.

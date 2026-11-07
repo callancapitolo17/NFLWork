@@ -35,11 +35,16 @@ Rules, in order, for every request:
   6. ceiling: contracts are cut so that open exposure + this order's cost
      stays at or under MAX_OPEN_COST; none left -> refused, "ceiling";
   6b. cash pot: Kalshi keeps cash per exchange shard and API orders get no
-     automatic move (football is pot 0, basketball pot 3). The market's pot
-     (the runner's exchangeIndex) must hold the order's cost; when short, the
-     bot's key moves exactly the shortfall from the subaccount's other pot in
-     BOT_SHARDS (kalshi_shards.top_up_bot_pot, Cal 2026-11-03: option A2).
-     Any doubt or a failed move -> refused, "pot_short";
+     automatic move (football is pot 0, basketball pot 3). Nothing is read
+     before the send: Kalshi itself checks the market's pot (Cal 2026-11-06;
+     a read before every order met Kalshi's rate limit and refused 1,346
+     bets in three days). Only when Kalshi refuses the order with
+     `insufficient_balance` (an immediate-or-cancel order it refused placed
+     nothing) does the bot's key move exactly the shortfall from the
+     subaccount's other pot in BOT_SHARDS (kalshi_shards.top_up_bot_pot, Cal
+     2026-11-03: option A2) and send the order ONCE more under a new id
+     (retry_order_id). Any doubt or a failed move -> refused, "pot_short",
+     the refused send kept as a "rejected" row;
   7. the order row is INSERTED (status "sending", full cost) BEFORE it is
      sent, so a crash mid-send still counts against the ceiling;
   8. one limit buy at the ask (never a market order), then a cancel of the
@@ -86,10 +91,10 @@ from unabated_ticket.bets_service.taker_store import TakerStore
 
 log = logging.getLogger(__name__)
 
-# The Kalshi bot's Kelly bankroll (Cal, 2026-11-04: $7,500; $5,000 from 2026-10-28). taker.js KELLY_BANKROLL sizes the
+# The Kalshi bot's Kelly bankroll (Cal, 2026-11-06: $10,000; $7,500 from 2026-11-04, $5,000 from 2026-10-28). taker.js KELLY_BANKROLL sizes the
 # stakes and must equal it (tests/test_taker_orders.py reads taker.js to check).
-KELLY_BANKROLL = 7500.0
-# The ceiling on the bot's open cost, a share of its Kelly bankroll (Cal, 2026-11-03: 60%, $4,500 on the 2026-11-04 bankroll; the
+KELLY_BANKROLL = 10000.0
+# The ceiling on the bot's open cost, a share of its Kelly bankroll (Cal, 2026-11-03: 60%, $6,000 on the 2026-11-06 bankroll, $4,500 on 2026-11-04's; the
 # 40% cap was full with edges still listed; 40% from 2026-11-02, 20% from 2026-10-28, a flat $500 before).
 MAX_OPEN_COST_FRACTION = 0.60
 MAX_OPEN_COST = KELLY_BANKROLL * MAX_OPEN_COST_FRACTION
@@ -136,6 +141,11 @@ MAX_DECISION_AGE_SEC = 60
 FILLS_PAGE_LIMIT = 1000
 FILLS_MAX_PAGES = 10
 BOT_ORDER_ID_PREFIX = "ubot-"
+# Kalshi's error code for an order its market's cash pot cannot cover: nothing was placed.
+INSUFFICIENT_BALANCE_CODE = "insufficient_balance"
+# The suffix of the one resend after a pot top-up; client ids are at most 64 characters.
+RETRY_ORDER_ID_SUFFIX = "-r"
+MAX_CLIENT_ORDER_ID_LENGTH = 64
 # Statuses under which the order may hold contracts (see _may_hold_contracts).
 STATUSES_MAYBE_HOLDING = ("sending", "unknown", "sent", "resting", "filled", "partial")
 BALANCE_PATH = "/portfolio/balance"
@@ -198,6 +208,20 @@ def _parse(raw: bytes) -> object:
         return json.loads(text)
     except ValueError:
         return text
+
+
+def retry_order_id(client_order_id: str) -> str:
+    """The client id of the one resend after a pot top-up: the refused id,
+    cut to fit, plus RETRY_ORDER_ID_SUFFIX (Kalshi wants a fresh id per order)."""
+    keep = MAX_CLIENT_ORDER_ID_LENGTH - len(RETRY_ORDER_ID_SUFFIX)
+    return client_order_id[:keep] + RETRY_ORDER_ID_SUFFIX
+
+
+def _error_code_of(reply) -> str | None:
+    """Kalshi's error code ({"error": {"code": ...}}), or None."""
+    error = reply.get("error") if isinstance(reply, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def order_body(ticker: str, contract_side: str, ask: float, count: int, client_order_id: str,
@@ -368,7 +392,7 @@ def validate_order_request(body: object) -> dict | str:
         return f"body must be an object, got {type(body).__name__}"
     client_order_id = body.get("clientOrderId")
     if (not isinstance(client_order_id, str) or not client_order_id.startswith(BOT_ORDER_ID_PREFIX)
-            or len(client_order_id) > 64):
+            or len(client_order_id) > MAX_CLIENT_ORDER_ID_LENGTH):
         return f"clientOrderId must be a '{BOT_ORDER_ID_PREFIX}' id of at most 64 characters, got {client_order_id!r}"
     for field in ("ticker", "rowKey"):
         if not isinstance(body.get(field), str) or not body[field]:
@@ -504,13 +528,33 @@ class TakerDesk:
             count = min(request["count"], math.floor((headroom - FEE_ROUNDING_SLACK) / request["all_in_price"]))
             if count < 1:
                 return {"status": "ceiling", "detail": f"${headroom:.2f} of ${MAX_OPEN_COST:.0f} left"}
-            top_up = top_up_bot_pot(self._client, self._subaccount, request["exchange_index"],
-                                    order_cost_bound(count, request["all_in_price"]), BOT_SHARDS, self._sleep)
-            if top_up.refusal:
-                return {"status": "pot_short", "detail": top_up.refusal}
-            if top_up.note:
-                log.info("taker order %s %s: %s", request["client_order_id"], request["ticker"], top_up.note)
-            return self._send(request, count)
+            result = self._send(request, count)
+            if result.get("errorCode") != INSUFFICIENT_BALANCE_CODE:
+                return result
+            return self._top_up_and_resend(request, count)
+
+    def _top_up_and_resend(self, request: dict, count: int) -> dict:
+        """Kalshi refused the order for the market's cash pot: move exactly the
+        shortfall from the bot's other pot, then send it once more under
+        retry_order_id. Any doubt -> "pot_short", nothing more sent."""
+        top_up = top_up_bot_pot(self._client, self._subaccount, request["exchange_index"],
+                                order_cost_bound(count, request["all_in_price"]), BOT_SHARDS, self._sleep)
+        if top_up.refusal:
+            return {"status": "pot_short", "detail": f"Kalshi refused it for insufficient balance; {top_up.refusal}"}
+        if top_up.note is None:
+            # The pot reads as covering it although Kalshi just said it does not: a resend would meet the same refusal.
+            return {"status": "pot_short",
+                    "detail": "Kalshi refused it for insufficient balance, yet the pot reads as covering it; not resent"}
+        log.info("taker order %s %s: %s", request["client_order_id"], request["ticker"], top_up.note)
+        if self._stop_path.exists():
+            return {"status": "stopped", "detail": f"stop file {self._stop_path} is present; the pot was topped up, nothing resent"}
+        refused = self._refuse_unfit(request)  # the move can take seconds: the decision may have aged out
+        if refused:
+            return refused
+        resend = {**request, "client_order_id": retry_order_id(request["client_order_id"])}
+        if self._store.has_order(resend["client_order_id"]):
+            return {"status": "duplicate", "detail": f"{resend['client_order_id']} was already sent"}
+        return self._send(resend, count)
 
     def _refuse_unfit(self, request: dict) -> dict | None:
         """A request the desk must not act on, whatever the ceiling says, or None."""
@@ -554,7 +598,8 @@ class TakerDesk:
             self._store.update_order(client_order_id, {"status": "rejected", "open_cost": 0.0, "settled_at": self._now(),
                                                        "error": f"HTTP {status}: {str(reply)[:500]}"})
             log.warning("taker order %s %s refused by Kalshi: HTTP %s %s", client_order_id, request["ticker"], status, reply)
-            return {"status": "rejected", "count": count, "detail": f"Kalshi HTTP {status}"}
+            return {"status": "rejected", "count": count, "detail": f"Kalshi HTTP {status}",
+                    "errorCode": _error_code_of(reply)}
         if status not in (200, 201) or not order_id:
             # A gateway error or a conflict may hide a placed order: full cost held, looked up by client_order_id.
             self._store.update_order(client_order_id, {"status": "unknown",
