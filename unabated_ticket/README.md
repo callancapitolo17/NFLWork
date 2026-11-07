@@ -3958,8 +3958,11 @@ scripted access: reads only, his own account, one poll a minute.
   when Auth0 rotates it. Its own chain, so the phone app and Chrome stay
   logged in. Access tokens live 10 minutes; reads need no location headers.
 - **Reads:** every 60 s, `GET api.underdogfantasy.com/v10/user/active_entry_slips`
-  and `settled_entry_slips?page=N` (15 a page, newest made first) back 30 days,
-  and further until every slip the store holds open has been found.
+  and the newest `settled_entry_slips?page=N` page (15 a page, newest made
+  first); further pages only to find a slip the store holds open (the list is
+  ordered by when a slip was made, not settled), at most 20 a poll; 30 days back
+  on the first poll after a boot. A held slip the walk passes without seeing
+  is `closed` with no result, never guessed.
 - **Records:** prediction slips only (product `prediction_markets`; pick'em
   is skipped). One record per slip, `underdog:<slip id>`: stake = the entry
   fee, toWin = the contracts it holds ($1 each) less the fee, price the
@@ -3970,8 +3973,10 @@ scripted access: reads only, his own account, one poll a minute.
   as a code fix.
 - **Grades:** off what the slip paid, since no settled prediction slip had
   been seen when this was built: nothing lost, its contracts won, its fee back
-  void, anything else a cash-out (`closed`, its payout in `raw.payout`). Check
-  the first few settled slips against the app.
+  void, anything else a cash-out (`closed`, `pnl` = payout less stake, which the
+  Tracker counts); no payout field is `unknown`. Anything on the active list is
+  open. A settled answer that leaves the game out keeps the stored game fields.
+  Check the first few settled slips against the app.
 - **Bets tab / Tracker:** a venue row `underdog` and the name "Underdog".
 
 ### Open at BetOnline on the phone Ticket (`server/phone/phoneview.js`, 2026-11-06)

@@ -8,9 +8,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from unabated_ticket.bets_service.service import open_slip_ids
 from unabated_ticket.bets_service.sources import underdog_auth
-from unabated_ticket.bets_service.sources.underdog import UnderdogSource, normalize_underdog
+from unabated_ticket.bets_service.sources.underdog import UnderdogSource, closed_by_absence, normalize_underdog
 from unabated_ticket.bets_service.sources.underdog_auth import UnderdogAuth, UnderdogAuthError
 
 FETCHED_AT = "2026-11-07T06:20:00Z"
@@ -62,12 +61,17 @@ def page(slips, next_page=None, number=1):
             "meta": {"count": len(slips), "items": len(slips), "next": next_page, "page": number}}
 
 
+def read(active_slips, settled_slips=(), stored=None):
+    """normalize_underdog on one active page and one settled page."""
+    return normalize_underdog(page(list(active_slips)), [page(list(settled_slips))], stored or {}, FETCHED_AT)
+
+
 def by_id(records):
     return {record["id"]: record for record in records}
 
 
 def test_cals_live_moneyline_reads_as_the_49ers_at_minus_435():
-    [record] = normalize_underdog([page([slip("s1", ["o-sf"], [179088])])], FETCHED_AT)
+    [record] = read([slip("s1", ["o-sf"], [179088])])
     assert record["id"] == "underdog:s1" and record["venue"] == "underdog" and record["status"] == "open"
     assert (record["league"], record["awayTeam"], record["homeTeam"]) == ("nfl", "Las Vegas Raiders", "San Francisco 49ers")
     assert (record["betType"], record["period"], record["side"], record["points"]) == ("moneyline", "FG", "home", None)
@@ -78,10 +82,10 @@ def test_cals_live_moneyline_reads_as_the_49ers_at_minus_435():
 
 
 def test_spread_takes_its_sign_from_the_pick_and_a_total_reads_under():
-    records = by_id(normalize_underdog([page([
+    records = by_id(read([
         slip("fav", ["o-cin"], [179090], fee="10.0", contracts="20.1"),
         slip("dog", ["o-atl"], [179090], fee="10.0", contracts="17.6"),
-        slip("und", ["o-under"], [179090], fee="10.0", contracts="19.0")])], FETCHED_AT))
+        slip("und", ["o-under"], [179090], fee="10.0", contracts="19.0")]))
     assert (records["underdog:fav"]["side"], records["underdog:fav"]["points"]) == ("away", -3.5)
     assert (records["underdog:dog"]["side"], records["underdog:dog"]["points"]) == ("home", 3.5)
     assert (records["underdog:und"]["betType"], records["underdog:und"]["side"], records["underdog:und"]["points"]) == \
@@ -89,28 +93,51 @@ def test_spread_takes_its_sign_from_the_pick_and_a_total_reads_under():
     assert records["underdog:fav"]["price"] == 101 and records["underdog:und"]["price"] == -111
 
 
-@pytest.mark.parametrize("paid, status", [("0.0", "lost"), ("1.23", "won"), ("1.0", "void"), ("0.6", "closed")])
-def test_a_settled_slip_grades_off_what_it_paid(paid, status):
-    [record] = normalize_underdog([page([slip("s", ["o-sf"], [179088], status="settled", payout=paid,
-                                              payout_at="2026-11-09T00:40:00Z")])], FETCHED_AT)
-    assert record["status"] == status
-    assert record["closedAt"] == "2026-11-09T00:40:00Z"
+@pytest.mark.parametrize("paid, status, pnl", [("0.0", "lost", None), ("1.23", "won", None), ("1.0", "void", None),
+                                               ("0.6", "closed", -0.4), (None, "unknown", None)])
+def test_a_settled_slip_grades_off_what_it_paid(paid, status, pnl):
+    [record] = read([], [slip("s", ["o-sf"], [179088], status="settled", payout=paid,
+                              payout_at="2026-11-09T00:40:00Z")])
+    assert (record["status"], record.get("pnl"), record["closedAt"]) == (status, pnl, "2026-11-09T00:40:00Z")
+    assert (record["stake"], record["toWin"], record["side"]) == (1, 0.23, "home")
 
 
-def test_pickem_is_skipped_and_a_slip_on_both_pages_keeps_its_settled_copy():
-    active = page([slip("s1", ["o-sf"], [179088])])
-    settled = page([slip("s1", ["o-sf"], [179088], status="settled", payout="1.23"),
+def test_with_no_payout_time_a_settled_slip_keeps_its_stored_close_and_never_the_poll_clock_twice():
+    settled = slip("s", ["o-sf"], [179088], status="settled", payout="0.0")
+    [first] = read([], [settled])
+    assert first["closedAt"] == FETCHED_AT
+    [again] = normalize_underdog(page([]), [page([settled])], {"underdog:s": first}, "2026-11-07T07:00:00Z")
+    assert again["closedAt"] == FETCHED_AT
+
+
+def test_anything_on_the_active_list_is_open_whatever_its_status_word():
+    [record] = read([slip("s", ["o-sf"], [179088], status="live")])
+    assert (record["status"], record["closedAt"]) == ("open", None)
+
+
+def test_a_settled_answer_without_the_game_keeps_the_stored_game_fields():
+    [stored] = read([slip("s", ["o-sf"], [179088])])
+    settled = page([slip("s", ["o-sf"], [179088], status="settled", payout="1.23")])
+    settled["data"]["games"] = []
+    [record] = normalize_underdog(page([]), [settled], {"underdog:s": stored}, FETCHED_AT)
+    assert (record["status"], record["homeTeam"], record["side"], record["unmatchable"]) == \
+        ("won", "San Francisco 49ers", "home", None)
+    assert not record["raw"].get("parseFailed")
+
+
+def test_pickem_is_skipped_and_a_slip_on_both_lists_keeps_its_settled_copy():
+    records = read([slip("s1", ["o-sf"], [179088])],
+                   [slip("s1", ["o-sf"], [179088], status="settled", payout="1.23"),
                     slip("pk", ["o-sf"], [179088], product="fantasy")])
-    records = normalize_underdog([active, settled], FETCHED_AT)
     assert [(record["id"], record["status"]) for record in records] == [("underdog:s1", "won")]
 
 
 def test_what_does_not_place_is_unmatchable_and_only_an_unreadable_game_line_is_a_code_fix():
-    records = by_id(normalize_underdog([page([
+    records = by_id(read([
         slip("combo", ["o-sf", "o-cin"], [179088, 179090], contracts="2.47"),
         slip("half", ["o-1h"], [179090]),
         slip("prop", ["o-prop"], [179090]),
-        slip("gone", ["o-missing"], [179090])])], FETCHED_AT))
+        slip("gone", ["o-missing"], [179090])]))
     assert records["underdog:combo"]["unmatchable"].startswith("combo of 2 picks")
     assert records["underdog:combo"]["raw"]["sportId"] == "NFL"
     assert "names a period" in records["underdog:half"]["unmatchable"]
@@ -125,19 +152,26 @@ def test_a_spread_whose_pick_disagrees_with_the_line_fails_closed():
     options = OPTIONS + [{"id": "o-bad", "over_under_line_id": "l-sp", "choice": "away", "choice_display": "CIN -4.5"}]
     bad = page([slip("bad", ["o-bad"], [179090])])
     bad["data"]["over_under_options"] = options
-    [record] = normalize_underdog([bad], FETCHED_AT)
+    [record] = normalize_underdog(bad, [], {}, FETCHED_AT)
     assert record["raw"]["parseFailed"] is True and record["side"] is None
 
 
-def test_an_answer_without_data_raises():
-    with pytest.raises(ValueError):
-        normalize_underdog([{"error": "nope"}], FETCHED_AT)
+def test_an_answer_without_a_slip_list_raises():
+    for answer in ({"error": "nope"}, {"data": {}}):
+        with pytest.raises(ValueError):
+            normalize_underdog(answer, [], {}, FETCHED_AT)
 
 
-def test_open_slip_ids_reads_the_stored_open_records():
-    stored = {"underdog:a": {"status": "open", "raw": {"slipId": "a"}},
-              "underdog:b": {"status": "won", "raw": {"slipId": "b"}}}
-    assert open_slip_ids(stored) == {"a"}
+def test_a_stored_open_slip_neither_list_returns_closes_with_no_result_once_the_walk_passed_it():
+    stored = {"underdog:a": {"id": "underdog:a", "status": "open", "placedAt": "2026-11-06T00:00:00Z", "raw": {}},
+              "underdog:b": {"id": "underdog:b", "status": "open", "placedAt": "2026-10-01T00:00:00Z", "raw": {}},
+              "underdog:c": {"id": "underdog:c", "status": "won", "placedAt": "2026-11-06T00:00:00Z", "raw": {}}}
+    walked_to = datetime(2026, 11, 1, tzinfo=timezone.utc).timestamp() * 1000
+    [closed] = closed_by_absence(stored, set(), walked_to, FETCHED_AT)
+    assert (closed["id"], closed["status"], closed["closedAt"], closed["raw"]["closedByAbsence"]) == \
+        ("underdog:a", "closed", FETCHED_AT, True)
+    assert closed_by_absence(stored, {"underdog:a"}, walked_to, FETCHED_AT) == []
+    assert {record["id"] for record in closed_by_absence(stored, set(), -1, FETCHED_AT)} == {"underdog:a", "underdog:b"}
 
 
 # ---- the network half, on a scripted session ----------------------------------------
@@ -152,14 +186,12 @@ class Reply:
 
 
 class ScriptedSession:
-    """Answers the client-version read, then each API GET from `replies` by (path, page)."""
+    """Answers each API GET from `replies` by (path, page)."""
 
     def __init__(self, replies):
         self.replies, self.calls = replies, []
 
     def get(self, url, params=None, headers=None, timeout=None):
-        if url.endswith("/client-version"):
-            return Reply(200, {"clientVersion": "20261106182101"})
         key = (url.split(".com", 1)[1], (params or {}).get("page"))
         self.calls.append((key, headers.get("Authorization")))
         return self.replies[key].pop(0) if isinstance(self.replies[key], list) else self.replies[key]
@@ -180,38 +212,62 @@ NOW = datetime(2026, 11, 7, 6, 20, tzinfo=timezone.utc).timestamp()
 OLD = "2026-08-01T00:00:00Z"
 
 
-def source(replies, known_open=frozenset()):
+def source(replies, stored=None):
     session = ScriptedSession(replies)
-    return UnderdogSource(FixedAuth(), lambda: set(known_open), session=session, clock=lambda: NOW), session
+    return UnderdogSource(FixedAuth(), lambda: dict(stored or {}), session=session, clock=lambda: NOW), session
 
 
-def test_one_poll_reads_active_and_stops_at_the_first_settled_page_past_the_window():
-    underdog, session = source({("/v10/user/active_entry_slips", None): Reply(200, page([slip("s1", ["o-sf"], [179088])])),
-                                ("/v10/user/settled_entry_slips", 1): Reply(200, page(
-                                    [slip("old", ["o-sf"], [179088], status="settled", created_at=OLD)], next_page=2))})
-    records = underdog.fetch()
-    assert {record["id"] for record in records} == {"underdog:s1", "underdog:old"}
-    assert [call[0] for call in session.calls] == [("/v10/user/active_entry_slips", None),
-                                                    ("/v10/user/settled_entry_slips", 1)]
+ACTIVE = ("/v10/user/active_entry_slips", None)
+
+
+def settled(number):
+    return ("/v10/user/settled_entry_slips", number)
+
+
+def test_the_first_poll_reads_back_the_history_window_and_later_polls_read_one_settled_page():
+    recent, old = "2026-11-01T00:00:00Z", OLD
+    underdog, session = source({
+        ACTIVE: Reply(200, page([slip("s1", ["o-sf"], [179088])])),
+        settled(1): [Reply(200, page([slip("r", ["o-sf"], [179088], status="settled", created_at=recent)], next_page=2)),
+                     Reply(200, page([slip("r", ["o-sf"], [179088], status="settled", created_at=recent)], next_page=2))],
+        settled(2): Reply(200, page([slip("o", ["o-sf"], [179088], status="settled", created_at=old)], next_page=3))})
+    assert {record["id"] for record in underdog.fetch()} == {"underdog:s1", "underdog:r", "underdog:o"}
+    assert [call[0] for call in session.calls] == [ACTIVE, settled(1), settled(2)]
     assert session.calls[0][1] == "Bearer tok0"
+    session.calls.clear()
+    underdog.fetch()
+    assert [call[0] for call in session.calls] == [ACTIVE, settled(1)]
 
 
 def test_a_slip_still_held_open_is_chased_down_the_settled_pages():
+    stored = {"underdog:late": {"id": "underdog:late", "status": "open", "placedAt": OLD, "raw": {}}}
     underdog, session = source({
-        ("/v10/user/active_entry_slips", None): Reply(200, page([])),
-        ("/v10/user/settled_entry_slips", 1): Reply(200, page([slip("x", ["o-sf"], [179088], status="settled",
-                                                                     created_at=OLD)], next_page=2)),
-        ("/v10/user/settled_entry_slips", 2): Reply(200, page([slip("late", ["o-sf"], [179088], status="settled",
-                                                                        payout="1.23", created_at=OLD)], next_page=3)),
-    }, known_open={"late"})
+        ACTIVE: Reply(200, page([])),
+        settled(1): Reply(200, page([slip("x", ["o-sf"], [179088], status="settled", created_at="2026-11-05T00:00:00Z")],
+                                    next_page=2)),
+        settled(2): Reply(200, page([slip("late", ["o-sf"], [179088], status="settled", payout="1.23", created_at=OLD)],
+                                    next_page=3)),
+    }, stored)
+    underdog._read_history = True
     records = by_id(underdog.fetch())
     assert records["underdog:late"]["status"] == "won"
-    assert [call[0][1] for call in session.calls] == [None, 1, 2]
+    assert [call[0] for call in session.calls] == [ACTIVE, settled(1), settled(2)]
+
+
+def test_a_stored_open_slip_the_walk_passes_without_seeing_is_closed():
+    stored = {"underdog:gone": {"id": "underdog:gone", "status": "open", "placedAt": "2026-11-06T00:00:00Z", "raw": {}}}
+    underdog, session = source({
+        ACTIVE: Reply(200, page([])),
+        settled(1): Reply(200, page([slip("x", ["o-sf"], [179088], status="settled", created_at=OLD)], next_page=2))},
+        stored)
+    underdog._read_history = True
+    records = by_id(underdog.fetch())
+    assert records["underdog:gone"]["status"] == "closed"
+    assert [call[0] for call in session.calls] == [ACTIVE, settled(1)]
 
 
 def test_a_refused_token_is_refreshed_once_and_a_failed_read_raises():
-    underdog, session = source({("/v10/user/active_entry_slips", None): [Reply(401, {}), Reply(200, page([]))],
-                                ("/v10/user/settled_entry_slips", 1): Reply(503, {"error": "down"})})
+    underdog, session = source({ACTIVE: [Reply(401, {}), Reply(200, page([]))], settled(1): Reply(503, {"error": "down"})})
     with pytest.raises(RuntimeError, match="HTTP 503"):
         underdog.fetch()
     assert [call[1] for call in session.calls[:2]] == ["Bearer tok0", "Bearer tok1"]

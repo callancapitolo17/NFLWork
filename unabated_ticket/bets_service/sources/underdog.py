@@ -8,8 +8,7 @@ access (2026-11-07): reads only, his own account, one poll a minute.
 
 Two halves, like sources/prophetx.py:
   normalize_underdog(pages, fetched_at)  pure: the slips of every page read -> records.
-                                         Pinned by tests/test_underdog.py on
-                                         tests/fixtures/bets/underdog_slips.json.
+                                         Pinned by tests/test_underdog.py.
   UnderdogSource                         the network half (Source protocol).
 
 Endpoints (captured from Cal's logged-in Chrome, 2026-11-07; only the bearer token is
@@ -38,10 +37,13 @@ Wire grammar (one live $1 prediction slip, 2026-11-07, plus the app's NFL board)
           Points O/U"), appearance_stat {stat: "moneyline" | "spread" | "points"}}
   game    {id, sport_id ("NFL"), away_team_id, home_team_id, scheduled_at (UTC)}
   team    {id, name ("San Francisco 49ers")}
-Unseen until a slip settles or is cashed out: the grade fields. A settled slip is graded
-off its money, which the slip states whatever the words: payout 0 lost, payout equal to
-contract_quantity won, payout equal to the stake void (refunded); any other payout is a
-cash-out, `closed` with what it paid in raw (the Polymarket US rule for a side sold back).
+Unseen until a slip settles or is cashed out: the grade fields. Every slip the active list
+returns is open, whatever its status word. A settled slip is graded off its money, which
+the slip states whatever the words: payout 0 lost, payout equal to contract_quantity won,
+payout equal to the stake void (refunded); any other payout is a cash-out, `closed` with
+`pnl` = payout - stake (the Tracker's closed-bet money); a settled slip with no payout field
+is `unknown`. A slip the store holds open that neither list returns, once the settled walk
+has passed the time it was placed, is `closed` with no result (the Bet105 rule).
 
 Record conventions: one record per slip, id "underdog:<slip id>"; stake = fee (what left
 the wallet), toWin = contract_quantity - fee, price = the American price of that ratio
@@ -62,7 +64,7 @@ import requests
 
 from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.normalize import (
-    EASTERN, json_clean, mark_parse_failed, round_cents, to_number, utc_now_iso)
+    EASTERN, json_clean, mark_parse_failed, parse_iso_ms, round_cents, to_number, utc_now_iso)
 from unabated_ticket.bets_service.sources.betonline import american_from_payout
 from unabated_ticket.bets_service.sources.underdog_auth import UnderdogAuth
 
@@ -73,13 +75,12 @@ VENUE = "underdog"
 API_BASE_URL = "https://api.underdogfantasy.com"
 ACTIVE_PATH = "/v10/user/active_entry_slips"
 SETTLED_PATH = "/v10/user/settled_entry_slips"
-# The web app's own build stamp; any value was accepted on 2026-11-07, so it is only
-# read once per boot to look like the current client.
-CLIENT_VERSION_URL = "https://app.underdogsports.com/client-version"
-FALLBACK_CLIENT_VERSION = "20261106182101"
+# The web app's build stamp on 2026-11-07; any value was accepted, so it is a constant.
+CLIENT_VERSION = "20261106182101"
 HTTP_TIMEOUT_SEC = 20
-# 1,726 settled pick'em slips at 15 a page is 116 pages; a cursor that never ends stops here.
-MAX_SETTLED_PAGES = 150
+# A poll reads at most this many settled pages (15 slips each), so one slip the walk
+# cannot place never holds the shared poll lane for long.
+MAX_SETTLED_PAGES = 20
 PRODUCT_PREDICTION = "prediction_markets"
 # Underdog sport_id -> the extension's league path (feed.LEAGUES).
 LEAGUES = {"NFL": "nfl", "CFB": "cfb", "NBA": "nba", "CBB": "cbb", "WNBA": "wnba", "MLB": "mlb", "NHL": "nhl"}
@@ -113,9 +114,6 @@ def eastern_date_of(iso: str | None) -> str | None:
 
 
 def _by_id(items: object) -> dict:
-    """Underdog sends each lookup as a list (slip answers) or an id-keyed dict (board answers)."""
-    if isinstance(items, dict):
-        items = list(items.values())
     if not isinstance(items, list):
         return {}
     return {item["id"]: item for item in items if isinstance(item, dict) and item.get("id") is not None}
@@ -131,25 +129,19 @@ def selections_of(slip: dict) -> list[tuple[dict, dict]]:
 
 
 def money_of(slip: dict) -> tuple[float, float | None]:
-    """(stake, dollars paid if it wins) of a slip: the fee, and the contracts it holds
-    ($1 each), else the fee times the slip's own payout multiplier."""
+    """(stake, dollars paid if it wins) of a slip: the fee, and the contracts it holds ($1 each)."""
     stake = round_cents(to_number(slip.get("fee")))
     prediction = slip.get("prediction") if isinstance(slip.get("prediction"), dict) else {}
     contracts = to_number(prediction.get("contract_quantity"))
-    if contracts > 0:
-        return stake, round_cents(contracts)
-    multiplier = to_number(slip.get("initial_max_payout_multiplier"))
-    return stake, round_cents(stake * multiplier) if multiplier > 0 else None
+    return stake, round_cents(contracts) if contracts > 0 else None
 
 
-def status_of(slip: dict, stake: float, win_payout: float | None) -> str:
-    """The record status of a slip, graded off its money once settled (module docstring)."""
-    status = str(slip.get("status") or "").lower()
-    if status == "active":
+def status_of(slip: dict, stake: float, win_payout: float | None, on_active_list: bool) -> str:
+    """The record status of a slip, graded off its money once settled (module docstring).
+    Anything the active list returns is open, whatever its status word."""
+    if on_active_list:
         return "open"
-    if status in ("cancelled", "canceled", "refunded", "voided"):
-        return "void"
-    if status != "settled":
+    if str(slip.get("status") or "").lower() != "settled" or slip.get("payout") is None:
         return "unknown"
     paid = to_number(slip.get("payout"))
     if paid <= MONEY_TOLERANCE:
@@ -225,39 +217,53 @@ def lookups_of(data: dict) -> dict:
 GAME_FIELDS = ("league", "eventStart", "eventDate", "awayTeam", "homeTeam", "betType", "period", "side", "points")
 
 
-def record_of(slip: dict, lookups: dict, fetched_at: str | None) -> dict:
+def _stored_game(stored: dict | None) -> dict | None:
+    """A stored record's game fields, when it had a line."""
+    if not stored or stored.get("unmatchable") or stored.get("betType") not in BET_TYPES.values():
+        return None
+    return {field: stored.get(field) for field in GAME_FIELDS}
+
+
+def record_of(slip: dict, lookups: dict, stored: dict | None, on_active_list: bool, fetched_at: str | None) -> dict:
+    """One slip's record. `stored`: its stored record, if any — its game fields stand in
+    when this answer no longer carries the game, and its closedAt when the slip names no
+    payout time (never the poll clock twice)."""
     stake, win_payout = money_of(slip)
     to_win = round_cents(win_payout - stake) if win_payout is not None else None
-    status = status_of(slip, stake, win_payout)
+    status = status_of(slip, stake, win_payout, on_active_list)
     picks = selections_of(slip)
     prediction = slip.get("prediction") if isinstance(slip.get("prediction"), dict) else {}
-    raw = {"slipId": slip.get("id"), "type": slip.get("type"), "slipStatus": slip.get("status"),
-           "displayResult": slip.get("display_result"), "fee": slip.get("fee"), "payout": slip.get("payout"),
-           "contractQuantity": prediction.get("contract_quantity"), "tradeCost": prediction.get("trade_cost"),
-           "totalFees": prediction.get("total_fees"), "freeEntry": slip.get("free_entry"),
-           "usedBonusFunds": slip.get("used_bonus_funds"),
+    first = picks[0] if picks else ({}, {})
+    raw = {"slipId": slip.get("id"), "slipStatus": slip.get("status"), "fee": slip.get("fee"),
+           "payout": slip.get("payout"), "contractQuantity": prediction.get("contract_quantity"),
+           "openContractQuantity": prediction.get("open_contract_quantity"),
+           # The game's own sport, kept for a slip that does not place (the Tracker's league column).
+           "sportId": (lookups["games"].get(first[0].get("match_id")) or {}).get("sport_id"),
            "picks": [{"optionId": selection.get("option_id"), "matchId": group.get("match_id"),
                       "multiplier": selection.get("payout_multiplier"), "result": selection.get("result")}
                      for group, selection in picks]}
-    first = picks[0] if picks else ({}, {})
-    # The game's own sport, kept for a slip that does not place (the Tracker's league column).
-    raw["sportId"] = (lookups["games"].get(first[0].get("match_id")) or {}).get("sport_id")
+    closed_at = None
+    if status != "open":
+        closed_at = iso_utc_of(slip.get("payout_at")) or (stored or {}).get("closedAt") or fetched_at
     record = {"id": f"{VENUE}:{slip.get('id')}", "source": SOURCE, "venue": VENUE,
               "awayKey": None, "homeKey": None, "rotation": None, "contracts": win_payout,
               "isParlayLeg": False, "parlayId": None, "legIndex": None, "legCount": None,
               "sourceFetchedAt": fetched_at, "placedAt": iso_utc_of(slip.get("created_at")),
-              "venueIds": {"slipId": slip.get("id"), "optionId": first[1].get("option_id"),
-                           "matchId": first[0].get("match_id")},
+              "venueIds": {"slipId": slip.get("id")},
               "price": american_from_payout(stake, to_win) if to_win else None,
               "stake": stake, "toWin": to_win, "status": status, "approx": [], "unmatchable": None,
-              "closedAt": None if status == "open" else iso_utc_of(slip.get("payout_at")) or fetched_at,
-              "raw": raw}
+              "closedAt": closed_at, "raw": raw}
+    if status == "closed":
+        # A cash-out: the Tracker counts a closed bet's money only off `pnl`.
+        record["pnl"] = round_cents(to_number(slip.get("payout")) - stake)
     record.update({field: None for field in GAME_FIELDS})
     if len(picks) != 1:
         record["betType"] = "other"
         record["unmatchable"] = f"combo of {len(picks)} picks: its picks are not matched"
         return json_clean(record)
     line = line_of(first[1], first[0], lookups)
+    if isinstance(line, str) and _stored_game(stored) is not None:
+        line = _stored_game(stored)
     if isinstance(line, dict):
         record.update(line)
         return json_clean(record)
@@ -269,71 +275,82 @@ def record_of(slip: dict, lookups: dict, fetched_at: str | None) -> dict:
     return json_clean(mark_parse_failed(record, line))
 
 
-def normalize_underdog(pages: list[dict], fetched_at: str | None) -> list[dict]:
-    """The records of every prediction slip on the pages read (active first, then
-    settled). A slip on two pages (it settled between the reads) keeps its last copy,
-    the settled one. Pick'em slips (product "fantasy") are skipped. Pure."""
+def slips_of(page: object) -> tuple[list[dict], dict]:
+    """(slips, lookups) of one answer; raises on an answer that is not a slip list."""
+    data = page.get("data") if isinstance(page, dict) else None
+    if not isinstance(data, dict) or not isinstance(data.get("entry_slips"), list):
+        raise ValueError(f"underdog: answer without data.entry_slips: {str(page)[:200]}")
+    return [slip for slip in data["entry_slips"] if isinstance(slip, dict)], lookups_of(data)
+
+
+def normalize_underdog(active_page: dict, settled_pages: list[dict], stored: dict[str, dict],
+                       fetched_at: str | None) -> list[dict]:
+    """The records of every prediction slip on the pages read. A slip on both lists (it
+    settled between the reads) keeps its settled copy. Pick'em slips (product "fantasy")
+    are skipped. `stored`: the stored Underdog records by id. Pure."""
     by_id: dict[str, dict] = {}
-    for page in pages:
-        data = page.get("data") if isinstance(page, dict) else None
-        if not isinstance(data, dict):
-            raise ValueError(f"underdog: answer without a data object: {str(page)[:200]}")
-        lookups = lookups_of(data)
-        for slip in data.get("entry_slips") or []:
-            if not isinstance(slip, dict) or slip.get("product") != PRODUCT_PREDICTION or not slip.get("id"):
+    for page, on_active_list in [(active_page, True)] + [(page, False) for page in settled_pages]:
+        slips, lookups = slips_of(page)
+        for slip in slips:
+            if slip.get("product") != PRODUCT_PREDICTION or not slip.get("id"):
                 continue
-            by_id[str(slip["id"])] = record_of(slip, lookups, fetched_at)
+            record_id = f"{VENUE}:{slip['id']}"
+            by_id[record_id] = record_of(slip, lookups, stored.get(record_id), on_active_list, fetched_at)
     return list(by_id.values())
+
+
+def closed_by_absence(stored: dict[str, dict], seen_ids: set[str], placed_before_ms: float | None,
+                      fetched_at: str) -> list[dict]:
+    """Stored open records neither list returned, once the settled walk has gone past the
+    time each was placed (so it would have been seen): `closed`, no result — never
+    guessed won or lost (the Bet105 rule). Pure."""
+    closed = []
+    for record_id, record in stored.items():
+        if record.get("status") != "open" or record_id in seen_ids:
+            continue
+        placed_ms = parse_iso_ms(record.get("placedAt") or "")
+        if placed_before_ms is None or placed_ms is None or placed_ms <= placed_before_ms:
+            continue
+        ended = dict(record)
+        ended.update({"status": "closed", "closedAt": fetched_at, "sourceFetchedAt": fetched_at,
+                      "raw": {**(record.get("raw") or {}), "closedByAbsence": True}})
+        closed.append(json_clean(ended))
+    return closed
 
 
 # ---- network half -----------------------------------------------------------------
 
-def _oldest_created_ms(page: dict) -> float | None:
+def _oldest_created_ms(slips: list[dict]) -> int | None:
     """Epoch ms of the oldest slip created on a settled page (they come newest first)."""
-    slips = (page.get("data") or {}).get("entry_slips") or []
-    stamps = [iso_utc_of(slip.get("created_at")) for slip in slips if isinstance(slip, dict)]
-    stamps = [stamp for stamp in stamps if stamp]
-    if not stamps:
-        return None
-    return datetime.fromisoformat(min(stamps).replace("Z", "+00:00")).timestamp() * 1000
+    stamps = [parse_iso_ms(slip["created_at"]) for slip in slips if isinstance(slip.get("created_at"), str)]
+    stamps = [stamp for stamp in stamps if stamp is not None]
+    return min(stamps) if stamps else None
 
 
 class UnderdogSource:
     """Polls the account's Underdog prediction slips on the service's own login.
 
-    Each poll reads every active slip, then settled pages newest first until a page
-    holds only slips created more than `history_days` ago AND every slip the store
-    still holds as open has been seen (a slip settles late, and its page is ordered by
-    when it was created, not settled) — at most MAX_SETTLED_PAGES pages.
+    Each poll reads every active slip and the newest settled page, then further
+    settled pages (newest made first) while any slip the store still holds open was
+    placed before the oldest slip read so far — a slip settles late, and the list is
+    ordered by when it was made. The first poll after a boot also reads back
+    `history_days`. A stored open slip the walk passes without seeing is closed with
+    no result. At most MAX_SETTLED_PAGES pages a poll.
     """
 
     name = VENUE
 
-    def __init__(self, auth: UnderdogAuth, known_open_ids: Callable[[], set[str]] = set,
+    def __init__(self, auth: UnderdogAuth, known_records: Callable[[], dict[str, dict]] = dict,
                  poll_sec: float = config.UNDERDOG_POLL_SEC, history_days: int = config.UNDERDOG_HISTORY_DAYS,
                  session: requests.Session | None = None, clock: Callable[[], float] = time.time):
-        """`known_open_ids`: the slip ids of the stored Underdog records still open."""
+        """`known_records`: the stored Underdog records by id (store.load_records_of_venue)."""
         self.poll_sec = poll_sec
         self._auth = auth
-        self._known_open_ids = known_open_ids
+        self._known_records = known_records
         self._history_days = history_days
         self._session = session or requests.Session()
         self._clock = clock
-        self._client_version: str | None = None
-
-    def _headers(self) -> dict:
-        if self._client_version is None:
-            self._client_version = self._read_client_version()
-        return {"Accept": "application/json", "Client-Type": "web", "Client-Version": self._client_version,
-                "Authorization": f"Bearer {self._auth.token().token}"}
-
-    def _read_client_version(self) -> str:
-        try:
-            reply = self._session.get(CLIENT_VERSION_URL, timeout=HTTP_TIMEOUT_SEC)
-            version = reply.json().get("clientVersion") if reply.status_code == 200 else None
-        except (requests.RequestException, ValueError):
-            version = None
-        return str(version) if version else FALLBACK_CLIENT_VERSION
+        self._read_history = False
 
     def _get(self, path: str, params: dict | None = None) -> dict:
         reply = self._session.get(API_BASE_URL + path, params=params, headers=self._headers(), timeout=HTTP_TIMEOUT_SEC)
@@ -345,43 +362,55 @@ class UnderdogSource:
         if reply.status_code != 200:
             raise RuntimeError(f"underdog: GET {path} {params or ''} answered HTTP {reply.status_code}: {reply.text[:200]}")
         try:
-            payload = reply.json()
+            return reply.json()
         except ValueError as error:
             raise RuntimeError(f"underdog: GET {path} answered non-JSON: {reply.text[:200]}") from error
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"underdog: GET {path} answered {type(payload).__name__}, expected an object")
-        return payload
+
+    def _headers(self) -> dict:
+        return {"Accept": "application/json", "Client-Type": "web", "Client-Version": CLIENT_VERSION,
+                "Authorization": f"Bearer {self._auth.token().token}"}
 
     def fetch(self) -> list[dict]:
-        pages = [self._get(ACTIVE_PATH)]
-        seen = {str(slip.get("id")) for slip in (pages[0].get("data") or {}).get("entry_slips") or []
-                if isinstance(slip, dict)}
-        still_open = set(self._known_open_ids()) - seen
-        cutoff_ms = (self._clock() - self._history_days * 86400) * 1000
-        page_number = 1
-        while page_number <= MAX_SETTLED_PAGES:
+        stored = self._known_records()
+        active_page = self._get(ACTIVE_PATH)
+        active_slips, _ = slips_of(active_page)
+        seen_ids = {f"{VENUE}:{slip.get('id')}" for slip in active_slips}
+        # Stored open slips not on the active list: placed time by id, until a settled page shows them.
+        open_placed_ms = {record_id: parse_iso_ms(record.get("placedAt") or "") for record_id, record in stored.items()
+                          if record.get("status") == "open" and record_id not in seen_ids}
+        history_ms = None if self._read_history else (self._clock() - self._history_days * 86400) * 1000
+        settled_pages: list[dict] = []
+        oldest_read_ms = None
+        complete = False
+        for page_number in range(1, MAX_SETTLED_PAGES + 1):
             page = self._get(SETTLED_PATH, {"page": page_number})
-            pages.append(page)
-            still_open -= {str(slip.get("id")) for slip in (page.get("data") or {}).get("entry_slips") or []
-                           if isinstance(slip, dict)}
-            oldest = _oldest_created_ms(page)
-            next_page = (page.get("meta") or {}).get("next")
-            if not next_page or oldest is None:
+            slips, _ = slips_of(page)
+            settled_pages.append(page)
+            seen_ids |= {f"{VENUE}:{slip.get('id')}" for slip in slips}
+            oldest = _oldest_created_ms(slips)
+            oldest_read_ms = oldest if oldest is not None else oldest_read_ms
+            if not (page.get("meta") or {}).get("next") or oldest is None:
+                complete = True
                 break
-            if oldest < cutoff_ms and not still_open:
+            wanted = [stamp for record_id, stamp in open_placed_ms.items()
+                      if record_id not in seen_ids and stamp is not None and stamp <= oldest]
+            if not wanted and (history_ms is None or oldest < history_ms):
                 break
-            page_number = int(next_page)
         else:
-            log.warning("underdog: stopped after %d settled pages; %d open slip(s) not found",
-                        MAX_SETTLED_PAGES, len(still_open))
-        return normalize_underdog(pages, utc_now_iso())
+            log.warning("underdog: stopped after %d settled pages", MAX_SETTLED_PAGES)
+        self._read_history = True
+        fetched_at = utc_now_iso()
+        records = normalize_underdog(active_page, settled_pages, stored, fetched_at)
+        # Every slip ever made was read when the list ended; else only those placed after the oldest read.
+        passed_ms = -1 if complete else oldest_read_ms
+        return records + closed_by_absence(stored, seen_ids, passed_ms, fetched_at)
 
 
-def source_if_connected(known_open_ids: Callable[[], set[str]] = set) -> UnderdogSource | None:
+def source_if_connected(known_records: Callable[[], dict[str, dict]] = dict) -> UnderdogSource | None:
     """An UnderdogSource when `underdog_auth connect` has been run (the token file
     exists), else None so the service leaves the venue "no source configured"."""
     if not config.UNDERDOG_TOKEN_PATH.exists():
         log.warning("underdog: no token at %s — run `python -m unabated_ticket.bets_service.sources.underdog_auth "
                     "connect`; Underdog source not registered", config.UNDERDOG_TOKEN_PATH)
         return None
-    return UnderdogSource(UnderdogAuth(config.UNDERDOG_TOKEN_PATH), known_open_ids)
+    return UnderdogSource(UnderdogAuth(config.UNDERDOG_TOKEN_PATH), known_records)

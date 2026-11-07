@@ -263,10 +263,10 @@ PROPHETX_HISTORY_DAYS = 60
 # `python -m unabated_ticket.bets_service.sources.underdog_auth connect` and
 # rewritten on rotation. The source registers only when the file exists.
 UNDERDOG_TOKEN_PATH = Path(_get("UNDERDOG_TOKEN_PATH", str(PKG_DIR / "underdog_token.json")))
-# Every 60 s: two GETs (open slips, the newest settled page), one token refresh per ~9 min.
+# Every 60 s: the open slips and the newest settled page (more only to find a slip the
+# store holds open, and 30 days back on the first poll after a boot); a token refresh per ~9 min.
 UNDERDOG_POLL_SEC = float(_get("BETS_UNDERDOG_POLL_SEC", "60"))
-# Settled pages are read back until slips created this long ago (and every slip still
-# held open has been found).
+# The first poll after a boot reads settled pages back to slips made this long ago.
 UNDERDOG_HISTORY_DAYS = 30
 # A second ProphetX key pair (2026-11-05), only for the Edges list's live
 # ProphetX prices (prophetx_live.py, reads only), so its reads never take the

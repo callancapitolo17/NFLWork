@@ -2672,12 +2672,6 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
 )
 
 
-def open_slip_ids(records: dict[str, dict]) -> set[str]:
-    """The Underdog slip ids of the stored records still open."""
-    return {str((record.get("raw") or {}).get("slipId")) for record in records.values()
-            if record.get("status") == "open" and (record.get("raw") or {}).get("slipId")}
-
-
 def main() -> None:
     setup_logging()
     store = BetsStore(config.DB_PATH, config.SOURCE_RUNS_RETENTION_DAYS)
@@ -2691,9 +2685,9 @@ def main() -> None:
             optional = factory(lambda: store.load_records_of_venue("prophetx"),
                                lambda orders, trades: settle_prophetx_place_orders(store, orders, trades, _now()))
         elif venue == "underdog":
-            # Settled slips come ordered by when they were made, not settled: the source
-            # reads back until every slip the store holds open is found.
-            optional = factory(lambda: open_slip_ids(store.load_records_of_venue(UNDERDOG_VENUE)))
+            # The stored records: open slips to chase down the settled list, and game fields
+            # and settle times to keep when an answer leaves them out.
+            optional = factory(lambda: store.load_records_of_venue(UNDERDOG_VENUE))
         else:
             optional = factory()
         if optional is not None:
