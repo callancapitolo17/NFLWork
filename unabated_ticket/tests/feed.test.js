@@ -593,6 +593,10 @@ test("snapshot: each event keeps its live score, clock and period off its row", 
   });
 });
 
+test("gameStateOf: keeps overtimeNumber as read (NCAAB, 2026-11-07)", () => {
+  assert.equal(feed.gameStateOf({ eventPeriodTypeId: 3, overtimeNumber: 1, eventTeams: {} }, null).overtimeNumber, 1);
+});
+
 test("gameStateOf: missing fields read null, never zero", () => {
   assert.deepEqual(feed.gameStateOf({ eventTeams: { 0: { id: 1 }, 1: { id: 2 } } }, null), {
     statusId: null, awayScore: null, homeScore: null, gameClock: null, periodId: null, overtimeNumber: null, snapshotAtMs: null,

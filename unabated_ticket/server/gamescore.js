@@ -44,26 +44,17 @@ const NAMED_PERIOD_IDS = {
   nba: [2, 4, 5, 6, 7],
 };
 
-// League path -> the overtimeNumber values named there. Overtime is not a
-// period id: an NCAAB game read 2026-11-07 every 20 s kept eventPeriodTypeId
-// 3 (2nd half) from 58-58 at 00:00 into overtime, where overtimeNumber went
-// null -> 1 with the clock restarting (4:02, 58-60 ... 00:00, 70-70), then
-// 2 for the second overtime (4:27, 72-72). While overtimeNumber is set, the
-// regulation period's name would be wrong, so an unchecked league or count
-// shows no name (football and NBA overtime unread).
+// League path -> overtimeNumber -> its name. Overtime is not a period id:
+// while overtimeNumber is set, eventPeriodTypeId stays at the last regulation
+// period (NCAAB read 2026-11-07: 3 into OT, overtimeNumber null -> 1 -> 2), so
+// an unchecked league or count shows no name, never the regulation period's
+// (football and NBA overtime unread).
 const NAMED_OVERTIMES = {
-  cbb: [1, 2],
+  cbb: { 1: "OT", 2: "2OT" },
 };
 
-function overtimeNameOf(overtimeNumber) {
-  return overtimeNumber === 1 ? "OT" : `${overtimeNumber}OT`;
-}
-
 function periodNameOf(league, periodId, overtimeNumber) {
-  if (overtimeNumber != null && overtimeNumber > 0) {
-    const counts = NAMED_OVERTIMES[league];
-    return counts && counts.includes(overtimeNumber) ? overtimeNameOf(overtimeNumber) : null;
-  }
+  if (overtimeNumber > 0) return NAMED_OVERTIMES[league]?.[overtimeNumber] ?? null;
   const ids = NAMED_PERIOD_IDS[league];
   if (!ids || !ids.includes(periodId)) return null;
   return live.PERIOD_ENDED[periodId] ?? null;
