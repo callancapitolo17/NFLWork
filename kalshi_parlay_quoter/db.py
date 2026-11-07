@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS rfq_decisions (
     earliest_kickoff_ms     BIGINT,
     hours_to_kickoff        DOUBLE,
     pricer_ms               DOUBLE,
-    priced_at_ms            BIGINT
+    priced_at_ms            BIGINT,
+    queue_ms                DOUBLE
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_seen ON rfq_decisions(seen_at);
 CREATE TABLE IF NOT EXISTS rfq_legs (
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS door_counts (
     below_floor     BIGINT,
     too_many_legs   BIGINT,
     malformed       BIGINT,
+    backlog         BIGINT,
     feed_mode       VARCHAR
 );
 """
@@ -85,14 +87,14 @@ DECISION_COLS = [
     "same_game", "decision", "reason", "reason_detail", "parlay_fair",
     "parlay_fair_lo", "parlay_fair_hi", "max_leg_sigma",
     "legs_kalshi_ask_product", "earliest_kickoff_ms", "hours_to_kickoff",
-    "pricer_ms", "priced_at_ms"]
+    "pricer_ms", "priced_at_ms", "queue_ms"]
 LEG_COLS = [
     "rfq_id", "leg_idx", "market_ticker", "side", "series", "league", "market",
     "game_key", "ok", "reason", "fair", "fair_lo", "fair_hi", "bracketed",
     "sigma", "c", "tau", "line", "kickoff_ms", "fair_age_ms", "kalshi_status",
     "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask"]
 DOOR_COLS = ["minute", "logged", "other_league", "below_floor",
-             "too_many_legs", "malformed", "feed_mode"]
+             "too_many_legs", "malformed", "backlog", "feed_mode"]
 
 
 def _ins(table, cols):

@@ -29,9 +29,9 @@ sends no quotes and no orders**; nothing in this package can.
 
 | table | one row per | notes |
 |---|---|---|
-| `rfq_decisions` | in-league RFQ id | size, leagues, leg count, same-game flag, decision, reason, parlay fair and bracket, max leg sigma, product of Kalshi's single-leg asks, hours to kickoff, pricer latency |
+| `rfq_decisions` | in-league RFQ id | size, leagues, leg count, same-game flag, decision, reason, parlay fair and bracket, max leg sigma, product of Kalshi's single-leg asks, hours to kickoff, pricer latency, `queue_ms` (wait for a free pricer worker) |
 | `rfq_legs` | leg of a logged RFQ | everything the pricer returned for the leg (`line` is JSON) |
-| `door_counts` | minute | RFQs that got no row: `other_league`, `below_floor` (size under `PARLAY_MIN_RFQ_TARGET_COST_USD`, default $50), `too_many_legs` (always 0, no cap), `malformed`; plus `logged` and the feed mode |
+| `door_counts` | minute | RFQs that got no row: `other_league`, `below_floor` (size under `PARLAY_MIN_RFQ_TARGET_COST_USD`, default $50), `too_many_legs` (always 0, no cap), `malformed`; plus `logged`, the pricer `backlog` and the feed mode |
 
 Every RFQ seen is either a row in `rfq_decisions` or a count in
 `door_counts`. Decline reasons: `no_legs`, `unsupported_leg`, `bad_side`,

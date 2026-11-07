@@ -253,6 +253,7 @@ def test_every_rfq_gets_one_decision_row(tmp_path):
     door = dlog.query("SELECT logged, other_league, below_floor, feed_mode "
                       "FROM door_counts")
     assert door == [(4, 8, 3, "ws")]
+    assert dlog.query("SELECT count(*) FROM rfq_decisions WHERE queue_ms >= 0")[0][0] == 4
     line = dlog.query("SELECT line->>'league' FROM rfq_legs "
                       "WHERE rfq_id='r1' AND leg_idx=0")[0][0]
     assert line == "NFL"

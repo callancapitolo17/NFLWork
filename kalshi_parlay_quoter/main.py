@@ -80,9 +80,11 @@ class Quoter:
         legs = market.get("mve_selected_legs")
         return (legs, None) if isinstance(legs, list) and legs else (None, "no_mve_legs")
 
-    def handle(self, rfq: dict) -> None:
+    def handle(self, rfq: dict, seen_at: datetime | None = None) -> None:
+        """seen_at is when tick() first saw the RFQ, so a pricer backlog
+        shows up as queue_ms instead of hiding inside seen_at."""
         try:
-            seen_at = datetime.now(timezone.utc)
+            seen_at = seen_at or datetime.now(timezone.utc)
             legs, why = self._legs_for(rfq)
             if legs is not None and not scope.in_league(legs):
                 # REST fallback is unfiltered; count like the WS door does.
@@ -90,6 +92,7 @@ class Quoter:
                     self._other_league += 1
                 return
             row, leg_rows = decide.decide(rfq, legs, self.price_fn, seen_at=seen_at)
+            row["queue_ms"] = (datetime.now(timezone.utc) - seen_at).total_seconds() * 1000.0
             if legs is None and why:
                 row["reason_detail"] = why
             self.dlog.add(row, leg_rows)
@@ -111,7 +114,7 @@ class Quoter:
             if not rid or rid in self._seen:
                 continue
             self._seen[rid] = now
-            self._pool.submit(self.handle, rfq)
+            self._pool.submit(self.handle, rfq, datetime.now(timezone.utc))
             submitted += 1
         if now - self._last_prune > 60 or len(self._seen) > 200_000:
             cutoff = now - self._seen_ttl
@@ -129,6 +132,7 @@ class Quoter:
             logged, other = self._logged, self._other_league
             self._logged = self._other_league = 0
         return {"minute": minute, "logged": logged,
+                "backlog": self._pool._work_queue.qsize(),
                 "other_league": other + delta.get("non_mlb", 0),
                 "below_floor": delta.get("below_floor", 0),
                 "too_many_legs": delta.get("too_many_legs", 0),

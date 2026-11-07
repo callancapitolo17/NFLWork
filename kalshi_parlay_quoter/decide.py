@@ -59,7 +59,7 @@ def base_row(rfq: dict, seen_at: datetime) -> dict:
         "parlay_fair": None, "parlay_fair_lo": None, "parlay_fair_hi": None,
         "max_leg_sigma": None, "legs_kalshi_ask_product": None,
         "earliest_kickoff_ms": None, "hours_to_kickoff": None,
-        "pricer_ms": None, "priced_at_ms": None,
+        "pricer_ms": None, "priced_at_ms": None, "queue_ms": None,
     }
 
 
