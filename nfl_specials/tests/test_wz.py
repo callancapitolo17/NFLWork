@@ -106,3 +106,40 @@ def test_a_server_env_file_without_a_wagerzon_login_fails_loudly(tmp_path, monke
     with pytest.raises(RuntimeError) as raised:
         wz._load_wagerzon_env()
     assert str(raised.value) == f"expected WAGERZON*_USERNAME / _PASSWORD lines in {env_file}, found none"
+
+
+def _special():
+    return wz._parse_special({"idgm": "6008644", "hnum": 777043, "vnum": 777043, "gmdt": "20261004",
+                              "htm": "RAIDERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)",
+                              "GameLines": [{"odds": "1730", "oddsh": "+1730"}]})
+
+
+def test_a_login_expired_at_preflight_logs_in_again_and_retries_once(monkeypatch):
+    # 2026-11-08: the cached login expired and every Place failed until restart.
+    replies = [{"status": "auth_error", "error_msg": wz.single_placer.PREFLIGHT_LOGGED_OUT_MSG},
+               {"status": "placed", "ticket_number": 123}]
+    calls, cleared = [], []
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: calls.append(account) or replies.pop(0))
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: cleared.append(label))
+    assert wz.place_fecta("Wagerzon", _special(), 250.0)["status"] == "placed"
+    assert calls == ["Wagerzon", "Wagerzon"]
+    assert cleared == ["Wagerzon"]
+
+
+def test_a_second_preflight_logout_is_not_retried_again(monkeypatch):
+    reply = {"status": "auth_error", "error_msg": wz.single_placer.PREFLIGHT_LOGGED_OUT_MSG}
+    calls = []
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: calls.append(account) or dict(reply))
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: None)
+    assert wz.place_fecta("Wagerzon", _special(), 250.0)["status"] == "auth_error"
+    assert len(calls) == 2
+
+
+def test_a_logout_at_submission_is_never_retried(monkeypatch):
+    # The submit may have gone through; a retry could place the bet twice.
+    reply = {"status": "auth_error", "error_msg": "Wagerzon returned HTML at submission (session expired)"}
+    calls, cleared = [], []
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: calls.append(account) or reply)
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: cleared.append(label))
+    assert wz.place_fecta("Wagerzon", _special(), 250.0) is reply
+    assert len(calls) == 1 and cleared == []

@@ -176,6 +176,12 @@ def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:
     Returns single_placer's result: status 'placed' (with ticket_number) or
     'price_moved' / 'rejected' / 'auth_error' / 'network_error' / 'orphaned'.
     A changed price is refused by the placer's preflight, never filled.
+
+    Side effect: when Wagerzon answers the PREFLIGHT logged out, the cached
+    login for `account_label` is dropped and the bet is retried once on a
+    fresh login. Nothing was submitted at preflight, so the retry cannot
+    double-place. A logout at SUBMISSION is never retried: that bet may
+    have gone through.
     """
     bet = {
         "idgm": special.wz_game_id,
@@ -192,4 +198,18 @@ def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:
         "market": "nfl_fecta",
         "bet_on": special.description,
     }
+    result = single_placer.place_single(account_label, bet)
+    if not _logged_out_at_preflight(result):
+        return result
+    # The page keeps one login per account for the life of the process; once
+    # Wagerzon expires it every Place fails until it is dropped (2026-11-08).
+    log.warning("Wagerzon login for %s expired at preflight; logging in again and retrying once",
+                account_label)
+    wagerzon_auth.clear_session_cache(account_label)
     return single_placer.place_single(account_label, bet)
+
+
+def _logged_out_at_preflight(result: dict) -> bool:
+    """single_placer's auth_error from its ConfirmWagerHelper step, before any submit."""
+    return (result.get("status") == "auth_error"
+            and single_placer.PREFLIGHT_LOGGED_OUT_MSG == result.get("error_msg"))
