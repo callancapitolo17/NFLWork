@@ -2929,8 +2929,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   refresh also turns to "No recent score" at its `staleAt`. A game Unabated
   marks final (event `statusId` 3, kept even once the reading is stale) gets
   no card, and its open straight bets leave the Live tab until they settle
-  (`finishedBetIds`; Cal, 2026-11-08); a parlay or teaser with a leg there
-  stays under the tickets riding. Started bets the
+  (`finishedBetIds`; Cal, 2026-11-08), or until the runner forgets the game
+  12 h after its start (`KICKOFF_MEMO_HOURS`), when an ungraded one falls to
+  **Not on a game card**; a parlay or teaser with a leg there stays under
+  the tickets riding, its leg on no card, so Worst case leaves it out. Started bets the
   runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
   **Not on a game card**; when `/scenarios.json` cannot be read the tab says
