@@ -817,17 +817,23 @@
    * not be read). onCard: straights on a card, whatever their own start says
    * (a BetOnline bet has none). tickets: parlays and teasers with a leg on a
    * card or whose first leg has started. offCard: started straights the
-   * runner could not place on a card. upcoming / noStart: the rest, as
-   * splitOpenByStart files them.
+   * runner could not place on a card. finished: straights on a game Unabated
+   * marks final (/scenarios.json finishedBetIds), awaiting settlement, kept
+   * off the Live tab; a parlay or teaser leg on a finished game keeps its
+   * ticket riding. upcoming / noStart: the rest, as splitOpenByStart files them.
    */
-  function splitOpenForLive(openTickets, coveredBetIds, nowMs) {
+  function splitOpenForLive(openTickets, coveredBetIds, nowMs, finishedBetIds) {
     const covered = new Set(coveredBetIds || []);
+    const finishedIds = new Set(finishedBetIds || []);
     const tickets = [];
     const onCard = [];
+    const finished = [];
     const rest = [];
     for (const ticket of openTickets) {
       const isCovered = ticket.betIds.some((id) => covered.has(id));
-      if (!isCovered) rest.push(ticket);
+      const isFinished = ticket.betIds.some((id) => finishedIds.has(id));
+      if (isFinished && ticket.legCount <= 1) finished.push(ticket);
+      else if (!isCovered && !isFinished) rest.push(ticket);
       else if (ticket.legCount > 1) tickets.push(ticket);
       else onCard.push(ticket);
     }
@@ -838,7 +844,7 @@
       else offCard.push(ticket);
     }
     const byStart = (a, b) => (parseMs(a.eventStart) ?? Infinity) - (parseMs(b.eventStart) ?? Infinity);
-    return { onCard, tickets: tickets.sort(byStart), offCard, upcoming, noStart };
+    return { onCard, tickets: tickets.sort(byStart), offCard, finished, upcoming, noStart };
   }
 
   /**

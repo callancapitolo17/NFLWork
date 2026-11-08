@@ -2717,7 +2717,7 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   `related` (the bets on the game with their tags and `fair then`) and
   `move` (`{kind, label, detail, sinceFill}` or null). The full shape is
   documented at the top of `server/edges_payload.js`. `GET /scenarios.json`
-  → `{generatedAt, scanner, betsService, games, coveredBetIds}`, the Bet
+  → `{generatedAt, scanner, betsService, games, coveredBetIds, finishedBetIds}`, the Bet
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
   bets service passes it through at its own `/scenarios.json`). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
   {tau, measured, rungCount, sampleCount, covariance}}}`, the pooled tail-flex tau the
@@ -2926,7 +2926,11 @@ visible. Its one write is the Bets page's Remove / Restore.
   `NAMED_OVERTIMES` names it "OT" / "2OT" where read (NCAAB 1 and 2, read
   2026-11-07), and any other league or count shows the clock alone, never
   the regulation period's name. A copy the tracker kept through a failed
-  refresh also turns to "No recent score" at its `staleAt`. Started bets the
+  refresh also turns to "No recent score" at its `staleAt`. A game Unabated
+  marks final (event `statusId` 3, kept even once the reading is stale) gets
+  no card, and its open straight bets leave the Live tab until they settle
+  (`finishedBetIds`; Cal, 2026-11-08); a parlay or teaser with a leg there
+  stays under the tickets riding. Started bets the
   runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
   **Not on a game card**; when `/scenarios.json` cannot be read the tab says
@@ -3045,7 +3049,8 @@ visible. Its one write is the Bets page's Remove / Restore.
   its count and stake at risk, re-split on every refresh. Bets whose game
   has started (a parlay's earliest leg), or that the runner placed on a live
   game card, are on the Live tab instead (`trackerstats.splitOpenForLive`).
-  A game that has ended stays live until its venue grades the bet.
+  A game Unabated marks final leaves the Live tab; its bets show again once
+  their venue grades them.
 - **Sorting**: click any column header on any table to sort by it (numbers
   high to low first, text A to Z), click again to reverse. Blanks ("—") stay
   last either way; the bet log and the Bets list sort their whole match

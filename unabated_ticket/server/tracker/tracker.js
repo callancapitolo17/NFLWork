@@ -934,7 +934,7 @@
 
   /** Open tickets split for the Live and Open tabs off the runner's covered bet ids. */
   function liveSplit() {
-    return stats.splitOpenForLive(openTickets(), scenarios ? scenarios.coveredBetIds : [], Date.now());
+    return stats.splitOpenForLive(openTickets(), scenarios ? scenarios.coveredBetIds : [], Date.now(), scenarios ? scenarios.finishedBetIds : []);
   }
 
   function liveTickets() {

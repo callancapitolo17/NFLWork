@@ -16,7 +16,7 @@
 //             snapshot before kickoff landed) or null, `gameState` the
 //             game's latest feed.gameStateOf (score, clock) or null
 //   now       ms
-// Output {games: [game], coveredBetIds} — `game` = {eventId, league,
+// Output {games: [game], coveredBetIds, finishedBetIds} — `game` = {eventId, league,
 //   awayTeam, homeTeam, startMs, oddsAt, score, groups, bets, legs}; `score`
 //   is gamescore.scoreLineOf (latest score and clock, or stale, or null); each group is
 //   one (period, axis) ladder: {key, period, axis, title, bands, ev, best,
@@ -30,7 +30,9 @@
 //   straight bets only.
 //   `bets` lists every open straight bet on the game, each placed on a group
 //   or with the `reason` it is not; `coveredBetIds` is every bet id shown on
-//   a card, so the tracker can list the rest on their own.
+//   a card, so the tracker can list the rest on their own. A game Unabated
+//   marks final gets no card: its open bets (still awaiting settlement) go to
+//   `finishedBetIds` instead, so the tracker leaves them off the Live tab.
 // Side effects: none.
 
 "use strict";
@@ -278,28 +280,34 @@ function gameCard(game, matches, now) {
   };
 }
 
-// Every game in progress with an open bet on it, earliest start first.
+// Every game in progress with an open bet on it, earliest start first;
+// a finished game gets no card (its bet ids land in finishedBetIds).
 function buildScenarios({ records, games, now }) {
   const open = (records || []).filter(isOpen);
   const known = games || [];
   const live = known.filter((game) => typeof game.row.eventStartMs === "number" && game.row.eventStartMs <= now);
-  if (open.length === 0 || live.length === 0) return { games: [], coveredBetIds: [] };
+  if (open.length === 0 || live.length === 0) return { games: [], coveredBetIds: [], finishedBetIds: [] };
   // The whole board decides each bet's game (venue ids, two possible games);
   // only the started rows get cards.
   const boardRows = known.map((game) => game.row);
   const flags = betsLib.annotateRows(live.map((game) => game.row), open, { lines: boardRows });
   const cards = [];
   const covered = new Set();
+  const finished = new Set();
   live.forEach((game, index) => {
     const matches = flags[index].matches;
     if (matches.length === 0) return;
+    if (gamescore.isFinalState(game.gameState ?? null)) {
+      for (const { bet } of matches) finished.add(bet.id);
+      return;
+    }
     const card = gameCard(game, matches, now);
     for (const bet of card.bets) covered.add(bet.id);
     for (const leg of card.legs) covered.add(leg.id);
     cards.push(card);
   });
   cards.sort((a, b) => a.startMs - b.startMs || String(a.eventId).localeCompare(String(b.eventId)));
-  return { games: cards, coveredBetIds: Array.from(covered).sort() };
+  return { games: cards, coveredBetIds: Array.from(covered).sort(), finishedBetIds: Array.from(finished).sort() };
 }
 
 module.exports = { buildScenarios, marginLabel, totalLabel, mergeBands, bandProb, RESULT_WON, RESULT_LOST, RESULT_PUSH };
