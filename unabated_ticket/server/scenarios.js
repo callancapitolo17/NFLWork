@@ -280,8 +280,7 @@ function gameCard(game, matches, now) {
   };
 }
 
-// Every game in progress with an open bet on it, earliest start first;
-// a finished game gets no card (its bet ids land in finishedBetIds).
+// Every game in progress with an open bet on it, earliest start first.
 function buildScenarios({ records, games, now }) {
   const open = (records || []).filter(isOpen);
   const known = games || [];
@@ -297,7 +296,7 @@ function buildScenarios({ records, games, now }) {
   live.forEach((game, index) => {
     const matches = flags[index].matches;
     if (matches.length === 0) return;
-    if (gamescore.isFinalState(game.gameState ?? null)) {
+    if (gamescore.isFinalState(game.gameState)) {
       for (const { bet } of matches) finished.add(bet.id);
       return;
     }

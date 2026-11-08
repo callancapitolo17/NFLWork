@@ -3049,8 +3049,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   its count and stake at risk, re-split on every refresh. Bets whose game
   has started (a parlay's earliest leg), or that the runner placed on a live
   game card, are on the Live tab instead (`trackerstats.splitOpenForLive`).
-  A game Unabated marks final leaves the Live tab; its bets show again once
-  their venue grades them.
+  A game Unabated marks final leaves the Live tab; its ungraded straights
+  are counted in the Open bets tile ("N finished, awaiting settlement") and
+  At risk, listed nowhere, and show as settled bets the day after grading.
 - **Sorting**: click any column header on any table to sort by it (numbers
   high to low first, text A to Z), click again to reverse. Blanks ("—") stay
   last either way; the bet log and the Bets list sort their whole match

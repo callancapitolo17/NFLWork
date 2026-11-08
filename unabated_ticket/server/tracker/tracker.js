@@ -879,12 +879,13 @@
     const toWin = open.reduce((sum, t) => sum + (Number.isFinite(t.toWin) ? t.toWin : 0), 0);
     const withFair = open.filter((t) => t.expected !== null);
     const openEv = withFair.reduce((sum, t) => sum + t.expected, 0);
-    const { upcoming, noStart } = liveSplit();
+    const { upcoming, noStart, finished } = liveSplit();
     const live = liveTickets();
     const liveStake = live.reduce((sum, t) => sum + t.stake, 0);
     kpiTiles("op-kpis", [
       { label: "Open bets", value: String(open.length),
-        sub: live.length + " live · " + upcoming.length + " upcoming" + (noStart.length ? " · " + noStart.length + " no start time" : "") },
+        sub: live.length + " live · " + upcoming.length + " upcoming" + (noStart.length ? " · " + noStart.length + " no start time" : "")
+          + (finished.length ? " · " + finished.length + " finished, awaiting settlement" : "") },
       { label: "At risk", value: money(openStake), sub: "to win " + money(toWin) },
       { label: "Open EV", value: withFair.length ? money(openEv, true) : "—", color: withFair.length ? COLORS.exp : COLORS.muted,
         sub: withFair.length + " of " + open.length + " have a saved fair" },
@@ -1586,7 +1587,7 @@
     const liveBadge = document.getElementById("live-count");
     liveBadge.hidden = !liveCount;
     liveBadge.textContent = String(liveCount);
-    const openCount = payload ? openTickets().length - liveCount : 0;
+    const openCount = payload ? openTickets().length - liveCount - liveSplit().finished.length : 0;
     const badge = document.getElementById("open-count");
     badge.hidden = !openCount;
     badge.textContent = String(openCount);
@@ -1688,6 +1689,8 @@
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
       if (!body || !Array.isArray(body.games) || !Array.isArray(body.coveredBetIds)) throw new Error("scenarios.json has no games list");
+      // A runner from before finished games were split out sends none.
+      if (!Array.isArray(body.finishedBetIds)) body.finishedBetIds = [];
       scenarios = body;
       scenariosError = null;
     } catch (error) {
