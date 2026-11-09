@@ -2024,6 +2024,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             except Exception as error:  # noqa: BLE001 — place() answers for itself once the POST is out
                 log.exception("bfa teaser: placement failed before the wager went out")
                 result = {"status": bfa_teaser.STATUS_REFUSED, "message": f"Not placed: {type(error).__name__}: {error}"}
+            if request["freePlay"] and bfa_placer is not None:
+                # The free play balance may have changed: the next GET /bfa_free_play.json reads BFA.
+                bfa_placer.forget_free_play()
             open_wagers = result.pop("openWagers", None)
             if open_wagers:
                 self._store_bfa_open_bets(open_wagers)
@@ -2127,6 +2130,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             except Exception as error:  # noqa: BLE001 — place() answers for itself once its row is inserted
                 log.exception("bfa place: failed before the wager went out")
                 result = {"status": bfa_place.STATUS_REFUSED, "message": f"Not placed: {type(error).__name__}: {error}"}
+            if request["free_play"]:
+                # The free play balance may have changed: the next GET /bfa_free_play.json reads BFA.
+                bfa_placer.forget_free_play()
             open_wagers = result.pop("openWagers", None)
             if open_wagers:
                 self._store_bfa_open_bets(open_wagers)

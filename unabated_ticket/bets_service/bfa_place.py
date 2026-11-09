@@ -62,9 +62,7 @@ from unabated_ticket.bets_service.bfa_teaser import (
     is_number, main_market, one_line, parse_iso, read_account_metadata, read_board, risk_matches, short_text,
     spread_side_problem, ticket_of,
 )
-from unabated_ticket.bets_service.bfa_free_play import (
-    FreePlayReader, free_play_problem, free_play_rules_of, read_free_play_balance,
-)
+from unabated_ticket.bets_service.bfa_free_play import FreePlayReader, free_play_refusal
 from unabated_ticket.bets_service.manual_orders import (
     CLICK_ID_PATTERN, PRICE_TOLERANCE, STATUS_FILLED, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNKNOWN, VENUE_BFA,
     _cents, _iso_time, optional_read_at, unseen_manual_fill,
@@ -362,11 +360,15 @@ class BFAStraightPlacer:
         self._placing = threading.Lock()
         self._metadata: dict | None = None
         self._metadata_at = 0.0
-        self._free_play_reader = FreePlayReader(bfa_source, session_factory, read_account_metadata, clock)
+        self._free_play_reader = FreePlayReader(bfa_source, session_factory, self._account_metadata, clock)
 
     def free_play(self) -> dict:
         """GET /bfa_free_play.json's body (bfa_free_play.FreePlayReader.read). Never raises."""
         return self._free_play_reader.read()
+
+    def forget_free_play(self) -> None:
+        """A free play (straight or teaser) just went out: the next GET /bfa_free_play.json reads BFA."""
+        self._free_play_reader.forget()
 
     def place(self, request: dict) -> dict:
         """One validated request (validate_bfa_place_request) -> {status, message, ...}."""
@@ -407,8 +409,9 @@ class BFAStraightPlacer:
             return _refused(f"BFA is at {odds['price']:+g} now ({_cents(probability)}), more than 0.1¢ worse than the "
                             f"Ticket's {_cents(request['ticket_all_in'])}")
         if request["free_play"]:
-            refusal = self._free_play_refusal(metadata, straight_type["wagerTypeId"], SPORT_CODES[line["league"]],
-                                              request["stake"], odds["price"], headers, player_id)
+            refusal = free_play_refusal(self._session_factory(), headers, player_id, metadata,
+                                        straight_type["wagerTypeId"], {SPORT_CODES[line["league"]]}, request["stake"],
+                                        profit_at(request["stake"], odds["price"]), odds["price"])
             if refusal:
                 return _refused(refusal)
         open_before = self._bfa.open_wagers()
@@ -464,16 +467,6 @@ class BFAStraightPlacer:
         body = read_account_metadata(self._session_factory(), headers, player_id)
         self._metadata, self._metadata_at = body, self._clock()
         return body
-
-    def _free_play_refusal(self, metadata: dict, wager_type_id: int, sport_code: str, stake: int, price: float,
-                           headers: dict, player_id: str) -> str | None:
-        """Why this straight cannot go out on free play (bfa_free_play), or None. The balance
-        is read now: free play spent since the Ticket last read it must not go out twice."""
-        rules = free_play_rules_of(metadata, wager_type_id, {sport_code})
-        if isinstance(rules, str):
-            return rules
-        balance = read_free_play_balance(self._session_factory(), headers, player_id)
-        return free_play_problem(rules, balance, stake, profit_at(stake, price), price)
 
     def _stale_or_unseen(self, request: dict) -> str | None:
         read = self._store.source_status().get(BFA_READ_SOURCE)

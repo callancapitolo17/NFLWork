@@ -57,8 +57,8 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from unabated_ticket.bets_service.bfa_free_play import free_play_problem, free_play_rules_of, read_free_play_balance
-from unabated_ticket.bets_service.sources.bfa import BFASource, new_session, parse_leg
+from unabated_ticket.bets_service.bfa_free_play import free_play_refusal
+from unabated_ticket.bets_service.sources.bfa import BFASource, is_number, new_session, parse_leg
 
 log = logging.getLogger(__name__)
 
@@ -139,10 +139,6 @@ STATUS_UNCONFIRMED = "unconfirmed"
 
 
 # ---- the panel's request ------------------------------------------------------------
-
-def is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value
-
 
 def _leg_error(index: int, raw: object) -> str | None:
     """Why `legs[index]` is not a leg, or None."""
@@ -596,9 +592,9 @@ class BFATeaserPlacer:
         if teaser_type["maxRisk"] is not None and request["stake"] > teaser_type["maxRisk"]:
             return _refused(f"${request['stake']} is over BFA's ${teaser_type['maxRisk']:g} limit on this teaser")
         if request["freePlay"]:
-            refusal = self._free_play_refusal(metadata, teaser_type["wagerTypeId"],
-                                              {SPORT_CODES[leg["league"]] for leg in request["legs"]},
-                                              request["stake"], headers, player_id)
+            refusal = free_play_refusal(self._session_factory(), headers, player_id, metadata,
+                                        teaser_type["wagerTypeId"], {SPORT_CODES[leg["league"]] for leg in request["legs"]},
+                                        request["stake"], request["stake"] * TICKET_NET_ODDS, None)
             if refusal:
                 return _refused(refusal)
         matches = self._match_legs(request["legs"], headers, player_id, metadata.get("agentId"))
@@ -634,16 +630,6 @@ class BFATeaserPlacer:
             return {"status": STATUS_UNCONFIRMED,
                     "message": (f"Sent to BFA, but reading the open bets failed ({type(error).__name__}). "
                                 "Check BFA's open bets before placing it again.")}
-
-    def _free_play_refusal(self, metadata: dict, wager_type_id: int, sport_codes: set[str], stake: int,
-                           headers: dict, player_id: str) -> str | None:
-        """Why this teaser cannot go out on free play (bfa_free_play), or None. The balance is
-        read now: a free play spent since the Ticket last read it must not go out twice."""
-        rules = free_play_rules_of(metadata, wager_type_id, sport_codes)
-        if isinstance(rules, str):
-            return rules
-        balance = read_free_play_balance(self._session_factory(), headers, player_id)
-        return free_play_problem(rules, balance, stake, stake * TICKET_NET_ODDS, None)
 
     def _recent(self, key: tuple) -> str | None:
         """Why the same legs cannot go out again yet, or None."""

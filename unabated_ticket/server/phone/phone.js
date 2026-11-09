@@ -731,8 +731,9 @@
     const venue = venuePlace.venueOf(row.book ? row.book.id : null);
     const offersFreePlay = Boolean(venue && venue.freePlay);
     if (offersFreePlay) readFreePlay();
+    // A failed read never flips the switch: an armed free play must not turn
+    // into a cash bet. The bets service re-reads the balance at the click.
     const freePlay = state.freePlay.payload;
-    if (placeState.freePlay && !(freePlay && freePlay.ok)) placeState.freePlay = false;
     // The box follows the stake until Cal types in it, and holds still once Place is pressed.
     // With free play on it takes the stake capped at the balance and BFA's payout cap.
     if (!placeState.edited && placeState.phase !== "confirm" && document.activeElement !== view.ticketVenueStake) {
@@ -746,13 +747,14 @@
 
   // The Use free play switch: its balance, and what free play is worth on this line.
   function renderFreePlay(row, offersFreePlay) {
+    // "expected on $X" only with the switch on: the box is then the free play stake.
     const shown = offersFreePlay ? phoneView.freePlayView(state.freePlay.payload, phoneView.fairProbOf(row), phoneView.netOddsOf(row),
-      venuePlace.parseStake(view.ticketVenueStake.value)) : null;
+      placeState.freePlay ? venuePlace.parseStake(view.ticketVenueStake.value) : null) : null;
     view.ticketFp.hidden = !shown;
     if (!shown) return;
     view.ticketFpLabel.textContent = shown.label;
     view.ticketFpInput.checked = placeState.freePlay;
-    view.ticketFpInput.disabled = shown.failed || placeState.phase === "confirm";
+    view.ticketFpInput.disabled = (shown.failed && !placeState.freePlay) || placeState.phase === "confirm";
     view.ticketFpNote.hidden = !shown.note;
     view.ticketFpNote.className = `fp-note${shown.failed ? " bad" : ""}`;
     view.ticketFpNote.textContent = shown.note || "";
@@ -943,13 +945,16 @@
   function appendPlaceControls(actions, ticket) {
     const placeState = state.teaserPlace.get(ticket.signature) || null;
     const phase = placeState ? placeState.phase : null;
-    const freePlayStake = teaserFreePlayStake(ticket);
+    // Once armed, the free play stake is the one the Bet button showed (held in its state).
+    const freePlayStake = phase === "confirm" && placeState.freePlayStake != null ? placeState.freePlayStake : teaserFreePlayStake(ticket);
     const onFreePlay = freePlayStake != null && state.teaserFreePlay.has(ticket.signature);
-    if (freePlayStake != null && (phase === null || phase === "refused" || phase === "confirm")) {
+    // The switch stays while it is on, so a failed balance read can still be switched off.
+    const switchedOn = state.teaserFreePlay.has(ticket.signature);
+    if ((freePlayStake != null || switchedOn) && (phase === null || phase === "refused" || phase === "confirm")) {
       const check = makeEl("label", "check fp-check");
       const input = makeEl("input");
       input.type = "checkbox";
-      input.checked = onFreePlay;
+      input.checked = switchedOn;
       input.disabled = phase === "confirm";
       input.dataset.teaserFreePlay = ticket.signature;
       check.append(input, makeEl("span", null, "Free play"));
@@ -985,9 +990,9 @@
       renderAll();
       return;
     }
-    // Free play: the ticket's stake capped at the balance and payout cap, the
-    // same number its Bet button showed.
-    const freePlayStake = state.teaserFreePlay.has(signature) ? teaserFreePlayStake(ticket) : null;
+    // Free play: the stake its Bet button showed (held when Place was armed).
+    const armed = state.teaserPlace.get(signature);
+    const freePlayStake = state.teaserFreePlay.has(signature) && armed ? armed.freePlayStake : null;
     const body = freePlayStake != null ? { ...request.body, stake: freePlayStake, freePlay: true } : request.body;
     if (state.teaserFreePlay.has(signature) && freePlayStake == null) {
       state.teaserPlace.set(signature, { phase: "refused", message: "Not placed: the BFA free play balance is not read" });
@@ -1016,7 +1021,17 @@
     const action = button.dataset.placeAction;
     if (action === "arm") {
       const armedAt = Date.now();
-      state.teaserPlace.set(signature, { phase: "confirm", message: null, armedAt });
+      const ticket = (state.teasers.payload ? state.teasers.payload.tickets : []).find((shown) => shown.signature === signature);
+      const freePlayStake = ticket && state.teaserFreePlay.has(signature) ? teaserFreePlayStake(ticket) : null;
+      if (state.teaserFreePlay.has(signature) && freePlayStake == null) {
+        // Free play is switched on but its balance is not read: never arm a cash bet in its place.
+        state.teaserPlace.set(signature, { phase: "refused", message: "Not placed: the BFA free play balance is not read. Try again in a moment." });
+        state.freePlay.askedAt = 0;
+        readFreePlay();
+        renderAll();
+        return;
+      }
+      state.teaserPlace.set(signature, { phase: "confirm", message: null, armedAt, freePlayStake });
       setTimeout(() => {
         const held = state.teaserPlace.get(signature);
         if (held && held.phase === "confirm" && held.armedAt === armedAt) {

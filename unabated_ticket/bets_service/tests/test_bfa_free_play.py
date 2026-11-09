@@ -126,12 +126,31 @@ def test_a_cash_straight_never_confirms_on_a_free_play_ticket(store):
     ({"stake": 600}, {}, "more than your $530.00 of BFA free play"),
     ({}, {"freePlay": False}, "does not offer free play"),
     ({}, {"fpMaxPayout": 50.0}, "win at most $50"),
+    # The board's Giants price is -110: an odds limit under it refuses with the board's own price.
+    ({}, {"fpOddsLimit": -120}, "BFA takes free play at -120 or shorter, this is -110"),
 ])
 def test_a_free_play_straight_bfa_would_refuse_sends_nothing(store, changes, metadata_fields, words):
     session = FreePlaySession(straight.StraightSession(), with_free_play(straight.METADATA, **metadata_fields))
     result = straight.place(straight.make_placer(FakeBFA([[]]), session, store), freePlay=True, **changes)
     assert result["status"] == "refused" and words in result["message"], result
     assert session.posts == [] and straight.manual_rows(store) == []
+
+
+class FailingBalanceSession(FreePlaySession):
+    def get(self, url, params=None, headers=None, timeout=None):
+        if url == bfa_free_play.BALANCE_URL:
+            return FakeResponse(500, {"error": "down"})
+        return super().get(url, params, headers, timeout)
+
+
+def test_a_balance_bfa_will_not_read_at_the_click_sends_nothing(store):
+    session = FailingBalanceSession(straight.StraightSession(), with_free_play(straight.METADATA))
+    with pytest.raises(RuntimeError, match="BFA balance: HTTP 500"):
+        straight.place(straight.make_placer(FakeBFA([[]]), session, store), freePlay=True)
+    teaser_session = FailingBalanceSession(teaser.FakeSession(), with_free_play(teaser.METADATA))
+    with pytest.raises(RuntimeError, match="BFA balance: HTTP 500"):
+        teaser_placer(FakeBFA([[]]), teaser_session).place(validate_place_request({**teaser.REQUEST, "freePlay": True}))
+    assert session.posts == [] and teaser_session.posts == [] and straight.manual_rows(store) == []
 
 
 def test_a_held_free_play_on_the_other_side_blocks_a_place(store):
@@ -209,12 +228,17 @@ def test_a_free_play_tickets_risk_may_read_zero_or_the_stake():
 def test_the_reader_holds_one_read_for_30_seconds_and_says_when_it_fails():
     now = [0.0]
     session = free_play_straight_session()
-    reader = FreePlayReader(FakeBFA([[]]), lambda: session, bfa_teaser.read_account_metadata, clock=lambda: now[0])
+    reader = FreePlayReader(FakeBFA([[]]), lambda: session,
+                            lambda headers, player_id: bfa_teaser.read_account_metadata(session, headers, player_id),
+                            clock=lambda: now[0])
     assert reader.read() == {"ok": True, "freePlay": 530.0, "maxPayout": 1000.0, "oddsLimit": 800}
     now[0] = 29.0
     reader.read()
     assert session.balance_reads == 1
-    now[0] = 31.0
+    reader.forget()
+    reader.read()
+    assert session.balance_reads == 2, "a free play that went out drops the held read"
+    now[0] = 61.0
     session.free_play_amount = "oops"
     failed = reader.read()
     assert failed["ok"] is False and "freePlayAmount" in failed["error"]
@@ -244,4 +268,4 @@ def test_the_route_serves_the_free_play_read(tmp_path, placer, status):
         bets_store.close()
     assert got[0] == status
     if status == 200:
-        assert got[1]["freePlay"] == 530.0
+        assert got[1] == StubFreePlay().free_play()

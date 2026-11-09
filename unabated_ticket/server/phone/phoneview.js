@@ -198,7 +198,7 @@
   // checked) and the stake block.
   function ticketView(row, now) {
     const bookProb = kelly.bookProbOf({ bookPrice: row.price, sourceFormat: row.sourceFormat, sourcePrice: row.sourcePrice });
-    const fairProb = row.fair == null ? null : kelly.bookProbOf({ bookPrice: row.fair, sourceFormat: SOURCE_FORMAT_AMERICAN, sourcePrice: null });
+    const fairProb = fairProbOf(row);
     return {
       sideLabel: row.sideLabel,
       betLine: `${marketText(row)}${row.isAlt ? " · alt line" : ""}`,
