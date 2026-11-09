@@ -588,7 +588,7 @@ def test_fills_then_a_cancel_or_a_full_fill_make_the_orders_state_and_fill_event
     drained = stream.fill_events_after(0)
     assert [(event["fillId"], event["orderId"], event["qty"], event["ts"]) for event in drained["events"]] == [
         ("1e6a2f94-1", ORDER, 40, 1762600000000), ("1e6a2f94-2", other, 110, 1762600000000)]
-    assert drained["version"] == stream.status()["orders"]["fillEvents"]
+    assert drained["version"] == stream.status()["orders"]["version"]
     assert stream.fill_events_after(drained["version"])["events"] == []
     # A reject: an IOC that filled nothing.
     third = "7c9e6679-0000-4000-8000-000000000003"
@@ -619,7 +619,7 @@ def test_a_skipped_orders_seq_or_a_heartbeat_ahead_asks_for_a_snapshot_and_bumps
     # The snapshot answer (the kit's mock shape: no `subscribed`): back in sync at its seq, the buffered 910 replayed.
     handle(stream, orders_answer(2, 909, with_ack=False))
     assert stream.orders_live() and stream.status()["orders"] == pytest.approx(
-        {"live": True, "subscribed": True, "synced": True, "seq": 910, "epoch": 2, "fillEvents": 1, "error": None})
+        {"live": True, "subscribed": True, "synced": True, "seq": 910, "epoch": 2, "version": 1, "error": None})
     assert stream.wait_for_order(ORDER, 0, 0.0)[0]["filled"] == 40
     # A heartbeat naming a seq past ours: a dropped frame.
     handle(stream, {"heartbeat": {"orders": 915, "ts": 1757894415123}})
@@ -699,3 +699,33 @@ def test_wait_for_order_wakes_on_the_frame_from_the_stream_thread():
     handle(stream, fill_delta(908, qty=110, remaining=0))
     thread.join(timeout=5)
     assert got and got[0][0]["final"] == "FILLED"
+
+
+def test_a_heartbeat_below_our_seq_is_a_novig_reset_and_asks_for_a_snapshot(orders_made):
+    """Novig's seq resets on its restart; on a socket that stayed up every new
+    delta (seq 1, 2, ...) would read as stale, so the heartbeat decides."""
+    stream, _connection, _clock = orders_made
+    subscribe_orders(stream)
+    handle(stream, fill_delta(908))
+    handle(stream, fill_delta(2, fill_id="after-reset"))  # ignored as stale, as a replay would be
+    assert stream.orders_live() and len(stream.fill_events_after(0)["events"]) == 1
+    handle(stream, {"heartbeat": {"orders": 2, "ts": 1757894415123}})
+    assert not stream.orders_live()
+    assert stream._outgoing_frames() == [{"nonce": 2, "snapshot": {"private": ["orders"]}}]
+    handle(stream, orders_answer(2, 2, with_ack=False))
+    handle(stream, fill_delta(3, fill_id="after-reset-2"))
+    assert stream.orders_live() and stream.status()["orders"]["seq"] == 3
+    assert [event["fillId"] for event in stream.fill_events_after(0)["events"]] == ["1e6a2f94-1", "after-reset-2"]
+
+
+def test_a_fill_with_no_fill_id_is_unreadable_and_resyncs_the_channel(orders_made):
+    """A made-up id would never match REST's copy, so the subaccount source would count the fill twice."""
+    stream, _connection, _clock = orders_made
+    subscribe_orders(stream)
+    handle(stream, fill_delta(908))
+    frame = fill_delta(909, fill_id=None)
+    del frame["orders"]["deltas"][0]["fillId"]
+    handle(stream, frame)
+    assert not stream.orders_live()
+    assert len(stream.fill_events_after(0)["events"]) == 1, "nothing counted off the unreadable frame"
+    assert stream._outgoing_frames() == [{"nonce": 2, "snapshot": {"private": ["orders"]}}]

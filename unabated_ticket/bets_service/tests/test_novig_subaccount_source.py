@@ -338,11 +338,11 @@ def test_with_the_channel_live_rest_is_read_once_and_later_polls_merge_the_pushe
     stream.push("f-pushed", "o2", qty=2000, price="0.400")
     records = source.fetch()
     assert client.fill_queries == [client.fill_queries[0]], "no second REST read"
-    assert stream.asked == [0, 0]
+    assert stream.asked == [0, 0, 0], "the first poll asks again after its REST read, for every pushed fill REST may lack"
     pushed = next(record for record in records if record["id"] == "novig:o2:bot")
     assert (pushed["stake"], pushed["contracts"], pushed["price"]) == (8.0, 20.0, 150)
-    assert pushed["venueIds"]["marketId"] == "market-2" and pushed["raw"]["feePending"] is True and pushed["placedAt"] == "2025-10-18T15:08:20.000Z"
-    assert next(record for record in records if record["id"] == "novig:o1:bot")["raw"]["feePending"] is False
+    assert pushed["venueIds"]["marketId"] == "market-2" and pushed["raw"]["fillIds"] == ["f-pushed"]
+    assert pushed["placedAt"] == "2025-10-18T15:08:20.000Z"
     # The same fill pushed again (a replay) counts once.
     stream.events.append(dict(stream.events[-1]))
     clock["now"] = NOW + timedelta(seconds=20)
@@ -407,7 +407,7 @@ def test_a_pushed_fill_on_an_order_no_desk_placed_reads_that_orders_fills_from_r
     stream.push("f-stray", "stray", qty=500, price="0.400")
     [record] = source.fetch()
     assert client.order_reads == ["stray"] and record["id"] == "novig:stray:place" and record["unmatchable"]
-    assert record["venueIds"]["marketId"] == MARKET and record["raw"]["feePending"] is False
+    assert record["venueIds"]["marketId"] == MARKET and record["raw"]["fillIds"] == ["f-stray"]
     # Its REST read failing, or not listing the fill yet: the pushed fill is held with no market, never graded, never dropped.
     stream.push("f-lost", "lost", qty=100, price="0.500")
     stream.push("f-lagging", "lagging", qty=100, price="0.500")
@@ -415,3 +415,97 @@ def test_a_pushed_fill_on_an_order_no_desk_placed_reads_that_orders_fills_from_r
     assert set(records) == {"novig:stray:place", "novig:lost:place", "novig:lagging:place"}
     assert records["novig:lost:place"]["venueIds"]["marketId"] is None and records["novig:lost:place"]["status"] == "open"
     assert client.order_reads == ["stray", "lost", "lagging"]
+
+
+def test_a_pushed_fill_rest_does_not_list_yet_survives_a_whole_read_and_counts_once_when_rest_lists_it():
+    """REST's fills lag the stream by up to a minute: a whole read (the hourly
+    one, a new epoch) that misses a fill the stream pushed keeps the pushed
+    copy; once REST lists it, the two are one fill by fillId."""
+    stream = FakeStream()
+    client = CountingClient([fill()])
+    clock = {"now": NOW}
+    contexts = {"o1": CONTEXT, "o2": {**CONTEXT, "market_id": "market-2", "outcome_id": OUTCOME}}
+    source = NovigSubaccountSource("bot", client, lambda: contexts, now=lambda: clock["now"], order_stream=stream)
+    source.fetch()
+    stream.push("f-pushed", "o2", qty=2000, price="0.400")
+    stream.epoch = 2  # the stream re-snapshotted: a whole REST read, which still lacks f-pushed
+    clock["now"] = NOW + timedelta(seconds=10)
+    records = {record["id"]: record for record in source.fetch()}
+    assert len(client.fill_queries) == 2 and records["novig:o2:bot"]["contracts"] == 20.0, "the pushed fill is kept"
+    # REST now lists it (with the fee): the hourly read takes REST's copy, and the stream's is the same fill.
+    client._fills = [fill(), fill(order_id="o2", fill_id="f-pushed", qty=2000, cost="8.00000")]
+    client._fills[1]["fee"] = "0.10000"
+    clock["now"] = NOW + timedelta(hours=1, seconds=10)
+    records = {record["id"]: record for record in source.fetch()}
+    assert len(client.fill_queries) == 3
+    assert records["novig:o2:bot"]["contracts"] == 20.0 and records["novig:o2:bot"]["raw"]["fee"] == 0.1
+    assert records["novig:o2:bot"]["raw"]["fillIds"] == ["f-pushed"]
+
+
+def test_an_hourly_read_throttled_twice_keeps_the_streams_fills_and_tries_rest_again_a_minute_on():
+    from unabated_ticket.bets_service.novig_orders import NovigRateLimited
+    stream = FakeStream()
+    client = CountingClient([fill()])
+    clock = {"now": NOW}
+    source = NovigSubaccountSource("bot", client, lambda: {"o1": CONTEXT}, now=lambda: clock["now"], order_stream=stream,
+                                   sleep=lambda _sec: None)
+    source.fetch()
+    clock["now"] = NOW + timedelta(minutes=59, seconds=59)
+    source.fetch()
+    assert len(client.fill_queries) == 1, "59:59 is not the hour"
+    client.raise_first = NovigRateLimited("HTTP 429")
+    original = CountingClient.fills
+
+    def always_throttled(self, order_id=None, outcome_id=None, starts_after_ms=None):
+        self.fill_queries.append(starts_after_ms)
+        raise NovigRateLimited("GET /v3/portfolio/fills: HTTP 429")
+
+    CountingClient.fills = always_throttled
+    try:
+        clock["now"] = NOW + timedelta(hours=1)
+        assert len(source.fetch()) == 1, "the run still answers off the stream's fills"
+        assert len(client.fill_queries) == 3, "one read and its retry"
+        clock["now"] = NOW + timedelta(hours=1, seconds=30)
+        source.fetch()
+        assert len(client.fill_queries) == 3, "not tried again for a minute"
+        clock["now"] = NOW + timedelta(hours=1, seconds=61)
+        source.fetch()
+        assert len(client.fill_queries) == 5
+        # The channel not live: the whole read is a must, and a double 429 fails the run as before.
+        stream.live = False
+        with pytest.raises(NovigRateLimited):
+            source.fetch()
+    finally:
+        CountingClient.fills = original
+
+
+def test_a_channel_not_live_on_the_first_poll_reads_rest_until_it_is_then_once_more_for_its_snapshot():
+    stream = FakeStream(live=False, epoch=0)
+    client = CountingClient([fill()])
+    clock = {"now": NOW}
+    source = NovigSubaccountSource("bot", client, lambda: {"o1": CONTEXT}, now=lambda: clock["now"], order_stream=stream)
+    source.fetch()
+    clock["now"] = NOW + timedelta(seconds=10)
+    source.fetch()
+    assert len(client.fill_queries) == 2, "not live: every poll reads REST"
+    stream.live, stream.epoch = True, 1
+    clock["now"] = NOW + timedelta(seconds=20)
+    source.fetch()
+    assert len(client.fill_queries) == 3, "live at a new epoch: one whole read"
+    clock["now"] = NOW + timedelta(seconds=30)
+    source.fetch()
+    assert len(client.fill_queries) == 3
+
+
+def test_a_no_context_orders_rest_read_that_lags_the_stream_keeps_the_pushed_fills():
+    stream = FakeStream()
+    first = fill(order_id="stray", fill_id="f-1", qty=500, cost="2.00000")
+    client = CountingClient([], per_order={"stray": [first]})
+    source = NovigSubaccountSource("place", client, dict, now=lambda: NOW, order_stream=stream)
+    source.fetch()
+    stream.push("f-1", "stray", qty=500, price="0.400")
+    stream.push("f-2", "stray", qty=500, price="0.400")  # REST lists only f-1 so far
+    [record] = source.fetch()
+    assert record["raw"]["fillIds"] == ["f-1", "f-2"] and record["contracts"] == 10.0
+    assert record["venueIds"]["marketId"] == MARKET, "the market from REST's copy names the pushed fill too"
+    assert client.order_reads == ["stray"], "the first read named the market; the second pushed fill needs none"

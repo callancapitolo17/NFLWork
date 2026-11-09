@@ -95,8 +95,8 @@ from typing import Protocol
 from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
 from unabated_ticket.bets_service.novig_orders import FINAL_ORDER_STATUSES, QTY_PER_DOLLAR
 from unabated_ticket.bets_service.novig_orders import STATUS_FILLED as NOVIG_STATUS_FILLED
-from unabated_ticket.bets_service.novig_orders import (NovigError, NovigOrderClient, NovigRateLimited, fill_outcome,
-                                                       order_totals)
+from unabated_ticket.bets_service.novig_orders import (NovigError, NovigOrderClient, NovigRateLimited, cost_of,
+                                                       fill_outcome, order_totals)
 from unabated_ticket.bets_service.sources.novig import probability_to_american
 
 log = logging.getLogger(__name__)
@@ -111,6 +111,8 @@ HISTORY_DAYS = 14
 FULL_READ_EVERY = timedelta(hours=1)
 # A throttled REST fills read is tried once more after this (the `history` bucket refills 4 a second).
 RATE_LIMIT_RETRY_SEC = 1.5
+# An hourly reconciliation Novig throttled twice is tried again after this, the stream's fills standing meanwhile.
+FULL_READ_RETRY = timedelta(seconds=60)
 REASON_NO_CONTEXT = "no board line on record for this Novig order (placed outside the bot's desk)"
 
 Contexts = Callable[[], dict[str, dict]]
@@ -235,9 +237,7 @@ def normalize_order(name: str, order_id: str, fills: list[dict], context: dict |
                      "eventId": None, "gameId": None},
         "raw": {"orderId": order_id, "subaccount": name, "qty": qty, "cost": cost, "fee": fee,
                 "probability": probability, "qtyUnit": QTY_PER_DOLLAR,
-                "fillIds": [fill.get("fillId") for fill in fills],
-                # True while any fill is the stream's copy (no fee from Novig yet): the hourly REST read replaces it.
-                "feePending": any(fill.get("pushed") for fill in fills)},
+                "fillIds": [fill.get("fillId") for fill in fills]},
     }
     record.update(_game_fields(context))
     return json_clean(record)
@@ -251,7 +251,7 @@ class NovigSubaccountSource:
                  note_settled: NoteSettled | None = None, lost_orders: LostOrders | None = None,
                  adopt_order: AdoptOrder | None = None, unconfirmed_orders: UnconfirmedOrders | None = None,
                  confirm_order: ConfirmOrder | None = None, order_stream: OrderStream | None = None,
-                 full_read_every: timedelta = FULL_READ_EVERY, sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep):
         """`order_stream`: this subaccount's pushed fills (its key's private
         orders channel); None reads REST every poll as before."""
         if name not in NAMES:
@@ -268,7 +268,6 @@ class NovigSubaccountSource:
         self._confirm_order = confirm_order
         self._now = now
         self._order_stream = order_stream
-        self._full_read_every = full_read_every
         self._sleep = sleep
         # Every fill this subaccount holds, by Novig order id, in the REST fill shape; None before the first read.
         self._fills_by_order: dict[str, list[dict]] | None = None
@@ -310,25 +309,42 @@ class NovigSubaccountSource:
     def _read_fills(self, now: datetime, starts_after_ms: int, contexts: dict[str, dict]) -> dict[str, list[dict]]:
         """This subaccount's fills by order: Novig's REST fills whole when they
         must be (first poll, no stream or one not live, a new stream epoch, the
-        hourly reconciliation), else the fills held plus what the stream pushed
-        since the last poll. Raises on a failed REST read (the run fails)."""
+        hourly reconciliation), else the fills held; plus, either way, every
+        fill the stream pushed that is not in them (REST's fills lag the
+        stream by up to a minute, so a whole read can miss a fill it pushed).
+        Raises on a failed REST read (the run fails), except an hourly
+        reconciliation throttled twice while the channel is live: the stream's
+        fills stand and REST is tried again in FULL_READ_RETRY."""
         pushed = self._order_stream.fill_events_after(self._stream_version) if self._order_stream is not None else None
         why_full = self._why_full_read(now, pushed)
         if why_full is not None:
-            fills = self._fills_with_one_retry(starts_after_ms)
-            self._fills_by_order = _group_by_order(fills)
-            self._last_full_read_at = now
+            self._read_fills_whole(now, starts_after_ms, why_full, pushed)
             if pushed is not None:
-                self._stream_version, self._stream_epoch = pushed["version"], pushed["epoch"]
-            log.info("%s: REST fills read (%s): %d fills", self.name, why_full, len(fills))
+                # Every pushed fill the stream still holds, not only the new ones: REST may lag any of them.
+                pushed = self._order_stream.fill_events_after(0)
+        if pushed is None:
             return self._fills_by_order
-        new_events = pushed["events"]
-        for event in new_events:
-            self._merge_pushed_fill(event, contexts)
+        merged = sum(self._merge_pushed_fill(event, contexts) for event in pushed["events"])
         self._stream_version = pushed["version"]
-        if new_events:
-            log.info("%s: %d pushed fill(s) merged off the orders channel", self.name, len(new_events))
+        if merged:
+            log.info("%s: %d pushed fill(s) merged off the orders channel", self.name, merged)
         return self._fills_by_order
+
+    def _read_fills_whole(self, now: datetime, starts_after_ms: int, why_full: str, pushed: dict | None) -> None:
+        try:
+            fills = self._fills_with_one_retry(starts_after_ms)
+        except NovigRateLimited as error:
+            if why_full != "hourly reconciliation" or pushed is None or not pushed["live"]:
+                raise
+            self._last_full_read_at = now - FULL_READ_EVERY + FULL_READ_RETRY
+            log.warning("%s: hourly REST fills read throttled twice (%s); the stream's fills stand, REST again in %d s",
+                        self.name, error, FULL_READ_RETRY.seconds)
+            return
+        self._fills_by_order = _group_by_order(fills)
+        self._last_full_read_at = now
+        if pushed is not None:
+            self._stream_epoch = pushed["epoch"]
+        log.info("%s: REST fills read (%s): %d fills", self.name, why_full, len(fills))
 
     def _why_full_read(self, now: datetime, pushed: dict | None) -> str | None:
         if self._fills_by_order is None or self._last_full_read_at is None:
@@ -339,7 +355,7 @@ class NovigSubaccountSource:
             return "orders channel not live"
         if pushed["epoch"] != self._stream_epoch:
             return f"orders channel epoch {self._stream_epoch} -> {pushed['epoch']}"
-        if now - self._last_full_read_at >= self._full_read_every:
+        if now - self._last_full_read_at >= FULL_READ_EVERY:
             return "hourly reconciliation"
         return None
 
@@ -351,33 +367,37 @@ class NovigSubaccountSource:
             self._sleep(RATE_LIMIT_RETRY_SEC)
             return self._client.fills(starts_after_ms=starts_after_ms)
 
-    def _merge_pushed_fill(self, event: dict, contexts: dict[str, dict]) -> None:
+    def _merge_pushed_fill(self, event: dict, contexts: dict[str, dict]) -> bool:
         """One fill off the orders channel into the held fills, in the REST
         fill shape (fillId, orderId, marketId, outcomeId, qty, cost, fee, ts,
-        taker). Already held (the REST read had it) is a no-op."""
+        taker; the fee None until a REST read has it). False when it is
+        already held (REST's copy, or an earlier merge)."""
         order_id = event.get("orderId")
         if not isinstance(order_id, str) or not order_id:
             raise NovigError(f"pushed fill {event.get('fillId') or '?'} names no order")
         held = self._fills_by_order.setdefault(order_id, [])
         if any(fill.get("fillId") == event.get("fillId") for fill in held):
-            return
+            return False
         market_id = self._market_of(order_id, held, contexts)
         if market_id is None:
             # An order no desk placed, first heard of here: one small REST read names its market (and fee).
+            # What REST lists replaces its copies; a pushed fill REST lacks (lag) stays.
             try:
                 rest_fills = self._client.fills(order_id=order_id)
             except (NovigError, OSError) as error:
                 rest_fills = []
                 log.warning("%s: pushed fill on order %s with no known market and its REST read failed (%s); "
                             "held without a market until the next REST read", self.name, order_id, error)
-            if rest_fills:
-                self._fills_by_order[order_id] = rest_fills
-                return
+            rest_ids = {fill.get("fillId") for fill in rest_fills}
+            held = self._fills_by_order[order_id] = rest_fills + [fill for fill in held if fill.get("fillId") not in rest_ids]
+            if event.get("fillId") in rest_ids:
+                return True
+            market_id = self._market_of(order_id, held, contexts)
         qty = event["qty"]
-        price = float(event["price"])
         held.append({"fillId": event.get("fillId"), "orderId": order_id, "marketId": market_id,
-                     "outcomeId": event.get("outcomeId"), "qty": qty, "cost": f"{qty * price / QTY_PER_DOLLAR:.5f}",
-                     "fee": None, "ts": event.get("ts"), "taker": event.get("taker"), "pushed": True})
+                     "outcomeId": event.get("outcomeId"), "qty": qty, "cost": f"{cost_of(qty, float(event['price'])):.5f}",
+                     "fee": None, "ts": event.get("ts"), "taker": event.get("taker")})
+        return True
 
     @staticmethod
     def _market_of(order_id: str, held: list[dict], contexts: dict[str, dict]) -> str | None:

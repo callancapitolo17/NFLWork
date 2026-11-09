@@ -89,7 +89,7 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
-from unabated_ticket.bets_service.novig_orders import QTY_PER_DOLLAR, NovigOrderClient
+from unabated_ticket.bets_service.novig_orders import NovigOrderClient, cost_of
 from unabated_ticket.bets_service.novig_orders import STATUS_CANCELED as STATUS_CANCELED_ORDER
 from unabated_ticket.bets_service.novig_orders import STATUS_FILLED as STATUS_FILLED_ORDER
 from unabated_ticket.bets_service.novig_orders import STATUS_OPEN as STATUS_OPEN_ORDER
@@ -495,7 +495,7 @@ class NovigBookStream:
         if self._orders_channel:
             status["orders"] = {"live": self._orders_live_locked(), "subscribed": self._orders_subscribed,
                                 "synced": self._orders_synced, "seq": self._orders_seq, "epoch": self._orders_epoch,
-                                "fillEvents": self._orders_version, "error": self._orders_error}
+                                "version": self._orders_version, "error": self._orders_error}
         return status
 
     # ---- what the subaccount source and the Place desk read (orders channel) ----
@@ -855,9 +855,13 @@ class NovigBookStream:
         self._prune_order_states(now)
 
     def _check_orders_heartbeat(self, heartbeat_seq: int) -> None:
-        if self._orders_synced and self._orders_seq is not None and heartbeat_seq > self._orders_seq:
-            log.warning("novig stream: orders heartbeat at seq %d, ours %d: a frame was dropped; asking for a snapshot",
-                        heartbeat_seq, self._orders_seq)
+        """The heartbeat names the last seq Novig sent. Above ours, a frame was
+        dropped; below ours, Novig's seq was reset (a restart on a live socket)
+        and every delta since read as stale. Either way: a new snapshot."""
+        if self._orders_synced and self._orders_seq is not None and heartbeat_seq != self._orders_seq:
+            what = "a frame was dropped" if heartbeat_seq > self._orders_seq else "Novig's seq was reset"
+            log.warning("novig stream: orders heartbeat at seq %d, ours %d: %s; asking for a snapshot",
+                        heartbeat_seq, self._orders_seq, what)
             self._orders_synced = False
             self._orders_buffered = []
 
@@ -887,7 +891,10 @@ class NovigBookStream:
             price = float(delta["price"])
             if isinstance(qty, bool) or not isinstance(qty, int) or qty < 1 or not 0 < price < 1:
                 raise ValueError(f"fill {delta.get('fillId')!r}: qty {qty!r}, price {delta.get('price')!r}")
-            fill_id = str(delta.get("fillId") or f"{state['orderId']}:{len(state['fills']) + 1}")
+            fill_id = delta.get("fillId")
+            if not isinstance(fill_id, str) or not fill_id:
+                # The subaccount source dedups a pushed fill against REST's copy by this id; a made-up one would count it twice.
+                raise ValueError(f"fill on order {state['orderId']} names no fillId")
             if any(fill["fillId"] == fill_id for fill in state["fills"]):
                 return  # a snapshot replay or a repeated frame: the fill is already counted
             fill = {"fillId": fill_id, "orderId": state["orderId"], "clientId": state["clientId"],
@@ -896,7 +903,7 @@ class NovigBookStream:
                     "taker": delta.get("taker"), "ts": self._wall_clock_ms()}
             state["fills"].append(fill)
             state["filled"] += qty
-            state["cost"] = round(state["cost"] + qty * price / QTY_PER_DOLLAR, 5)
+            state["cost"] = round(state["cost"] + cost_of(qty, price), 5)
             state["remaining"] = delta.get("remaining")
             if delta.get("remaining") == 0:
                 state["final"] = STATUS_FILLED_ORDER

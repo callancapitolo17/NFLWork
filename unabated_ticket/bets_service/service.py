@@ -30,7 +30,7 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     novigPlaceStream?, prophetxStream?, prophetxLive?,
                                     polymarketStream?}: each stream's status(); the two
                                     Novig ones carry `orders` {live, subscribed, synced,
-                                    seq, epoch, fillEvents, error}, the private orders
+                                    seq, epoch, version, error}, the private orders
                                     channel of the bot's and Place's sub-accounts
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
@@ -2610,8 +2610,9 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
           taker_store: TakerStore | None = None, novig_book_stream: NovigBookStream | None = None,
           novig_place_stream: NovigBookStream | None = None) -> None:
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM. The
-    taker log and the two Novig sockets are opened here unless main() opened
-    them for the Novig sub-account sources."""
+    taker log is opened here unless main() opened it for the Novig sources;
+    the two Novig sockets (main() opens them for those sources) are None
+    without their keys."""
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
@@ -2623,10 +2624,6 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     novig_taker_desk, novig_taker_desk_off_reason = open_novig_taker_desk(
         taker_store, lambda: source_status(store, source_names))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
-    if novig_book_stream is None:
-        novig_book_stream = open_novig_book_stream()
-    if novig_place_stream is None:
-        novig_place_stream = open_novig_place_stream()
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names, order_stream=novig_place_stream)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
     prophetx_order_stream = open_prophetx_order_stream(sources)

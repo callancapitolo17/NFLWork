@@ -3439,14 +3439,18 @@ A heartbeat every 15 s names the last seq; one past ours means a dropped
 frame, and the channel asks for a new snapshot and counts as not live until
 it comes. The channel is read two ways. The sub-account source merges the
 pushed fills into its 10 s pass (the market id from the order's stored line,
-else one `fills?orderId=` read) and reads REST's fills whole only on its
+else one `fills?order=` read) and reads REST's fills whole only on its
 first pass, whenever the channel was not live or re-snapshotted since the
 last pass (a fill during a gap is in no snapshot), and **hourly** (the
-exact fee, `feePending` on a record until then; Novig's REST fills are the
-record, the stream only the first word). A REST fills read that Novig
-throttles is retried once 1.5 s later. `/health` carries the channel under
+exact fee, None on a pushed fill until then; Novig's REST fills are the
+record, the stream only the first word). REST's fills lag the stream by up
+to a minute, so after every whole read the pushed fills REST does not list
+yet are kept (one fill by `fillId` once it does). A REST fills read that
+Novig throttles is retried once 1.5 s later; an hourly read throttled twice
+while the channel is live does not fail the run (the stream's fills stand,
+REST is tried again a minute on), any other does. `/health` carries the channel under
 `novigStream.orders` and `novigPlaceStream.orders` (live, subscribed, synced,
-seq, snapshot epoch, fill events, error). Without a Place key there is no
+seq, snapshot epoch, version, error). Without a Place key there is no
 second socket and Place polls REST as before; without either channel live the
 source polls REST every pass as before.
 
@@ -3698,10 +3702,11 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    worse** than the Ticket's (a pregame take pays no fee); an open straight
    Novig bet is on the other outcome; a Novig read the stake counts (`novig`,
    `novig_place`, and `novig_bot` when it is read) is failing, has never run
-   or is over 5 minutes old (a read Novig throttled, `NovigRateLimited`, is a
-   blip and not a failure while the last good read of that source is under
-   60 s old and came after the newest Novig Place send, so a fill the blip
-   could hide is in it; 2026-11-09); a Novig Place on the game may have filled after
+   or is over 5 minutes old (Place's own `novig_place` read Novig throttled,
+   `NovigRateLimited`, is a blip and not a failure while its last good read is
+   under 60 s old and came after the newest Novig Place send, so a fill the
+   blip could hide is in it; the app's and the bot's reads have no such rule,
+   nothing here knows when the bot last sent; 2026-11-09); a Novig Place on the game may have filled after
    `novigReadAt` (the oldest of those reads, `place.js readAtsOf`), or a
    Kalshi Place after `kalshiReadAt` (`manual_orders.unseen_manual_fill`,
    shared with Place on Kalshi); the click id was already sent.
@@ -3713,7 +3718,10 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    and then reads its fills once over REST for the fee; a REST read that
    fails or lists fewer fills than the stream does not hold the answer: the
    pushed fills are recorded, the fee from the quote's rate (0 pregame), and
-   the hourly REST read corrects them. Without the channel (no Place key, or
+   the hourly REST read corrects them. A channel live to the end of the
+   window with no final frame reads the order once over REST (a resting one
+   is cancelled) and then its fills so far, the pushed ones standing when
+   REST lags them. Without the channel (no Place key, or
    it is down or resyncing, even mid-wait) it reads the order over REST until
    final as before (about 10 reads a second apart, none started after 12 s),
    then its fills; an order shown `OPEN` is

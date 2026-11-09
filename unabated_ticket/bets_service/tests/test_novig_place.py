@@ -73,6 +73,7 @@ class ScriptedNovig:
         return 200, {}
 
     def fills(self, order_id=None):
+        self.fill_reads = [*getattr(self, "fill_reads", []), order_id]
         if self.fill_items is not None:
             return self.fill_items
         return [{"fillId": "f1", "orderId": order_id, "qty": self.last_qty, "cost": f"{self.last_qty * 0.675 / 100:.5f}"}]
@@ -530,10 +531,12 @@ def pushed(final, filled, price=0.675, remaining=0):
 
 
 def streamed_desk(store, novig, stream, quote=None, clock=None):
-    desk = ManualNovigDesk(novig, store, lambda _line: dict(QUOTE if quote is None else quote), now=lambda: NOW,
-                           sleep=lambda _sec: None, clock=(lambda: clock[0]) if clock else None or (lambda: 0.0),
-                           order_stream=stream)
-    return desk
+    if clock is None:
+        clock = [0.0]
+    if stream._clock is None:
+        stream._clock = clock  # every wait moves the clock by its timeout, as the real wait_for_order blocks
+    return ManualNovigDesk(novig, store, lambda _line: dict(QUOTE if quote is None else quote), now=lambda: NOW,
+                           sleep=lambda _sec: None, clock=lambda: clock[0], order_stream=stream)
 
 
 class RestNeverAsked(ScriptedNovig):
@@ -542,12 +545,13 @@ class RestNeverAsked(ScriptedNovig):
 
 
 def test_a_pushed_final_order_skips_the_status_polls_and_reads_fills_once(store):
-    novig = RestNeverAsked()
+    novig = RestNeverAsked(fills=[{"fillId": "f1", "qty": 7407, "cost": "49.99725", "fee": "0.25000"}])
     stream = FakeOrderStream([pushed("FILLED", 7407)])
     answer = streamed_desk(store, novig, stream).place(request())
     assert answer["status"] == "filled" and answer["filled"] == 7407
     assert stream.waits == [(ORDER_ID, 0)], "one wait: the first frame was final"
-    assert order_row(store, f"nman-{CLICK_ID}") == ("filled", 7407, 49.99725, None)
+    assert novig.fill_reads == [ORDER_ID], "one REST fills read, for the fee"
+    assert order_row(store, f"nman-{CLICK_ID}") == ("filled", 7407, 50.24725, None), "REST's fee is in the cost"
 
 
 def test_a_pushed_reject_reads_unfilled_and_a_pushed_open_is_cancelled(store):
@@ -595,11 +599,32 @@ def test_a_fills_read_that_fails_or_lags_after_a_pushed_final_records_the_pushed
 def test_a_live_channel_with_no_final_frame_by_the_window_reads_unconfirmed(store):
     clock = [0.0]
     stream = FakeOrderStream([None] * 20, clock=clock)
-    novig = RestNeverAsked(fills=[])
+    novig = ScriptedNovig(order_reads=[(200, {"status": "PENDING"})], fills=[])
     answer = streamed_desk(store, novig, stream, clock=clock).place(request())
     assert answer["status"] == "unknown" and "has not confirmed what filled" in answer["message"]
     assert order_row(store, f"nman-{CLICK_ID}")[0] == "unknown"
     assert 11 <= len(stream.waits) <= 13, "waited the 12 s window in 1 s steps"
+    assert novig.order_reads == [], "one order read at the window's end (a resting order the channel missed)"
+    # Fills pushed but never a final frame, and REST lagging them: the pushed count stands, the row stays unknown.
+    clock = [0.0]
+    stream = FakeOrderStream([pushed(None, 3000, remaining=4407)] + [None] * 20, clock=clock)
+    novig = ScriptedNovig(order_reads=[(200, {"status": "PENDING"})], fills=[])
+    answer = streamed_desk(store, novig, stream, clock=clock).place(request(clickId="00000000-0000-4000-8000-000000000055",
+                                                                            eventId=EVENT_ID + 1))
+    assert answer["status"] == "unknown" and answer["filled"] == 3000 and "so far" in answer["message"]
+    assert order_row(store, "nman-00000000-0000-4000-8000-000000000055")[:3] == ("unknown", 3000, 20.25)
+    # An order the stream never showed final that REST reads OPEN is cancelled.
+    novig = ScriptedNovig(order_reads=[(200, {"status": "OPEN"})], fills=[])
+    answer = streamed_desk(store, novig, FakeOrderStream([None] * 20)).place(request(clickId="00000000-0000-4000-8000-000000000056",
+                                                                                     eventId=EVENT_ID + 2))
+    assert answer["status"] == "unknown" and novig.cancels == [ORDER_ID]
+
+
+def test_a_pushed_partial_fill_reads_partial_at_the_pushed_cost(store):
+    novig = RestNeverAsked(fills=[])  # REST lags: nothing listed yet
+    answer = streamed_desk(store, novig, FakeOrderStream([pushed("CANCELED", 4000, remaining=3407)])).place(request())
+    assert (answer["status"], answer["filled"], answer["cost"]) == ("partial", 4000, 27.0)
+    assert order_row(store, f"nman-{CLICK_ID}") == ("partial", 4000, 27.0, None)
 
 
 def test_a_throttled_read_is_a_blip_only_while_the_last_good_one_is_fresh_and_after_every_send(store):
@@ -628,6 +653,15 @@ def test_a_throttled_read_is_a_blip_only_while_the_last_good_one_is_fresh_and_af
         request(clickId="00000000-0000-4000-8000-000000000063", eventId=EVENT_ID + 6,
                 novigReadAt=(later + timedelta(seconds=62)).isoformat()))
     assert other["status"] == "refused"
+    # The bot's read throttled is never a blip: nothing here knows when the bot last sent.
+    store.log_source_run("novig_place", later + timedelta(seconds=64), later + timedelta(seconds=64), True, None, 3)
+    store.log_source_run("novig_bot", later + timedelta(seconds=64), later + timedelta(seconds=64), True, None, 3)
+    store.log_source_run("novig_bot", later + timedelta(seconds=65), later + timedelta(seconds=65), False, throttled, 0)
+    bot_desk = ManualNovigDesk(ScriptedNovig(), store, lambda _line: dict(QUOTE), read_sources=("novig", "novig_place", "novig_bot"),
+                               now=lambda: later + timedelta(seconds=66), sleep=lambda _sec: None)
+    bot_blip = bot_desk.place(request(clickId="00000000-0000-4000-8000-000000000064", eventId=EVENT_ID + 7,
+                                      novigReadAt=(later + timedelta(seconds=64)).isoformat()))
+    assert bot_blip["status"] == "refused" and "novig_bot read is failing" in bot_blip["message"]
 
 
 def test_a_row_left_sending_by_a_crash_is_re_read_after_two_minutes(store):
