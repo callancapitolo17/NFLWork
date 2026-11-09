@@ -173,6 +173,25 @@ test("banners: the page's failed reads, then what the runner reports, worst firs
   assert.equal(phoneView.freshnessText({ okAt: NOW - 4000 }, { okAt: null }, NOW), "edges 4s ago · bets —");
 });
 
+test("bannerSummary: one line, the worst level, how many, the first banner of that level; none when there are none", () => {
+  assert.equal(phoneView.bannerSummary([]), null);
+  assert.deepEqual(phoneView.bannerSummary([{ level: "warn", text: "Edges last read 3m ago" }]),
+    { level: "warn", count: "1 problem", text: "Edges last read 3m ago" });
+  assert.deepEqual(phoneView.bannerSummary([{ level: "warn", text: "settings" }, { level: "bad", text: "Scanner: league 2: HTTP 404" }, { level: "bad", text: "second" }]),
+    { level: "bad", count: "3 problems", text: "Scanner: league 2: HTTP 404" });
+});
+
+test("edgesStatusSummary: leagues, lines, books, floor, sort and age in one line; the loading text before any league lands", () => {
+  const payload = {
+    scanner: { phase: "live", leaguesLoaded: [1], lineCount: 62, altLineCount: 27, snapshotBuiltAt: NOW - 20000, staleLeagues: [] },
+    books: { ids: null, liveCount: 5 }, settings: { edges: { minEdgePct: 1 } },
+  };
+  assert.equal(phoneView.edgesStatusSummary(payload, "edge", NOW), "NFL · 62 lines · 5 books · ≥1% · by edge · 20s ago");
+  const chosen = { ...payload, books: { ids: [89], liveCount: 5, mode: "custom", names: ["Novig"] }, scanner: { ...payload.scanner, staleLeagues: [1] } };
+  assert.equal(phoneView.edgesStatusSummary(chosen, "start", NOW), "NFL · 62 lines · 1 book · ≥1% · by start · 20s ago · 1 stale");
+  assert.equal(phoneView.edgesStatusSummary({ ...payload, scanner: { phase: "starting" } }, "edge", NOW), "Runner starting the scanner…");
+});
+
 test("settings: defaults fill nulls, a save sends only what changed, books travel with their mode, reset sends null", () => {
   const nothing = { bankroll: null, multiplier: null, leagues: null, periods: null, betTypes: null, bookMode: null, bookIds: null, minEdgePct: null,
     minStake: null, maxLineAgeHours: null, minLiquidityToWin: null, includeAlts: null, sortBy: null, groupByMarket: null, minShrunkEdgePct: null };

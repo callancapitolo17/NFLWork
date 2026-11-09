@@ -72,6 +72,7 @@
   const el = (id) => document.getElementById(id);
   const view = {
     fresh: el("fresh"), banners: el("banners"),
+    edgesStatusToggle: el("edges-status-toggle"), edgesStatusSummary: el("edges-status-summary"), edgesStatusMore: el("edges-status-more"),
     edgesStatus: el("edges-status"), edgesBooks: el("edges-books"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"),
     edgesList: el("edges-list"), edgesEmpty: el("edges-empty"), edgesCount: el("edges-count"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTab: el("tab-bets"),
@@ -116,6 +117,9 @@
 
   const state = {
     activeView: "edges",
+    // The header's folded banners and the Edges status line: closed until tapped.
+    bannersOpen: false,
+    edgesStatusOpen: false,
     // What each poll left: {payload, okAt, error, errorAt, failingSince}.
     edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     teasers: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
@@ -329,8 +333,28 @@
 
   function renderTop(now) {
     view.fresh.textContent = phoneView.freshnessText(state.edges, state.bets, now);
-    view.banners.replaceChildren(...phoneView.banners(state.edges, state.bets, now)
-      .map((banner) => makeEl("div", `warning${banner.level === "bad" ? " bad" : ""}`, banner.text)));
+    const list = phoneView.banners(state.edges, state.bets, now);
+    const summary = phoneView.bannerSummary(list);
+    if (!summary) {
+      state.bannersOpen = false; // the next problem shows folded
+      view.banners.replaceChildren();
+      return;
+    }
+    const chip = makeEl("button", `banner-chip${summary.level === "bad" ? " bad" : ""}`);
+    chip.type = "button";
+    chip.setAttribute("aria-expanded", String(state.bannersOpen));
+    chip.append(makeEl("span", "banner-count", `⚠ ${summary.count}`),
+      makeEl("span", "banner-text", state.bannersOpen ? "" : summary.text),
+      makeEl("span", "banner-caret", state.bannersOpen ? "▴" : "▸"));
+    const full = state.bannersOpen
+      ? list.map((banner) => makeEl("div", `warning${banner.level === "bad" ? " bad" : ""}`, banner.text))
+      : [];
+    view.banners.replaceChildren(chip, ...full);
+  }
+
+  function renderEdgesStatusFold() {
+    view.edgesStatusMore.hidden = !state.edgesStatusOpen;
+    view.edgesStatusToggle.setAttribute("aria-expanded", String(state.edgesStatusOpen));
   }
 
   // ---- Edges -------------------------------------------------------------------------
@@ -581,12 +605,14 @@
     const payload = state.edges.payload;
     if (!payload) {
       view.edgesStatus.textContent = state.edges.error ? "No Edges list yet." : "Loading the Edges list…";
+      view.edgesStatusSummary.textContent = view.edgesStatus.textContent;
       view.edgesBooks.textContent = "";
       view.edgesList.replaceChildren();
       view.edgesCount.hidden = true;
       return;
     }
     const settings = payload.settings.edges;
+    view.edgesStatusSummary.textContent = phoneView.edgesStatusSummary(payload, SORT_LABELS[settings.sortBy] || settings.sortBy, now);
     view.edgesStatus.textContent = phoneView.scannerText(payload.scanner, now);
     view.edgesBooks.textContent = [
       phoneView.booksText(payload.books),
@@ -1781,6 +1807,15 @@
     if (button) showView(button.dataset.view);
   });
 
+  view.banners.addEventListener("click", (event) => {
+    if (!event.target.closest(".banner-chip")) return;
+    state.bannersOpen = !state.bannersOpen;
+    renderTop(Date.now());
+  });
+  view.edgesStatusToggle.addEventListener("click", () => {
+    state.edgesStatusOpen = !state.edgesStatusOpen;
+    renderEdgesStatusFold();
+  });
   view.edgesList.addEventListener("click", (event) => {
     const skipChip = event.target.closest("button.skip-chip");
     if (skipChip) {

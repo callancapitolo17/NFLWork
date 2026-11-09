@@ -2799,7 +2799,10 @@ node unabated_ticket/server/runner.js                     # must be running too 
   books tiles, every book at the number, the related-bets table (each bet on
   two lines) and the card's other lines. Freshness and errors (edges or
   bets service unreachable since …, scanner errors, settings fallback) sit at
-  the top. A read whose body does not arrive whole inside the page's 10 s
+  the top, folded to one line (`⚠ N problems` and the worst one, cut to fit;
+  a tap lists them all, 2026-11-09). The Edges status is one line too
+  (`NFL · 62 lines · 5 books · ≥1% · by edge · 20s ago`); a tap opens the full
+  scanner, books, tail-flex and price-check lines under it. A read whose body does not arrive whole inside the page's 10 s
   timeout (a slow connection; `/bets.json` is the big one) reads "download
   cut off", not as an empty reply. The confirm tap on a venue Place
   (Kalshi, Novig, Polymarket US, ProphetX, BFA) closes the Ticket at once and

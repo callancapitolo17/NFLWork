@@ -25,10 +25,16 @@
   <main>
     <section id="view-edges" class="view" aria-labelledby="tab-edges">
       <div id="edges-balances" class="balances-line" hidden></div>
-      <div id="edges-status" class="status-line"></div>
-      <div id="edges-books" class="status-line"></div>
-      <div id="edges-tailflex" class="status-line" hidden></div>
-      <div id="edges-pricecheck" class="status-line" hidden></div>
+      <!-- The status in one line; a tap opens the full lines under it. -->
+      <button type="button" id="edges-status-toggle" class="status-sum" aria-expanded="false" aria-controls="edges-status-more">
+        <span id="edges-status-summary" class="status-sum-text"></span><span class="status-sum-caret" aria-hidden="true">▾</span>
+      </button>
+      <div id="edges-status-more" class="status-more" hidden>
+        <div id="edges-status" class="status-line"></div>
+        <div id="edges-books" class="status-line"></div>
+        <div id="edges-tailflex" class="status-line" hidden></div>
+        <div id="edges-pricecheck" class="status-line" hidden></div>
+      </div>
       <ol id="edges-list" class="edges-list"></ol>
       <div id="edges-empty" class="pane-note" hidden></div>
     </section>
