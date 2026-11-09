@@ -121,8 +121,9 @@ re-injection could not reach still needs one).
   and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
   again. Not in the plan's contract; needed by the watcher.
 - `content.js` (isolated world) writes the ticket to `chrome.storage.local`
-  directly. `background.js` is off the hot path — it only sets the
-  panel-open-on-click behavior and handles edge-notification clicks — so a
+  directly. `background.js` is off the hot path — it sets the
+  panel-open-on-click behavior, handles edge-notification clicks and runs
+  the Underdog read (Underdog source section) — so a
   sleeping or crashed service worker can't stop a click from reaching the
   panel.
 - Every 5 s `page.js` re-reads the same book line through the grid API. If
