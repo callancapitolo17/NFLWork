@@ -252,3 +252,20 @@ test("a card carries the game's latest score line; a game the feed gave no state
   const [bare] = scenarios.buildScenarios({ records, games: gamesOf(billsChiefs()), now: NOW }).games;
   assert.equal(bare.score, null);
 });
+
+test("a game Unabated marks final gets no card, even off a stale reading; its open bets go to finishedBetIds", () => {
+  const records = [straightBet("bills"), teaserLeg("t1", 0, { points: 9.5 })];
+  const finalStale = gamesOf(billsChiefs()).map((game) => ({
+    ...game,
+    gameState: { statusId: 3, awayScore: 24, homeScore: 27, gameClock: "E", periodId: 7, snapshotAtMs: NOW - 60 * 60 * 1000, awayAbbr: "BUF", homeAbbr: "KC" },
+  }));
+  const payload = scenarios.buildScenarios({ records, games: finalStale, now: NOW });
+  assert.deepEqual(payload.games, []);
+  assert.deepEqual(payload.coveredBetIds, []);
+  assert.deepEqual(payload.finishedBetIds, ["novig:bills", "novig:t1:leg0"]);
+  const live = gamesOf(billsChiefs()).map((game) => ({ ...game, gameState: { ...finalStale[0].gameState, statusId: 2, snapshotAtMs: NOW } }));
+  const liveAgain = scenarios.buildScenarios({ records, games: live, now: NOW });
+  assert.equal(liveAgain.games.length, 1);
+  assert.deepEqual(liveAgain.coveredBetIds, ["novig:bills", "novig:t1:leg0"]);
+  assert.deepEqual(liveAgain.finishedBetIds, []);
+});
