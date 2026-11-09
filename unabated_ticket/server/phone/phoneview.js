@@ -273,6 +273,42 @@
     return out;
   }
 
+  // The banners folded to one line (the Edges top, issue: UI audit B): the
+  // worst level, how many, and the first banner's text, which the chip shows
+  // cut to one line. Tapping the chip lists every banner in full.
+  function bannerSummary(list) {
+    if (!list || list.length === 0) return null;
+    const level = list.some((banner) => banner.level === "bad") ? "bad" : "warn";
+    const worst = list.find((banner) => banner.level === level);
+    const count = `${list.length} problem${list.length === 1 ? "" : "s"}`;
+    return { level, count, text: worst.text };
+  }
+
+  // The Edges status in one line: "NFL · 62 lines · 5 books · ≥1% · by edge · 20s ago".
+  // The full lines (scannerText, the books line, tail flex, price check) open under it.
+  function edgesStatusSummary(payload, sortLabel, now) {
+    const scanner = payload.scanner;
+    if (!scanner || scanner.phase === "starting" || (scanner.phase === "loading" && !(scanner.leaguesLoaded || []).length)) {
+      return scannerText(scanner, now);
+    }
+    const label = (id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label;
+    const loaded = scanner.leaguesLoaded || [];
+    const leagues = loaded.length > 4 ? `${loaded.length} leagues` : loaded.map(label).join(" · ");
+    const books = payload.books;
+    const bookCount = !books ? null : books.ids ? books.ids.length : books.liveCount;
+    const settings = (payload.settings && payload.settings.edges) || {};
+    const stale = scanner.staleLeagues && scanner.staleLeagues.length ? `${scanner.staleLeagues.length} stale` : null;
+    return [
+      leagues || "no leagues",
+      `${(scanner.lineCount || 0).toLocaleString("en-US")} lines`,
+      bookCount == null ? null : `${bookCount} book${bookCount === 1 ? "" : "s"}`,
+      settings.minEdgePct == null ? null : `≥${settings.minEdgePct}%`,
+      sortLabel ? `by ${sortLabel}` : null,
+      scanner.snapshotBuiltAt ? fmtAge(now - scanner.snapshotBuiltAt) : "no data yet",
+      stale,
+    ].filter(Boolean).join(" · ");
+  }
+
   // "edges 4s ago · bets 12s ago"
   function freshnessText(edgesPoll, betsPoll, now) {
     const part = (name, poll) => {
@@ -682,7 +718,7 @@
     EDGES_POLL_MS, BETS_POLL_MS, EDGES_STALE_MS,
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
     marketText, describeMatchup, bookPriceText, lineAgeText, contractsView, stakeBlockView, ticketView,
-    scannerText, booksText, banners, freshnessText, betItemView, betsTabView, applyDismissals,
+    scannerText, booksText, banners, bannerSummary, edgesStatusSummary, freshnessText, betItemView, betsTabView, applyDismissals,
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
