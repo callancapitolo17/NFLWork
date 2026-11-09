@@ -584,6 +584,45 @@
     return `Placing ${fmtDollars(stakeDollars)} on ${sideLabel} at ${venueName}\u2026`;
   }
 
+  // ---- lines already bet (Cal 2026-11-09) ----------------------------------
+  // A line bet to full size ("add $0", stakeRail's atSize) leaves the Edges
+  // list: it has nothing left to do and kept Cal guessing what he had placed.
+  // A card leaves with its best line, the highest-growth line of the card,
+  // so a best at full size means no line of the card adds anything.
+  function isFullyBet(row) {
+    return Boolean(row && row.rail && row.rail.atSize);
+  }
+
+  // `items` is /edges.json's items: cards when `grouped`, else rows.
+  function withoutFullyBet(items, grouped) {
+    return items.filter((item) => !isFullyBet(grouped ? item.best : item));
+  }
+
+  // A Place sent from this page greys its row ("placed $X") from the tap
+  // until an Edges list arrives that the runner sized on bets read after the
+  // venue replied (a ?fresh=1 list asked for at or after the reply), so the
+  // old "add $X" never shows in between. PLACED_MARK_MAX_MS ends it anyway
+  // when that list never comes (the runner's own 10 s bets read has caught
+  // up by then).
+  // mark {stake, sentAt, repliedAt (null while the order is out)};
+  // freshListAskedAt: when the newest ?fresh=1 list that arrived was asked for, or null.
+  const PLACED_MARK_MAX_MS = 60 * 1000;
+
+  function placedMarkShows(mark, freshListAskedAt, now) {
+    if (now - mark.sentAt > PLACED_MARK_MAX_MS) return false;
+    if (mark.repliedAt == null) return true;
+    return freshListAskedAt == null || freshListAskedAt < mark.repliedAt;
+  }
+
+  // The greyed row's tag and rail words.
+  function placedMarkView(mark) {
+    return {
+      tag: `placed ${fmtDollars(mark.stake)}`,
+      text: mark.repliedAt == null ? "placing" : "placed",
+      note: mark.repliedAt == null ? "sending…" : "updating…",
+    };
+  }
+
   // tone: place.js replyTone ("ok" | "refused" | "warn" | "bad") or "wait" while placing.
   function placeToastHideAfterMs(tone) {
     return tone === "ok" ? PLACE_TOAST_FILLED_HIDE_MS : null;
@@ -641,7 +680,8 @@
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
-    placeToastPlacingText, placeToastHideAfterMs, freePlayStake, freePlayView, netOddsOf, fairProbOf,
+    placeToastPlacingText, placeToastHideAfterMs, freePlayStake,
+    isFullyBet, withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 
   if (inNode) {

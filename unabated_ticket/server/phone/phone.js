@@ -134,6 +134,12 @@
     // skips every 30 s, so without this a tap would take that long to show.
     skipOverrides: new Map(),
     skipError: null,
+    // Places sent from this page, greyed on the Edges list until a list sized
+    // on bets read after the reply arrives (phoneView.placedMarkShows):
+    // row key -> {stake, sentAt, repliedAt, cardKey}; and when the newest
+    // ?fresh=1 Edges list that arrived was asked for.
+    placedMarks: new Map(),
+    freshEdgesAskedAt: null,
     // Row keys whose every-book list is open; the Skipped fold's state.
     openPriceChecks: new Set(),
     skippedFoldOpen: false,
@@ -222,8 +228,10 @@
 
   // `fresh` asks the runner to re-read the bets service first (after a write here).
   async function pollEdges(fresh) {
+    const askedAt = Date.now();
     try {
       pollSucceeded(state.edges, await requestJson("GET", fresh === true ? "/edges.json?fresh=1" : "/edges.json"));
+      if (fresh === true) state.freshEdgesAskedAt = Math.max(state.freshEdgesAskedAt ?? 0, askedAt);
     } catch (error) {
       pollFailed(state.edges, error);
     }
@@ -338,6 +346,16 @@
     // The shrunk edge the list ranks and gates the row on (the tail flex, issue #208), as the panel's hover; the stake is on the raw edge.
     if (typeof row.shrunkEdgePct === "number") stake.title = `ranked on this stake's growth at ${phoneView.fmtEdgePct(row.shrunkEdgePct)} shrunk (${Math.round(row.shrink * 100)}% of Unabated's ${phoneView.fmtEdgePct(row.edgePct)}); the stake is on Unabated's edge`;
     rail.append(stake);
+    return rail;
+  }
+
+  // A just-placed row's rail: its edge, then "placed" where the stake was (phoneView.placedMarkView).
+  function placedRailEl(row, mark) {
+    const words = phoneView.placedMarkView(mark);
+    const rail = makeEl("div", "edge-rail");
+    const stake = makeEl("span", "edge-stake at-size", words.text);
+    stake.append(" ", makeEl("small", null, words.note));
+    rail.append(makeEl("span", `edge-pct tier-${row.edgeTier}`, phoneView.fmtEdgePct(row.edgePct)), stake);
     return rail;
   }
 
@@ -536,11 +554,25 @@
     renderAll();
   }
 
+  // The Place mark on a row or its card, or null once it no longer shows (and is dropped).
+  function placedMarkOf(row, card, now) {
+    for (const [rowKey, mark] of state.placedMarks) {
+      if (!phoneView.placedMarkShows(mark, state.freshEdgesAskedAt, now)) {
+        state.placedMarks.delete(rowKey);
+        continue;
+      }
+      if (rowKey === row.key || (card && mark.cardKey === card.key)) return mark;
+    }
+    return null;
+  }
+
   function edgeItem(row, card, now, skipped = false) {
-    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}${skipped ? " skipped" : ""}`);
+    const mark = skipped ? null : placedMarkOf(row, card, now);
+    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}${skipped ? " skipped" : ""}${mark ? " placed" : ""}`);
     li.dataset.key = row.key;
     if (card) li.dataset.card = card.key;
-    li.append(mainEl(row, now, skipped), railEl(row, true));
+    li.append(mainEl(row, now, skipped), mark ? placedRailEl(row, mark) : railEl(row, true));
+    if (mark) li.querySelector(".edge-side").prepend(tagEl("placed", phoneView.placedMarkView(mark).tag));
     const related = relatedBlock(row);
     if (related) li.append(related);
     if (card && card.others && card.others.length) {
@@ -570,7 +602,9 @@
     view.edgesTailFlex.hidden = !payload.tailFlex;
     view.edgesPriceCheck.textContent = payload.priceCheck || "";
     view.edgesPriceCheck.hidden = !payload.priceCheck;
-    const { items: listed, skipped, total } = edgesWithSkips(payload);
+    const { items: withSkips, skipped, total: totalWithSkips } = edgesWithSkips(payload);
+    const listed = phoneView.withoutFullyBet(withSkips, payload.grouped);
+    const total = totalWithSkips - (withSkips.length - listed.length);
     const items = listed.map((item) => (payload.grouped ? edgeItem(item.best, item, now) : edgeItem(item, null, now)));
     view.edgesList.replaceChildren(...items, ...skippedFoldEls(skipped, now));
     view.edgesCount.hidden = total === 0;
@@ -834,14 +868,25 @@
       return;
     }
     const sideLabel = phoneView.ticketView(found.row, Date.now()).sideLabel;
-    const toast = showToast(phoneView.placeToastPlacingText(venuePlace.parseStake(view.ticketVenueStake.value), sideLabel, venueName), "wait");
+    const stake = venuePlace.parseStake(view.ticketVenueStake.value);
+    const toast = showToast(phoneView.placeToastPlacingText(stake, sideLabel, venueName), "wait");
+    const mark = { stake, sentAt: Date.now(), repliedAt: null, cardKey: state.ticket.cardKey ?? null };
+    state.placedMarks.set(rowKey, mark);
     placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
     // The balance just changed: the next BFA Ticket reads it again.
     if (freePlay) state.freePlay.askedAt = 0;
     closeTicket();
+    // The order goes out first: greying the row is only a picture of it.
+    const sending = requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
+    try {
+      renderAll();
+    } catch (error) {
+      // A drawing fault must never cost the order its toast.
+      console.error("[unabated-ticket] render after Place failed", error);
+    }
     let next;
     try {
-      const reply = await requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
+      const reply = await sending;
       next = { message: reply.message, tone: venuePlace.replyTone(reply.status) };
     } catch (error) {
       // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
@@ -850,7 +895,15 @@
         : { message: `No answer from the bets service (${error.message}). Check ${venueName} before placing again.`, tone: "warn" };
     }
     setToast(toast, next.message, next.tone);
-    if (next.tone === "ok") await pollBets();
+    // A fill (or an answer that may hide one) stays grey until the runner's list counts it; nothing placed ungreys now.
+    if (next.tone === "ok" || next.tone === "warn") {
+      mark.repliedAt = Date.now();
+      renderAll();
+      await refreshAfterWrite();
+    } else {
+      state.placedMarks.delete(rowKey);
+      renderAll();
+    }
   }
 
   // ---- Place toasts ---------------------------------------------------------

@@ -2808,6 +2808,15 @@ node unabated_ticket/server/runner.js                     # must be running too 
   browse; a fill fades after 8 s, a refusal or an unsure reply stays until ✕.
   A toast lives in the open page only: leave Safari mid-Place and the bet still
   goes through, but its result shows on Bets, not as a toast.
+  **Already-bet lines (2026-11-09)**: the row a Place was sent from greys
+  out at the confirm tap with a `placed $X` tag (`placing · sending…`, then
+  `placed · updating…`) and stays grey until an Edges list arrives that was
+  asked for with `?fresh=1` after the venue replied (the runner re-reads
+  `/bets.json` first), at most 60 s (`phoneView.placedMarkShows`); a fill
+  or an unsure reply fetches that list at once, a refusal ungreys the row.
+  A line bet to full size (`add $0`, the rail's `atSize`; a card by its
+  best line) is not listed at all (`phoneView.withoutFullyBet`, phone only;
+  the panel still lists it).
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
   (the runner adds `betsService.unmatched`, `bets.unmatchedReasons` over
   its board, to `/edges.json`), venue freshness, open bets; Attach, Undo,

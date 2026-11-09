@@ -321,3 +321,26 @@ test("free play: the box takes the stake capped at the balance and the payout ca
     { label: "Use free play", note: "BFA free play read failed: HTTP 503", failed: true });
   assert.equal(phoneView.freePlayView(null, 0.5, 1, 10), null);
 });
+
+test("fully bet lines leave the Edges list: a row, or a card by its best line", () => {
+  const row = (key, atSize) => ({ key, rail: { text: atSize ? "add $0.00" : "add $10.00", note: null, atSize } });
+  assert.deepEqual(phoneView.withoutFullyBet([row("a", false), row("b", true), row("c", false)], false).map((item) => item.key), ["a", "c"]);
+  const cards = [{ key: "x", best: row("a", true), others: [row("b", false)] }, { key: "y", best: row("c", false), others: [] }];
+  assert.deepEqual(phoneView.withoutFullyBet(cards, true).map((card) => card.key), ["y"]);
+  assert.equal(phoneView.isFullyBet({ key: "live", rail: { text: "—", note: "declined", atSize: false } }), false, "a declined live row stays");
+  assert.equal(phoneView.isFullyBet({ key: "old" }), false, "a row without a rail stays");
+});
+
+test("a placed mark shows from the tap until a fresh list asked for after the reply arrives", () => {
+  const sentAt = 1_000_000;
+  const out = { stake: 79.88, sentAt, repliedAt: null };
+  assert.equal(phoneView.placedMarkShows(out, null, sentAt + 2000), true, "order still out");
+  assert.equal(phoneView.placedMarkShows(out, sentAt + 5000, sentAt + 6000), true, "a fresh list before the reply does not end it");
+  const replied = { ...out, repliedAt: sentAt + 1500 };
+  assert.equal(phoneView.placedMarkShows(replied, null, sentAt + 3000), true, "no fresh list yet");
+  assert.equal(phoneView.placedMarkShows(replied, sentAt + 1000, sentAt + 3000), true, "a fresh list asked for before the reply");
+  assert.equal(phoneView.placedMarkShows(replied, sentAt + 1500, sentAt + 3000), false, "a fresh list asked for at the reply");
+  assert.equal(phoneView.placedMarkShows(out, null, sentAt + phoneView.PLACED_MARK_MAX_MS + 1), false, "ends after the cap");
+  assert.deepEqual(phoneView.placedMarkView(out), { tag: "placed $79.88", text: "placing", note: "sending…" });
+  assert.deepEqual(phoneView.placedMarkView(replied), { tag: "placed $79.88", text: "placed", note: "updating…" });
+});
