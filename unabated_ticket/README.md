@@ -3419,6 +3419,7 @@ The Kalshi rules above hold unless this table says otherwise.
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price, off the live book stream below (never a REST `/book`); no book in sync, a market gone live or not `OPEN` is `no_book`; fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
 | Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000, Kalshi's until 2026-10-28, its own parameter, separate from the $850 cap) |
 | Ceiling | open bot cost on Novig never above $850 (`OPEN_COST_CEILING`; $500 until 2026-11-04), its own budget beside Kalshi's |
+| Cash | after a 422 `INSUFFICIENT_BALANCE` the desk answers `no_cash` and sends nothing until a newer `novig_bot` balance read pays for a contract, then cuts qty to it (Out of cash, below) |
 | Market check | before every order the market and event are read (keyed, below): market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a pick'em refused; a total's first word Over / O or Under / U; unreadable fails closed) |
 | Order | one IOC limit (`POST /v3/orders`, NOVIG-V3 signed); a partial fill cancels the rest, a zero fill comes back rejected; an order still `OPEN` is cancelled. `clientId` is a UUID derived from the outcome and the pass (Novig does not dedupe it, so the desk never re-sends) |
 | Adds | `unseen_fill` across venues: a Novig order waits for any earlier bot fill on the game, Kalshi or Novig, to be held; a Kalshi order waits for an earlier Novig one the same way. One bets list sorted by live edge, so the better venue goes first |
@@ -3557,7 +3558,7 @@ on the Mac's management key; a top-up is the same line with a new
 one does not).
 
 Desk statuses: `stopped`, `duplicate`, `env_mismatch`, `stale_decision`,
-`started`, `stale_holdings`, `unseen_fill`, `ceiling`, then the order's
+`started`, `stale_holdings`, `unseen_fill`, `ceiling`, `no_cash`, then the order's
 `sending`, `unknown` (no definite answer: full cost held, looked up by
 `clientId` a minute on), `sent` (an order Novig took but never shows final is
 settled off its listing by `clientId` a minute on), `resting`, `filled` /
@@ -3566,6 +3567,20 @@ market frees its orders' cost once it has left the bot's open positions
 (`GET /v3/portfolio/positions`, read at most every 5 min; Novig closes a
 position when its market settles); one still held 12 h after the start is
 logged once.
+
+**Out of cash (2026-11-09).** The $850 ceiling counts open cost only, so after
+a losing run the wallet can be empty with room left under it. Once Novig
+refuses an order `INSUFFICIENT_BALANCE` (answered `no_cash`; its row is
+`rejected`, cost 0), the desk sends nothing (`no_cash`, no row) until the bets
+service's own balance read of the bot subaccount (`/balances.json`
+`novig_bot`, every ~10 s poll), taken after that refusal, pays for a contract;
+that order's qty is cut to the cash and sending is back to normal. A failed or
+older read sends nothing. The state is in memory: after a restart the first
+order on an empty wallet is refused once. Before this the desk sent ~50
+refused orders a minute. The Bot tab shows it apart from the cap: the Novig
+card reads **Out of cash** (amber, `/bot.json` `cashShort`) while the desk
+waits, and the "why it passed" list has an **Out of cash** row next to **At
+the money cap**.
 
 ```sql
 -- taker.duckdb: the Novig bot's orders, newest first
