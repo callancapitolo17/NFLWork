@@ -505,6 +505,17 @@ test("botActivityWindow: Today, 7D, All and a clamped, swapped Custom", () => {
   assert.throws(() => stats.botActivityWindow("YTD", today), /unknown bot activity range/);
 });
 
+test("botResultDays: the bot range, ending at the last shown day", () => {
+  const yesterday = "2026-11-08";
+  assert.deepEqual(stats.botResultDays({ first: "2026-11-02", last: "2026-11-09" }, yesterday),
+    { first: "2026-11-02", last: yesterday, empty: false });
+  assert.deepEqual(stats.botResultDays({ first: "2026-11-09", last: "2026-11-09" }, yesterday),
+    { first: "2026-11-09", last: yesterday, empty: true });
+  assert.deepEqual(stats.botResultDays({ first: null, last: null }, yesterday), { first: null, last: yesterday, empty: false });
+  assert.deepEqual(stats.botResultDays({ first: "2026-11-01", last: "2026-11-03" }, yesterday),
+    { first: "2026-11-01", last: "2026-11-03", empty: false });
+});
+
 test("botReasonRows: names reasons, splits a bet by the desk's answer, merges labels", () => {
   const rows = stats.botReasonRows([
     { reason: "edge_short", orderStatus: null, lines: 40 },

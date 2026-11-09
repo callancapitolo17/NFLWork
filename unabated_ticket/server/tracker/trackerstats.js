@@ -913,6 +913,18 @@
     return { first, last, query: "?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end) };
   }
 
+  /**
+   * The settled-results days for a Bot tab range (Cal, 2026-11-09: Results
+   * follow the tab's one range picker, not the header's). Same window as
+   * Activity, but ending no later than lastShownDay, since a day's results
+   * stay hidden until the next Pacific day. {first, last, empty}: first null
+   * for All; empty when the window holds no shown day (Today).
+   */
+  function botResultDays(activityWindow, lastShownDay) {
+    const last = activityWindow.last === null || activityWindow.last > lastShownDay ? lastShownDay : activityWindow.last;
+    return { first: activityWindow.first, last, empty: activityWindow.first !== null && activityWindow.first > last };
+  }
+
   // taker.js REASONS, in Cal's words.
   const BOT_REASON_NAMES = {
     stale_feed: "Unabated feed stale", no_ticker: "No Kalshi contract", no_outcome: "No Novig outcome",
@@ -970,7 +982,7 @@
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
     venueName, originOf, leagueOf, splitOpenByStart, splitOpenForLive, sortRows,
-    BOT_ACTIVITY_RANGES, pacificDayStartMs, botActivityWindow, botReasonRows, botTicketsByVenue,
+    BOT_ACTIVITY_RANGES, pacificDayStartMs, botActivityWindow, botResultDays, botReasonRows, botTicketsByVenue,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;

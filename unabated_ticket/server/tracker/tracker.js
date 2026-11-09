@@ -75,7 +75,8 @@
   // Overview lists only the newest settled bets; the full, filterable list is Analysis's bet log.
   const OVERVIEW_SETTLED_ROWS = 10;
   // Tabs that read the header date range; the others hide it.
-  const RANGED_VIEWS = ["overview", "analysis", "bot"];
+  // The Bot tab has its own range picker, which drives every panel on it.
+  const RANGED_VIEWS = ["overview", "analysis"];
   const CALENDAR_WEEKS = 6;
   const CI_SCALE = 0.3;
   const CHART_W = 1000;
@@ -677,7 +678,7 @@
 
   /**
    * The Bot tab (Cal, 2026-11-04): a status card per automated taker, its
-   * activity in the tab's own range, settled results in the header range,
+   * activity and settled results in the tab's own range,
    * why it passed on lines, and its newest orders. A card's money at risk is
    * the desk's own open cost against its ceiling; cash is the bot's
    * subaccount balance from /balances.json.
@@ -791,12 +792,19 @@
     fill("bot-activity", table(columns, bot.bots));
   }
 
-  // Settled results follow the header range, the same math as Overview.
+  // Settled results follow the tab's range, the same math as Overview; today's stay hidden until midnight.
   function renderBotResults() {
     if (!payload) { fill("bot-results", emptyNote("Loading…")); return; }
-    const { first, last } = rangeDays();
-    setText("bot-results-caption", rangeCaption(first, last) + " (the header range) · Expected uses the Unabated fair at fill");
-    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, first, last));
+    const days = stats.botResultDays(botWindow(), lastShownDay());
+    const note = " · Expected uses the Unabated fair at fill";
+    if (days.empty) {
+      setText("bot-results-caption", "Today" + note);
+      fill("bot-results", emptyNote("Today's results show after midnight Pacific."));
+      return;
+    }
+    const when = days.first === null ? "All time to " + dayLabel(days.last) + " · Pacific time" : rangeCaption(days.first, days.last);
+    setText("bot-results-caption", when + note);
+    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, days.first, days.last));
     const rows = BOT_VENUES.map((v) => ({ label: v.label, total: stats.summarize(byVenue[v.key]) }));
     rows.push({ label: "Both", total: stats.summarize(byVenue.kalshi.concat(byVenue.novig)), isTotal: true });
     const columns = [

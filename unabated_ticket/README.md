@@ -3012,14 +3012,16 @@ visible. Its one write is the Bets page's Remove / Restore.
   when the runner's last pass is over 2 min old, skipped for that venue, or
   Novig's location lapsed — money at risk (the desk's open cost against its
   ceiling, $6,000 / $850), cash in its subaccount (`/balances.json`), open
-  orders and Kelly bankroll. **Activity** has its own range (Today, 7D, 30D,
-  All, Custom; it includes today, since these are orders, not results): orders
+  orders and Kelly bankroll. The tab has its own range (Today, 7D, 30D,
+  All, Custom; the header range is hidden there) driving every panel.
+  **Activity** includes today, since these are orders, not results: orders
   sent, filled, rejected by the venue, unconfirmed (no definite answer or
   fills not read yet, full cost held), fill rate (over orders whose fills
   are read, a rejection counting as unfilled), staked and the
   cost-weighted live edge at fill, one row per bot (a Kalshi contract pays $1,
-  a Novig one 1c). **Results** are the bots' settled bets in the header range
-  (Bot origin, never the MLB bots' combos), the Overview math. **Why it didn't
+  a Novig one 1c). **Results** are the bots' settled bets in that range, ending
+  yesterday since today's results stay hidden until midnight (Cal,
+  2026-11-09; Today shows none) (Bot origin, never the MLB bots' combos), the Overview math. **Why it didn't
   bet** counts distinct lines per decision in the activity range — the log
   holds a decision only when it changes, so it counts lines, not passes — with
   a bet split by the desk's answer (the money cap, the stop file, ... in
