@@ -364,6 +364,8 @@ from unabated_ticket.bets_service.sources.polymarket_us import source_if_configu
 from unabated_ticket.bets_service.sources.prophetx import VENUE as PROPHETX_VENUE
 from unabated_ticket.bets_service.sources.prophetx import ProphetXSource
 from unabated_ticket.bets_service.sources.prophetx import source_if_configured as prophetx_source_if_configured
+from unabated_ticket.bets_service.sources.underdog import VENUE as UNDERDOG_VENUE
+from unabated_ticket.bets_service.sources.underdog import source_if_connected as underdog_source_if_connected
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
 from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
@@ -2666,6 +2668,7 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
     ("wagerzon", wagerzon_source_if_configured),
     ("polymarket_us", polymarket_us_source_if_configured),
     ("prophetx", prophetx_source_if_configured),
+    ("underdog", underdog_source_if_connected),
 )
 
 
@@ -2676,11 +2679,17 @@ def main() -> None:
                                           final_tickers=store.load_kalshi_final_tickers,
                                           subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
     for venue, factory in OPTIONAL_SOURCE_FACTORIES:
-        # ProphetX drops ended games from its lists, so its source reuses the stored records' game fields.
-        # Its order history also settles Place's unconfirmed ProphetX orders.
-        optional = (factory(lambda: store.load_records_of_venue("prophetx"),
-                            lambda orders, trades: settle_prophetx_place_orders(store, orders, trades, _now()))
-                    if venue == "prophetx" else factory())
+        if venue == "prophetx":
+            # ProphetX drops ended games from its lists, so its source reuses the stored records' game fields.
+            # Its order history also settles Place's unconfirmed ProphetX orders.
+            optional = factory(lambda: store.load_records_of_venue("prophetx"),
+                               lambda orders, trades: settle_prophetx_place_orders(store, orders, trades, _now()))
+        elif venue == "underdog":
+            # The stored records: open slips to chase down the settled list, and game fields
+            # and settle times to keep when an answer leaves them out.
+            optional = factory(lambda: store.load_records_of_venue(UNDERDOG_VENUE))
+        else:
+            optional = factory()
         if optional is not None:
             sources.append(optional)
     taker_store = open_taker_store(config.TAKER_DB_PATH)

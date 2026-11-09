@@ -259,6 +259,15 @@ PROPHETX_BASE_URL = _get("PROPHETX_BASE_URL", "https://cash.api.prophetx.co/part
 PROPHETX_POLL_SEC = 30.0
 # ProphetX's order history allows at most a 60-day creation window per read.
 PROPHETX_HISTORY_DAYS = 60
+# Underdog (2026-11-07): the service's own Auth0 refresh token, minted once by
+# `python -m unabated_ticket.bets_service.sources.underdog_auth connect` and
+# rewritten on rotation. The source registers only when the file exists.
+UNDERDOG_TOKEN_PATH = Path(_get("UNDERDOG_TOKEN_PATH", str(PKG_DIR / "underdog_token.json")))
+# Every 60 s: the open slips and the newest settled page (more only to find a slip the
+# store holds open, and 30 days back on the first poll after a boot); a token refresh per ~9 min.
+UNDERDOG_POLL_SEC = float(_get("BETS_UNDERDOG_POLL_SEC", "60"))
+# The first poll after a boot reads settled pages back to slips made this long ago.
+UNDERDOG_HISTORY_DAYS = 30
 # A second ProphetX key pair (2026-11-05), only for the Edges list's live
 # ProphetX prices (prophetx_live.py, reads only), so its reads never take the
 # 1 request a second PROPHETX_* has for the bet source and Place. Unset =
