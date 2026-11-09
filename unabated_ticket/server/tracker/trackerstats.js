@@ -875,7 +875,7 @@
 
   // ---- Bot tab (tracker.js renderBot; /bot.json from bets_service/bot_report.py) ----
 
-  // The Kalshi bot went live 2026-10-14; a custom Activity range starts no earlier.
+  // The Kalshi bot went live 2026-10-14; a custom Bot tab range starts no earlier.
   const BOT_FIRST_DAY = "2026-10-14";
   const BOT_ACTIVITY_RANGES = ["Today", "Yesterday", "7D", "30D", "All", "Custom"];
 
@@ -889,9 +889,10 @@
   }
 
   /**
-   * The Bot tab's Activity window: {first, last} Pacific days (null for All)
+   * The Bot tab's range window: {first, last} Pacific days (null for All)
    * and the /bot.json query for it, [start of first, start of the day after last).
-   * Unlike the header range it includes today: these are orders, not results.
+   * Unlike the header range it includes today: orders are not results
+   * (Results cap it at yesterday, botResultDays).
    * Custom days are clamped to [BOT_FIRST_DAY, today] and swapped when backwards.
    */
   function botActivityWindow(range, today, custom) {

@@ -821,10 +821,11 @@
     }
     const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, days.first, days.last));
     // All names its first day off the bets the table counts (inDayRange drops a settle with no result).
-    const first = days.first === null ? stats.firstSettledDay(byVenue.kalshi.concat(byVenue.novig)) : days.first;
+    const both = byVenue.kalshi.concat(byVenue.novig);
+    const first = days.first === null ? stats.firstSettledDay(both) : days.first;
     setText("bot-results-caption", (first === null ? "All time" : rangeCaption(first, days.last)) + note);
     const rows = BOT_VENUES.map((v) => ({ label: v.label, total: stats.summarize(byVenue[v.key]) }));
-    rows.push({ label: "Both", total: stats.summarize(byVenue.kalshi.concat(byVenue.novig)), isTotal: true });
+    rows.push({ label: "Both", total: stats.summarize(both), isTotal: true });
     const columns = [
       { label: "Bot", cell: (r) => r.label },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.total.bets) },
@@ -1915,6 +1916,7 @@
       bot = body;
       botError = null;
     } catch (error) {
+      if (query !== botWindow().query) return;
       botError = error.message;
     }
   }

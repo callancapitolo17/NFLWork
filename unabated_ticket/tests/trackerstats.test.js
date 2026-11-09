@@ -506,7 +506,9 @@ test("botActivityWindow: Today, Yesterday, 7D, All and a clamped, swapped Custom
     "?start=" + encodeURIComponent("2026-11-01T07:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-02T08:00:00.000Z"));
   assert.equal(stats.botActivityWindow("Yesterday", "2026-03-09").query,
     "?start=" + encodeURIComponent("2026-03-08T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-03-09T07:00:00.000Z"));
-  assert.equal(stats.botActivityWindow("7D", today).first, "2026-10-29");
+  assert.deepEqual(stats.botActivityWindow("7D", today), { first: "2026-10-29", last: today,
+    query: "?start=" + encodeURIComponent("2026-10-29T07:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-05T08:00:00.000Z") });
+  assert.deepEqual([stats.botActivityWindow("30D", today).first, stats.botActivityWindow("30D", today).last], ["2026-10-06", today]);
   assert.deepEqual(stats.botActivityWindow("All", today), { first: null, last: null, query: "" });
   const custom = stats.botActivityWindow("Custom", today, { first: "2026-12-01", last: "2020-01-01" });
   assert.deepEqual([custom.first, custom.last], ["2026-10-14", today]);

@@ -3039,7 +3039,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   2026-11-09): 7D is today and the 6 days before, so its Results hold 6 days
   where Overview's 7D holds 7, and Today shows none. The range is remembered
   in the browser. **Why it didn't
-  bet** counts distinct lines per decision in the activity range — the log
+  bet** counts distinct lines per decision in the tab's range — the log
   holds a decision only when it changes, so it counts lines, not passes — with
   a bet split by the desk's answer (the money cap, the stop file, ... in
   amber). **Recent orders**: the newest 25 on either venue, the line named by
