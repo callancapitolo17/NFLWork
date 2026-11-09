@@ -1637,10 +1637,12 @@
   }
 
   function renderHeader() {
-    for (const button of document.querySelectorAll(".nav button")) {
+    for (const button of document.querySelectorAll(".nav button, .tabbar button[data-view]")) {
       if (button.dataset.view === state.view) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
+    // The phone bar's More lights up while one of the tabs it holds is open.
+    document.getElementById("tb-more").classList.toggle("on", ["bets", "balances", "bot"].includes(state.view));
     for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
     const liveCount = payload ? liveTickets().length : 0;
     const liveBadge = document.getElementById("live-count");
@@ -1650,6 +1652,11 @@
     const badge = document.getElementById("open-count");
     badge.hidden = !openCount;
     badge.textContent = String(openCount);
+    for (const [id, count] of [["tb-live-count", liveCount], ["tb-open-count", openCount]]) {
+      const tabBadge = document.getElementById(id);
+      tabBadge.hidden = !count;
+      tabBadge.textContent = String(count);
+    }
     const ranged = RANGED_VIEWS.includes(state.view);
     document.getElementById("ranges").hidden = !ranged;
     segButtons("ranges", RANGES, (r) => r === state.range, pickRange);
@@ -1812,14 +1819,19 @@
   }
 
   function wire() {
-    for (const button of document.querySelectorAll(".nav button")) {
-      button.addEventListener("click", () => showView(button.dataset.view));
+    const moreMenu = document.getElementById("tb-more-menu");
+    const moreButton = document.getElementById("tb-more");
+    const setMoreOpen = (open) => { moreMenu.hidden = !open; moreButton.setAttribute("aria-expanded", String(open)); };
+    for (const button of document.querySelectorAll(".nav button, .tabbar button[data-view]")) {
+      button.addEventListener("click", () => { setMoreOpen(false); showView(button.dataset.view); });
     }
+    moreButton.addEventListener("click", () => setMoreOpen(moreMenu.hidden));
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
     document.getElementById("f-reset").addEventListener("click", resetFilters);
     document.addEventListener("click", (event) => {
       const menu = document.getElementById("display-menu");
       if (menu.open && !menu.contains(event.target)) menu.open = false;
+      if (!moreMenu.hidden && !moreMenu.contains(event.target) && !moreButton.contains(event.target)) setMoreOpen(false);
     });
     document.getElementById("f-toggle").addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; render(); });
     document.getElementById("group-by").addEventListener("change", (event) => { state.groupBy = event.target.value; render(); });

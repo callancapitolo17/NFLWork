@@ -2873,12 +2873,20 @@ fairs and removed bets) and `GET /scenarios.json` (the Live tab's game
 cards, from the server runner through the bets service) every 60 s while
 visible. Its one write is the Bets page's Remove / Restore.
 
+- **Layout** (UI pass, Cal 2026-11-09): one system font with tabular figures,
+  neutral grays with one blue accent (green / red mean P&L), one headline tile
+  per page (Net P&L, Analysis P&L). The date range shows only on Overview,
+  Analysis and Bot; $ / Units and Bot combos live in the header's display menu
+  (a dot on it while combos are hidden). On a phone (under 640px) the header
+  scrolls away, the pages are a bottom tab bar (Bets, Balances, Bot under More)
+  and bet tables are two-line cards (`betCards`) grouped by day; Breakdown's
+  group-by is a dropdown.
 - **Today's results stay hidden** (Cal, 2026-10-12): a bet settled on the
   current Pacific day leaves every page until midnight Pacific
   (`trackerstats.hideSettledFrom`, applied once where the tickets are
   built), so there is no running P&L to watch during the day; the first poll
   after midnight brings the day in. Ranges end yesterday (there is no Today
-  range), today's calendar cell reads "Tomorrow", and a bet a book grades
+  range), today's calendar cell stays blank (outlined), and a bet a book grades
   after midnight counts on that later day. Open bets, open EV and the Live
   tab are unaffected. No reveal switch: it's a hard lock in the tracker
   only, so the books' own sites still show results.
@@ -2888,10 +2896,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   actual vs expected chart with daily bars; a 6-week calendar heatmap (click a
   day to filter the whole Overview to it as a one-day Custom range; click it
   again, or pick a range, to go back); daily
-  results; P&L by venue; and **Settled bets**: every bet settled in the
-  header range, newest first, 50 at a time with Show more, under the
-  range's P&L, record, expected and handle (Cal, 2026-10-07; briefly a
-  today-only panel). The Open risk tile links to the Open page.
+  results; P&L by venue; and **Settled bets**: the newest 10 settled in the
+  header range, then 50 more per Show more, with a link to Analysis's full
+  bet log, under the range's P&L, record, expected and handle (Cal,
+  2026-10-07; 10 rows since 2026-11-09). The Open risk tile links to the Open page.
 - **Live** (2026-10-08, Cal's "scenarios" idea): one card per game in
   progress holding open bets, cut into the results that change the money —
   "Chiefs by 2-3: +$410" — with each result's chance and P&L, one ladder
@@ -2956,7 +2964,8 @@ visible. Its one write is the Bets page's Remove / Restore.
   fav / dog, odds, edge, timing, weekday, stake and the number itself under **More
   filters**, and an exact **Price** range in American odds: every value is a chip (on =
   solid with a check, with its bet count in the range), each row has All / None, and
-  Reset filters clears them all; choices last until reload. Clicking a breakdown row,
+  Reset filters clears them all; choices last until reload. The chip rows fold
+  behind a **Filters (N)** button (2026-11-09); the drill path stays on screen. Clicking a breakdown row,
   a pivot cell, or a pivot row or column header keeps only that value, and the
   **drill path** above the filters lists the active filters in the order they were
   set (click a crumb to back up to it, × to drop it, All bets to clear);

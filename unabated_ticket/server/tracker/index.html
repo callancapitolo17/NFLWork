@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0e1218">
+  <meta name="theme-color" content="#0a0b0d">
   <title>Bet Tracker</title>
   <link rel="stylesheet" href="/tracker/tracker.css">
 </head>
@@ -291,6 +291,20 @@
       </section>
     </section>
   </main>
+
+  <!-- Phone only (CSS): the page tabs as a bottom bar; More holds Bets, Balances and Bot. -->
+  <nav class="tabbar" aria-label="Pages">
+    <button type="button" data-view="overview"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 17l5-5 4 3 7-8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Overview</span></button>
+    <button type="button" data-view="live"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/></svg><span>Live</span><b class="tb-badge num" id="tb-live-count" hidden></b></button>
+    <button type="button" data-view="open"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Open</span><b class="tb-badge num" id="tb-open-count" hidden></b></button>
+    <button type="button" data-view="analysis"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 19V11M12 19V5M19 19v-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Analysis</span></button>
+    <button type="button" id="tb-more" aria-expanded="false" aria-controls="tb-more-menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></svg><span>More</span></button>
+    <div class="tb-more-menu" id="tb-more-menu" hidden>
+      <button type="button" data-view="bets">Bets</button>
+      <button type="button" data-view="balances">Balances</button>
+      <button type="button" data-view="bot">Bot</button>
+    </div>
+  </nav>
 
   <script src="/tracker/trackerstats.js"></script>
   <script src="/tracker/tracker.js"></script>
