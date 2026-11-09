@@ -292,6 +292,13 @@ test("live filter: the cards rebuilt without the hidden bets; a teaser keeps or 
   assert.deepEqual(kept("not_origin=Bot&not_venue=BFA"), ["novig:bills"]);
   assert.deepEqual(kept("not_kind=Straight"), ["novig:t1:leg0", "novig:t1:leg1"], "both legs of the teaser");
   assert.deepEqual(kept("not_league=NFL"), []);
+  // Labelled as the page labels them: an Attach pin's league and an unmatchable leg change nothing.
+  const pinned = { ...straightBet("pinned", { league: "nfl", leagueFromPin: true }) };
+  const propParlay = [straightBet("p:leg0", { isParlayLeg: true, parlayId: "novig:p", legIndex: 0, legCount: 2 }),
+    straightBet("p:leg1", { isParlayLeg: true, parlayId: "novig:p", legIndex: 1, legCount: 2, league: "nba", unmatchable: "not a game" })];
+  const labelled = (query) => scenarios.recordsInFilter([pinned, ...propParlay], scenarios.liveFilterOf(new URLSearchParams(query))).map((record) => record.id);
+  assert.deepEqual(labelled("not_league=Unknown"), ["novig:p:leg0"], "the page has no league for the pinned bet");
+  assert.deepEqual(labelled("not_league=Mixed"), ["novig:pinned"], "the parlay reads Mixed on the page; its unmatchable leg is never on a card");
   const games = gamesOf(billsChiefs());
   const mine = scenarios.buildScenarios({ records: scenarios.recordsInFilter(records, scenarios.liveFilterOf(new URLSearchParams("not_origin=Bot&not_kind=Teaser"))), games, now: NOW });
   assert.deepEqual(mine.games[0].bets.map((bet) => bet.id), ["novig:bills"]);

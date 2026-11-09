@@ -33,11 +33,7 @@
 //   a card, so the tracker can list the rest on their own. A game Unabated
 //   marks final gets no card: its open bets (still awaiting settlement) go to
 //   `finishedBetIds` instead, so the tracker leaves them off the Live tab.
-//
-// The Live tab's filters (liveFilterOf, recordsInFilter): the tracker sends
-// the ticket values it hides (origin Bot / Other, venue, league, type) and the
-// runner builds the cards again from only those bets, so each ladder's P&L,
-// range and EV count just the bets the page shows.
+//   The Live tab's filters: liveFilterOf / recordsInFilter below.
 // Side effects: none.
 
 "use strict";
@@ -61,8 +57,8 @@ const KIND_TEASER = "teaser";
 const KIND_PARLAY = "parlay";
 // Two P&L values within a cent are the same band.
 const SAME_PNL_TOLERANCE = 0.005;
-// The Live tab's filters (Cal, 2026-11-09): each a trackerstats ticket field,
-// matched the way the tracker labels it (a missing value is "Unknown").
+// The Live tab's filters (Cal, 2026-11-09), each a trackerstats ticket field;
+// "Unknown" is the tracker's label for a missing value (tracker.js groupValue).
 const LIVE_FILTER_FIELDS = ["origin", "venue", "league", "kind"];
 const UNKNOWN_VALUE = "Unknown";
 const HIDE_PREFIX = "not_";
@@ -345,15 +341,23 @@ function liveFilterOf(params) {
   return Object.keys(filter).length ? filter : null;
 }
 
-/** The open records of the tickets the filter keeps (every leg of a kept parlay or teaser). */
+/**
+ * The open records of the tickets the filter keeps (every leg of a kept parlay
+ * or teaser). Tickets are labelled the way the tracker labels its own: off
+ * every open record, unmatchable legs included, and without the league an
+ * Attach pin filled in (bets.applyPins), which the page's /bets.json lacks,
+ * so a "Mixed" or "Unknown" ticket reads the same on both sides.
+ */
 function recordsInFilter(records, filter) {
-  const open = (records || []).filter(isOpen);
+  const asThePageReadsIt = (records || [])
+    .filter((record) => record && record.status === "open" && !record.mergedInto)
+    .map((record) => (record.leagueFromPin ? { ...record, league: null } : record));
   const keptIds = new Set();
-  for (const ticket of trackerstats.buildTickets(open, [], [], [])) {
+  for (const ticket of trackerstats.buildTickets(asThePageReadsIt, [], [], [])) {
     const hidden = Object.entries(filter).some(([field, values]) => values.has(ticket[field] || UNKNOWN_VALUE));
     if (!hidden) for (const id of ticket.betIds) keptIds.add(id);
   }
-  return open.filter((record) => keptIds.has(record.id));
+  return (records || []).filter((record) => isOpen(record) && keptIds.has(record.id));
 }
 
-module.exports = { buildScenarios, liveFilterOf, recordsInFilter, LIVE_FILTER_FIELDS, marginLabel, totalLabel, mergeBands, bandProb, RESULT_WON, RESULT_LOST, RESULT_PUSH };
+module.exports = { buildScenarios, liveFilterOf, recordsInFilter, marginLabel, totalLabel, mergeBands, bandProb, RESULT_WON, RESULT_LOST, RESULT_PUSH };
