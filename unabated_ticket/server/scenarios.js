@@ -33,6 +33,7 @@
 //   a card, so the tracker can list the rest on their own. A game Unabated
 //   marks final gets no card: its open bets (still awaiting settlement) go to
 //   `finishedBetIds` instead, so the tracker leaves them off the Live tab.
+//   The Live tab's filters: liveFilterOf / recordsInFilter below.
 // Side effects: none.
 
 "use strict";
@@ -41,6 +42,7 @@ const betsLib = require("../extension/bets.js");
 const condkelly = require("../extension/condkelly.js");
 const ladderLib = require("../extension/ladder.js");
 const gamescore = require("./gamescore.js");
+const trackerstats = require("./tracker/trackerstats.js");
 
 const AXIS_MARGIN = betsLib.AXIS_MARGIN;
 const AXIS_TOTAL = betsLib.AXIS_TOTAL;
@@ -55,6 +57,12 @@ const KIND_TEASER = "teaser";
 const KIND_PARLAY = "parlay";
 // Two P&L values within a cent are the same band.
 const SAME_PNL_TOLERANCE = 0.005;
+// The Live tab's filters (Cal, 2026-11-09), each a trackerstats ticket field;
+// "Unknown" is the tracker's label for a missing value (tracker.js groupValue).
+const LIVE_FILTER_FIELDS = ["origin", "venue", "league", "kind"];
+const UNKNOWN_VALUE = "Unknown";
+const HIDE_PREFIX = "not_";
+const HTTP_BAD_REQUEST = 400;
 
 function isOpen(record) {
   return Boolean(record) && record.status === "open" && !record.unmatchable && !record.mergedInto;
@@ -309,4 +317,47 @@ function buildScenarios({ records, games, now }) {
   return { games: cards, coveredBetIds: Array.from(covered).sort(), finishedBetIds: Array.from(finished).sort() };
 }
 
-module.exports = { buildScenarios, marginLabel, totalLabel, mergeBands, bandProb, RESULT_WON, RESULT_LOST, RESULT_PUSH };
+/**
+ * The Live tab's filter off /scenarios.json's query, or null when it sets none:
+ * {field: Set of values to hide}. Each `not_<field>` key (field one of
+ * LIVE_FILTER_FIELDS) may repeat (`not_venue=BFA&not_venue=Wagerzon`) and
+ * hides the tickets whose value is one of its values, the way the tracker's
+ * chips switch values off, so a value new since the page last read shows.
+ * Any other key is a 400.
+ */
+function liveFilterOf(params) {
+  const filter = {};
+  for (const [key, value] of params) {
+    const field = key.startsWith(HIDE_PREFIX) ? key.slice(HIDE_PREFIX.length) : null;
+    if (!LIVE_FILTER_FIELDS.includes(field)) {
+      const expected = LIVE_FILTER_FIELDS.map((name) => HIDE_PREFIX + name).join(", ");
+      const error = new Error(`unknown /scenarios.json filter ${JSON.stringify(key)}; expected one of ${expected}`);
+      error.status = HTTP_BAD_REQUEST;
+      throw error;
+    }
+    if (!filter[field]) filter[field] = new Set();
+    filter[field].add(value);
+  }
+  return Object.keys(filter).length ? filter : null;
+}
+
+/**
+ * The open records of the tickets the filter keeps (every leg of a kept parlay
+ * or teaser). Tickets are labelled the way the tracker labels its own: off
+ * every open record, unmatchable legs included, and without the league an
+ * Attach pin filled in (bets.applyPins), which the page's /bets.json lacks,
+ * so a "Mixed" or "Unknown" ticket reads the same on both sides.
+ */
+function recordsInFilter(records, filter) {
+  const asThePageReadsIt = (records || [])
+    .filter((record) => record && record.status === "open" && !record.mergedInto)
+    .map((record) => (record.leagueFromPin ? { ...record, league: null } : record));
+  const keptIds = new Set();
+  for (const ticket of trackerstats.buildTickets(asThePageReadsIt, [], [], [])) {
+    const hidden = Object.entries(filter).some(([field, values]) => values.has(ticket[field] || UNKNOWN_VALUE));
+    if (!hidden) for (const id of ticket.betIds) keptIds.add(id);
+  }
+  return (records || []).filter((record) => isOpen(record) && keptIds.has(record.id));
+}
+
+module.exports = { buildScenarios, liveFilterOf, recordsInFilter, marginLabel, totalLabel, mergeBands, bandProb, RESULT_WON, RESULT_LOST, RESULT_PUSH };
