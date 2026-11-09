@@ -205,8 +205,9 @@ def test_out_of_cash_waits_for_a_cash_read_after_the_refusal(setup):
     # A failed read is no read: nothing sent.
     cash["reading"] = {"cash": 400.0, "fetchedAt": (NOW + timedelta(seconds=20)).isoformat(), "error": "HTTP 500"}
     assert place_at(21, 2)["status"] == "no_cash" and len(client.placed) == 1
-    # $5 is back: the order is cut to it, then the desk is back to normal.
+    # $5 is back: the card stops saying out of cash at once; the order is cut to it, then the desk is back to normal.
     cash["reading"] = {"cash": 5.0, "fetchedAt": (NOW + timedelta(seconds=30)).isoformat(), "error": None}
+    assert desk.cash_short_detail() is None
     place_at(31, 3, qty=300000)
     assert client.placed[-1][2] == 1075  # $5 at 0.465 = 1075 1c contracts
     assert desk.cash_short_detail() is None

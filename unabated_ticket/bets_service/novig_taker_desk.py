@@ -86,6 +86,8 @@ OPEN_COST_CEILING = 850.0
 BOT_ACCOUNT_NAME = "bot"
 # Novig's 422 code for an order the subaccount's cash cannot pay for.
 NOVIG_INSUFFICIENT_BALANCE_CODE = "INSUFFICIENT_BALANCE"
+# A Novig contract pays 1c, so none costs more than this: a wallet holding it pays for one at any price.
+MAX_CONTRACT_COST_DOLLARS = 0.01
 REFRESH_SEC = 30
 MAX_DECISION_AGE_SEC = 60
 # The stake is conditional on the held Novig bets: the app poll is 60 s, the subaccount poll 30 s.
@@ -317,11 +319,14 @@ class NovigTakerDesk:
 
     def cash_short_detail(self) -> str | None:
         """Why the desk is waiting on cash (the Bot tab's "Out of cash"), or None
-        when it is not. Reads no lock: two attribute reads, for /bot.json."""
+        when it is not, or when a reading since the refusal already pays for a
+        contract (the next order goes). Reads no lock, for /bot.json."""
         refused_at = self._cash_refused_at
         if refused_at is None:
             return None
         cash = self._cash_read_since_refusal()
+        if cash is not None and cash >= MAX_CONTRACT_COST_DOLLARS:
+            return None
         shown = "no cash read since" if cash is None else f"${cash:.2f} in the bot subaccount since"
         return f"{shown} Novig refused an order for cash at {refused_at.isoformat(timespec='seconds')}"
 
