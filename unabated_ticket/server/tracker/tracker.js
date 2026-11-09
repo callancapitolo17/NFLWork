@@ -819,10 +819,10 @@
       fill("bot-results", emptyNote("Today's results show after midnight Pacific."));
       return;
     }
-    const botTickets = stats.botTicketsByVenue(tickets);
-    const first = days.first === null ? stats.firstSettledDay(botTickets.kalshi.concat(botTickets.novig)) || days.last : days.first;
-    setText("bot-results-caption", rangeCaption(first, days.last) + note);
-    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, first, days.last));
+    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, days.first, days.last));
+    // All names its first day off the bets the table counts (inDayRange drops a settle with no result).
+    const first = days.first === null ? stats.firstSettledDay(byVenue.kalshi.concat(byVenue.novig)) : days.first;
+    setText("bot-results-caption", (first === null ? "All time" : rangeCaption(first, days.last)) + note);
     const rows = BOT_VENUES.map((v) => ({ label: v.label, total: stats.summarize(byVenue[v.key]) }));
     rows.push({ label: "Both", total: stats.summarize(byVenue.kalshi.concat(byVenue.novig)), isTotal: true });
     const columns = [
@@ -1904,11 +1904,14 @@
 
   // The Bot tab's read; a failure keeps the last one and says why.
   async function refreshBot() {
+    const query = botWindow().query;
     try {
-      const response = await fetch(BOT_URL + botWindow().query, { cache: "no-store" });
+      const response = await fetch(BOT_URL + query, { cache: "no-store" });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
       if (!body || !Array.isArray(body.bots) || !Array.isArray(body.recentOrders)) throw new Error("bot.json has no bots list");
+      // A reply for a range picked away from while it was in flight would draw under the new range's caption.
+      if (query !== botWindow().query) return;
       bot = body;
       botError = null;
     } catch (error) {

@@ -501,6 +501,11 @@ test("botActivityWindow: Today, Yesterday, 7D, All and a clamped, swapped Custom
   const yesterdayWin = stats.botActivityWindow("Yesterday", today);
   assert.deepEqual([yesterdayWin.first, yesterdayWin.last], ["2026-11-03", "2026-11-03"]);
   assert.equal(yesterdayWin.query, "?start=" + encodeURIComponent("2026-11-03T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-04T08:00:00.000Z"));
+  // DST: the fall-back day is 25 hours, the spring-forward day 23.
+  assert.equal(stats.botActivityWindow("Yesterday", "2026-11-02").query,
+    "?start=" + encodeURIComponent("2026-11-01T07:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-02T08:00:00.000Z"));
+  assert.equal(stats.botActivityWindow("Yesterday", "2026-03-09").query,
+    "?start=" + encodeURIComponent("2026-03-08T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-03-09T07:00:00.000Z"));
   assert.equal(stats.botActivityWindow("7D", today).first, "2026-10-29");
   assert.deepEqual(stats.botActivityWindow("All", today), { first: null, last: null, query: "" });
   const custom = stats.botActivityWindow("Custom", today, { first: "2026-12-01", last: "2020-01-01" });

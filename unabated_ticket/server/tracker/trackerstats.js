@@ -899,8 +899,7 @@
     let first;
     let last = today;
     if (range === "Today") first = today;
-    else if (range === "Yesterday") { first = addDays(today, -1); last = first; }
-    else if (RANGE_DAYS[range]) first = addDays(today, 1 - RANGE_DAYS[range]);
+    else if (range === "Yesterday" || RANGE_DAYS[range]) ({ first, last } = rangeBounds(range, today));
     else if (range === "Custom") {
       const clamp = (day) => (day < BOT_FIRST_DAY ? BOT_FIRST_DAY : day > today ? today : day);
       first = clamp(custom && isDayKey(custom.first) ? custom.first : today);
