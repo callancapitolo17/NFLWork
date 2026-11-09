@@ -4067,26 +4067,39 @@ price and types the stake shown above it. The link goes when the line leaves
 the Edges list. Phone page only; the bet comes back into `/bets.json` through
 the Underdog source below.
 
-### Underdog source (`bets_service/sources/underdog.py`, `underdog_auth.py`, 2026-11-07)
+### Underdog source (`extension/underdog.js`, `underdogpage.js`, `bets_service/sources/underdog.py`; 2026-11-07, read from Chrome since 2026-11-09)
 
-Underdog has no API for its prediction markets, so the bets service reads
+Underdog has no API for its prediction markets, so Cal's slips are read off
 the private endpoints Underdog's own web app reads for its Live and Results
-pages, on a login of its own. Cal chose this knowing Underdog's terms ban
-scripted access: reads only, his own account, one poll a minute.
+pages. Cal chose this knowing Underdog's terms ban scripted access: reads
+only, his own account. Pushed like Bet105 and DraftKings: the VM cannot hold a
+login, because Underdog's login server (`login.underdogsports.com`) answers a
+script with a Cloudflare bot wall, token refreshes included (2026-11-09).
 
-- **Login:** `python -m unabated_ticket.bets_service.sources.underdog_auth connect`
-  once (on the VM: `deploy/README.md` step 15). Email and password at a prompt
-  go to Auth0's password grant on the web app's public client
-  (`login.underdogsports.com`, the grant the app itself uses); only the
-  refresh token is saved (`UNDERDOG_TOKEN_PATH`, 0600, gitignored), rewritten
-  when Auth0 rotates it. Its own chain, so the phone app and Chrome stay
-  logged in. Access tokens live 10 minutes; reads need no location headers.
-- **Reads:** every 60 s, `GET api.underdogfantasy.com/v10/user/active_entry_slips`
-  and the newest `settled_entry_slips?page=N` page (15 a page, newest made
-  first); further pages only to find a slip the store holds open (the list is
-  ordered by when a slip was made, not settled), at most 20 a poll; 30 days back
-  on the first poll after a boot. A held slip the walk passes without seeing
-  is `closed` with no result, never guessed.
+- **What Cal keeps open:** Chrome on the Mac with the extension and one
+  `app.underdogsports.com` tab, logged in. The side panel need not be open:
+  the service worker (`background.js`) reads on an alarm every 2 minutes.
+  With no tab the Bets tab's Underdog row reads red with the fix.
+- **Login:** never touched. `underdogpage.js` (MAIN world, document_start on
+  the Underdog tab) keeps the read headers of the newest request the app sent
+  to `api.underdogfantasy.com`: `Authorization` (the app's 10-minute JWT),
+  `Client-Type`, `Client-Version` (an old one answers 426) and
+  `Client-Device-Id`; the app's location headers are not sent. The app
+  refreshes its own token only when it makes a request, so when the kept token
+  has under a minute left the worker reloads the tab (the app logs itself back
+  in on load), at most every 5 minutes and never while Cal is looking at it,
+  then reads again. The app's rotating refresh token is never used, so
+  nothing logs out.
+- **Reads:** in the tab, `GET /v10/user/active_entry_slips` and
+  `settled_entry_slips?page=N` (15 a page, newest made first) from page 1
+  until the list ends, a page reaches slips made over 31 days ago, or 20
+  pages. Each page is cut to its prediction slips and the options, lines,
+  markets, games and teams they name (a whole page is ~600 KB; Cal's push is
+  ~10 KB). One `POST /underdog.json` `{fetchedAt, active, settled, complete}`;
+  a failed read posts `{error}` (a failed run, the records stand). A held slip
+  the pages passed without seeing (every one, when the list ended) is
+  `closed` with no result, never guessed; one placed over 31 days ago stays
+  as it was.
 - **Records:** prediction slips only (product `prediction_markets`; pick'em
   is skipped). One record per slip, `underdog:<slip id>`: stake = the entry
   fee, toWin = the contracts it holds ($1 each) less the fee, price the
@@ -4095,12 +4108,12 @@ scripted access: reads only, his own account, one poll a minute.
   game, NFL/CFB/NBA/CBB/WNBA/MLB/NHL. A combo, a prop, a period market or
   another league is unmatchable; a game line that does not read is flagged
   as a code fix.
-- **Grades:** off what the slip paid, since no settled prediction slip had
-  been seen when this was built: nothing lost, its contracts won, its fee back
-  void, anything else a cash-out (`closed`, `pnl` = payout less stake, which the
-  Tracker counts); no payout field is `unknown`. Anything on the active list is
-  open. A settled answer that leaves the game out keeps the stored game fields.
-  Check the first few settled slips against the app.
+- **Grades:** off what the slip paid: nothing lost, its contracts won (Cal's
+  $1 49ers slip settled with payout 1.23 = its contracts, 2026-11-09), its fee
+  back void, anything else a cash-out (`closed`, `pnl` = payout less stake,
+  which the Tracker counts); no payout field is `unknown`. Anything on the
+  active list is open. A settled answer that leaves the game out keeps the
+  stored game fields.
 - **Bets tab / Tracker:** a venue row `underdog` and the name "Underdog".
 
 ### Open at BetOnline on the phone Ticket (`server/phone/phoneview.js`, 2026-11-06)

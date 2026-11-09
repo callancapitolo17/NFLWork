@@ -7,11 +7,17 @@
 // notifications (the panel creates them; a click focuses the Unabated tab
 // and points page.js at the row through locate.js, same path as a row click).
 //
+// It also reads Cal's Underdog slips every few minutes (2026-11-09, below):
+// in his own app.underdogsports.com tab, on the app's own login, POSTed to the
+// bets service — here rather than in the panel so it runs with the panel
+// closed (Cal uses the phone page; Chrome on the Mac just has to be open).
+//
 // Side effects: writes chrome.storage.local {locate, locateResult} via
 // locate.js; clears the clicked notification; on install/reload re-injects
-// page.js + content.js into Unabated tabs that are already open.
+// page.js + content.js into Unabated tabs that are already open; POSTs
+// /underdog.json to the bets service and may reload an idle Underdog tab.
 
-importScripts("locate.js");
+importScripts("locate.js", "underdog.js");
 
 // Chrome injects content scripts only into pages loaded after the extension
 // (re)loads; a tab that was already open keeps a dead copy whose storage
@@ -62,3 +68,99 @@ chrome.notifications.onClicked.addListener(async (notificationId) => {
     console.error("[unabated-ticket] notification click failed", error);
   }
 });
+
+
+// ---- Underdog (read in Cal's tab, stored by the service) ---------------------
+//
+// On an alarm every underdog.POLL_MINUTES: run the read in the first
+// app.underdogsports.com tab (underdogpage.js, MAIN world) and POST what it
+// returns to the bets service. The read reuses the headers the app last sent;
+// when they have expired (the app refreshes only when it makes a request, so
+// an idle tab's 10-minute token lapses) the tab is reloaded so the app logs
+// itself back in — at most every RELOAD_MIN_MS and never while Cal is looking
+// at it — then read again. A failed read is POSTed as an error so the Bets
+// tab's Underdog row turns red with the fix; nothing half-read is pushed.
+const underdog = globalThis.UnabatedUnderdog;
+const UNDERDOG_ALARM = "underdog-read";
+const UNDERDOG_RETRY_EVERY_MS = 3 * 1000;
+let underdogBusy = false;
+
+function ensureUnderdogAlarm() {
+  chrome.alarms.get(UNDERDOG_ALARM).then((alarm) => {
+    if (!alarm) chrome.alarms.create(UNDERDOG_ALARM, { periodInMinutes: underdog.POLL_MINUTES, delayInMinutes: 0.1 });
+  }).catch((error) => console.error("[unabated-ticket] underdog: alarm setup failed", error));
+}
+ensureUnderdogAlarm();
+chrome.runtime.onStartup.addListener(ensureUnderdogAlarm);
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== UNDERDOG_ALARM) return;
+  pollUnderdog().catch((error) => console.error("[unabated-ticket] underdog poll failed", error));
+});
+
+async function postUnderdog(body) {
+  const stored = await chrome.storage.local.get("betsSettings");
+  const response = await fetch(`${underdog.serviceUrlOf(stored.betsSettings)}${underdog.SERVICE_PATH}`, {
+    method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    signal: AbortSignal.timeout(underdog.FETCH_TIMEOUT_MS),
+  });
+  const reply = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(`bets service answered HTTP ${response.status}${reply && reply.error ? `: ${reply.error}` : ""}`);
+  return reply;
+}
+
+// What the tab's read returned; {missing: true} when underdogpage.js is not in
+// the tab (it was open before the extension loaded).
+async function readInTab(tabId) {
+  const [injection] = await chrome.scripting.executeScript({
+    target: { tabId }, world: "MAIN",
+    func: () => (typeof globalThis.__unabatedUnderdogRead === "function" ? globalThis.__unabatedUnderdogRead() : { missing: true }),
+  });
+  return (injection && injection.result) || { error: "the Underdog tab returned nothing" };
+}
+
+async function reloadAndRead(tabId) {
+  await chrome.storage.session.set({ underdogLastReloadAt: Date.now() });
+  await chrome.tabs.reload(tabId);
+  const deadline = Date.now() + underdog.RELOAD_WAIT_MS;
+  let result = { error: underdog.STALE, stale: true };
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, UNDERDOG_RETRY_EVERY_MS));
+    try {
+      result = await readInTab(tabId);
+    } catch (error) {
+      result = { error: `the Underdog tab is still loading: ${error.message}` };
+      continue;
+    }
+    if (!result.stale && !result.missing) return result;
+  }
+  return result.missing ? { error: "the Underdog tab did not load the extension's reader — reload it" } : result;
+}
+
+async function pollUnderdog() {
+  if (underdogBusy) return;
+  underdogBusy = true;
+  try {
+    const [tab] = await chrome.tabs.query({ url: underdog.APP_TAB_PATTERN });
+    if (!tab) {
+      await postUnderdog(underdog.errorBody(underdog.NO_TAB));
+      return;
+    }
+    let result = await readInTab(tab.id);
+    if (result.stale || result.missing) {
+      const appWindow = await chrome.windows.get(tab.windowId).catch(() => null);
+      const { underdogLastReloadAt } = await chrome.storage.session.get("underdogLastReloadAt");
+      if (underdog.mayReload(tab, Boolean(appWindow && appWindow.focused), underdogLastReloadAt || 0, Date.now())) {
+        result = await reloadAndRead(tab.id);
+      } else if (result.missing) {
+        result = { error: "the Underdog tab was open before the extension loaded — reload it" };
+      }
+    }
+    await postUnderdog(result.push || underdog.errorBody(result.error));
+  } catch (error) {
+    console.warn("[unabated-ticket] underdog:", error.message);
+    await postUnderdog(underdog.errorBody(error.message)).catch(() => {});
+  } finally {
+    underdogBusy = false;
+  }
+}

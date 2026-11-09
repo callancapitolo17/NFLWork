@@ -1,49 +1,51 @@
-"""Underdog bet source: the account's prediction-market entries -> normalised bet records,
-read on the service's own Underdog login (sources/underdog_auth.py).
+"""Underdog bet source: the account's prediction-market slips -> normalised bet records,
+PUSHED by the extension (POST /underdog.json), which reads them on the Underdog web
+app's own login in Cal's Chrome (extension/underdog.js, underdogpage.js).
 
 Underdog has no public API for its prediction markets (UDX's participant API is
-approval-gated), so this reads the same private endpoints Underdog's web app reads
-for its Live and Results pages. Cal chose this knowing Underdog's terms ban scripted
-access (2026-11-07): reads only, his own account, one poll a minute.
+approval-gated), so the extension reads the same private endpoints the web app reads
+for its Live and Results pages, with the headers the app itself just sent. Cal chose
+this knowing Underdog's terms ban scripted access (2026-11-07): reads only, his own
+account. Not from the VM: Underdog's login server answers a script with a Cloudflare
+bot wall (2026-11-09, refresh grants too), and getting past one is not built.
 
-Two halves, like sources/prophetx.py:
-  normalize_underdog(pages, fetched_at)  pure: the slips of every page read -> records.
-                                         Pinned by tests/test_underdog.py.
-  UnderdogSource                         the network half (Source protocol).
+Pure: validate_push + records_of_push turn one push into records; pinned by
+tests/test_underdog.py.
 
-Endpoints (captured from Cal's logged-in Chrome, 2026-11-07; only the bearer token is
-required, no location headers — tested both ways):
+Endpoints (captured from Cal's logged-in Chrome, 2026-11-07 / 11-09):
   GET api.underdogfantasy.com/v10/user/active_entry_slips             every open slip
   GET api.underdogfantasy.com/v10/user/settled_entry_slips?page=N     15 per page, newest
                                                                       created first; meta
                                                                       {count, items, next, page}
 Each answer is {data: {entry_slips, games, teams, over_under_lines, over_under_options,
 over_unders, appearances, ...}, meta}: the slips plus every game, team, line and option
-they name, so each page is read on its own lookups.
+they name, so each page is read on its own lookups. A settled page is ~600 KB whole, so
+the extension sends only the prediction slips and the lookups they name.
 
-Wire grammar (one live $1 prediction slip, 2026-11-07, plus the app's NFL board):
+Wire grammar (Cal's $1 49ers prediction slip, open 2026-11-07 and settled 2026-11-09):
   slip    {id, product ("prediction_markets"; "fantasy" = pick'em, skipped), type
-          ("Prediction"), status ("active" | "settled"), fee (stake, dollars),
-          payout (dollars paid at settlement), created_at, payout_at,
-          prediction {contract_quantity (= dollars paid if it wins), trade_cost,
-          total_fees}, selection_groups [{match_id, match_type "Game", selections
-          [{option_id, payout_multiplier, result ("pending")}]}]}
+          ("Prediction"), status ("active" | "settled"), display_result ("won"), fee
+          (stake, dollars), payout (dollars paid at settlement: "1.23" on the win),
+          created_at, payout_at, prediction {contract_quantity (= dollars paid if it
+          wins), open_contract_quantity, trade_cost, total_fees}, selection_groups
+          [{match_id, match_type "Game", selections [{option_id, payout_multiplier,
+          result ("pending" | "won")}]}]}
   option  (over_under_options) {id, over_under_line_id, choice ("home" | "away" on a
           moneyline or spread, "higher" | "lower" on a total), choice_display
           ("49ers to win", "CIN -3.5", "Higher"), american_price, decimal_price}
   line    (over_under_lines) {id, over_under_id, provider_id "udx", stat_value (the
-          total, or the spread's size unsigned: "3.5")}
+          total, or the spread's size unsigned: "3.5"; null on a moneyline)}
   over_under {id, title ("LV @ SF Moneyline", "CIN @ ATL Spread", "CIN @ ATL Total
           Points O/U"), appearance_stat {stat: "moneyline" | "spread" | "points"}}
   game    {id, sport_id ("NFL"), away_team_id, home_team_id, scheduled_at (UTC)}
   team    {id, name ("San Francisco 49ers")}
-Unseen until a slip settles or is cashed out: the grade fields. Every slip the active list
-returns is open, whatever its status word. A settled slip is graded off its money, which
-the slip states whatever the words: payout 0 lost, payout equal to contract_quantity won,
-payout equal to the stake void (refunded); any other payout is a cash-out, `closed` with
-`pnl` = payout - stake (the Tracker's closed-bet money); a settled slip with no payout field
-is `unknown`. A slip the store holds open that neither list returns, once the settled walk
-has passed the time it was placed, is `closed` with no result (the Bet105 rule).
+Every slip the active list returns is open, whatever its status word. A settled slip is
+graded off its money, which the slip states whatever the words: payout 0 lost, payout
+equal to contract_quantity won, payout equal to the stake void (refunded); any other
+payout is a cash-out, `closed` with `pnl` = payout - stake (the Tracker's closed-bet
+money); a settled slip with no payout field is `unknown`. A slip the store holds open
+that neither list returns, once the settled pages have passed the time it was placed,
+is `closed` with no result (the Bet105 rule).
 
 Record conventions: one record per slip, id "underdog:<slip id>"; stake = fee (what left
 the wallet), toWin = contract_quantity - fee, price = the American price of that ratio
@@ -51,36 +53,21 @@ the wallet), toWin = contract_quantity - fee, price = the American price of that
 unmatchable record with its picks in raw. awayKey / homeKey stay None — the extension
 resolves the names through teams.js.
 
-Outputs: records. Side effects: network reads only. Raises on a failed or malformed read
-(the service keeps the previous records and logs the failed run).
+Outputs: records. Side effects: none (the service stores them).
 """
-import logging
 import re
-import time
-from collections.abc import Callable
 from datetime import datetime, timezone
 
-import requests
-
-from unabated_ticket.bets_service import config
 from unabated_ticket.bets_service.normalize import (
     EASTERN, json_clean, mark_parse_failed, parse_iso_ms, round_cents, to_number, utc_now_iso)
 from unabated_ticket.bets_service.sources.betonline import american_from_payout
-from unabated_ticket.bets_service.sources.underdog_auth import UnderdogAuth
-
-log = logging.getLogger(__name__)
 
 SOURCE = "underdog_api"
 VENUE = "underdog"
-API_BASE_URL = "https://api.underdogfantasy.com"
-ACTIVE_PATH = "/v10/user/active_entry_slips"
-SETTLED_PATH = "/v10/user/settled_entry_slips"
-# The web app's build stamp on 2026-11-07; any value was accepted, so it is a constant.
-CLIENT_VERSION = "20261106182101"
-HTTP_TIMEOUT_SEC = 20
-# A poll reads at most this many settled pages (15 slips each), so one slip the walk
-# cannot place never holds the shared poll lane for long.
+# A push carries at most this many settled pages (15 slips each; the extension's own
+# cap, extension/underdog.js MAX_SETTLED_PAGES) and slips.
 MAX_SETTLED_PAGES = 20
+MAX_SLIPS_PER_PUSH = 500
 PRODUCT_PREDICTION = "prediction_markets"
 # Underdog sport_id -> the extension's league path (feed.LEAGUES).
 LEAGUES = {"NFL": "nfl", "CFB": "cfb", "NBA": "nba", "CBB": "cbb", "WNBA": "wnba", "MLB": "mlb", "NHL": "nhl"}
@@ -318,99 +305,65 @@ def closed_by_absence(stored: dict[str, dict], seen_ids: set[str], placed_before
     return closed
 
 
-# ---- network half -----------------------------------------------------------------
+# ---- one push -----------------------------------------------------------------------
+
+def _validate_page(name: str, page: object) -> str | None:
+    if not isinstance(page, dict) or not isinstance(page.get("data"), dict):
+        return f"{name} must be an answer object with data"
+    data = page["data"]
+    if not isinstance(data.get("entry_slips"), list) or not all(isinstance(slip, dict) for slip in data["entry_slips"]):
+        return f"{name}.data.entry_slips must be a list of objects"
+    for key in ("over_under_options", "over_under_lines", "over_unders", "games", "teams"):
+        if key in data and not isinstance(data[key], list):
+            return f"{name}.data.{key} must be a list, got {type(data[key]).__name__}"
+    return None
+
+
+def validate_push(body: object) -> dict | str:
+    """{fetchedAt, active, settled, complete} or {error} of a POST /underdog.json body, or
+    what is wrong with it. A push is the whole active list plus the settled pages read from
+    page 1, or it is an error — never half (a half push would close open slips)."""
+    if not isinstance(body, dict):
+        return f"body must be an object, got {type(body).__name__}"
+    if "error" in body:
+        if not isinstance(body["error"], str) or not body["error"].strip():
+            return "error must be a non-empty string"
+        return {"error": body["error"].strip()}
+    fetched_at = body.get("fetchedAt")
+    if not isinstance(fetched_at, str) or parse_iso_ms(fetched_at) is None:
+        return f"fetchedAt must be an ISO time, got {fetched_at!r}"
+    problem = _validate_page("active", body.get("active"))
+    if problem:
+        return problem
+    settled = body.get("settled")
+    if not isinstance(settled, list) or not 1 <= len(settled) <= MAX_SETTLED_PAGES:
+        return f"settled must be a list of 1 to {MAX_SETTLED_PAGES} pages"
+    for index, page in enumerate(settled):
+        problem = _validate_page(f"settled[{index}]", page)
+        if problem:
+            return problem
+    if not isinstance(body.get("complete"), bool):
+        return f"complete must be true or false, got {body.get('complete')!r}"
+    slip_count = sum(len(page["data"]["entry_slips"]) for page in [body["active"]] + settled)
+    if slip_count > MAX_SLIPS_PER_PUSH:
+        return f"at most {MAX_SLIPS_PER_PUSH} slips per push, got {slip_count}"
+    return {"fetchedAt": fetched_at, "active": body["active"], "settled": settled, "complete": body["complete"]}
+
 
 def _oldest_created_ms(slips: list[dict]) -> int | None:
-    """Epoch ms of the oldest slip created on a settled page (they come newest first)."""
     stamps = [parse_iso_ms(slip["created_at"]) for slip in slips if isinstance(slip.get("created_at"), str)]
     stamps = [stamp for stamp in stamps if stamp is not None]
     return min(stamps) if stamps else None
 
 
-class UnderdogSource:
-    """Polls the account's Underdog prediction slips on the service's own login.
-
-    Each poll reads every active slip and the newest settled page, then further
-    settled pages (newest made first) while any slip the store still holds open was
-    placed before the oldest slip read so far — a slip settles late, and the list is
-    ordered by when it was made. The first poll after a boot also reads back
-    `history_days`. A stored open slip the walk passes without seeing is closed with
-    no result. At most MAX_SETTLED_PAGES pages a poll.
-    """
-
-    name = VENUE
-
-    def __init__(self, auth: UnderdogAuth, known_records: Callable[[], dict[str, dict]] = dict,
-                 poll_sec: float = config.UNDERDOG_POLL_SEC, history_days: int = config.UNDERDOG_HISTORY_DAYS,
-                 session: requests.Session | None = None, clock: Callable[[], float] = time.time):
-        """`known_records`: the stored Underdog records by id (store.load_records_of_venue)."""
-        self.poll_sec = poll_sec
-        self._auth = auth
-        self._known_records = known_records
-        self._history_days = history_days
-        self._session = session or requests.Session()
-        self._clock = clock
-        self._read_history = False
-
-    def _get(self, path: str, params: dict | None = None) -> dict:
-        reply = self._session.get(API_BASE_URL + path, params=params, headers=self._headers(), timeout=HTTP_TIMEOUT_SEC)
-        if reply.status_code == 401:
-            # A token Underdog refused before its expiry: refresh once and retry.
-            self._auth.forget()
-            reply = self._session.get(API_BASE_URL + path, params=params, headers=self._headers(),
-                                      timeout=HTTP_TIMEOUT_SEC)
-        if reply.status_code != 200:
-            raise RuntimeError(f"underdog: GET {path} {params or ''} answered HTTP {reply.status_code}: {reply.text[:200]}")
-        try:
-            return reply.json()
-        except ValueError as error:
-            raise RuntimeError(f"underdog: GET {path} answered non-JSON: {reply.text[:200]}") from error
-
-    def _headers(self) -> dict:
-        return {"Accept": "application/json", "Client-Type": "web", "Client-Version": CLIENT_VERSION,
-                "Authorization": f"Bearer {self._auth.token().token}"}
-
-    def fetch(self) -> list[dict]:
-        stored = self._known_records()
-        active_page = self._get(ACTIVE_PATH)
-        active_slips, _ = slips_of(active_page)
-        seen_ids = {f"{VENUE}:{slip.get('id')}" for slip in active_slips}
-        # Stored open slips not on the active list: placed time by id, until a settled page shows them.
-        open_placed_ms = {record_id: parse_iso_ms(record.get("placedAt") or "") for record_id, record in stored.items()
-                          if record.get("status") == "open" and record_id not in seen_ids}
-        history_ms = None if self._read_history else (self._clock() - self._history_days * 86400) * 1000
-        settled_pages: list[dict] = []
-        oldest_read_ms = None
-        complete = False
-        for page_number in range(1, MAX_SETTLED_PAGES + 1):
-            page = self._get(SETTLED_PATH, {"page": page_number})
-            slips, _ = slips_of(page)
-            settled_pages.append(page)
-            seen_ids |= {f"{VENUE}:{slip.get('id')}" for slip in slips}
-            oldest = _oldest_created_ms(slips)
-            oldest_read_ms = oldest if oldest is not None else oldest_read_ms
-            if not (page.get("meta") or {}).get("next") or oldest is None:
-                complete = True
-                break
-            wanted = [stamp for record_id, stamp in open_placed_ms.items()
-                      if record_id not in seen_ids and stamp is not None and stamp <= oldest]
-            if not wanted and (history_ms is None or oldest < history_ms):
-                break
-        else:
-            log.warning("underdog: stopped after %d settled pages", MAX_SETTLED_PAGES)
-        self._read_history = True
-        fetched_at = utc_now_iso()
-        records = normalize_underdog(active_page, settled_pages, stored, fetched_at)
-        # Every slip ever made was read when the list ended; else only those placed after the oldest read.
-        passed_ms = -1 if complete else oldest_read_ms
-        return records + closed_by_absence(stored, seen_ids, passed_ms, fetched_at)
-
-
-def source_if_connected(known_records: Callable[[], dict[str, dict]] = dict) -> UnderdogSource | None:
-    """An UnderdogSource when `underdog_auth connect` has been run (the token file
-    exists), else None so the service leaves the venue "no source configured"."""
-    if not config.UNDERDOG_TOKEN_PATH.exists():
-        log.warning("underdog: no token at %s — run `python -m unabated_ticket.bets_service.sources.underdog_auth "
-                    "connect`; Underdog source not registered", config.UNDERDOG_TOKEN_PATH)
-        return None
-    return UnderdogSource(UnderdogAuth(config.UNDERDOG_TOKEN_PATH), known_records)
+def records_of_push(push: dict, stored: dict[str, dict]) -> tuple[list[dict], list[dict]]:
+    """(records, closed) of a validated push. `stored`: the stored Underdog records by id.
+    `complete` (the settled list ended) closes every stored open slip neither list
+    returned; otherwise only those placed after the oldest slip the pages carry. Pure."""
+    fetched_at = push["fetchedAt"]
+    records = normalize_underdog(push["active"], push["settled"], stored, fetched_at)
+    pages = [push["active"]] + push["settled"]
+    seen_ids = {f"{VENUE}:{slip.get('id')}" for page in pages for slip in slips_of(page)[0]}
+    settled_slips = [slip for page in push["settled"] for slip in slips_of(page)[0]]
+    passed_ms = -1 if push["complete"] else _oldest_created_ms(settled_slips)
+    return records, closed_by_absence(stored, seen_ids, passed_ms, fetched_at)
