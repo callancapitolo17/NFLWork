@@ -131,7 +131,10 @@
 //                    and the POST /pins.json body the page sends the bets service
 //   GET /scenarios.json  the Bet Tracker's Live tab: every game in progress
 //                    with open bets, its results and the P&L and kickoff
-//                    chance of each (server/scenarios.js documents the shape)
+//                    chance of each (server/scenarios.js documents the shape);
+//                    ?not_origin=&not_venue=&not_league=&not_kind= (each may
+//                    repeat) rebuilds the cards without the bets the Live
+//                    tab's filter hides
 //   GET /taker.json  the automated taker's last pass: every Kalshi row it
 //                    looked at, what it decided and what each order did
 //   GET /kalshi_quote.json?eventId=..&periodTypeId=..&betTypeId=..&sideIndex=..&points=..
@@ -2847,8 +2850,12 @@ function createRunner(deps) {
     };
   }
 
-  // The Live tab's cards, off the remembered games (scenarios.js).
-  function scenariosPayloadNow() {
+  // The Live tab's cards, off the remembered games (scenarios.js). With the
+  // Live tab's filter in `params`, `games` holds the cards rebuilt from only
+  // the bets it keeps; coveredBetIds / finishedBetIds stay every bet's, since
+  // the tracker splits its Open tab and badges off them.
+  function scenariosPayloadNow(params) {
+    const filter = params ? scenarios.liveFilterOf(params) : null;
     const at = now();
     const games = Array.from(kickoffMemo.values(), (entry) => {
       const ladders = new Map();
@@ -2862,11 +2869,14 @@ function createRunner(deps) {
       return { row: entry.row, ladderOf, oddsAt: entry.oddsAt, gameState: entry.gameState };
     });
     const records = held.records.filter((record) => !excludedBetIds.has(record.id));
+    const everyBet = scenarios.buildScenarios({ records, games, now: at });
     return {
       generatedAt: new Date(at).toISOString(),
       scanner: scannerStatus ? { phase: scannerStatus.phase, error: scannerStatus.error } : { phase: "starting", error: null },
       betsService: { okAt: betsStatus.okAt, error: betsStatus.error },
-      ...scenarios.buildScenarios({ records, games, now: at }),
+      ...everyBet,
+      games: filter ? scenarios.buildScenarios({ records: scenarios.recordsInFilter(records, filter), games, now: at }).games : everyBet.games,
+      filtered: filter !== null,
     };
   }
 
@@ -2967,7 +2977,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/edges.json") return sendJson(response, 200, await runner.edgesPayload({ fresh }));
       if (path === "/teasers.json") return sendJson(response, 200, await runner.teasersPayload({ fresh }));
       if (path === "/attach.json") return sendJson(response, 200, await runner.attachPayload(url.searchParams));
-      if (path === "/scenarios.json") return sendJson(response, 200, await runner.scenariosPayload());
+      if (path === "/scenarios.json") return sendJson(response, 200, await runner.scenariosPayload(url.searchParams));
       if (path === "/taker.json") return sendJson(response, 200, await runner.takerPayload());
       if (path === "/tau.json") return sendJson(response, 200, await runner.tauPayload());
       if (path === "/live_prices.json") return sendJson(response, 200, await runner.livePricesPayload());

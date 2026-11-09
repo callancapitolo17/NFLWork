@@ -791,6 +791,20 @@ test("scenarios: a game seen before kickoff keeps its kickoff chances once it is
   runner.stop();
 });
 
+test("scenarios: the Live tab's filter rebuilds the cards from its bets only; covered ids stay every bet's", async () => {
+  const clock = { ms: KICKOFF_MS + 3600 * 1000 };
+  const runner = await runnerOnClock(clock, [BEARS_HELD]);
+  const all = runner.scenariosPayload();
+  const botOnly = runner.scenariosPayload(new URLSearchParams("not_origin=Other"));
+  const mine = runner.scenariosPayload(new URLSearchParams("not_origin=Bot"));
+  assert.equal(all.filtered, false);
+  assert.deepEqual([botOnly.filtered, botOnly.games], [true, []], "the BetOnline bet is not a bot's");
+  assert.deepEqual(botOnly.coveredBetIds, all.coveredBetIds, "the Open tab still splits off every bet");
+  assert.deepEqual(mine.games, all.games);
+  assert.throws(() => runner.scenariosPayload(new URLSearchParams("sport=nfl")), (error) => error.status === 400);
+  runner.stop();
+});
+
 test("scenarios: started before the runner saw it, the card has no chances; a removed bet is never on a card", async () => {
   const clock = { ms: KICKOFF_MS + 3600 * 1000 };
   const runner = await runnerOnClock(clock, [BEARS_HELD]);
@@ -2036,6 +2050,10 @@ test("board thread: the HTTP routes answer exactly what the runner builds, throu
     assert.deepEqual((await get("/edges.json?fresh=1")).body, same(runner.edgesPayload()));
     assert.deepEqual((await get("/teasers.json")).body, same(runner.teasersPayload()));
     assert.deepEqual((await get("/scenarios.json")).body, same(runner.scenariosPayload()));
+    const botOnly = (await get("/scenarios.json?not_origin=Other")).body;
+    assert.deepEqual([botOnly.filtered, botOnly.games, botOnly.coveredBetIds], [true, [], same(runner.scenariosPayload()).coveredBetIds]);
+    const badFilter = await get("/scenarios.json?sport=nfl");
+    assert.equal(badFilter.status, 400);
     assert.equal((await get("/attach.json?betId=bol-1&query=bears")).body.events[0].eventId, 125807);
     const missing = await get("/attach.json?betId=nope");
     assert.deepEqual([missing.status, missing.body.error], [404, 'no open bet "nope"']);

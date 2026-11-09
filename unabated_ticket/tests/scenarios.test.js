@@ -269,3 +269,31 @@ test("a game Unabated marks final gets no card, even off a stale reading; its op
   assert.deepEqual(liveAgain.coveredBetIds, ["novig:bills", "novig:t1:leg0"]);
   assert.deepEqual(liveAgain.finishedBetIds, []);
 });
+
+// ---- the Live tab's filters (liveFilterOf, recordsInFilter) ------------------------------
+
+test("live filter: no keys is no filter; a key may repeat and names values to hide; any other key is a 400", () => {
+  assert.equal(scenarios.liveFilterOf(new URLSearchParams("")), null);
+  const filter = scenarios.liveFilterOf(new URLSearchParams("not_origin=Bot&not_venue=BFA&not_venue=Wagerzon"));
+  assert.deepEqual(Object.fromEntries(Object.entries(filter).map(([key, values]) => [key, [...values]])),
+    { origin: ["Bot"], venue: ["BFA", "Wagerzon"] });
+  for (const bad of ["venue=Kalshi", "fresh=1", "not_sport=nfl"]) {
+    assert.throws(() => scenarios.liveFilterOf(new URLSearchParams(bad)), (error) => error.status === 400 && /unknown \/scenarios.json filter/.test(error.message), bad);
+  }
+});
+
+test("live filter: the cards rebuilt without the hidden bets; a teaser keeps or drops all its legs; a bot bet is Bot", () => {
+  const botBet = straightBet("bot", { source: "novig_bot", side: "home", points: -1.5, rotation: 402, stake: 200, toWin: 210 });
+  const records = [straightBet("bills"), botBet, teaserLeg("t1", 0, { points: 9.5 }), teaserLeg("t1", 1, { points: 47.5, betType: "total", side: "over" }),
+    straightBet("settled", { status: "won" })];
+  const kept = (query) => scenarios.recordsInFilter(records, scenarios.liveFilterOf(new URLSearchParams(query))).map((record) => record.id);
+  assert.deepEqual(kept("not_origin=Bot"), ["novig:bills", "novig:t1:leg0", "novig:t1:leg1"], "the settled bet never counts");
+  assert.deepEqual(kept("not_origin=Other"), ["novig:bot"]);
+  assert.deepEqual(kept("not_origin=Bot&not_venue=BFA"), ["novig:bills"]);
+  assert.deepEqual(kept("not_kind=Straight"), ["novig:t1:leg0", "novig:t1:leg1"], "both legs of the teaser");
+  assert.deepEqual(kept("not_league=NFL"), []);
+  const games = gamesOf(billsChiefs());
+  const mine = scenarios.buildScenarios({ records: scenarios.recordsInFilter(records, scenarios.liveFilterOf(new URLSearchParams("not_origin=Bot&not_kind=Teaser"))), games, now: NOW });
+  assert.deepEqual(mine.games[0].bets.map((bet) => bet.id), ["novig:bills"]);
+  assert.deepEqual(bandRows(mine.games[0].groups[0]).map(([, pnl]) => pnl), [-220, 200], "only the Bills bet's P&L");
+});
