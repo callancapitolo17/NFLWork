@@ -72,6 +72,10 @@
   const PIVOT_FULL_SHADE_ROI = 0.3;
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
+  // Overview lists only the newest settled bets; the full, filterable list is Analysis's bet log.
+  const OVERVIEW_SETTLED_ROWS = 10;
+  // Tabs that read the header date range; the others hide it.
+  const RANGED_VIEWS = ["overview", "analysis", "bot"];
   const CALENDAR_WEEKS = 6;
   const CI_SCALE = 0.3;
   const CHART_W = 1000;
@@ -87,12 +91,12 @@
     // The drill path: filter keys in the order they came into use, so the
     // breadcrumb reads like the clicks that built it. oddsMin/oddsMax are the
     // typed American odds range (null = open end).
-    drillOrder: [], oddsMin: null, oddsMax: null, moreFilters: false,
+    drillOrder: [], oddsMin: null, oddsMax: null, moreFilters: false, filtersOpen: false,
     pivotRows: "side", pivotCols: "timing", pivotMetric: "roi",
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
-    settledLimit: LOG_PAGE,
+    settledLimit: OVERVIEW_SETTLED_ROWS,
     // Bot tab: its own Activity range (Today / 7D / 30D / All / Custom, Cal 2026-11-04) and the reasons panel's bot.
     botRange: "Today", botCustomFirst: null, botCustomLast: null, botReasonVenue: "kalshi",
     // A calendar-day click (Cal, 2026-10-07): { day, anchor, range, customFirst,
@@ -261,12 +265,12 @@
     return el("div", { className: "empty", text });
   }
 
-  /** Tiles {label, value, sub, color?, onClick?}; a tile with onClick is a button-like link. */
+  /** Tiles {label, value, sub, color?, onClick?, hero?}; a tile with onClick is a button-like link, a hero tile is the page's headline number. */
   function kpiTiles(id, tiles) {
     fill(id, ...tiles.map((tile) => {
       const link = typeof tile.onClick === "function";
       const node = el("div", {
-        className: "panel kpi" + (link ? " link" : ""),
+        className: "panel kpi" + (link ? " link" : "") + (tile.hero ? " hero" : ""),
         attrs: link ? { role: "link", tabindex: "0" } : null,
         onClick: link ? tile.onClick : null,
       }, [
@@ -301,6 +305,46 @@
     })));
     return el("table", { className: "tbl" }, [el("thead", null, [head]), el("tbody", null, body)]);
   }
+
+  /**
+   * The phone's form of a bet table (CSS shows it under 640px, the table above):
+   * two lines per bet, the bet and its main number on top, game · venue · league
+   * and price · stake under, in the table's own row order. Day headers
+   * (opts.dayOf) show only while the table keeps its default newest-first order.
+   * opts {sortKey, dayOf(t), main(t) -> {text, className}, detail(t) -> string}.
+   */
+  function betCards(rows, opts) {
+    const byDay = opts.dayOf && !state.sorts[opts.sortKey];
+    const nodes = [];
+    let lastDay = null;
+    for (const ticket of rows) {
+      const day = byDay ? opts.dayOf(ticket) : null;
+      if (byDay && day !== lastDay) { nodes.push(el("div", { className: "bet-card-day", text: day })); lastDay = day; }
+      const main = opts.main(ticket);
+      const where = [ticket.event || ticket.kind, ticket.venue + (ticket.origin === stats.ORIGINS.bot ? " · Bot" : ""), ticket.league].filter(Boolean).join(" · ");
+      nodes.push(el("div", { className: "bet-card" }, [
+        el("span", { className: "bet-card-what", text: ticket.selection }),
+        el("span", { className: "bet-card-main num " + (main.className || ""), text: main.text }),
+        el("span", { className: "bet-card-where", text: where }),
+        el("span", { className: "bet-card-detail num", text: opts.detail(ticket) }),
+      ]));
+    }
+    return el("div", { className: "bet-cards" }, nodes);
+  }
+
+  /** A bet table plus its phone form; CSS shows one or the other. */
+  function betTable(columns, rows, opts, cardOpts) {
+    const wide = table(columns, rows, opts);
+    wide.classList.add("wide-only");
+    return [wide, betCards(rows, Object.assign({ sortKey: opts.sortKey }, cardOpts))];
+  }
+
+  /** Phone card parts of a settled bet: P&L on top, price · stake under. */
+  const SETTLED_CARD = {
+    main: (t) => ({ text: money(t.pnl, true), className: toneClass(t.pnl) }),
+    detail: (t) => american(t.displayPrice) + " · " + money(t.stake),
+    dayOf: (t) => dayLabel(t.settledDay, true),
+  };
 
   function headerCell(col, index, sortKey, current) {
     const className = col.right ? "r" : "";
@@ -401,7 +445,7 @@
 
     const luck = total.withFair ? total.fairPnl - total.expected : null;
     kpiTiles("ov-kpis", [
-      { label: "Net P&L", value: money(total.pnl, true), color: toneColor(total.pnl),
+      { label: "Net P&L", hero: true, value: money(total.pnl, true), color: toneColor(total.pnl),
         sub: total.bets + " settled · " + total.wins + "-" + total.losses + "-" + total.pushes
           + (total.winRate === null ? "" : " (" + pct(total.winRate) + ")") + (missing ? " · " + missing + " without a result" : "") },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.pnl), sub: "on " + money(total.handle) + " handle" },
@@ -524,7 +568,6 @@
         cell.title = dayLabel(day, true) + ": " + money(totals.pnl, true) + " on " + totals.bets + " bets";
       } else {
         cell.title = dayLabel(day, true) + (day === realToday ? ": results show after midnight Pacific" : day > realToday ? "" : ": no bets settled");
-        if (day === realToday) value.textContent = "Tomorrow";
       }
       if (isPickable) cell.title += isPicked ? " · click to clear" : " · click to filter to this day";
       cell.append(dayNumber, value);
@@ -553,7 +596,7 @@
       state.calendarPick = { day, anchor, range: previous.range, customFirst: previous.customFirst, customLast: previous.customLast };
       state.range = "Custom"; state.customFirst = day; state.customLast = day;
     }
-    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+    state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; savePrefs(); render();
   }
 
   function renderDaily(series) {
@@ -834,7 +877,7 @@
       : "");
     document.getElementById("settled-more").hidden = settled.length <= shown.length;
     if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
-    fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
+    fill("ov-settled", ...betTable(columns, shown, { sortKey: "settled" }, SETTLED_CARD));
   }
 
   /** P&L, record, expected and handle above a settled-bets table. */
@@ -916,7 +959,7 @@
       why ? el("span", { className: "note muted", text: why }) : null,
     ]);
     if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
-    return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
+    return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, betTable([
       { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart), sort: (t) => msOf(t.eventStart) },
       VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
@@ -928,7 +971,10 @@
       { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell, sort: (t) => t.clv },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—"), sort: (t) => (Number.isFinite(t.toWin) ? t.toWin : null) },
-    ], group, { sortKey: sortKey || "open" })])]);
+    ], group, { sortKey: sortKey || "open" }, {
+      main: (t) => ({ text: money(t.stake) }),
+      detail: (t) => american(t.displayPrice) + " · " + startLabel(t.eventStart),
+    }))]);
   }
 
   // ---- live -----------------------------------------------------------------
@@ -1132,7 +1178,7 @@
   }
 
   function resetPaging() {
-    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+    state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS;
   }
 
   function setOff(key, values) {
@@ -1198,7 +1244,7 @@
           onClick: () => { clearFilter(key); resetPaging(); render(); } }),
       ]));
     }
-    if (!keys.length) nodes.push(el("span", { className: "note", text: "Click any breakdown row or pivot cell to drill in." }));
+    if (!keys.length) nodes.push(el("span", { className: "note", text: "No filters. Click any breakdown row or pivot cell to drill in." }));
     fill("f-crumbs", ...nodes);
   }
 
@@ -1286,20 +1332,25 @@
     });
     fill("f-rows", ...shown.map((filter) => filterRow(filter, inRange)), oddsRangeRow(), (state.moreFilters || hiddenCount) ? toggle : null);
     document.getElementById("f-reset").hidden = !active.length;
+    // The chip rows fold behind one button; the drill path above them always shows what is filtered.
+    document.getElementById("f-body").hidden = !state.filtersOpen;
+    const filtersToggle = document.getElementById("f-toggle");
+    filtersToggle.setAttribute("aria-expanded", String(state.filtersOpen));
+    filtersToggle.textContent = state.filtersOpen ? "Hide filters" : "Filters" + (active.length ? " (" + active.length + ")" : "");
     renderCrumbs();
   }
 
   function renderAnalysis() {
     const { first, last } = rangeDays();
     renderFilters(first, last);
-    segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
+    renderGroupBySelect();
 
     const settled = filteredSettled();
     const total = stats.summarize(settled);
     setText("an-caption", rangeCaption(first, last) + " · " + total.bets + " settled bets");
     kpiTiles("an-kpis", [
+      { label: "P&L", hero: true, value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no fairs" },
       { label: "Bets", value: String(total.bets), sub: total.wins + "-" + total.losses + "-" + total.pushes + " W-L-P · " + money(total.handle) + " handle" },
-      { label: "P&L", value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no fairs" },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.roi), sub: "95%: " + pct(total.roi - total.ciHalf, true) + " to " + pct(total.roi + total.ciHalf, true) },
       { label: "Avg edge", value: pct(total.expRoi, true), color: COLORS.exp, sub: "stake-weighted, fill fair else close" },
       clvTile(total),
@@ -1325,6 +1376,14 @@
       el("div", { className: "cap", style: { left: "calc(" + high + "% - 2px)", background: color } }),
       el("div", { className: "pt", style: { left: scale(row.roi) + "%", background: toneColor(row.roi) } }),
     ]);
+  }
+
+  function renderGroupBySelect() {
+    const select = document.getElementById("group-by");
+    if (!select.options.length) {
+      for (const group of stats.GROUPS) select.appendChild(el("option", { text: group.label, attrs: { value: group.key } }));
+    }
+    select.value = state.groupBy;
   }
 
   function renderGroups(settled) {
@@ -1492,7 +1551,7 @@
     setText("log-caption", "Showing " + shown.length + " of " + matching.length + " settled bets, " + orderCaption("log", columns, "newest first"));
     document.getElementById("log-more").hidden = matching.length <= shown.length;
     if (!shown.length) { fill("an-log", emptyNote(query ? "No bets match that search." : "No settled bets match these filters.")); return; }
-    fill("an-log", table(columns, shown, { sortKey: "log" }));
+    fill("an-log", ...betTable(columns, shown, { sortKey: "log" }, SETTLED_CARD));
   }
 
   // ---- bets -----------------------------------------------------------------
@@ -1591,12 +1650,20 @@
     const badge = document.getElementById("open-count");
     badge.hidden = !openCount;
     badge.textContent = String(openCount);
+    const ranged = RANGED_VIEWS.includes(state.view);
+    document.getElementById("ranges").hidden = !ranged;
     segButtons("ranges", RANGES, (r) => r === state.range, pickRange);
-    renderCustomRange();
+    renderCustomRange(ranged);
     document.getElementById("show-dollars").setAttribute("aria-pressed", String(!state.units));
     document.getElementById("show-units").setAttribute("aria-pressed", String(state.units));
     document.getElementById("unit-size-label").hidden = !state.units;
-    document.getElementById("bot-combos").setAttribute("aria-pressed", String(state.includeBotCombos));
+    const combos = document.getElementById("bot-combos");
+    combos.setAttribute("aria-pressed", String(state.includeBotCombos));
+    combos.textContent = state.includeBotCombos ? "Counted" : "Hidden";
+    // The menu's button names the money format, and a dot flags a total that leaves the combos out.
+    setText("display-summary", state.units ? "Units" : "$");
+    document.getElementById("display-dot").hidden = state.includeBotCombos;
+    document.getElementById("display-menu").title = state.includeBotCombos ? "Display settings" : "Display settings · Kalshi bot combos hidden from every total";
     const unitInput = document.getElementById("unit-size");
     if (document.activeElement !== unitInput) unitInput.value = String(state.unitSize);
   }
@@ -1608,12 +1675,13 @@
       state.customFirst = first; state.customLast = last;
     }
     state.calendarPick = null;
-    state.range = range; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+    state.range = range; state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; savePrefs(); render();
   }
 
-  function renderCustomRange() {
-    document.getElementById("custom-range").hidden = state.range !== "Custom";
-    if (state.range !== "Custom") return;
+  function renderCustomRange(ranged) {
+    const custom = ranged && state.range === "Custom";
+    document.getElementById("custom-range").hidden = !custom;
+    if (!custom) return;
     const { first, last } = rangeDays();
     const lastShown = lastShownDay();
     for (const [id, value] of [["custom-first", first], ["custom-last", last]]) {
@@ -1749,11 +1817,17 @@
     }
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
     document.getElementById("f-reset").addEventListener("click", resetFilters);
+    document.addEventListener("click", (event) => {
+      const menu = document.getElementById("display-menu");
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    });
+    document.getElementById("f-toggle").addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; render(); });
+    document.getElementById("group-by").addEventListener("change", (event) => { state.groupBy = event.target.value; render(); });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
       state.includeBotCombos = !state.includeBotCombos;
-      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+      state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS;
       savePrefs(); applyBotComboFilter(); render();
     });
     document.getElementById("unit-size").addEventListener("change", (event) => {
@@ -1765,7 +1839,7 @@
       document.getElementById(id).addEventListener("change", (event) => {
         if (!stats.isDayKey(event.target.value)) return;
         state.calendarPick = null;
-        state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+        state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; savePrefs(); render();
       });
     }
     for (const [id, key] of [["bot-custom-first", "botCustomFirst"], ["bot-custom-last", "botCustomLast"]]) {
@@ -1777,7 +1851,7 @@
       });
     }
     document.getElementById("log-search").addEventListener("input", (event) => {
-      state.query = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render();
+      state.query = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; render();
     });
     document.getElementById("log-more").addEventListener("click", () => { state.logLimit += LOG_PAGE; render(); });
     document.getElementById("bets-search").addEventListener("input", (event) => {
