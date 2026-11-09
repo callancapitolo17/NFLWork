@@ -321,3 +321,30 @@ test("free play: the box takes the stake capped at the balance and the payout ca
     { label: "Use free play", note: "BFA free play read failed: HTTP 503", failed: true });
   assert.equal(phoneView.freePlayView(null, 0.5, 1, 10), null);
 });
+
+test("fully bet lines leave the Edges list: a row, or a card by its best line", () => {
+  const row = (key, atSize) => ({ key, rail: { text: atSize ? "add $0.00" : "add $10.00", note: null, atSize } });
+  assert.deepEqual(phoneView.withoutFullyBet([row("a", false), row("b", true), row("c", false)], false).map((item) => item.key), ["a", "c"]);
+  // A card goes by its best line only: another line at full size keeps it, a best at full size drops it.
+  const cards = [{ key: "x", best: row("a", true), others: [row("b", false)] }, { key: "y", best: row("c", false), others: [row("d", true)] }];
+  assert.deepEqual(phoneView.withoutFullyBet(cards, true).map((card) => card.key), ["y"]);
+  const declinedLive = { key: "live", rail: { text: "\u2014", note: "declined", atSize: false } };
+  assert.deepEqual(phoneView.withoutFullyBet([declinedLive, { key: "old" }], false).map((item) => item.key), ["live", "old"], "a declined live row and a row without a rail stay");
+  assert.deepEqual(phoneView.withoutFullyBet([], true), []);
+});
+
+test("a placed mark shows from the tap until the list's bets read is newer than the read made after the reply", () => {
+  const sentAt = 1_000_000;
+  const out = { stake: 79.88, sentAt, repliedAt: null, betsReadAfter: null };
+  assert.equal(phoneView.placedMarkShows(out, "2026-11-09T19:00:00Z", sentAt + 85_000), true, "order still out, past the cap");
+  const replied = { ...out, repliedAt: sentAt + 1500 };
+  assert.equal(phoneView.placedMarkShows(replied, "2026-11-09T19:00:00Z", sentAt + 3000), true, "the read after the reply has not landed");
+  const read = { ...replied, betsReadAfter: "2026-11-09T19:00:05Z" };
+  assert.equal(phoneView.placedMarkShows(read, null, sentAt + 3000), true, "no list yet");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:04Z", sentAt + 3000), true, "a list on an older read (a runner read already in flight)");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:05Z", sentAt + 3000), true, "the same whole second may be a read begun before the fill");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:09Z", sentAt + 3000), false, "a list on a later read");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:04Z", replied.repliedAt + phoneView.PLACED_MARK_MAX_MS + 1), false, "ends a minute after the reply");
+  assert.deepEqual(phoneView.placedMarkView(out), { tag: "placed $79.88", rail: { text: "placing", note: "sending…", atSize: true } });
+  assert.deepEqual(phoneView.placedMarkView(replied), { tag: "placed $79.88", rail: { text: "placed", note: "updating…", atSize: true } });
+});
