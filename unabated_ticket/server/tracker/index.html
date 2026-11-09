@@ -38,7 +38,7 @@
           <summary aria-label="Display settings"><span id="display-summary">$</span><span class="dot exp" id="display-dot" hidden></span><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="2.3" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></summary>
           <div class="menu-body">
             <div class="menu-row">
-              <span class="lbl bare">Show money as</span>
+              <span class="lbl">Show money as</span>
               <div class="seg" role="group" aria-label="Show money as">
                 <button type="button" id="show-dollars">$</button>
                 <button type="button" id="show-units">Units</button>
@@ -46,8 +46,8 @@
             </div>
             <label class="unit-size" id="unit-size-label" hidden>1u = $<input id="unit-size" type="number" min="1" step="1" inputmode="numeric"></label>
             <div class="menu-row">
-              <span class="lbl bare">Kalshi bot combos</span>
-              <button type="button" class="chip" id="bot-combos" aria-pressed="true" title="Include the Kalshi MLB bots' combo fills in every total">Counted</button>
+              <span class="lbl">Kalshi bot combos</span>
+              <button type="button" class="chip" id="bot-combos" role="switch" aria-checked="true" title="Include the Kalshi MLB bots' combo fills in every total">Counted</button>
             </div>
           </div>
         </details>
@@ -298,7 +298,7 @@
     <button type="button" data-view="live"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/></svg><span>Live</span><b class="tb-badge num" id="tb-live-count" hidden></b></button>
     <button type="button" data-view="open"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Open</span><b class="tb-badge num" id="tb-open-count" hidden></b></button>
     <button type="button" data-view="analysis"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 19V11M12 19V5M19 19v-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Analysis</span></button>
-    <button type="button" id="tb-more" aria-expanded="false" aria-controls="tb-more-menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></svg><span>More</span></button>
+    <button type="button" id="tb-more" aria-haspopup="menu" aria-expanded="false" aria-controls="tb-more-menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></svg><span>More</span></button>
     <div class="tb-more-menu" id="tb-more-menu" hidden>
       <button type="button" data-view="bets">Bets</button>
       <button type="button" data-view="balances">Balances</button>

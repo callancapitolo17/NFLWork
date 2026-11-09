@@ -37,7 +37,7 @@ button { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
 
 /* header */
-.top { border-bottom: 1px solid var(--line); background: var(--bar); position: sticky; top: 0; z-index: 2; }
+.top { border-bottom: 1px solid var(--line); background: var(--bar); position: sticky; top: 0; z-index: 2; backdrop-filter: saturate(180%) blur(14px); -webkit-backdrop-filter: saturate(180%) blur(14px); }
 .top-in { max-width: 1376px; margin: 0 auto; padding: 12px 32px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; margin: 0; }
 .nav { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -160,7 +160,7 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .filter-row .lbl { min-width: 64px; }
 .chip { border-radius: 999px; padding: 0 14px; min-height: 34px; cursor: pointer; font-size: 13px; font-weight: 500; background: transparent; color: var(--muted); border: 1px solid #262e3a; }
-.chip[aria-pressed="true"] { background: var(--chip); color: var(--text); border-color: #2c3139; }
+.chip[aria-pressed="true"], .chip[aria-checked="true"] { background: var(--chip); color: var(--text); border-color: #2c3139; }
 .chip.danger { color: var(--neg); border-color: rgba(255, 107, 107, .35); }
 .chip:disabled { opacity: .5; cursor: progress; }
 .tbl tr.removed td { opacity: .45; }
@@ -219,7 +219,7 @@ main { max-width: 1376px; margin: 0 auto; padding: 28px 32px 56px; display: flex
 .cal-plot svg { width: 100%; height: auto; aspect-ratio: 4 / 3; }
 
 /* sortable headers: the label is a button so it takes a click and a keypress */
-.tbl th button.sort { all: unset; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; }
+.tbl th button.sort { all: unset; cursor: pointer; font: inherit; color: inherit; }
 .tbl th button.sort:hover, .tbl th button.sort.on { color: var(--text); }
 .tbl th button.sort:focus-visible { outline: 2px solid var(--exp); outline-offset: 2px; border-radius: 2px; }
 
@@ -285,7 +285,6 @@ tr.drill:hover td { background: #161c25; }
 .pv-cell small { color: var(--muted); font-size: 11px; }
 .pv-cell:hover { outline: 1px solid var(--exp); }
 .pv-empty { color: var(--faint); text-align: right; }
-.tbl.pivot th { text-transform: none; letter-spacing: 0; }
 
 /* Balances tab: its own tab so a glance at Overview never shows today's swings (Cal, 2026-10-14) */
 .balances-panel { max-width: 760px; }
@@ -320,8 +319,7 @@ tr.drill:hover td { background: #161c25; }
 .reason-rows .warn { color: var(--warn); }
 .reason-rows .n { font-family: var(--mono); text-align: right; }
 
-.tabbar { display: none; }
-/* UI pass (2026-11-09): compact header, display menu, folded filters, phone bet cards */
+/* Header display menu, folded Analysis filters, phone bet cards */
 .brand-row { display: flex; align-items: center; gap: 10px 20px; flex-wrap: wrap; }
 .custom-range:not([hidden]) { flex-basis: 100%; }
 .menu { position: relative; }
@@ -336,9 +334,9 @@ tr.drill:hover td { background: #161c25; }
 .filter-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
 .filters-toggle { min-height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid #2c3139; background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
 .filters-toggle[aria-expanded="true"] { background: var(--chip); }
-.more-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; padding-right: 22px; }
-.see-all { font-size: 13px; margin: 12px 22px 18px; text-decoration: none; }
-.more-row .more + .see-all { margin-left: 0; }
+.more-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; padding: 0 22px; }
+.see-all { font-size: 13px; margin: 12px 0 18px; text-decoration: none; }
+.more-row .more { margin: 12px 0 18px; }
 .see-all:hover { text-decoration: underline; }
 .bet-cards { display: none; }
 .bet-card-day { padding: 8px 16px; font-size: 12px; color: var(--muted); background: var(--bg); border-bottom: 1px solid var(--line); }
@@ -347,6 +345,7 @@ tr.drill:hover td { background: #161c25; }
 .bet-card-main { font-weight: 600; text-align: right; }
 .bet-card-where { font-size: 12px; color: var(--muted); min-width: 0; }
 .bet-card-detail { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+.tabbar { display: none; }
 @media (max-width: 640px) {
   /* The header scrolls away on a phone: pinned, it took ~40% of the screen. */
   .top { position: static; }
@@ -369,14 +368,13 @@ tr.drill:hover td { background: #161c25; }
   .kpi.hero { grid-column: 1 / -1; }
   .wide-only { display: none; }
   .bet-cards { display: block; }
-  .see-all { margin: 12px 16px 16px; }
+  .more-row { padding: 0 16px; }
 }
 
 /* Section headers: sentence case and a step up from the small labels. */
 .panel > .head > .lbl, .panel > .head > .stack.tight > .lbl, .panel.pad > .title-row > .lbl, .panel.pad > .title-row > .stack.tight > .lbl, .panel.pad > .stack.tight > .lbl { font-size: 15px; font-weight: 600; color: var(--text); }
-.top { backdrop-filter: saturate(180%) blur(14px); -webkit-backdrop-filter: saturate(180%) blur(14px); }
 .result.won::before, .result.lost::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: currentColor; }
-/* Phone bottom tab bar (shown by the 640px rule above). */
+/* Phone bottom tab bar (shown by the 640px rule above, which must follow `.tabbar { display: none }`). */
 .tabbar > button { border: 0; background: transparent; color: var(--faint); display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10.5px; padding: 4px 0; position: relative; cursor: pointer; }
 .tabbar > button[aria-current="page"], .tabbar > button.on { color: var(--exp); }
 .tb-badge { position: absolute; top: 0; left: 55%; font-size: 10px; font-weight: 600; background: #e5484d; color: #fff; border-radius: 8px; padding: 0 5px; }

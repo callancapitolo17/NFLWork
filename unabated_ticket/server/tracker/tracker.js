@@ -336,7 +336,7 @@
   function betTable(columns, rows, opts, cardOpts) {
     const wide = table(columns, rows, opts);
     wide.classList.add("wide-only");
-    return [wide, betCards(rows, Object.assign({ sortKey: opts.sortKey }, cardOpts))];
+    return [wide, betCards(sortedRows(opts.sortKey, columns, rows), Object.assign({ sortKey: opts.sortKey }, cardOpts))];
   }
 
   /** Phone card parts of a settled bet: P&L on top, price · stake under. */
@@ -973,7 +973,7 @@
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—"), sort: (t) => (Number.isFinite(t.toWin) ? t.toWin : null) },
     ], group, { sortKey: sortKey || "open" }, {
       main: (t) => ({ text: money(t.stake) }),
-      detail: (t) => american(t.displayPrice) + " · " + startLabel(t.eventStart),
+      detail: (t) => american(t.displayPrice) + (Number.isFinite(t.toWin) ? " · to win " + money(t.toWin) : "") + " · " + startLabel(t.eventStart),
     }))]);
   }
 
@@ -1642,17 +1642,12 @@
       else button.removeAttribute("aria-current");
     }
     // The phone bar's More lights up while one of the tabs it holds is open.
-    document.getElementById("tb-more").classList.toggle("on", ["bets", "balances", "bot"].includes(state.view));
+    const moreViews = [...document.querySelectorAll("#tb-more-menu button[data-view]")].map((button) => button.dataset.view);
+    document.getElementById("tb-more").classList.toggle("on", moreViews.includes(state.view));
     for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
     const liveCount = payload ? liveTickets().length : 0;
-    const liveBadge = document.getElementById("live-count");
-    liveBadge.hidden = !liveCount;
-    liveBadge.textContent = String(liveCount);
     const openCount = payload ? openTickets().length - liveCount - liveSplit().finished.length : 0;
-    const badge = document.getElementById("open-count");
-    badge.hidden = !openCount;
-    badge.textContent = String(openCount);
-    for (const [id, count] of [["tb-live-count", liveCount], ["tb-open-count", openCount]]) {
+    for (const [id, count] of [["live-count", liveCount], ["open-count", openCount], ["tb-live-count", liveCount], ["tb-open-count", openCount]]) {
       const tabBadge = document.getElementById(id);
       tabBadge.hidden = !count;
       tabBadge.textContent = String(count);
@@ -1665,7 +1660,7 @@
     document.getElementById("show-units").setAttribute("aria-pressed", String(state.units));
     document.getElementById("unit-size-label").hidden = !state.units;
     const combos = document.getElementById("bot-combos");
-    combos.setAttribute("aria-pressed", String(state.includeBotCombos));
+    combos.setAttribute("aria-checked", String(state.includeBotCombos));
     combos.textContent = state.includeBotCombos ? "Counted" : "Hidden";
     // The menu's button names the money format, and a dot flags a total that leaves the combos out.
     setText("display-summary", state.units ? "Units" : "$");
@@ -1828,10 +1823,16 @@
     moreButton.addEventListener("click", () => setMoreOpen(moreMenu.hidden));
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
     document.getElementById("f-reset").addEventListener("click", resetFilters);
-    document.addEventListener("click", (event) => {
-      const menu = document.getElementById("display-menu");
-      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    // pointerdown, not click: iOS Safari sends no click for a tap on a plain element, so a blank-page tap would leave a menu open.
+    const displayMenu = document.getElementById("display-menu");
+    document.addEventListener("pointerdown", (event) => {
+      if (displayMenu.open && !displayMenu.contains(event.target)) displayMenu.open = false;
       if (!moreMenu.hidden && !moreMenu.contains(event.target) && !moreButton.contains(event.target)) setMoreOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      displayMenu.open = false;
+      setMoreOpen(false);
     });
     document.getElementById("f-toggle").addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; render(); });
     document.getElementById("group-by").addEventListener("change", (event) => { state.groupBy = event.target.value; render(); });
@@ -1870,12 +1871,7 @@
       state.betsQuery = event.target.value; state.betsLimit = LOG_PAGE; render();
     });
     document.getElementById("bets-more").addEventListener("click", () => { state.betsLimit += LOG_PAGE; render(); });
-    window.addEventListener("hashchange", () => {
-      state.view = viewOfHash();
-      render();
-      if (state.view === "balances") refreshBalances().then(render);
-      if (state.view === "bot") Promise.all([refreshBot(), refreshBalances()]).then(render);
-    });
+    window.addEventListener("hashchange", () => { if (viewOfHash() !== state.view) showView(viewOfHash()); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
   }

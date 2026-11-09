@@ -2878,9 +2878,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   per page (Net P&L, Analysis P&L). The date range shows only on Overview,
   Analysis and Bot; $ / Units and Bot combos live in the header's display menu
   (a dot on it while combos are hidden). On a phone (under 640px) the header
-  scrolls away, the pages are a bottom tab bar (Bets, Balances, Bot under More)
-  and bet tables are two-line cards (`betCards`) grouped by day; Breakdown's
-  group-by is a dropdown.
+  scrolls away, the pages are a bottom tab bar (Bets, Balances, Bot under More),
+  and the settled, bet-log and open-bet tables are two-line cards (`betCards`,
+  settled ones grouped by day while unsorted; the Bets page and Bot tables stay
+  tables). Breakdown's group-by is a dropdown at every width.
 - **Today's results stay hidden** (Cal, 2026-10-12): a bet settled on the
   current Pacific day leaves every page until midnight Pacific
   (`trackerstats.hideSettledFrom`, applied once where the tickets are
@@ -3002,7 +3003,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   `bets`) and it leaves every number on Overview and Analysis — a parlay or
   teaser goes as a whole; **Restore** counts it again. Only those two books
   (Cal, 2026-10-05); the service refuses any other venue's bet.
-- **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
+- **Header**: range (Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days; shown on Overview, Analysis and Bot only), a display menu with $ / units, the unit size and Bot combos
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
 - **Bot** (own tab, Cal 2026-11-04): one card per automated taker (Kalshi
@@ -3076,8 +3077,8 @@ visible. Its one write is the Bets page's Remove / Restore.
   #139). Kalshi's
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
   same account) are their own type, "Kalshi combo", and count in every total
-  by default (Cal, 2026-10-05); switching off the header's **Bot combos**
-  toggle hides them. **Market** is the record's `betType`; a record its
+  by default (Cal, 2026-10-05); setting **Kalshi bot combos** to Hidden in
+  the header's display menu hides them. **Market** is the record's `betType`; a record its
   source left as `other` (no scanner game to place it on: BFA college
   lines, Bet105 team totals, Kalshi futures, Wagerzon fectas, props) is typed
   off the venue's own text (`otherMarketName`: Team total, Player prop,
