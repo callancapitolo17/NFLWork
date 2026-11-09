@@ -98,7 +98,7 @@
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
     settledLimit: OVERVIEW_SETTLED_ROWS,
-    // Bot tab: its own Activity range (Today / 7D / 30D / All / Custom, Cal 2026-11-04) and the reasons panel's bot.
+    // Bot tab: its own range for every panel (stats.BOT_ACTIVITY_RANGES, Cal 2026-11-04 / 11-09) and the reasons panel's bot.
     botRange: "Today", botCustomFirst: null, botCustomLast: null, botReasonVenue: "kalshi",
     // A calendar-day click (Cal, 2026-10-07): { day, anchor, range, customFirst,
     // customLast } so a second click restores the range it replaced and the
@@ -135,6 +135,9 @@
       if (RANGES.includes(saved.range)) prefs.range = saved.range;
       if (stats.isDayKey(saved.customFirst)) prefs.customFirst = saved.customFirst;
       if (stats.isDayKey(saved.customLast)) prefs.customLast = saved.customLast;
+      if (stats.BOT_ACTIVITY_RANGES.includes(saved.botRange)) prefs.botRange = saved.botRange;
+      if (stats.isDayKey(saved.botCustomFirst)) prefs.botCustomFirst = saved.botCustomFirst;
+      if (stats.isDayKey(saved.botCustomLast)) prefs.botCustomLast = saved.botCustomLast;
       if (typeof saved.units === "boolean") prefs.units = saved.units;
       if (typeof saved.includeBotCombos === "boolean") prefs.includeBotCombos = saved.includeBotCombos;
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
@@ -148,7 +151,7 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, botRange: state.botRange, botCustomFirst: state.botCustomFirst, botCustomLast: state.botCustomLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
     }
@@ -769,6 +772,7 @@
       state.botCustomFirst = win.first || today; state.botCustomLast = win.last || today;
     }
     state.botRange = range;
+    savePrefs();
     render();
     refreshBot().then(render);
   }
@@ -795,16 +799,18 @@
   // Settled results follow the tab's range, the same math as Overview; today's stay hidden until midnight.
   function renderBotResults() {
     if (!payload) { fill("bot-results", emptyNote("Loading…")); return; }
-    const days = stats.botResultDays(botWindow(), lastShownDay());
+    const win = botWindow();
+    const days = stats.botResultDays(win, lastShownDay());
     const note = " · Expected uses the Unabated fair at fill";
     if (days.empty) {
-      setText("bot-results-caption", "Today" + note);
+      setText("bot-results-caption", rangeCaption(win.first, win.last) + note);
       fill("bot-results", emptyNote("Today's results show after midnight Pacific."));
       return;
     }
-    const when = days.first === null ? "All time to " + dayLabel(days.last) + " · Pacific time" : rangeCaption(days.first, days.last);
-    setText("bot-results-caption", when + note);
-    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, days.first, days.last));
+    const botTickets = stats.botTicketsByVenue(tickets);
+    const first = days.first === null ? stats.firstSettledDay(botTickets.kalshi.concat(botTickets.novig)) || days.last : days.first;
+    setText("bot-results-caption", rangeCaption(first, days.last) + note);
+    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, first, days.last));
     const rows = BOT_VENUES.map((v) => ({ label: v.label, total: stats.summarize(byVenue[v.key]) }));
     rows.push({ label: "Both", total: stats.summarize(byVenue.kalshi.concat(byVenue.novig)), isTotal: true });
     const columns = [
@@ -1867,6 +1873,7 @@
       document.getElementById(id).addEventListener("change", (event) => {
         if (!stats.isDayKey(event.target.value)) return;
         state[key] = event.target.value;
+        savePrefs();
         render();
         refreshBot().then(render);
       });

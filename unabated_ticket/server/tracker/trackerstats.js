@@ -877,7 +877,7 @@
 
   // The Kalshi bot went live 2026-10-14; a custom Activity range starts no earlier.
   const BOT_FIRST_DAY = "2026-10-14";
-  const BOT_ACTIVITY_RANGES = ["Today", "7D", "30D", "All", "Custom"];
+  const BOT_ACTIVITY_RANGES = ["Today", "Yesterday", "7D", "30D", "All", "Custom"];
 
   /** Epoch ms of 00:00 Pacific on `dayKey` (PDT is UTC-7, PST UTC-8; US midnight is never skipped by DST). */
   function pacificDayStartMs(dayKey) {
@@ -899,6 +899,7 @@
     let first;
     let last = today;
     if (range === "Today") first = today;
+    else if (range === "Yesterday") { first = addDays(today, -1); last = first; }
     else if (RANGE_DAYS[range]) first = addDays(today, 1 - RANGE_DAYS[range]);
     else if (range === "Custom") {
       const clamp = (day) => (day < BOT_FIRST_DAY ? BOT_FIRST_DAY : day > today ? today : day);

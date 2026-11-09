@@ -3003,7 +3003,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   `bets`) and it leaves every number on Overview and Analysis — a parlay or
   teaser goes as a whole; **Restore** counts it again. Only those two books
   (Cal, 2026-10-05); the service refuses any other venue's bet.
-- **Header**: range (Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days; shown on Overview, Analysis and Bot only), a display menu with $ / units, the unit size and Bot combos
+- **Header**: range (Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days; shown on Overview and Analysis only; Bot has its own), a display menu with $ / units, the unit size and Bot combos
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
 - **Bot** (own tab, Cal 2026-11-04): one card per automated taker (Kalshi
@@ -3012,16 +3012,19 @@ visible. Its one write is the Bets page's Remove / Restore.
   when the runner's last pass is over 2 min old, skipped for that venue, or
   Novig's location lapsed — money at risk (the desk's open cost against its
   ceiling, $6,000 / $850), cash in its subaccount (`/balances.json`), open
-  orders and Kelly bankroll. The tab has its own range (Today, 7D, 30D,
+  orders and Kelly bankroll. The tab has its own range (Today, Yesterday, 7D, 30D,
   All, Custom; the header range is hidden there) driving every panel.
   **Activity** includes today, since these are orders, not results: orders
   sent, filled, rejected by the venue, unconfirmed (no definite answer or
   fills not read yet, full cost held), fill rate (over orders whose fills
   are read, a rejection counting as unfilled), staked and the
   cost-weighted live edge at fill, one row per bot (a Kalshi contract pays $1,
-  a Novig one 1c). **Results** are the bots' settled bets in that range, ending
+  a Novig one 1c). **Results** are the bots' settled bets (Bot origin,
+  never the MLB bots' combos) in that range, the Overview math, ending
   yesterday since today's results stay hidden until midnight (Cal,
-  2026-11-09; Today shows none) (Bot origin, never the MLB bots' combos), the Overview math. **Why it didn't
+  2026-11-09): 7D is today and the 6 days before, so its Results hold 6 days
+  where Overview's 7D holds 7, and Today shows none. The range is remembered
+  in the browser. **Why it didn't
   bet** counts distinct lines per decision in the activity range — the log
   holds a decision only when it changes, so it counts lines, not passes — with
   a bet split by the desk's answer (the money cap, the stop file, ... in

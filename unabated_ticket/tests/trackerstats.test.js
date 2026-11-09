@@ -493,11 +493,14 @@ test("pacificDayStartMs: midnight Pacific in both PDT and PST", () => {
   assert.equal(new Date(stats.pacificDayStartMs("2026-11-01")).toISOString(), "2026-11-01T07:00:00.000Z");
 });
 
-test("botActivityWindow: Today, 7D, All and a clamped, swapped Custom", () => {
+test("botActivityWindow: Today, Yesterday, 7D, All and a clamped, swapped Custom", () => {
   const today = "2026-11-04";
   const todayWin = stats.botActivityWindow("Today", today);
   assert.deepEqual([todayWin.first, todayWin.last], [today, today]);
   assert.equal(todayWin.query, "?start=" + encodeURIComponent("2026-11-04T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-05T08:00:00.000Z"));
+  const yesterdayWin = stats.botActivityWindow("Yesterday", today);
+  assert.deepEqual([yesterdayWin.first, yesterdayWin.last], ["2026-11-03", "2026-11-03"]);
+  assert.equal(yesterdayWin.query, "?start=" + encodeURIComponent("2026-11-03T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-04T08:00:00.000Z"));
   assert.equal(stats.botActivityWindow("7D", today).first, "2026-10-29");
   assert.deepEqual(stats.botActivityWindow("All", today), { first: null, last: null, query: "" });
   const custom = stats.botActivityWindow("Custom", today, { first: "2026-12-01", last: "2020-01-01" });
@@ -507,10 +510,13 @@ test("botActivityWindow: Today, 7D, All and a clamped, swapped Custom", () => {
 
 test("botResultDays: the bot range, ending at the last shown day", () => {
   const yesterday = "2026-11-08";
-  assert.deepEqual(stats.botResultDays({ first: "2026-11-02", last: "2026-11-09" }, yesterday),
-    { first: "2026-11-02", last: yesterday, empty: false });
+  // 7D as the picker builds it on Nov 9: today and the 6 days before, so 6 days of results.
+  assert.deepEqual(stats.botResultDays(stats.botActivityWindow("7D", "2026-11-09"), yesterday),
+    { first: "2026-11-03", last: yesterday, empty: false });
   assert.deepEqual(stats.botResultDays({ first: "2026-11-09", last: "2026-11-09" }, yesterday),
     { first: "2026-11-09", last: yesterday, empty: true });
+  assert.deepEqual(stats.botResultDays({ first: yesterday, last: yesterday }, yesterday),
+    { first: yesterday, last: yesterday, empty: false });
   assert.deepEqual(stats.botResultDays({ first: null, last: null }, yesterday), { first: null, last: yesterday, empty: false });
   assert.deepEqual(stats.botResultDays({ first: "2026-11-01", last: "2026-11-03" }, yesterday),
     { first: "2026-11-01", last: "2026-11-03", empty: false });
