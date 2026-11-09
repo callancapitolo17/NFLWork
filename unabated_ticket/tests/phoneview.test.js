@@ -325,22 +325,26 @@ test("free play: the box takes the stake capped at the balance and the payout ca
 test("fully bet lines leave the Edges list: a row, or a card by its best line", () => {
   const row = (key, atSize) => ({ key, rail: { text: atSize ? "add $0.00" : "add $10.00", note: null, atSize } });
   assert.deepEqual(phoneView.withoutFullyBet([row("a", false), row("b", true), row("c", false)], false).map((item) => item.key), ["a", "c"]);
-  const cards = [{ key: "x", best: row("a", true), others: [row("b", false)] }, { key: "y", best: row("c", false), others: [] }];
+  // A card goes by its best line only: another line at full size keeps it, a best at full size drops it.
+  const cards = [{ key: "x", best: row("a", true), others: [row("b", false)] }, { key: "y", best: row("c", false), others: [row("d", true)] }];
   assert.deepEqual(phoneView.withoutFullyBet(cards, true).map((card) => card.key), ["y"]);
-  assert.equal(phoneView.isFullyBet({ key: "live", rail: { text: "—", note: "declined", atSize: false } }), false, "a declined live row stays");
-  assert.equal(phoneView.isFullyBet({ key: "old" }), false, "a row without a rail stays");
+  const declinedLive = { key: "live", rail: { text: "\u2014", note: "declined", atSize: false } };
+  assert.deepEqual(phoneView.withoutFullyBet([declinedLive, { key: "old" }], false).map((item) => item.key), ["live", "old"], "a declined live row and a row without a rail stay");
+  assert.deepEqual(phoneView.withoutFullyBet([], true), []);
 });
 
-test("a placed mark shows from the tap until a fresh list asked for after the reply arrives", () => {
+test("a placed mark shows from the tap until the list's bets read is no older than the read made after the reply", () => {
   const sentAt = 1_000_000;
-  const out = { stake: 79.88, sentAt, repliedAt: null };
-  assert.equal(phoneView.placedMarkShows(out, null, sentAt + 2000), true, "order still out");
-  assert.equal(phoneView.placedMarkShows(out, sentAt + 5000, sentAt + 6000), true, "a fresh list before the reply does not end it");
+  const out = { stake: 79.88, sentAt, repliedAt: null, betsReadAfter: null };
+  assert.equal(phoneView.placedMarkShows(out, "2026-11-09T19:00:00Z", sentAt + 85_000), true, "order still out, past the cap");
   const replied = { ...out, repliedAt: sentAt + 1500 };
-  assert.equal(phoneView.placedMarkShows(replied, null, sentAt + 3000), true, "no fresh list yet");
-  assert.equal(phoneView.placedMarkShows(replied, sentAt + 1000, sentAt + 3000), true, "a fresh list asked for before the reply");
-  assert.equal(phoneView.placedMarkShows(replied, sentAt + 1500, sentAt + 3000), false, "a fresh list asked for at the reply");
-  assert.equal(phoneView.placedMarkShows(out, null, sentAt + phoneView.PLACED_MARK_MAX_MS + 1), false, "ends after the cap");
-  assert.deepEqual(phoneView.placedMarkView(out), { tag: "placed $79.88", text: "placing", note: "sending…" });
-  assert.deepEqual(phoneView.placedMarkView(replied), { tag: "placed $79.88", text: "placed", note: "updating…" });
+  assert.equal(phoneView.placedMarkShows(replied, "2026-11-09T19:00:00Z", sentAt + 3000), true, "the read after the reply has not landed");
+  const read = { ...replied, betsReadAfter: "2026-11-09T19:00:05Z" };
+  assert.equal(phoneView.placedMarkShows(read, null, sentAt + 3000), true, "no list yet");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:04.900Z", sentAt + 3000), true, "a list on an older read (a runner read already in flight)");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:05Z", sentAt + 3000), false, "a list on the same read");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:09Z", sentAt + 3000), false, "a list on a later read");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:04Z", replied.repliedAt + phoneView.PLACED_MARK_MAX_MS + 1), false, "ends a minute after the reply");
+  assert.deepEqual(phoneView.placedMarkView(out), { tag: "placed $79.88", rail: { text: "placing", note: "sending…", atSize: true } });
+  assert.deepEqual(phoneView.placedMarkView(replied), { tag: "placed $79.88", rail: { text: "placed", note: "updating…", atSize: true } });
 });

@@ -599,27 +599,31 @@
   }
 
   // A Place sent from this page greys its row ("placed $X") from the tap
-  // until an Edges list arrives that the runner sized on bets read after the
-  // venue replied (a ?fresh=1 list asked for at or after the reply), so the
-  // old "add $X" never shows in between. PLACED_MARK_MAX_MS ends it anyway
-  // when that list never comes (the runner's own 10 s bets read has caught
-  // up by then).
-  // mark {stake, sentAt, repliedAt (null while the order is out)};
-  // freshListAskedAt: when the newest ?fresh=1 list that arrived was asked for, or null.
-  const PLACED_MARK_MAX_MS = 60 * 1000;
+  // until the Edges list counts it, so the old "add $X" never shows in
+  // between. The list counts it once the runner's bets read
+  // (edges.json betsService.generatedAt) is no older than a /bets.json read
+  // this page made after the venue replied (mark.betsReadAfter): both are the
+  // bets service's own clock, so a runner read already in flight, a failed
+  // runner read or the phone's clock cannot end it early. While the order is
+  // out the mark always shows (the send has its own timeout);
+  // PLACED_MARK_MAX_MS after the reply it ends anyway.
+  // mark {stake, sentAt, repliedAt (null while the order is out),
+  // betsReadAfter (ISO, null until that read lands)};
+  // listBetsReadAt: the shown list's betsService.generatedAt, or null.
+  const PLACED_MARK_MAX_MS = MINUTE_MS;
 
-  function placedMarkShows(mark, freshListAskedAt, now) {
-    if (now - mark.sentAt > PLACED_MARK_MAX_MS) return false;
+  function placedMarkShows(mark, listBetsReadAt, now) {
     if (mark.repliedAt == null) return true;
-    return freshListAskedAt == null || freshListAskedAt < mark.repliedAt;
+    if (now - mark.repliedAt > PLACED_MARK_MAX_MS) return false;
+    if (mark.betsReadAfter == null || listBetsReadAt == null) return true;
+    return Date.parse(listBetsReadAt) < Date.parse(mark.betsReadAfter);
   }
 
   // The greyed row's tag and rail words.
   function placedMarkView(mark) {
     return {
       tag: `placed ${fmtDollars(mark.stake)}`,
-      text: mark.repliedAt == null ? "placing" : "placed",
-      note: mark.repliedAt == null ? "sending…" : "updating…",
+      rail: { text: mark.repliedAt == null ? "placing" : "placed", note: mark.repliedAt == null ? "sending…" : "updating…", atSize: true },
     };
   }
 
@@ -681,7 +685,7 @@
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
     placeToastPlacingText, placeToastHideAfterMs, freePlayStake,
-    isFullyBet, withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
+    withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 
   if (inNode) {
