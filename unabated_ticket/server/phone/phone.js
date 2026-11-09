@@ -260,17 +260,21 @@
   }
 
   // The records as the panel holds them (edgeRows.applyBetsPayload: merged, pins applied).
+  // Returns this read's generatedAt (the bets service's clock), or null when it failed.
   async function pollBets() {
+    let generatedAt = null;
     try {
       const body = await requestJson("GET", "/bets.json");
       const applied = edgeRows.applyBetsPayload(state.held, body, Date.now());
       state.held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
       if (state.betsSaving.size === 0) state.dismissedIds = applied.dismissals ? applied.dismissals.map((row) => row.betId) : null;
       pollSucceeded(state.bets, { generatedAt: applied.generatedAt, sources: applied.sources });
+      generatedAt = applied.generatedAt ?? null;
     } catch (error) {
       pollFailed(state.bets, error);
     }
     renderAll();
+    return generatedAt;
   }
 
   // Each book's balance for the Edges tab's Balances line, on the bets poll's cadence;
@@ -606,7 +610,7 @@
     view.edgesEmpty.hidden = total > 0 && payload.total <= payload.maxShown;
     view.edgesEmpty.textContent = payload.total === 0
       ? (payload.scanner.phase === "live" ? `No line at or above ${settings.minEdgePct}% edge right now.` : "Waiting for the runner's first snapshot…")
-      : total === 0 && payload.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
+      : total === 0 && fullyBet > 0 && payload.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
         : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
   }
 
@@ -895,8 +899,7 @@
     const ownMark = state.placedMarks.get(rowKey) === mark;
     if (next.tone === "ok" || next.tone === "warn") {
       mark.repliedAt = Date.now();
-      await pollBets();
-      if (state.bets.okAt != null && state.bets.okAt >= mark.repliedAt) mark.betsReadAfter = state.bets.payload.generatedAt ?? null;
+      mark.betsReadAfter = await pollBets();
       await Promise.all([pollEdges(true), pollTeasers(true)]);
     } else {
       if (ownMark) state.placedMarks.delete(rowKey);

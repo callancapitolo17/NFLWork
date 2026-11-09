@@ -601,7 +601,7 @@
   // A Place sent from this page greys its row ("placed $X") from the tap
   // until the Edges list counts it, so the old "add $X" never shows in
   // between. The list counts it once the runner's bets read
-  // (edges.json betsService.generatedAt) is no older than a /bets.json read
+  // (edges.json betsService.generatedAt) is newer than a /bets.json read
   // this page made after the venue replied (mark.betsReadAfter): both are the
   // bets service's own clock, so a runner read already in flight, a failed
   // runner read or the phone's clock cannot end it early. While the order is
@@ -616,7 +616,9 @@
     if (mark.repliedAt == null) return true;
     if (now - mark.repliedAt > PLACED_MARK_MAX_MS) return false;
     if (mark.betsReadAfter == null || listBetsReadAt == null) return true;
-    return Date.parse(listBetsReadAt) < Date.parse(mark.betsReadAfter);
+    // Strictly newer: the service stamps whole seconds, so a runner read
+    // begun just before the fill can carry the same second as the read after it.
+    return Date.parse(listBetsReadAt) <= Date.parse(mark.betsReadAfter);
   }
 
   // The greyed row's tag and rail words.

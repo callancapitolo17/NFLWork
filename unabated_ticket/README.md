@@ -2813,8 +2813,8 @@ node unabated_ticket/server/runner.js                     # must be running too 
   (`placing · sending…`, then `placed · updating…`). After a fill or an
   unsure reply the page reads `/bets.json` at once, then a `?fresh=1` Edges
   list; the row stays grey until the list's runner bets read
-  (`betsService.generatedAt`) is no older than that `/bets.json` read (both
-  the bets service's clock), at most a minute after the reply
+  (`betsService.generatedAt`) is newer than that `/bets.json` read (both
+  the bets service's clock, whole seconds), at most a minute after the reply
   (`phoneView.placedMarkShows`). A refusal ungreys it. A line sized to $0
   (`add $0`, the rail's `atSize`, also a line an open teaser sizes to zero;
   a card by its best line) is not listed at all (`phoneView.withoutFullyBet`,
