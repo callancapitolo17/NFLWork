@@ -72,6 +72,7 @@ GRID_LOW_MAX = 50
 GRID_MID_MIN, GRID_MID_MAX, GRID_MID_STEP = 55, 945, 5
 GRID_HIGH_MIN, GRID_HIGH_MAX = 950, 999
 GEO_STATUS = 451
+RATE_LIMIT_STATUS = 429
 
 # Transport: (method, url, headers, body bytes or None) -> (status, body bytes).
 # Raises OSError when no answer came back at all.
@@ -80,6 +81,13 @@ Transport = Callable[[str, str, dict, bytes | None], tuple[int, bytes]]
 
 class NovigError(RuntimeError):
     """A Novig answer this module could not use, with what was expected and found."""
+
+
+class NovigRateLimited(NovigError):
+    """Novig answered HTTP 429 RATE_LIMIT_EXCEEDED: the read is fine to repeat
+    once its bucket refills (a listing's `history` bucket refills 4 tokens a
+    second). Callers that may wait retry once; a source names it in its failed
+    run so Place can tell a throttled read from a broken one."""
 
 
 # ---- signing --------------------------------------------------------------------------------
@@ -286,6 +294,8 @@ class NovigOrderClient:
         for _ in range(MAX_PAGES):
             page_query = [*query, ("limit", str(PAGE_LIMIT))] + ([("after", after)] if after else [])
             status, reply = self.request("GET", path, page_query)
+            if status == RATE_LIMIT_STATUS:
+                raise NovigRateLimited(f"GET {path}: HTTP 429 {error_code_of(reply) or ''} {str(reply)[:200]}".rstrip())
             if status != 200 or not isinstance(reply, dict) or not isinstance(reply.get("items"), list):
                 raise NovigError(f"GET {path}: expected 200 with an items list, got HTTP {status} {str(reply)[:300]}")
             items.extend(item for item in reply["items"] if isinstance(item, dict))

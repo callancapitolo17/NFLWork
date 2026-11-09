@@ -13,6 +13,23 @@ the moment its fills land, so the bot subaccount is read every POLL_SEC.
     GET /v3/portfolio/fills?startsAfter=<ms>   (signed, NOVIG-V3, paged)
         -> one record per order: its fills summed
 
+Where the fills come from (2026-11-09): the key's private `orders` channel on
+the bets service's Novig websocket (novig_book_stream.py, `order_stream`)
+pushes every fill the moment it lands, so a poll drains those
+(`fill_events_after`) into the fills it already holds and reads Novig's REST
+fills only on the first poll, when the stream is not live or has loaded a new
+snapshot (a connect or a gap: a fill meanwhile is in no snapshot), and once an
+hour (FULL_READ_EVERY) as the reconciliation. Before this every 10 s poll
+re-read all HISTORY_DAYS of fills: two pages of 500 at 8 + 1 per 50 rows from
+a `history` bucket that refills 4 a second, for two subaccounts, plus each
+Place's own reads — Novig 429'd the lot on 2026-11-07 and Place refused. A
+REST read Novig throttles is retried once after RATE_LIMIT_RETRY_SEC; a second
+429 fails the run (it is named `NovigRateLimited` so Place can tell a blip from
+a broken read). A pushed fill names no market and no fee: the market comes from
+the order's board line (contexts) or an earlier REST fill of the order, else
+that one order's fills are read from REST; its fee is 0 until the hourly REST
+read (a pregame take pays none; an in-game one is corrected then).
+
 Novig's catalog names neither the board's teams nor its periods, so a bet's
 game fields (league, teams with Unabated's team ids, market, period, side,
 number) come from `contexts()`: the board line the order was placed on, by
@@ -70,13 +87,16 @@ Side effects: none on disk but `note_settled`'s, `adopt_order`'s and `confirm_or
 records a failed run and keeps the previous records.
 """
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
 from unabated_ticket.bets_service.normalize import EASTERN, json_clean, round_cents, utc_now_iso
 from unabated_ticket.bets_service.novig_orders import FINAL_ORDER_STATUSES, QTY_PER_DOLLAR
 from unabated_ticket.bets_service.novig_orders import STATUS_FILLED as NOVIG_STATUS_FILLED
-from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient, fill_outcome, order_totals
+from unabated_ticket.bets_service.novig_orders import (NovigError, NovigOrderClient, NovigRateLimited, cost_of,
+                                                       fill_outcome, order_totals)
 from unabated_ticket.bets_service.sources.novig import probability_to_american
 
 log = logging.getLogger(__name__)
@@ -85,11 +105,24 @@ NAMES = ("bot", "place")
 SOURCE_PREFIX = "novig_"
 VENUE = "novig"
 POLL_SEC = 10.0  # the app source's NOVIG_POLL_SEC cadence (same poll thread)
-# Fills on events that started within this many days are read every poll (the store keeps older ones).
+# Fills on events that started within this many days are read from REST (the store keeps older ones).
 HISTORY_DAYS = 14
+# With the private orders channel live, REST fills are still read whole this often.
+FULL_READ_EVERY = timedelta(hours=1)
+# A throttled REST fills read is tried once more after this (the `history` bucket refills 4 a second).
+RATE_LIMIT_RETRY_SEC = 1.5
+# An hourly reconciliation Novig throttled twice is tried again after this, the stream's fills standing meanwhile.
+FULL_READ_RETRY = timedelta(seconds=60)
 REASON_NO_CONTEXT = "no board line on record for this Novig order (placed outside the bot's desk)"
 
 Contexts = Callable[[], dict[str, dict]]
+
+
+class OrderStream(Protocol):
+    """The private orders channel this subaccount's socket carries (novig_book_stream.NovigBookStream)."""
+
+    def fill_events_after(self, version: int) -> dict: ...
+
 # (Novig order id, first SETTLED sighting) -> the settle time kept for good.
 NoteSettled = Callable[[str, datetime], datetime]
 # placed_before -> [{client_order_id, outcome_id}]: Place orders Novig never answered or named.
@@ -127,6 +160,16 @@ def _iso_of_epoch_ms(epoch_ms: object) -> str | None:
     if isinstance(epoch_ms, bool) or not isinstance(epoch_ms, int):
         return None
     return _iso_ms(datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc))
+
+
+def _group_by_order(fills: list[dict]) -> dict[str, list[dict]]:
+    by_order: dict[str, list[dict]] = {}
+    for fill in fills:
+        order_id = fill.get("orderId")
+        if not isinstance(order_id, str) or not order_id:
+            raise NovigError(f"fill {fill.get('fillId') or '?'} names no order")
+        by_order.setdefault(order_id, []).append(fill)
+    return by_order
 
 
 def record_id_of(name: str, novig_order_id: str) -> str:
@@ -207,7 +250,10 @@ class NovigSubaccountSource:
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), poll_sec: float = POLL_SEC,
                  note_settled: NoteSettled | None = None, lost_orders: LostOrders | None = None,
                  adopt_order: AdoptOrder | None = None, unconfirmed_orders: UnconfirmedOrders | None = None,
-                 confirm_order: ConfirmOrder | None = None):
+                 confirm_order: ConfirmOrder | None = None, order_stream: OrderStream | None = None,
+                 sleep: Callable[[float], None] = time.sleep):
+        """`order_stream`: this subaccount's pushed fills (its key's private
+        orders channel); None reads REST every poll as before."""
         if name not in NAMES:
             raise ValueError(f"name must be one of {NAMES}, got {name!r}")
         self.name = f"{SOURCE_PREFIX}{name}"
@@ -221,6 +267,14 @@ class NovigSubaccountSource:
         self._unconfirmed_orders = unconfirmed_orders
         self._confirm_order = confirm_order
         self._now = now
+        self._order_stream = order_stream
+        self._sleep = sleep
+        # Every fill this subaccount holds, by Novig order id, in the REST fill shape; None before the first read.
+        self._fills_by_order: dict[str, list[dict]] | None = None
+        self._last_full_read_at: datetime | None = None
+        # How far the stream's fill events were drained, and the snapshot epoch they were drained under.
+        self._stream_version = 0
+        self._stream_epoch: int | None = None
         # (open position market ids, market id -> (dollars paid, last SETTLEMENT ms)) as of _ledger_read_at.
         self._ledger: tuple[set[str], dict[str, tuple[float, int]]] | None = None
         self._ledger_read_at: datetime | None = None
@@ -230,15 +284,9 @@ class NovigSubaccountSource:
         now = self._now()
         self._adopt_lost_orders(now)
         starts_after_ms = int((now - timedelta(days=HISTORY_DAYS)).timestamp() * 1000)
-        fills = self._client.fills(starts_after_ms=starts_after_ms)
-        by_order: dict[str, list[dict]] = {}
-        for fill in fills:
-            order_id = fill.get("orderId")
-            if not isinstance(order_id, str) or not order_id:
-                raise NovigError(f"fill {fill.get('fillId') or '?'} names no order")
-            by_order.setdefault(order_id, []).append(fill)
-        self._confirm_unconfirmed_orders(now)
         contexts = self._contexts()
+        by_order = self._read_fills(now, starts_after_ms, contexts)
+        self._confirm_unconfirmed_orders(now)
         self._read_ledger_if_due(now, starts_after_ms)
         held_qty: dict[str, int] = {}
         held_outcomes: dict[str, set] = {}
@@ -255,8 +303,110 @@ class NovigSubaccountSource:
                 # It may already be stored graded, and no ledger read can grade it now: the stored row stands.
                 continue
             records.append(normalize_order(self._account, order_id, order_fills, context, fetched_at, grade))
-        log.info("%s: %d fills -> %d bets", self.name, len(fills), len(records))
+        log.info("%s: %d fills -> %d bets", self.name, sum(len(order_fills) for order_fills in by_order.values()), len(records))
         return records
+
+    def _read_fills(self, now: datetime, starts_after_ms: int, contexts: dict[str, dict]) -> dict[str, list[dict]]:
+        """This subaccount's fills by order: Novig's REST fills whole when they
+        must be (first poll, no stream or one not live, a new stream epoch, the
+        hourly reconciliation), else the fills held; plus, either way, every
+        fill the stream pushed that is not in them (REST's fills lag the
+        stream by up to a minute, so a whole read can miss a fill it pushed).
+        Raises on a failed REST read (the run fails), except an hourly
+        reconciliation throttled twice while the channel is live: the stream's
+        fills stand and REST is tried again in FULL_READ_RETRY."""
+        pushed = self._order_stream.fill_events_after(self._stream_version) if self._order_stream is not None else None
+        why_full = self._why_full_read(now, pushed)
+        if why_full is not None:
+            self._read_fills_whole(now, starts_after_ms, why_full, pushed)
+            if pushed is not None:
+                # Every pushed fill the stream still holds, not only the new ones: REST may lag any of them.
+                pushed = self._order_stream.fill_events_after(0)
+        if pushed is None:
+            return self._fills_by_order
+        merged = sum(self._merge_pushed_fill(event, contexts) for event in pushed["events"])
+        self._stream_version = pushed["version"]
+        if merged:
+            log.info("%s: %d pushed fill(s) merged off the orders channel", self.name, merged)
+        return self._fills_by_order
+
+    def _read_fills_whole(self, now: datetime, starts_after_ms: int, why_full: str, pushed: dict | None) -> None:
+        try:
+            fills = self._fills_with_one_retry(starts_after_ms)
+        except NovigRateLimited as error:
+            if why_full != "hourly reconciliation" or pushed is None or not pushed["live"]:
+                raise
+            self._last_full_read_at = now - FULL_READ_EVERY + FULL_READ_RETRY
+            log.warning("%s: hourly REST fills read throttled twice (%s); the stream's fills stand, REST again in %d s",
+                        self.name, error, FULL_READ_RETRY.seconds)
+            return
+        self._fills_by_order = _group_by_order(fills)
+        self._last_full_read_at = now
+        if pushed is not None:
+            self._stream_epoch = pushed["epoch"]
+        log.info("%s: REST fills read (%s): %d fills", self.name, why_full, len(fills))
+
+    def _why_full_read(self, now: datetime, pushed: dict | None) -> str | None:
+        if self._fills_by_order is None or self._last_full_read_at is None:
+            return "first read"
+        if pushed is None:
+            return "no orders channel"
+        if not pushed["live"]:
+            return "orders channel not live"
+        if pushed["epoch"] != self._stream_epoch:
+            return f"orders channel epoch {self._stream_epoch} -> {pushed['epoch']}"
+        if now - self._last_full_read_at >= FULL_READ_EVERY:
+            return "hourly reconciliation"
+        return None
+
+    def _fills_with_one_retry(self, starts_after_ms: int) -> list[dict]:
+        try:
+            return self._client.fills(starts_after_ms=starts_after_ms)
+        except NovigRateLimited as error:
+            log.warning("%s: %s; trying once more in %.1f s", self.name, error, RATE_LIMIT_RETRY_SEC)
+            self._sleep(RATE_LIMIT_RETRY_SEC)
+            return self._client.fills(starts_after_ms=starts_after_ms)
+
+    def _merge_pushed_fill(self, event: dict, contexts: dict[str, dict]) -> bool:
+        """One fill off the orders channel into the held fills, in the REST
+        fill shape (fillId, orderId, marketId, outcomeId, qty, cost, fee, ts,
+        taker; the fee None until a REST read has it). False when it is
+        already held (REST's copy, or an earlier merge)."""
+        order_id = event.get("orderId")
+        if not isinstance(order_id, str) or not order_id:
+            raise NovigError(f"pushed fill {event.get('fillId') or '?'} names no order")
+        held = self._fills_by_order.setdefault(order_id, [])
+        if any(fill.get("fillId") == event.get("fillId") for fill in held):
+            return False
+        market_id = self._market_of(order_id, held, contexts)
+        if market_id is None:
+            # An order no desk placed, first heard of here: one small REST read names its market (and fee).
+            # What REST lists replaces its copies; a pushed fill REST lacks (lag) stays.
+            try:
+                rest_fills = self._client.fills(order_id=order_id)
+            except (NovigError, OSError) as error:
+                rest_fills = []
+                log.warning("%s: pushed fill on order %s with no known market and its REST read failed (%s); "
+                            "held without a market until the next REST read", self.name, order_id, error)
+            rest_ids = {fill.get("fillId") for fill in rest_fills}
+            held = self._fills_by_order[order_id] = rest_fills + [fill for fill in held if fill.get("fillId") not in rest_ids]
+            if event.get("fillId") in rest_ids:
+                return True
+            market_id = self._market_of(order_id, held, contexts)
+        qty = event["qty"]
+        held.append({"fillId": event.get("fillId"), "orderId": order_id, "marketId": market_id,
+                     "outcomeId": event.get("outcomeId"), "qty": qty, "cost": f"{cost_of(qty, float(event['price'])):.5f}",
+                     "fee": None, "ts": event.get("ts"), "taker": event.get("taker")})
+        return True
+
+    @staticmethod
+    def _market_of(order_id: str, held: list[dict], contexts: dict[str, dict]) -> str | None:
+        for fill in held:
+            if isinstance(fill.get("marketId"), str) and fill["marketId"]:
+                return fill["marketId"]
+        context = contexts.get(order_id)
+        market_id = context.get("market_id") if context else None
+        return market_id if isinstance(market_id, str) and market_id else None
 
     def balance(self) -> dict:
         """This subaccount's balance for the tracker's Balances tab (balances.py).
@@ -307,7 +457,7 @@ class NovigSubaccountSource:
         on the market), or "lost" for a started order whose position closed
         with none LOSS_CONFIRM ago; None while the ledger cannot say."""
         market_id = fills[0].get("marketId")
-        if self._ledger is None or len(held_outcomes.get(market_id, ())) != 1:
+        if self._ledger is None or market_id is None or len(held_outcomes.get(market_id, ())) != 1:
             return None
         open_markets, settlements = self._ledger
         qty, cost, fee = order_totals(fills)

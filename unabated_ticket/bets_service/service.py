@@ -26,7 +26,12 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     [bet_fill_snapshots / bet_close_snapshots rows of those
                                     bets] (every book's two sides at each bet's number at the
                                     fill and at the close; opt-in, they are large)
-           GET /health              {ok, generatedAt, uptimeSec, sources}
+           GET /health              {ok, generatedAt, uptimeSec, sources, novigStream?,
+                                    novigPlaceStream?, prophetxStream?, prophetxLive?,
+                                    polymarketStream?}: each stream's status(); the two
+                                    Novig ones carry `orders` {live, subscribed, synced,
+                                    seq, epoch, version, error}, the private orders
+                                    channel of the bot's and Place's sub-accounts
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
                                     learnedFrom?}]} -> {ok, learned, conflicts, crosswalk}
@@ -1424,11 +1429,14 @@ def health_payload(store: BetsStore, started_at: float, source_names: list[str] 
                    novig_book_stream: NovigBookStream | None = None,
                    prophetx_order_stream: ProphetXOrderStream | None = None,
                    prophetx_live: ProphetXLiveBooks | None = None,
-                   polymarket_book_stream: PolymarketBookStream | None = None) -> dict:
+                   polymarket_book_stream: PolymarketBookStream | None = None,
+                   novig_place_stream: NovigBookStream | None = None) -> dict:
     payload = {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
                "sources": source_status(store, list(source_names))}
     if novig_book_stream is not None:
         payload["novigStream"] = novig_book_stream.status()
+    if novig_place_stream is not None:
+        payload["novigPlaceStream"] = novig_place_stream.status()
     if prophetx_order_stream is not None:
         payload["prophetxStream"] = prophetx_order_stream.status()
     if prophetx_live is not None:
@@ -1516,6 +1524,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  prophetx_live: ProphetXLiveBooks | None = None,
                  source_reader: SourceReader | None = None,
                  polymarket_book_stream: PolymarketBookStream | None = None,
+                 novig_place_stream: NovigBookStream | None = None,
                  ladder_store: LadderStore | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
@@ -1554,7 +1563,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             url = urlparse(self.path)
             if url.path == "/health":
                 self._send_json(200, health_payload(store, started_at, names, novig_book_stream,
-                                                             prophetx_order_stream, prophetx_live, polymarket_book_stream))
+                                                             prophetx_order_stream, prophetx_live, polymarket_book_stream,
+                                                             novig_place_stream))
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
@@ -2342,15 +2352,21 @@ def open_novig_taker_desk(store: TakerStore | None, holdings_status: Callable[[]
     return NovigTakerDesk(client, store, (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH), holdings_status), ""
 
 
-def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -> list[Source]:
+def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore,
+                             bot_stream: NovigBookStream | None = None,
+                             place_stream: NovigBookStream | None = None) -> list[Source]:
     """The bot's and the Place button's Novig subaccounts, each read on its
     own trading key when one is configured. The bot's bets are named by the
     board lines its desk kept (taker.duckdb), Place's by the lines its orders
-    bought (bets.duckdb::manual_orders), which also keep Place's settle times."""
+    bought (bets.duckdb::manual_orders), which also keep Place's settle times.
+    Each source takes its fills off its key's private orders channel
+    (`bot_stream` / `place_stream`, the sockets opened on the same keys) and
+    reads Novig's REST fills only on connect, after a gap and hourly; without
+    a stream it polls REST every pass as before."""
     sources: list[Source] = []
     bot_client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
     if bot_client is not None and taker_store is not None:
-        sources.append(NovigSubaccountSource("bot", bot_client, taker_store.novig_order_contexts))
+        sources.append(NovigSubaccountSource("bot", bot_client, taker_store.novig_order_contexts, order_stream=bot_stream))
     elif bot_client is not None:
         log.error("novig_bot: the taker log is not open, so the bot subaccount's bets cannot be named; not read")
     else:
@@ -2363,20 +2379,34 @@ def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -
             adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now()),
             unconfirmed_orders=store.unconfirmed_novig_place_orders,
             confirm_order=lambda client_order_id, outcome, filled, paid: store.confirm_novig_place_order(
-                client_order_id, outcome, filled, paid, _now())))
+                client_order_id, outcome, filled, paid, _now()),
+            order_stream=place_stream))
     else:
         log.info("novig_place: %s, not read", reason)
     return sources
 
 
 def open_novig_book_stream() -> NovigBookStream | None:
-    """The live Novig book stream on the bot's Novig key, or None without one.
+    """The live Novig book stream on the bot's Novig key, or None without one,
+    with the bot sub-account's private orders channel on the same socket.
     Reads only: it runs whether or not the bot desk is armed or stopped."""
     client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
     if client is None:
         log.info("novig stream: %s, no live Novig books and no keyed catalog reads (the runner's Novig checks fail closed)", reason)
         return None
-    return NovigBookStream(client, stream_url(config.NOVIG_API_URL))
+    return NovigBookStream(client, stream_url(config.NOVIG_API_URL), orders_channel=True)
+
+
+def open_novig_place_stream() -> NovigBookStream | None:
+    """A second Novig socket on Place's own key for Place's sub-account's
+    private orders channel (a channel covers only the signing key's
+    sub-account), or None without that key. No market is ever asked of it:
+    it carries Place's pushed fills to the desk and the novig_place source."""
+    client, reason = novig_trading_client(config.NOVIG_PLACE_KEY_ID, config.NOVIG_PLACE_PRIVATE_KEY_PATH, "Place")
+    if client is None:
+        log.info("novig place stream: %s, Place polls its orders over REST", reason)
+        return None
+    return NovigBookStream(client, stream_url(config.NOVIG_API_URL), orders_channel=True)
 
 
 def open_polymarket_book_stream(client_factory: Callable[[str, str], PolymarketOrderClient] = PolymarketOrderClient,
@@ -2440,7 +2470,7 @@ def open_kalshi_place_desk(store: BetsStore) -> tuple[ManualKalshiDesk | None, s
 
 def open_novig_place_desk(store: BetsStore, source_names: list[str],
                           check: Callable[[NovigOrderClient], tuple[str | None, float | None]] = account_problem,
-                          ) -> tuple[ManualNovigDesk | None, str]:
+                          order_stream: NovigBookStream | None = None) -> tuple[ManualNovigDesk | None, str]:
     """(the Place button's Novig desk on Place's own sub-account, "") or (None, why).
     It signs only with Place's own trading key (NOVIG_PLACE_*), proven by Novig
     a trading key on its own sub-account (it reads that balance and is refused
@@ -2467,7 +2497,7 @@ def open_novig_place_desk(store: BetsStore, source_names: list[str],
     return ManualNovigDesk(client, store,
                            lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH,
                                                           RUNNER_NOVIG_QUOTE_TIMEOUT_SEC),
-                           read_sources=read_sources), ""
+                           read_sources=read_sources, order_stream=order_stream), ""
 
 
 def open_polymarket_place_desk(store: BetsStore, source_names: list[str],
@@ -2577,9 +2607,12 @@ def open_ladder_store(db_path: Path) -> LadderStore | None:
 
 
 def serve(sources: list[Source], store: BetsStore, host: str, port: int,
-          taker_store: TakerStore | None = None) -> None:
+          taker_store: TakerStore | None = None, novig_book_stream: NovigBookStream | None = None,
+          novig_place_stream: NovigBookStream | None = None) -> None:
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM. The
-    taker log is opened here unless main() opened it for the Novig sources."""
+    taker log is opened here unless main() opened it for the Novig sources;
+    the two Novig sockets (main() opens them for those sources) are None
+    without their keys."""
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
@@ -2591,7 +2624,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     novig_taker_desk, novig_taker_desk_off_reason = open_novig_taker_desk(
         taker_store, lambda: source_status(store, source_names))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
-    novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
+    novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names, order_stream=novig_place_stream)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
     prophetx_order_stream = open_prophetx_order_stream(sources)
     prophetx_live = prophetx_live_reader_if_configured(
@@ -2599,7 +2632,6 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
         lambda league, away, home: read_runner_team_keys(config.RUNNER_URL, PROPHETX_VENUE, league, away, home))
     prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources, prophetx_order_stream,
                                                                               prophetx_live)
-    novig_book_stream = open_novig_book_stream()
     polymarket_book_stream = open_polymarket_book_stream()
     novig_catalog_reads = open_novig_catalog_reads()
     source_reader = SourceReader(sources, store)
@@ -2625,6 +2657,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             balance_book=balance_book,
                                                             source_reader=source_reader,
                                                             polymarket_book_stream=polymarket_book_stream,
+                                                            novig_place_stream=novig_place_stream,
                                                             ladder_store=ladder_store))
     server.daemon_threads = True
     pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book, source_reader),
@@ -2635,6 +2668,9 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                    for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
     if novig_book_stream is not None:
         background_threads.append(threading.Thread(target=novig_book_stream.run, args=(stop,), name="novig-stream", daemon=True))
+    if novig_place_stream is not None:
+        background_threads.append(threading.Thread(target=novig_place_stream.run, args=(stop,), name="novig-place-stream",
+                                                   daemon=True))
     if polymarket_book_stream is not None:
         background_threads.append(threading.Thread(target=polymarket_book_stream.run, args=(stop,), name="polymarket-stream",
                                                    daemon=True))
@@ -2710,8 +2746,11 @@ def main() -> None:
         if optional is not None:
             sources.append(optional)
     taker_store = open_taker_store(config.TAKER_DB_PATH)
-    sources.extend(novig_subaccount_sources(taker_store, store))
-    serve(sources, store, config.BIND_HOST, config.PORT, taker_store=taker_store)
+    novig_book_stream = open_novig_book_stream()
+    novig_place_stream = open_novig_place_stream()
+    sources.extend(novig_subaccount_sources(taker_store, store, novig_book_stream, novig_place_stream))
+    serve(sources, store, config.BIND_HOST, config.PORT, taker_store=taker_store, novig_book_stream=novig_book_stream,
+          novig_place_stream=novig_place_stream)
 
 
 if __name__ == "__main__":

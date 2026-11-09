@@ -3444,6 +3444,40 @@ frame part the stream cannot read resyncs only that market, and the bets log
 prints it (`unreadable frame part ... part: {...}`, first 400 characters), so
 a new shape can be read off the log.
 
+**Private orders channel (`bets_service/novig_book_stream.py`, 2026-11-09).**
+The two sub-account reads (`novig_bot`, `novig_place`) used to re-read every
+fill of the last 14 days from `GET /v3/portfolio/fills` every 10 s. That read
+is on Novig's `history` throttle (512 tokens, 4 a second) at 8 tokens plus 1
+per 50 rows, so two sub-accounts holding ~870 fills cost ~42 tokens per 10 s
+against a refill of 40: the bucket sat at its floor and every extra read a
+Place made (its order status, its fills) was refused `HTTP 429` (2026-11-07,
+"the novig_place read is failing"). Now each socket also subscribes the
+`orders` private channel (`{"subscribe": {"private": ["orders"]}}`, 1 token;
+Novig pushes it only for the signing key's sub-account, so the bot's book
+socket carries the bot's and a **second socket on the Place key**
+(`novig-place-stream`, no market ever asked of it) carries Place's). The
+answer lists the sub-account's open orders (never a finished IOC) and every
+later frame is a delta: `open`, `fill` (fillId, orderId, outcomeId, price,
+qty, remaining; no fee, no marketId), `cancel`, `reject` (an unfilled IOC).
+A heartbeat every 15 s names the last seq; one past ours means a dropped
+frame, and the channel asks for a new snapshot and counts as not live until
+it comes. The channel is read two ways. The sub-account source merges the
+pushed fills into its 10 s pass (the market id from the order's stored line,
+else one `fills?order=` read) and reads REST's fills whole only on its
+first pass, whenever the channel was not live or re-snapshotted since the
+last pass (a fill during a gap is in no snapshot), and **hourly** (the
+exact fee, None on a pushed fill until then; Novig's REST fills are the
+record, the stream only the first word). REST's fills lag the stream by up
+to a minute, so after every whole read the pushed fills REST does not list
+yet are kept (one fill by `fillId` once it does). A REST fills read that
+Novig throttles is retried once 1.5 s later; an hourly read throttled twice
+while the channel is live does not fail the run (the stream's fills stand,
+REST is tried again a minute on), any other does. `/health` carries the channel under
+`novigStream.orders` and `novigPlaceStream.orders` (live, subscribed, synced,
+seq, snapshot epoch, version, error). Without a Place key there is no
+second socket and Place polls REST as before; without either channel live the
+source polls REST every pass as before.
+
 **Keyed catalog reads (`bets_service/novig_catalog_reads.py`, 2026-10-30).**
 The stream moved only the books. The market list (every 30 s while Novig rows
 are up, and on a Place quote when the last one is over a minute old) and the
@@ -3692,15 +3726,29 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    worse** than the Ticket's (a pregame take pays no fee); an open straight
    Novig bet is on the other outcome; a Novig read the stake counts (`novig`,
    `novig_place`, and `novig_bot` when it is read) is failing, has never run
-   or is over 5 minutes old; a Novig Place on the game may have filled after
+   or is over 5 minutes old (Place's own `novig_place` read Novig throttled,
+   `NovigRateLimited`, is a blip and not a failure while its last good read is
+   under 60 s old and came after the newest Novig Place send, so a fill the
+   blip could hide is in it; the app's and the bot's reads have no such rule,
+   nothing here knows when the bot last sent; 2026-11-09); a Novig Place on the game may have filled after
    `novigReadAt` (the oldest of those reads, `place.js readAtsOf`), or a
    Kalshi Place after `kalshiReadAt` (`manual_orders.unseen_manual_fill`,
    shared with Place on Kalshi); the click id was already sent.
 3. It buys `floor(stake x 100 / price)` contracts (a Novig contract pays 1c,
    not $1) with ONE immediate-or-cancel order at the live price, clientId the
    click's UUID, row `nman-<clickId>`, never re-sent (Novig does not dedupe
-   clientIds). It reads the order until final (about 10 reads a second
-   apart, none started after 12 s), then its fills; an order shown `OPEN` is
+   clientIds). While Place's private orders channel is live (above) it waits
+   for the order's pushed `fill` / `reject` / `cancel` frame (at most 12 s)
+   and then reads its fills once over REST for the fee; a REST read that
+   fails or lists fewer fills than the stream does not hold the answer: the
+   pushed fills are recorded, the fee from the quote's rate (0 pregame), and
+   the hourly REST read corrects them. A channel live to the end of the
+   window with no final frame reads the order once over REST (a resting one
+   is cancelled) and then its fills so far, the pushed ones standing when
+   REST lags them. Without the channel (no Place key, or
+   it is down or resyncing, even mid-wait) it reads the order over REST until
+   final as before (about 10 reads a second apart, none started after 12 s),
+   then its fills; an order shown `OPEN` is
    cancelled. An order never read final still has its fills read: every
    contract filled is `filled` (it cannot fill more); less stays `unknown`
    with what filled so far, and the `novig_place` read gives it its final
@@ -3720,7 +3768,10 @@ orders too; `/bets.json` serves such an order once, as the sub-account read's
 (`store._SELECT_WINDOW`; nothing is deleted). When the sub-account copy
 names no game (an order no desk placed, or a lost send not yet found), the
 app's copy is served instead. An `unknown` Place order is re-read by the
-`novig_place` read for 24 hours, then left `unknown`.
+`novig_place` read for 24 hours, then left `unknown`. A row left `sending`
+by a bets service that died mid-Place (2026-11-07: `nman-b2ec5517`, an order
+id and no status for a day) is re-read the same way once it is 2 minutes old:
+with an order id as an unconfirmed order, without one as a lost send.
 
 Its rows are in the same `manual_orders` table with `venue = 'novig'`
 (`ticker` = the outcome id, `novig_order_id`, and the board line Place's
