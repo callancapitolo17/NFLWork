@@ -370,12 +370,13 @@
         return names.other;
       }
       case "bfa": {
-        // "[309141] TOTAL o61½-110 (A vrs B)", "[308945] ILLINOIS ST -3-110"; props carry no rotation.
+        // "[309141] TOTAL o61½-110 (A vrs B)", "[308945] ILLINOIS ST -3-110"; props carry no rotation
+        // ("… Over 23.5 Receiving Yards", "… 1+ Touchdowns", "… First Touchdown Scorer - Kyle Juszczyk (LVR @ SF)").
         const text = String(raw.description || "");
         if (/^\[\d+\]\s+TOTAL\b/.test(text)) return /TEAM PTS/.test(text) ? names.teamTotal : names.total;
         if (/^\[\d+\]\s+.+\s[+-]\d+½?(-|\+|EV)/.test(text)) return names.spread;
         if (/^\[\d+\]/.test(text)) return names.other;
-        return /\d\+ |Over \d|Under \d|Goalscorer/.test(text) ? names.playerProp : names.other;
+        return /\d\+ |Over \d|Under \d|Goalscorer|Touchdown Scorer/.test(text) ? names.playerProp : names.other;
       }
       case "wagerzon": {
         // "[777045] GIANTS SUPERFECTA (...)" specials; RBL rows are player props ("1+ Touchdowns").
