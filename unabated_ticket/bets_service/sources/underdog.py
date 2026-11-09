@@ -59,14 +59,15 @@ import re
 from datetime import datetime, timezone
 
 from unabated_ticket.bets_service.normalize import (
-    EASTERN, json_clean, mark_parse_failed, parse_iso_ms, round_cents, to_number, utc_now_iso)
+    EASTERN, json_clean, mark_parse_failed, parse_iso_ms, round_cents, to_number)
 from unabated_ticket.bets_service.sources.betonline import american_from_payout
 
 SOURCE = "underdog_api"
 VENUE = "underdog"
-# A push carries at most this many settled pages (15 slips each; the extension's own
-# cap, extension/underdog.js MAX_SETTLED_PAGES) and slips.
+# A push carries at most this many settled pages (15 slips each): the extension's own
+# cap, extension/underdog.js MAX_SETTLED_PAGES (tests/test_underdog.py pins them equal).
 MAX_SETTLED_PAGES = 20
+# Far over the 21 pages a push can carry (~315 slips), so only a malformed body hits it.
 MAX_SLIPS_PER_PUSH = 500
 PRODUCT_PREDICTION = "prediction_markets"
 # Underdog sport_id -> the extension's league path (feed.LEAGUES).

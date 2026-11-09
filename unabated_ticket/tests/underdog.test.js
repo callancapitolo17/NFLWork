@@ -70,6 +70,10 @@ test("trimPage keeps prediction slips and only the lookups they name", () => {
   assert.deepEqual(trimmed.data.over_unders.map((o) => o.id), ["ou-1"]);
   assert.deepEqual(trimmed.data.games.map((g) => g.id), [1]);
   assert.deepEqual(trimmed.data.teams.map((t) => t.name), ["Las Vegas Raiders", "San Francisco 49ers"]);
+  // Whole objects: sources/underdog.py reads their every field (title, stat, choice, stat_value, ...).
+  assert.deepEqual(trimmed.data.over_unders[0], page.data.over_unders[0]);
+  assert.deepEqual(trimmed.data.over_under_options[0], page.data.over_under_options[0]);
+  assert.deepEqual(trimmed.data.games[0], page.data.games[0]);
   assert.equal(trimmed.data.players, undefined);
   assert.deepEqual(trimmed.meta, { next: 2, page: 1 });
 });
@@ -123,6 +127,20 @@ test("readAccount: a refused token is stale, an old app version names the reload
   ({ fetchImpl } = fakeFetch([{ body: { data: {} } }]));
   assert.equal((await underdog.readAccount({ fetchImpl, headers: {}, nowMs: NOW })).error,
     "Underdog open slips answered without data.entry_slips");
+});
+
+test("stepAfterRead pushes a read, revives a tab that cannot read, posts any other error", () => {
+  assert.equal(underdog.stepAfterRead({ push: {} }), "push");
+  for (const result of [{ stale: true }, { missing: true }, { unreachable: true }]) assert.equal(underdog.stepAfterRead(result), "reload");
+  assert.equal(underdog.stepAfterRead({ error: "Underdog settled page 2 failed (HTTP 500)" }), "error");
+  assert.equal(underdog.stepAfterRead(undefined), "error");
+});
+
+test("afterReloadError: a reload with no login back says to log in, not to reload", () => {
+  assert.match(underdog.afterReloadError({ stale: true }), /^reloaded the Underdog tab and no login came back — log in/);
+  assert.match(underdog.afterReloadError({}), /log in at app\.underdogsports\.com/);
+  assert.match(underdog.afterReloadError({ missing: true }), /did not load the extension's reader/);
+  assert.equal(underdog.afterReloadError({ unreachable: true, error: "asleep" }), "asleep");
 });
 
 test("mayReload: never the tab Cal is looking at, at most every five minutes", () => {

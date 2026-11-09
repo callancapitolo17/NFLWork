@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -193,6 +194,7 @@ def test_validate_push_takes_a_whole_read_or_an_error_and_names_what_is_wrong():
     assert validate_push([]) == "body must be an object, got list"
     assert validate_push({**body, "fetchedAt": "soon"}).startswith("fetchedAt must be an ISO time")
     assert validate_push({**body, "active": {"data": {}}}) == "active.data.entry_slips must be a list of objects"
+    assert validate_push({**body, "active": None}) == "active must be an answer object with data"
     assert validate_push({**body, "settled": []}) == f"settled must be a list of 1 to {MAX_SETTLED_PAGES} pages"
     assert validate_push({**body, "settled": [page([])] * (MAX_SETTLED_PAGES + 1)}).startswith("settled must be")
     assert validate_push({**body, "settled": [{"data": {"entry_slips": [], "games": {}}}]}) == \
@@ -200,6 +202,11 @@ def test_validate_push_takes_a_whole_read_or_an_error_and_names_what_is_wrong():
     assert validate_push({k: v for k, v in body.items() if k != "complete"}) == "complete must be true or false, got None"
     many = [slip(f"s{n}", ["o-sf"], [179088]) for n in range(501)]
     assert validate_push(push(many)) == "at most 500 slips per push, got 501"
+
+
+def test_the_page_cap_is_the_extensions_own():
+    extension = (Path(__file__).parents[2] / "extension" / "underdog.js").read_text()
+    assert f"const MAX_SETTLED_PAGES = {MAX_SETTLED_PAGES};" in extension
 
 
 def test_cals_49ers_slip_settles_won_off_the_push():
@@ -261,6 +268,14 @@ def test_http_push_stores_the_slip_then_settles_it_and_records_an_error_run(http
     [bet] = [bet for bet in payload["bets"] if bet["venue"] == "underdog"]
     assert (bet["id"], bet["status"], bet["awayTeam"], bet["homeTeam"]) == \
         ("underdog:7ed9", "won", "Las Vegas Raiders", "San Francisco 49ers")
+    # A second slip goes open, then a complete push lists it nowhere: closed, no result.
+    assert request_json("POST", f"{http_server}/underdog.json", push([slip("b2", ["o-sf"], [179088])])) == \
+        (200, {"ok": True, "count": 1, "closed": 0})
+    assert request_json("POST", f"{http_server}/underdog.json", push([], [page([won])], complete=True)) == \
+        (200, {"ok": True, "count": 1, "closed": 1})
+    bets = {bet["id"]: bet for bet in request_json("GET", f"{http_server}/bets.json?days=3650")[1]["bets"]}
+    assert (bets["underdog:b2"]["status"], bets["underdog:b2"]["raw"]["closedByAbsence"]) == ("closed", True)
+    assert bets["underdog:7ed9"]["status"] == "won"
     assert request_json("POST", f"{http_server}/underdog.json", {"error": "no app.underdogsports.com tab"}) == \
         (200, {"ok": True, "recorded": "error"})
     source = request_json("GET", f"{http_server}/bets.json?days=3650")[1]["sources"]["underdog"]

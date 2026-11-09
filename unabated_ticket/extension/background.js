@@ -7,7 +7,7 @@
 // notifications (the panel creates them; a click focuses the Unabated tab
 // and points page.js at the row through locate.js, same path as a row click).
 //
-// It also reads Cal's Underdog slips every few minutes (2026-11-09, below):
+// It also reads Cal's Underdog slips every 2 minutes (2026-11-09, below):
 // in his own app.underdogsports.com tab, on the app's own login, POSTed to the
 // bets service — here rather than in the panel so it runs with the panel
 // closed (Cal uses the phone page; Chrome on the Mac just has to be open).
@@ -40,6 +40,16 @@ async function reinjectIntoOpenTabs() {
       console.info("[unabated-ticket] re-injected into", tab.url);
     } catch (error) {
       console.error("[unabated-ticket] re-inject failed for", tab.url, error);
+    }
+  }
+  // The Underdog reader too, so a tab open before a reload keeps reading
+  // without being reloaded (underdogpage.js leaves an earlier copy in place).
+  for (const tab of await chrome.tabs.query({ url: underdog.APP_TAB_PATTERN })) {
+    if (tab.discarded) continue;
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["underdog.js", "underdogpage.js"], world: "MAIN" });
+    } catch (error) {
+      console.error("[unabated-ticket] underdog re-inject failed for", tab.url, error);
     }
   }
 }
@@ -110,53 +120,64 @@ async function postUnderdog(body) {
 }
 
 // What the tab's read returned; {missing: true} when underdogpage.js is not in
-// the tab (it was open before the extension loaded).
-async function readInTab(tabId) {
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId }, world: "MAIN",
-    func: () => (typeof globalThis.__unabatedUnderdogRead === "function" ? globalThis.__unabatedUnderdogRead() : { missing: true }),
-  });
-  return (injection && injection.result) || { error: "the Underdog tab returned nothing" };
+// the tab, {unreachable: true} when the tab cannot run a script (discarded by
+// Memory Saver, or mid-navigation).
+async function readInTab(tab) {
+  if (tab.discarded) return { unreachable: true, error: "the Underdog tab was put to sleep by Chrome" };
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id }, world: "MAIN",
+      func: () => (typeof globalThis.__unabatedUnderdogRead === "function" ? globalThis.__unabatedUnderdogRead() : { missing: true }),
+    });
+    return (injection && injection.result) || { error: "the Underdog tab returned nothing" };
+  } catch (error) {
+    return { unreachable: true, error: `the Underdog tab could not be read: ${error.message}` };
+  }
 }
 
-async function reloadAndRead(tabId) {
+async function reloadAndRead(tab) {
   await chrome.storage.session.set({ underdogLastReloadAt: Date.now() });
-  await chrome.tabs.reload(tabId);
+  await chrome.tabs.reload(tab.id);
   const deadline = Date.now() + underdog.RELOAD_WAIT_MS;
-  let result = { error: underdog.STALE, stale: true };
+  let result = {};
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, UNDERDOG_RETRY_EVERY_MS));
-    try {
-      result = await readInTab(tabId);
-    } catch (error) {
-      result = { error: `the Underdog tab is still loading: ${error.message}` };
-      continue;
-    }
-    if (!result.stale && !result.missing) return result;
+    result = await readInTab(tab);
+    if (underdog.stepAfterRead(result) !== "reload") return result;
   }
-  return result.missing ? { error: "the Underdog tab did not load the extension's reader — reload it" } : result;
+  return { error: underdog.afterReloadError(result) };
 }
 
 async function pollUnderdog() {
   if (underdogBusy) return;
   underdogBusy = true;
   try {
-    const [tab] = await chrome.tabs.query({ url: underdog.APP_TAB_PATTERN });
-    if (!tab) {
+    const tabs = await chrome.tabs.query({ url: underdog.APP_TAB_PATTERN });
+    if (!tabs.length) {
       await postUnderdog(underdog.errorBody(underdog.NO_TAB));
       return;
     }
-    let result = await readInTab(tab.id);
-    if (result.stale || result.missing) {
-      const appWindow = await chrome.windows.get(tab.windowId).catch(() => null);
+    // The first tab that reads wins; else the first tab is the one to revive.
+    let first = null;
+    for (const tab of tabs) {
+      const result = await readInTab(tab);
+      if (result.push) {
+        await postUnderdog(result.push);
+        return;
+      }
+      if (!first) first = { tab, result };
+    }
+    let { result } = first;
+    if (underdog.stepAfterRead(result) === "reload") {
+      const appWindow = await chrome.windows.get(first.tab.windowId).catch(() => null);
       const { underdogLastReloadAt } = await chrome.storage.session.get("underdogLastReloadAt");
-      if (underdog.mayReload(tab, Boolean(appWindow && appWindow.focused), underdogLastReloadAt || 0, Date.now())) {
-        result = await reloadAndRead(tab.id);
+      if (underdog.mayReload(first.tab, Boolean(appWindow && appWindow.focused), underdogLastReloadAt || 0, Date.now())) {
+        result = await reloadAndRead(first.tab);
       } else if (result.missing) {
         result = { error: "the Underdog tab was open before the extension loaded — reload it" };
       }
     }
-    await postUnderdog(result.push || underdog.errorBody(result.error));
+    await postUnderdog(result.push || underdog.errorBody(result.error || underdog.STALE));
   } catch (error) {
     console.warn("[unabated-ticket] underdog:", error.message);
     await postUnderdog(underdog.errorBody(error.message)).catch(() => {});

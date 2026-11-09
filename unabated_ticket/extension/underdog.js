@@ -40,7 +40,8 @@
   // A token this close to expiry is not used: the read could outlive it.
   const TOKEN_MARGIN_MS = 60 * 1000;
   // Settled pages back to slips made this long ago (the service keeps 30 days),
-  // and never more than MAX_SETTLED_PAGES (the service's own cap) a read.
+  // and never more than MAX_SETTLED_PAGES a read (the service refuses more:
+  // sources/underdog.py MAX_SETTLED_PAGES, pinned equal by its tests).
   const SETTLED_LOOKBACK_MS = 31 * 24 * 60 * 60 * 1000;
   const MAX_SETTLED_PAGES = 20;
   const POLL_MINUTES = 2;
@@ -181,7 +182,9 @@
   }
 
   // The bets service's base URL off the stored betsSettings — the panel's own
-  // rule (betsview.sanitizeBetsSettings; tests/underdog.test.js keeps them equal).
+  // rule (betsview.sanitizeBetsSettings), copied because the service worker
+  // cannot load betsview.js without bets/kelly/ladder/condkelly;
+  // tests/underdog.test.js keeps the two equal.
   const DEFAULT_SERVICE_URL = "http://127.0.0.1:8094";
   function serviceUrlOf(storedBetsSettings) {
     const url = storedBetsSettings && storedBetsSettings.serviceUrl;
@@ -192,6 +195,24 @@
     return { error: String(message || "unknown error") };
   }
 
+  // What the poll does with one tab's read: push it, revive the tab (its token
+  // lapsed, the reader is not in it, or Chrome put it to sleep), or post the error.
+  function stepAfterRead(result) {
+    if (result && result.push) return "push";
+    if (result && (result.stale || result.missing || result.unreachable)) return "reload";
+    return "error";
+  }
+
+  // The error once a reload brought no usable login back. Two causes look the
+  // same from here: the session is gone (log in), or the app no longer sends
+  // its API calls by XMLHttpRequest, which is all underdogpage.js watches.
+  function afterReloadError(result) {
+    if (result && result.missing) return "the Underdog tab did not load the extension's reader — reload it";
+    if (result && result.unreachable) return result.error;
+    return "reloaded the Underdog tab and no login came back — log in at app.underdogsports.com in this Chrome "
+      + "(if you are logged in, the app changed how it calls its API and the reader needs a fix)";
+  }
+
   // Whether the poll may reload the Underdog tab to make the app refresh its login.
   function mayReload(tab, windowFocused, lastReloadAtMs, nowMs) {
     if (tab.active && windowFocused) return false;
@@ -199,9 +220,9 @@
   }
 
   const api = {
-    API_ORIGIN, ACTIVE_URL, SETTLED_URL, APP_TAB_PATTERN, SERVICE_PATH, READ_HEADERS, TOKEN_MARGIN_MS,
-    SETTLED_LOOKBACK_MS, MAX_SETTLED_PAGES, POLL_MINUTES, RELOAD_MIN_MS, RELOAD_WAIT_MS, FETCH_TIMEOUT_MS,
-    NO_TAB, STALE, DEFAULT_SERVICE_URL, serviceUrlOf, readHeadersOf, tokenExpiryMs, isFresh, trimPage, oldestCreatedMs, readAccount, errorBody, mayReload,
+    API_ORIGIN, ACTIVE_URL, SETTLED_URL, APP_TAB_PATTERN, SERVICE_PATH, MAX_SETTLED_PAGES, POLL_MINUTES,
+    RELOAD_MIN_MS, RELOAD_WAIT_MS, FETCH_TIMEOUT_MS, NO_TAB, STALE, serviceUrlOf, readHeadersOf, tokenExpiryMs,
+    isFresh, trimPage, readAccount, errorBody, stepAfterRead, afterReloadError, mayReload,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedUnderdog = api;

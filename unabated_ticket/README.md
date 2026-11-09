@@ -1253,10 +1253,11 @@ Two kinds of source feed the flags:
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
 | ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 60 days (ProphetX's window); older ones once per boot |
+| Underdog | the extension's service worker (`extension/underdog.js`, `underdogpage.js`, read inside your logged-in app.underdogsports.com tab on the app's own headers — Underdog's login server puts a Cloudflare bot wall in front of any script) → `POST /underdog.json`, parsed by `bets_service/sources/underdog.py`; 2026-11-09 | every 2 min while Chrome is open with an Underdog tab (the panel need not be open); every open prediction slip plus settled slips back 31 days |
 
 Start the service (next section), keep the panel open. Every 30 s while the
 panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
-the service worker), resolves each record's teams through `teams.js`, dedupes
+the service worker, which only POSTs the Underdog read), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
 (`betsService`, which also carries the service's team crosswalk and the
@@ -2014,7 +2015,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   stored as that source's run. `POST /draftkings.json` with `{fetchedAt, open:
   [bet], settled: [bet], events: {eventId: event}}` (at most 2000 bets) →
   `{ok, count, closed, skipped}`, or `{error}` → `{ok, recorded: "error"}` —
-  the panel's read of DraftKings (the DraftKings source bullet). `POST /place_teaser.json`
+  the panel's read of DraftKings (the DraftKings source bullet). `POST /underdog.json`
+  with `{fetchedAt, active: page, settled: [page] (1-20), complete}` (at most
+  500 slips) → `{ok, count, closed}`, or `{error}` → `{ok, recorded: "error"}`
+  — the service worker's read of Underdog (the Underdog source section). `POST /place_teaser.json`
   with `{stake, legs: [4 x {league "nfl"|"cfb", betType "spread"|"total",
   side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
   before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
@@ -2528,8 +2532,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `service.main()`. `fetch()` returns every record the venue knows and raises
   on failure — never a partial list. A venue no script can reach (Cloudflare
   challenging anything but the browser's own session — Bet105; Akamai and a
-  login code — DraftKings) is read by the panel instead and PUSHED to a route
-  of its own (`POST /bet105.json`, `POST /draftkings.json`), the
+  login code — DraftKings; a bot wall on the login server — Underdog) is read
+  in Chrome instead and PUSHED to a route of its own (`POST /bet105.json`,
+  `POST /draftkings.json`, `POST /underdog.json`), the
   parser still a module in `sources/` and the venue listed in
   `service.PUSHED_SOURCES`. Records follow the contract in the plan
   (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
@@ -2863,8 +2868,8 @@ the open panel used to do.
   learn), Undo, Dismiss / Restore, the learned team names with a two-tap
   Clear, a Line moved note on the ticket, and move tags and alt numbers on
   the card's other lines.
-- **Still Mac-only**: in-game Live edges, Bet105 and DraftKings need the
-  logged-in Chrome; desktop alerts; clicking a price on Unabated's screen.
+- **Still Mac-only**: in-game Live edges, Bet105, DraftKings and Underdog
+  need the logged-in Chrome; desktop alerts; clicking a price on Unabated's screen.
 
 ### Bet Tracker (`server/tracker/`)
 
@@ -4099,7 +4104,14 @@ script with a Cloudflare bot wall, token refreshes included (2026-11-09).
   a failed read posts `{error}` (a failed run, the records stand). A held slip
   the pages passed without seeing (every one, when the list ended) is
   `closed` with no result, never guessed; one placed over 31 days ago stays
-  as it was.
+  as it was. The pages "passed" are counted off the prediction slips they
+  carry, so a page of pick'em only closes nothing (conservative).
+- **When it cannot read:** a tab Chrome put to sleep, or one open before the
+  extension loaded, is revived like a lapsed login (reloaded unless Cal is
+  looking at it; an extension reload re-injects the reader first). With two
+  Underdog tabs the first that reads wins. A reload that brings no login back
+  reads "log in at app.underdogsports.com" — or, if Cal is logged in, the app
+  stopped calling its API by XMLHttpRequest, which is all the reader watches.
 - **Records:** prediction slips only (product `prediction_markets`; pick'em
   is skipped). One record per slip, `underdog:<slip id>`: stake = the entry
   fee, toWin = the contracts it holds ($1 each) less the fee, price the
