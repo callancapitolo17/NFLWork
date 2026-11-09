@@ -31,15 +31,6 @@ class FakeNovig:
         self.positions = [{"marketId": MARKET, "outcomeId": OUTCOME, "qty": 2150, "cost": "9.99750"}]
         self.positions_reads = 0
         self.cancelled = []
-        self.cash = 1000.0
-        self.balance_reads = 0
-
-    def balance(self):
-        self.balance_reads += 1
-        if isinstance(self.cash, Exception):
-            raise self.cash
-        return self.cash
-
     def place_ioc_order(self, outcome_id, price, qty, client_id):
         self.placed.append((outcome_id, price, qty, client_id))
         if isinstance(self.place_reply, Exception):
@@ -184,47 +175,56 @@ def test_a_refusal_holds_nothing_and_a_lost_answer_holds_the_cost(setup):
     assert len(client.placed) == 2  # never retried
 
 
-def test_out_of_cash_sends_nothing_until_the_cash_pays_for_a_contract(setup):
-    desk, client, store, clock, *_ = setup
+def test_out_of_cash_waits_for_a_cash_read_after_the_refusal(setup):
+    _desk, client, store, clock, status, tmp_path = setup
+    cash = {"reading": {"cash": 500.0, "fetchedAt": (NOW - timedelta(seconds=5)).isoformat(), "error": None}}
+    desk = NovigTakerDesk(client, store, (tmp_path / "taker.stop",), lambda: status["value"],
+                          bot_cash=lambda: cash["reading"], now=lambda: clock["now"], sleep=lambda _s: None)
+    assert desk.cash_short_detail() is None
     client.place_reply = (422, {"code": "INSUFFICIENT_BALANCE", "message": "Insufficient balance"})
     assert desk.place(request())["status"] == "no_cash"
     assert store.novig_open_exposure() == 0
     assert store._con.execute("SELECT status FROM novig_taker_orders WHERE client_id = ?", [CLIENT_ID]).fetchone()[0] == "rejected"
     client.place_reply = (201, {"orderId": ORDER_ID, "clientId": CLIENT_ID})
-    client.cash = 0.0026
-    ids = ["4b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a9%d" % n for n in range(4)]
-    for n in range(3):  # a burst inside the minute: no cash read, nothing sent, no row written
-        result = desk.place(request(clientId=ids[n], eventId=20 + n))
-        assert result["status"] == "no_cash" and result["detail"].startswith("$0.00 cash")
-    assert len(client.placed) == 1 and client.balance_reads == 0
-    assert not store.has_novig_order(ids[0])
-    # A minute on the read still shows nothing: one read, still nothing sent.
-    clock["now"] = NOW + timedelta(seconds=61)
-    assert desk.place(request(clientId=ids[1], eventId=21,
-                              decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat()))["status"] == "no_cash"
-    assert client.balance_reads == 1
-    # Another minute on, $5 has come back: qty is cut to it and sending resumes.
-    client.cash = 5.0
-    clock["now"] = NOW + timedelta(seconds=122)
-    desk.place(request(clientId=ids[3], eventId=30, decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat(),
-                       qty=300000))
+    ids = ["4b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a9%d" % n for n in range(7)]
+
+    def place_at(seconds, n, **changes):
+        clock["now"] = NOW + timedelta(seconds=seconds)
+        return desk.place(request(clientId=ids[n], eventId=20 + n,
+                                  decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat(), **changes))
+
+    # The $500 reading predates the refusal: it is what the refused order went out on. Nothing sent, no row.
+    result = place_at(1, 0)
+    assert result["status"] == "no_cash" and result["detail"].startswith("no cash read since Novig refused")
+    assert len(client.placed) == 1 and not store.has_novig_order(ids[0])
+    # A newer read shows less than one 1c contract costs.
+    cash["reading"] = {"cash": 0.004, "fetchedAt": (NOW + timedelta(seconds=10)).isoformat(), "error": None}
+    result = place_at(11, 1)
+    assert result["status"] == "no_cash" and result["detail"].startswith("$0.00 in the bot subaccount since")
+    assert desk.cash_short_detail().startswith("$0.00 in the bot subaccount since")
+    # A failed read is no read: nothing sent.
+    cash["reading"] = {"cash": 400.0, "fetchedAt": (NOW + timedelta(seconds=20)).isoformat(), "error": "HTTP 500"}
+    assert place_at(21, 2)["status"] == "no_cash" and len(client.placed) == 1
+    # $5 is back: the order is cut to it, then the desk is back to normal.
+    cash["reading"] = {"cash": 5.0, "fetchedAt": (NOW + timedelta(seconds=30)).isoformat(), "error": None}
+    place_at(31, 3, qty=300000)
     assert client.placed[-1][2] == 1075  # $5 at 0.465 = 1075 1c contracts
-    assert client.balance_reads == 2
-    # Back to normal: the next order reads no cash.
-    desk.place(request(clientId="5b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a90", eventId=31,
-                       decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat()))
-    assert client.balance_reads == 2 and len(client.placed) == 3
+    assert desk.cash_short_detail() is None
+    place_at(32, 4)
+    assert client.placed[-1][2] == 2150 and len(client.placed) == 3
+    # Refused again after the cut: the $5 reading is older than this refusal, so nothing more is sent.
+    client.place_reply = (422, {"code": "INSUFFICIENT_BALANCE"})
+    assert place_at(33, 5)["status"] == "no_cash"
+    assert place_at(34, 6)["status"] == "no_cash"
+    assert len(client.placed) == 4
 
 
-def test_a_failed_cash_read_sends_nothing(setup):
-    desk, client, _store, clock, *_ = setup
+def test_without_a_balance_reading_a_cash_refusal_sends_nothing_more(setup):
+    desk, client, *_ = setup
     client.place_reply = (422, {"code": "INSUFFICIENT_BALANCE"})
     desk.place(request())
-    client.cash = OSError("timed out")
-    clock["now"] = NOW + timedelta(seconds=61)
-    result = desk.place(request(clientId="6b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a90", eventId=9,
-                                decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat()))
-    assert result["status"] == "no_cash" and "unread" in result["detail"] and len(client.placed) == 1
+    result = desk.place(request(clientId="6b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a90", eventId=9))
+    assert result["status"] == "no_cash" and len(client.placed) == 1
 
 
 def test_a_lost_send_is_found_by_client_id_or_freed(setup):

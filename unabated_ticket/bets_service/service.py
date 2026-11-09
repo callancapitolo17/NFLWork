@@ -314,7 +314,7 @@ every 30 s, runner or no runner.
 POST /taker/novig_order.json places a bot order on Novig (money) on the bot's
 own trading key, which trades only in the bot's Novig subaccount, and INSERTs /
 UPDATEs taker.duckdb::novig_taker_orders (novig_taker_desk.py: stop files,
-holdings freshness, its own $850 ceiling, one IOC buy); its thread reads final
+holdings freshness, its own $850 ceiling, its cash after a refusal, one IOC buy); its thread reads final
 fills and frees settled markets every 30 s. The bot's (and the Novig Place
 button's) subaccount is read as its own source, novig_bot / novig_place
 (sources/novig_subaccount.py).
@@ -397,6 +397,8 @@ FAILED_POLL_RETRY_SEC = 60.0
 # Wagerzon ran between them and every venue waited ~35 s). Novig's three sources
 # share a lane: each read is ~1 s or less, and one queue keeps their requests apart.
 OWN_LANES = (("kalshi",), ("novig", "novig_bot", "novig_place"), ("polymarket_us",))
+# The balance book venue of the bot subaccount (sources/novig_subaccount.py names it SOURCE_PREFIX + "bot").
+NOVIG_BOT_BALANCE_VENUE = "novig_bot"
 # A Place that may hold contracts reads its venue's sources before it answers
 # (Cal, 2026-10-29), so the panel's and phone's /bets.json read right after the
 # reply already counts it and the next Place on the game is not refused as
@@ -1613,6 +1615,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                                  (config.TAKER_STOP_PATH,))
             novig_desk = bot_report.desk_status(novig_taker_desk is not None, novig_taker_desk_off_reason,
                                                 (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH))
+            novig_desk["cashShort"] = novig_taker_desk.cash_short_detail() if novig_taker_desk is not None else None
             runner = bot_report.runner_pass(
                 lambda: fetch_runner_json(edges_runner_url, "/taker.json", edges_timeout_sec))
             self._send_json(200, bot_report.bot_payload(taker_store, kalshi_desk, novig_desk, runner, *window,
@@ -2330,8 +2333,11 @@ def novig_trading_client(key_id: str | None, key_path: str | None, variable: str
 
 def open_novig_taker_desk(store: TakerStore | None, holdings_status: Callable[[], dict[str, dict]],
                           check: Callable[[NovigOrderClient], tuple[str | None, float | None]] = account_problem,
+                          bot_cash: Callable[[], dict | None] = lambda: None,
                           ) -> tuple[NovigTakerDesk | None, str]:
-    """(the bot's Novig desk, "") or (None, why): without its own trading key,
+    """(the bot's Novig desk, "") or (None, why). `bot_cash` is the balance
+    book's latest novig_bot reading, which the desk waits on after a cash
+    refusal. Without its own trading key,
     Novig's word that it is a trading key on its own subaccount (it reads
     that balance and is refused the key listing), or its log, nothing is sent."""
     client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
@@ -2349,7 +2355,8 @@ def open_novig_taker_desk(store: TakerStore | None, holdings_status: Callable[[]
         return None, reason
     log.info("novig taker: ARMED on its own trading key %s (subaccount balance $%s); stop files %s, %s",
              config.NOVIG_TAKER_KEY_ID[:8], f"{balance:,.2f}", config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH)
-    return NovigTakerDesk(client, store, (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH), holdings_status), ""
+    return NovigTakerDesk(client, store, (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH), holdings_status,
+                          bot_cash), ""
 
 
 def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore,
@@ -2622,7 +2629,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     taker_desk, taker_desk_off_reason = open_taker_desk(taker_store)
     ladder_store = open_ladder_store(config.LADDER_DB_PATH)
     novig_taker_desk, novig_taker_desk_off_reason = open_novig_taker_desk(
-        taker_store, lambda: source_status(store, source_names))
+        taker_store, lambda: source_status(store, source_names),
+        bot_cash=lambda: balance_book.snapshot().get(NOVIG_BOT_BALANCE_VENUE))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
     novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names, order_stream=novig_place_stream)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
