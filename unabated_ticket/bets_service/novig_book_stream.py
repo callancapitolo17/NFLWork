@@ -39,6 +39,40 @@ first run):
     runner's own event OPEN_PREGAME read before every order and quote is the
     guard against a started game.
 
+The same socket can carry the key's PRIVATE `orders` channel (`orders_channel`;
+docs.novig.com/api/streaming/private, read 2026-11-09, exact frames below):
+  * `subscribe` {"private": ["orders"]} costs 1 token; the answer carries
+    `subscribed.private` (a list of channel names) and a TOP-LEVEL `orders`
+    object, never under `snapshot`: {"seq", "open": [{orderId, clientId,
+    marketId, outcomeId, price, qty, tif}]} (open orders only, so a finished
+    IOC is never in it). `seq` is per subaccount per channel and resets on a
+    Novig restart; 0 means no event yet.
+  * Deltas: a frame with a top-level `orders` {"seq", "deltas": [...]} (its
+    `delta` is {}), one seq per batch; an order's `fill` entries come before
+    its `open` / `cancel` / `reject`. Entries: `open` {orderId, clientId?,
+    marketId, outcomeId, price, qty (resting), originalQty, tif, expiresAt?};
+    `fill` {fillId, orderId, clientId?, outcomeId, price, qty (this fill),
+    originalQty, remaining, taker} — NO marketId and NO fee; `remaining` 0 is
+    FILLED; `cancel` {orderId, clientId?, outcomeId, originalQty, remaining,
+    reason? (GO_LIVE | MARKET_CLOSED | SETTLED | NEUTRALIZED)}; `reject`
+    {orderId, clientId?, outcomeId, originalQty}. An IOC that fills nothing
+    arrives as `reject`; one that part-fills as `fill` then `cancel`.
+  * A `heartbeat` {"orders": <seq>, "ts"} every 15 s names the last seq on
+    each subscribed private channel: one above ours is a dropped frame (Novig
+    drops private frames on a full queue). Recovery: `snapshot` {"private":
+    ["orders"]}, answered like the subscribe (no example in the docs; the
+    kit's mock answers {"snapshot": {}, "orders": {seq, open}}).
+  * The channel covers only the subaccount of the key that signed the
+    upgrade, so the Place sub-account needs a socket of its own (service.py
+    opens one on the Place key, markets never asked of it).
+  Fills are pushed to the subaccount's bet source (fill_events_after) so its
+  10 s REST re-read of two weeks of fills stops (2026-11-07: those reads, two
+  pages of 500 at 8 + 1 per 50 rows out of a 4/s `history` bucket, were what
+  Novig 429'd), and to the Place desk (wait_for_order), which no longer polls
+  the order's status. A snapshot load bumps `ordersEpoch`: the source reads
+  REST once whenever it sees a new epoch, since a fill during the gap or the
+  disconnect is in no snapshot.
+
 A book is served only while the connection is up and was heard from within
 STALE_VIEW_SEC, and the market's seq ran without a gap since its snapshot.
 Anything else answers an `error` naming why, never a stale book. The Place
@@ -46,7 +80,7 @@ button's markets go ahead of the bot's in the subscribe queue.
 
 Side effects: one outbound websocket to Novig on the configured key (reads
 only: no verb here can place, cancel or move money). Nothing on disk; books
-are held in memory only.
+and order states are held in memory only.
 """
 import json
 import logging
@@ -55,7 +89,11 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
-from unabated_ticket.bets_service.novig_orders import NovigOrderClient
+from unabated_ticket.bets_service.novig_orders import QTY_PER_DOLLAR, NovigOrderClient
+from unabated_ticket.bets_service.novig_orders import STATUS_CANCELED as STATUS_CANCELED_ORDER
+from unabated_ticket.bets_service.novig_orders import STATUS_FILLED as STATUS_FILLED_ORDER
+from unabated_ticket.bets_service.novig_orders import STATUS_OPEN as STATUS_OPEN_ORDER
+from unabated_ticket.bets_service.novig_orders import STATUS_REJECTED as STATUS_REJECTED_ORDER
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +104,14 @@ STREAM_REFILL_PER_SEC = 4.0
 UPGRADE_COST = 32
 BOOK_PAIR_COST = 16
 UNSUBSCRIBE_COST_PER_SUBJECT = 1
+# The private `orders` channel: 1 token to subscribe, 1 for a recovery snapshot.
+ORDERS_CHANNEL = "orders"
+PRIVATE_CHANNEL_COST = 1
+# A pushed order state is kept this long after its last event (Place waits at most
+# PLACE_FINAL_READ_WINDOW_SEC; the source drains fill events every poll).
+ORDER_STATE_KEEP_SEC = 10 * 60
+# Fill events kept for the source to drain (a poll is 10 s; this is many hours of fills).
+MAX_FILL_EVENTS = 5000
 # Novig pings every 15 s: a book is not served after this long without a frame,
 # and the connection is dropped after SILENT_RECONNECT_SEC.
 STALE_VIEW_SEC = 25
@@ -338,13 +384,26 @@ class NovigBookStream:
     run(stop) is the thread's loop; books_for() is called from HTTP threads."""
 
     def __init__(self, client: NovigOrderClient, url: str, connect: Connect = websocket_client_connect,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, orders_channel: bool = False,
+                 wall_clock_ms: Callable[[], int] = lambda: int(time.time() * 1000)):
+        """`orders_channel`: also subscribe the key's private `orders` channel
+        (the subaccount's own fills, cancels and rejects, pushed)."""
         self._client = client
         self._url = url
         self._connect = connect
         self._clock = clock
+        self._wall_clock_ms = wall_clock_ms
+        self._orders_channel = orders_channel
         self._cond = threading.Condition()
         self._bucket = TokenBucket(STREAM_CAPACITY, STREAM_REFILL_PER_SEC, clock)
+        # Kept across connections: every order the private channel told of, by Novig order id, and the
+        # fill events the source drains, each tagged with a version that only grows.
+        self._order_states: dict[str, dict] = {}
+        self._fill_events: list[tuple[int, dict]] = []
+        self._orders_version = 0
+        # Bumped on every private snapshot load (connect, gap): a new epoch means frames may have been missed.
+        self._orders_epoch = 0
+        self._orders_error: str | None = None
         # Kept across connections: the markets asked for (when last asked), Place's among them, and refusals.
         self._wanted: dict[str, float] = {}
         self._priority: set[str] = set()
@@ -371,6 +430,15 @@ class NovigBookStream:
         self._snapshots_in_flight: dict[int, tuple[list[str], float]] = {}
         # Every subscribe nonce sent on this connection: only a subscribe's answer subscribes a market.
         self._subscribe_nonces: set[int] = set()
+        # The private orders channel on this connection: subscribed, in sync (its snapshot loaded and
+        # no seq skipped), its last seq, the nonce + time of the subscribe or snapshot awaiting an
+        # answer, deltas buffered behind a gap, and when a refused subscribe may be sent again.
+        self._orders_subscribed = False
+        self._orders_synced = False
+        self._orders_seq: int | None = None
+        self._orders_in_flight: tuple[int, float] | None = None
+        self._orders_buffered: list[tuple[int, list]] = []
+        self._orders_refused_at: float | None = None
 
     # ---- what the HTTP route calls ----
 
@@ -416,7 +484,7 @@ class NovigBookStream:
 
     def _status_locked(self) -> dict:
         now = self._clock()
-        return {
+        status = {
             "connected": self._connection is not None,
             "connectedForSec": None if self._connected_at is None else round(now - self._connected_at),
             "lastFrameAgeMs": None if self._last_frame_at is None else int((now - self._last_frame_at) * 1000),
@@ -424,6 +492,52 @@ class NovigBookStream:
             "subscribedMarkets": len(self._subscribed),
             "wantedMarkets": len(self._wanted),
         }
+        if self._orders_channel:
+            status["orders"] = {"live": self._orders_live_locked(), "subscribed": self._orders_subscribed,
+                                "synced": self._orders_synced, "seq": self._orders_seq, "epoch": self._orders_epoch,
+                                "fillEvents": self._orders_version, "error": self._orders_error}
+        return status
+
+    # ---- what the subaccount source and the Place desk read (orders channel) ----
+
+    def orders_live(self) -> bool:
+        """Is the private orders channel delivering now: connected, heard from
+        within STALE_VIEW_SEC, subscribed and in sync (no seq skipped since its snapshot)?"""
+        with self._cond:
+            return self._orders_live_locked()
+
+    def _orders_live_locked(self) -> bool:
+        return (self._connection is not None and self._orders_subscribed and self._orders_synced
+                and self._last_frame_at is not None and self._clock() - self._last_frame_at <= STALE_VIEW_SEC)
+
+    def fill_events_after(self, version: int) -> dict:
+        """{events, version, live, epoch}: the fill events pushed since
+        `version` (oldest first, each {fillId, orderId, clientId, outcomeId,
+        price, qty, originalQty, remaining, taker, ts}), the version to pass
+        next time, whether the channel is live now, and the snapshot epoch. A
+        caller that sees a new epoch, or `live` False, reads Novig's REST fills
+        once instead: a fill during a gap or a disconnect is in no snapshot."""
+        with self._cond:
+            events = [event for event_version, event in self._fill_events if event_version > version]
+            return {"events": events, "version": self._orders_version, "live": self._orders_live_locked(),
+                    "epoch": self._orders_epoch}
+
+    def wait_for_order(self, order_id: str, after_version: int, timeout_sec: float) -> tuple[dict | None, int]:
+        """The order's pushed state once it is newer than `after_version` (or
+        None at the timeout, or at once when the channel is not live), and the
+        version to pass next time. A state is {final, filled, cost, remaining,
+        fills}: `final` FILLED | CANCELED | REJECTED once Novig is done with it,
+        OPEN while it rests, None while only fills have arrived."""
+        deadline = self._clock() + timeout_sec
+        with self._cond:
+            while True:
+                held = self._order_states.get(order_id)
+                if held is not None and held["version"] > after_version:
+                    return {key: held[key] for key in ("final", "filled", "cost", "remaining", "fills")}, held["version"]
+                remaining = deadline - self._clock()
+                if remaining <= 0 or not self._orders_live_locked():
+                    return None, after_version
+                self._cond.wait(min(remaining, RECV_POLL_SEC))
 
     def _view_of(self, market_id: str) -> dict:
         if self._connection is None:
@@ -478,7 +592,8 @@ class NovigBookStream:
             self._last_error = None
             self._last_logged_failure = None
             self._cond.notify_all()
-        log.info("novig stream: connected to %s on key %s", self._url, self._client.key_id[:8])
+        log.info("novig stream: connected to %s on key %s%s", self._url, self._client.key_id[:8],
+                 " (private orders channel wanted)" if self._orders_channel else "")
 
     def _drop(self, reason: str) -> None:
         with self._cond:
@@ -529,6 +644,7 @@ class NovigBookStream:
         with self._cond:
             now = self._clock()
             self._expire(now)
+            frames.extend(self._orders_channel_frames(now))
             frames.extend(self._unsubscribe_idle(now))
             in_flight = {market_id for markets, _sent_at in self._subscribes_in_flight.values() for market_id in markets}
             due = [market_id for market_id in self._wanted
@@ -552,6 +668,28 @@ class NovigBookStream:
         for market_id, (refused_at, _reason) in list(self._refused.items()):
             if now - refused_at > REFUSED_RETRY_SEC:
                 del self._refused[market_id]
+        if self._orders_in_flight is not None and now - self._orders_in_flight[1] > ANSWER_WAIT_SEC:
+            self._orders_in_flight = None
+        if self._orders_refused_at is not None and now - self._orders_refused_at > REFUSED_RETRY_SEC:
+            self._orders_refused_at = None
+
+    def _orders_channel_frames(self, now: float) -> list[dict]:
+        """The private orders channel's one verb due now, if any: its subscribe
+        (first thing on a connection, ahead of every market), or the snapshot
+        healing a gap. One at a time, each awaited ANSWER_WAIT_SEC."""
+        if not self._orders_channel or self._orders_in_flight is not None or self._orders_refused_at is not None:
+            return []
+        if not self._orders_subscribed:
+            verb = "subscribe"
+        elif not self._orders_synced:
+            verb = "snapshot"
+        else:
+            return []
+        if not self._bucket.take(PRIVATE_CHANNEL_COST):
+            return []
+        nonce = self._next_nonce()
+        self._orders_in_flight = (nonce, now)
+        return [{"nonce": nonce, verb: {"private": [ORDERS_CHANNEL]}}]
 
     def _unsubscribe_idle(self, now: float) -> list[dict]:
         idle = sorted(market_id for market_id, asked_at in self._wanted.items() if now - asked_at > WATCH_IDLE_SEC)
@@ -597,6 +735,8 @@ class NovigBookStream:
         if isinstance(message.get("code"), str):
             self._handle_error(nonce, message["code"], str(message.get("message", "")))
             return
+        if self._orders_channel:
+            self._handle_orders_part(message, nonce)
         snapshot = {str(market_id): body for market_id, body in (message.get("snapshot") or {}).items()}
         subscribed = self._subscribes_in_flight.pop(nonce, None) if isinstance(nonce, int) else None
         healed = self._snapshots_in_flight.pop(nonce, None) if isinstance(nonce, int) else None
@@ -641,8 +781,155 @@ class NovigBookStream:
             book.synced = False
             book.buffered = []
 
+    # ---- the private orders channel (called with the lock held) ----
+
+    def _handle_orders_part(self, message: dict, nonce: object) -> None:
+        """The private parts of one frame: the subscribe or snapshot answer's
+        `orders` {seq, open}, a delta's `orders` {seq, deltas}, or a heartbeat."""
+        answers_ours = self._orders_in_flight is not None and nonce == self._orders_in_flight[0]
+        if answers_ours:
+            self._orders_in_flight = None
+        subscribed_private = (message.get("subscribed") or {}).get("private") if isinstance(message.get("subscribed"), dict) else None
+        if answers_ours and isinstance(subscribed_private, list) and ORDERS_CHANNEL in subscribed_private:
+            self._orders_subscribed = True
+        orders = message.get("orders")
+        heartbeat = message.get("heartbeat")
+        try:
+            if isinstance(orders, dict) and "open" in orders:
+                if answers_ours and not self._orders_subscribed:
+                    # A snapshot answer to our subscribe without the ack list still means subscribed.
+                    self._orders_subscribed = True
+                self._load_orders_snapshot(orders)
+            elif isinstance(orders, dict) and "deltas" in orders:
+                self._step_orders(int(orders["seq"]), orders.get("deltas") or [])
+            elif answers_ours and not self._orders_subscribed:
+                self._orders_refused_at = self._clock()
+                self._orders_error = "the private subscribe answer named no orders channel"
+                log.error("novig stream: %s: %s", self._orders_error, json.dumps(message, default=str)[:LOGGED_PART_CHARS])
+            if isinstance(heartbeat, dict) and isinstance(heartbeat.get(ORDERS_CHANNEL), int):
+                self._check_orders_heartbeat(heartbeat[ORDERS_CHANNEL])
+        except (KeyError, ValueError, TypeError) as error:
+            log.warning("novig stream: orders channel: unreadable frame part (%s: %s); resyncing it; part: %s",
+                        type(error).__name__, error, json.dumps(orders if orders is not None else message, default=str)[:LOGGED_PART_CHARS])
+            self._orders_synced = False
+            self._orders_buffered = []
+
+    def _load_orders_snapshot(self, orders: dict) -> None:
+        seq = int(orders["seq"])
+        now = self._clock()
+        for open_order in orders.get("open") or []:
+            if not isinstance(open_order, dict):
+                raise TypeError(f"expected an open order object, got {str(open_order)[:200]}")
+            state = self._order_state(order_id_of(open_order), open_order, now)
+            state["final"] = STATUS_OPEN_ORDER
+            state["remaining"] = open_order.get("qty")
+            self._bump_order(state, now)
+        self._orders_seq = seq
+        self._orders_synced = True
+        self._orders_epoch += 1
+        self._orders_error = None
+        buffered, self._orders_buffered = sorted(self._orders_buffered, key=lambda item: item[0]), []
+        for buffered_seq, deltas in buffered:
+            if buffered_seq > self._orders_seq:
+                self._step_orders(buffered_seq, deltas)
+        log.info("novig stream: orders channel in sync at seq %d (%d open order(s), epoch %d) on key %s",
+                 seq, len(orders.get("open") or []), self._orders_epoch, self._client.key_id[:8])
+
+    def _step_orders(self, seq: int, deltas: list) -> None:
+        """One private batch in sequence; a stale seq is ignored; a skipped one
+        puts the channel out of sync (a snapshot is asked for) and buffers it."""
+        if not self._orders_synced:
+            self._orders_buffered = [*self._orders_buffered, (seq, deltas)][-MAX_BUFFERED_DELTAS:]
+            return
+        if seq <= self._orders_seq:
+            return
+        if seq != self._orders_seq + 1:
+            log.warning("novig stream: orders channel skipped seq %d -> %d; asking for a snapshot", self._orders_seq, seq)
+            self._orders_synced = False
+            self._orders_buffered = [(seq, deltas)]
+            return
+        now = self._clock()
+        for delta in deltas:
+            self._apply_order_delta(delta, now)
+        self._orders_seq = seq
+        self._prune_order_states(now)
+
+    def _check_orders_heartbeat(self, heartbeat_seq: int) -> None:
+        if self._orders_synced and self._orders_seq is not None and heartbeat_seq > self._orders_seq:
+            log.warning("novig stream: orders heartbeat at seq %d, ours %d: a frame was dropped; asking for a snapshot",
+                        heartbeat_seq, self._orders_seq)
+            self._orders_synced = False
+            self._orders_buffered = []
+
+    def _order_state(self, order_id: str, entry: dict, now: float) -> dict:
+        state = self._order_states.get(order_id)
+        if state is None:
+            state = {"orderId": order_id, "clientId": None, "outcomeId": None, "marketId": None, "final": None,
+                     "filled": 0, "cost": 0.0, "remaining": None, "fills": [], "version": 0, "at": now}
+            self._order_states[order_id] = state
+        for key in ("clientId", "outcomeId", "marketId"):
+            if isinstance(entry.get(key), str) and entry[key]:
+                state[key] = entry[key]
+        return state
+
+    def _bump_order(self, state: dict, now: float) -> None:
+        self._orders_version += 1
+        state["version"] = self._orders_version
+        state["at"] = now
+
+    def _apply_order_delta(self, delta: dict, now: float) -> None:
+        if not isinstance(delta, dict):
+            raise TypeError(f"expected an orders delta object, got {str(delta)[:200]}")
+        kind = delta.get("kind")
+        state = self._order_state(order_id_of(delta), delta, now)
+        if kind == "fill":
+            qty = delta["qty"]
+            price = float(delta["price"])
+            if isinstance(qty, bool) or not isinstance(qty, int) or qty < 1 or not 0 < price < 1:
+                raise ValueError(f"fill {delta.get('fillId')!r}: qty {qty!r}, price {delta.get('price')!r}")
+            fill_id = str(delta.get("fillId") or f"{state['orderId']}:{len(state['fills']) + 1}")
+            if any(fill["fillId"] == fill_id for fill in state["fills"]):
+                return  # a snapshot replay or a repeated frame: the fill is already counted
+            fill = {"fillId": fill_id, "orderId": state["orderId"], "clientId": state["clientId"],
+                    "outcomeId": state["outcomeId"], "price": delta["price"], "qty": qty,
+                    "originalQty": delta.get("originalQty"), "remaining": delta.get("remaining"),
+                    "taker": delta.get("taker"), "ts": self._wall_clock_ms()}
+            state["fills"].append(fill)
+            state["filled"] += qty
+            state["cost"] = round(state["cost"] + qty * price / QTY_PER_DOLLAR, 5)
+            state["remaining"] = delta.get("remaining")
+            if delta.get("remaining") == 0:
+                state["final"] = STATUS_FILLED_ORDER
+            self._bump_order(state, now)
+            self._fill_events = [*self._fill_events, (self._orders_version, fill)][-MAX_FILL_EVENTS:]
+        elif kind == "cancel":
+            state["final"] = STATUS_CANCELED_ORDER
+            state["remaining"] = delta.get("remaining")
+            self._bump_order(state, now)
+        elif kind == "reject":
+            state["final"] = STATUS_REJECTED_ORDER
+            state["remaining"] = delta.get("originalQty")
+            self._bump_order(state, now)
+        elif kind == "open":
+            state["final"] = STATUS_OPEN_ORDER
+            state["remaining"] = delta.get("qty")
+            self._bump_order(state, now)
+        else:
+            raise ValueError(f"expected an orders delta of kind open, fill, cancel or reject, got {delta!r}")
+
+    def _prune_order_states(self, now: float) -> None:
+        for order_id in [order_id for order_id, state in self._order_states.items() if now - state["at"] > ORDER_STATE_KEEP_SEC]:
+            del self._order_states[order_id]
+
     def _handle_error(self, nonce: object, code: str, text: str) -> None:
         reason = f"{code} {text}".strip()
+        if self._orders_in_flight is not None and nonce == self._orders_in_flight[0]:
+            self._orders_in_flight = None
+            self._orders_refused_at = self._clock()
+            self._orders_error = reason
+            log.error("novig stream: the private orders %s was refused: %s",
+                      "snapshot" if self._orders_subscribed else "subscribe", reason)
+            return
         for in_flight, what in ((self._subscribes_in_flight, "subscribe"), (self._snapshots_in_flight, "gap snapshot")):
             sent = in_flight.pop(nonce, None) if isinstance(nonce, int) else None
             if sent is None:

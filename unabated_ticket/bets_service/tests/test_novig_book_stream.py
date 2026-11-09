@@ -503,3 +503,199 @@ def test_an_update_for_an_order_the_book_never_saw_resyncs_the_market(made):
     subscribe(stream)
     handle(stream, book_delta(48121, [{"kind": "update", "orderId": "o-unknown", "remaining": 5}]))
     assert "resyncing" in ask(stream)["error"]
+
+
+# ---- the private orders channel ---------------------------------------------------------
+
+ORDER = "7c9e6679-0000-4000-8000-000000000001"
+CLICK = "0b3f5f20-0000-4000-8000-000000000001"
+
+
+def fill_delta(seq, qty=40, remaining=70, fill_id="1e6a2f94-1", price="0.670", order=ORDER):
+    return {"ts": 2, "delta": {}, "orders": {"seq": seq, "deltas": [
+        {"kind": "fill", "fillId": fill_id, "orderId": order, "clientId": CLICK, "outcomeId": DUQ, "price": price,
+         "qty": qty, "originalQty": 110, "remaining": remaining, "taker": True}]}}
+
+
+def orders_answer(nonce, seq=907, open_orders=(), with_ack=True):
+    frame = {"ts": 1, "nonce": nonce, "snapshot": {}, "orders": {"seq": seq, "open": list(open_orders)}}
+    if with_ack:
+        frame["subscribed"] = {"markets": {}, "events": {}, "private": ["orders"]}
+    return frame
+
+
+@pytest.fixture
+def orders_made():
+    clock = Clock()
+    client = FakeClient()
+    connection = FakeConnection()
+    stream = nbs.NovigBookStream(client, "wss://novig.test/v3/ws", connect=lambda url, headers: connection, clock=clock,
+                                 orders_channel=True, wall_clock_ms=lambda: 1762600000000)
+    stream._open()
+    return stream, connection, clock
+
+
+def subscribe_orders(stream, seq=907):
+    [frame] = stream._outgoing_frames()
+    assert frame == {"nonce": 1, "subscribe": {"private": ["orders"]}}
+    handle(stream, orders_answer(1, seq))
+    return frame
+
+
+def test_the_orders_channel_is_subscribed_first_thing_for_one_token_and_the_snapshot_syncs_it(orders_made):
+    stream, _connection, _clock = orders_made
+    assert not stream.orders_live()
+    ask(stream)  # a market asked for at the same time goes behind the private subscribe
+    frames = stream._outgoing_frames()
+    assert frames[0] == {"nonce": 1, "subscribe": {"private": ["orders"]}}
+    assert "subscribe" in frames[1] and "markets" in frames[1]["subscribe"]
+    assert stream._bucket.available() == pytest.approx(nbs.STREAM_CAPACITY - nbs.UPGRADE_COST - 1 - nbs.BOOK_PAIR_COST)
+    handle(stream, orders_answer(1, 907, open_orders=[{"orderId": ORDER, "clientId": CLICK, "marketId": MARKET, "outcomeId": DUQ,
+                                                       "price": "0.665", "qty": 110, "tif": "GTC"}]))
+    assert stream.orders_live()
+    status = stream.status()["orders"]
+    assert (status["subscribed"], status["synced"], status["seq"], status["epoch"]) == (True, True, 907, 1)
+    resting, version = stream.wait_for_order(ORDER, 0, 0.0)
+    assert resting["final"] == "OPEN" and resting["remaining"] == 110 and resting["filled"] == 0 and version == 1
+    assert stream.fill_events_after(0) == {"events": [], "version": 1, "live": True, "epoch": 1}
+
+
+def test_a_stream_without_the_channel_sends_no_private_subscribe(made):
+    stream, _connection, _clock, _client = made
+    assert stream._outgoing_frames() == []
+    assert "orders" not in stream.status()
+    assert not stream.orders_live()
+    assert stream.wait_for_order(ORDER, 0, 0.0) == (None, 0)
+
+
+def test_fills_then_a_cancel_or_a_full_fill_make_the_orders_state_and_fill_events(orders_made):
+    stream, _connection, _clock = orders_made
+    subscribe_orders(stream)
+    handle(stream, fill_delta(908, qty=40, remaining=70))
+    state, version = stream.wait_for_order(ORDER, 0, 0.0)
+    assert state["final"] is None and state["filled"] == 40 and state["cost"] == pytest.approx(0.268) and state["remaining"] == 70
+    assert stream.wait_for_order(ORDER, version, 0.0) == (None, version), "nothing newer yet"
+    # An IOC's unfilled rest is cancelled: fill then cancel, one batch each.
+    handle(stream, {"ts": 3, "delta": {}, "orders": {"seq": 909, "deltas": [
+        {"kind": "cancel", "orderId": ORDER, "clientId": CLICK, "outcomeId": DUQ, "originalQty": 110, "remaining": 70}]}})
+    state, version2 = stream.wait_for_order(ORDER, version, 0.0)
+    assert state["final"] == "CANCELED" and state["filled"] == 40 and version2 > version
+    # Another order filled whole: remaining 0 is FILLED whether or not Novig sends more.
+    other = "7c9e6679-0000-4000-8000-000000000002"
+    handle(stream, fill_delta(910, qty=110, remaining=0, fill_id="1e6a2f94-2", order=other))
+    state, _ = stream.wait_for_order(other, 0, 0.0)
+    assert state["final"] == "FILLED" and state["filled"] == 110 and state["cost"] == pytest.approx(0.737)
+    drained = stream.fill_events_after(0)
+    assert [(event["fillId"], event["orderId"], event["qty"], event["ts"]) for event in drained["events"]] == [
+        ("1e6a2f94-1", ORDER, 40, 1762600000000), ("1e6a2f94-2", other, 110, 1762600000000)]
+    assert drained["version"] == stream.status()["orders"]["fillEvents"]
+    assert stream.fill_events_after(drained["version"])["events"] == []
+    # A reject: an IOC that filled nothing.
+    third = "7c9e6679-0000-4000-8000-000000000003"
+    handle(stream, {"ts": 4, "delta": {}, "orders": {"seq": 911, "deltas": [
+        {"kind": "reject", "orderId": third, "clientId": CLICK, "outcomeId": DUQ, "originalQty": 50}]}})
+    state, _ = stream.wait_for_order(third, 0, 0.0)
+    assert state["final"] == "REJECTED" and state["filled"] == 0 and state["remaining"] == 50
+
+
+def test_a_repeated_fill_id_is_counted_once(orders_made):
+    stream, _connection, _clock = orders_made
+    subscribe_orders(stream)
+    handle(stream, fill_delta(908), {"ts": 2, "delta": {}, "orders": {"seq": 909, "deltas": [fill_delta(0)["orders"]["deltas"][0]]}})
+    state, _ = stream.wait_for_order(ORDER, 0, 0.0)
+    assert state["filled"] == 40 and len(stream.fill_events_after(0)["events"]) == 1
+
+
+def test_a_skipped_orders_seq_or_a_heartbeat_ahead_asks_for_a_snapshot_and_bumps_the_epoch(orders_made):
+    stream, _connection, clock = orders_made
+    subscribe_orders(stream)
+    handle(stream, fill_delta(910))  # 908 and 909 never came
+    assert not stream.orders_live()
+    assert stream.fill_events_after(0)["live"] is False
+    assert stream.wait_for_order(ORDER, 0, 5.0) == (None, 0), "a wait on a channel out of sync returns at once"
+    [frame] = stream._outgoing_frames()
+    assert frame == {"nonce": 2, "snapshot": {"private": ["orders"]}}
+    assert stream._outgoing_frames() == [], "one recovery in flight at a time"
+    # The snapshot answer (the kit's mock shape: no `subscribed`): back in sync at its seq, the buffered 910 replayed.
+    handle(stream, orders_answer(2, 909, with_ack=False))
+    assert stream.orders_live() and stream.status()["orders"] == pytest.approx(
+        {"live": True, "subscribed": True, "synced": True, "seq": 910, "epoch": 2, "fillEvents": 1, "error": None})
+    assert stream.wait_for_order(ORDER, 0, 0.0)[0]["filled"] == 40
+    # A heartbeat naming a seq past ours: a dropped frame.
+    handle(stream, {"heartbeat": {"orders": 915, "ts": 1757894415123}})
+    assert not stream.orders_live()
+    assert stream._outgoing_frames() == [{"nonce": 3, "snapshot": {"private": ["orders"]}}]
+    handle(stream, {"heartbeat": {"orders": 915, "ts": 1757894415124}})  # another while healing changes nothing
+    handle(stream, orders_answer(3, 915, with_ack=False))
+    assert stream.status()["orders"]["epoch"] == 3 and stream.orders_live()
+    # A snapshot answer that never comes is asked for again after the wait.
+    handle(stream, fill_delta(920, fill_id="late"))
+    assert stream._outgoing_frames()[0]["nonce"] == 4
+    clock.now += nbs.ANSWER_WAIT_SEC + 1
+    assert stream._outgoing_frames()[0]["nonce"] == 5
+
+
+def test_a_refused_private_subscribe_is_tried_again_a_minute_later_and_named_in_health(orders_made):
+    stream, _connection, clock = orders_made
+    stream._outgoing_frames()
+    handle(stream, {"nonce": 1, "code": "SCOPE_INSUFFICIENT", "message": "api key scope is insufficient"})
+    assert stream._outgoing_frames() == []
+    assert stream.status()["orders"]["error"] == "SCOPE_INSUFFICIENT api key scope is insufficient"
+    clock.now += nbs.REFUSED_RETRY_SEC + 1
+    assert stream._outgoing_frames() == [{"nonce": 2, "subscribe": {"private": ["orders"]}}]
+    # An answer that acks nothing private and carries no orders object is a refusal too.
+    handle(stream, {"ts": 1, "nonce": 2, "subscribed": {"markets": {}, "events": {}, "private": []}, "snapshot": {}})
+    assert not stream.orders_live() and "named no orders channel" in stream.status()["orders"]["error"]
+
+
+def test_an_unreadable_orders_delta_resyncs_the_channel_and_logs_the_part(orders_made, caplog):
+    stream, _connection, _clock = orders_made
+    subscribe_orders(stream)
+    handle(stream, {"ts": 2, "delta": {}, "orders": {"seq": 908, "deltas": [{"kind": "fill", "orderId": ORDER, "qty": "forty", "price": "0.67"}]}})
+    assert not stream.orders_live()
+    assert any("orders channel: unreadable frame part" in record.message and "forty" in record.message for record in caplog.records)
+    assert stream._outgoing_frames() == [{"nonce": 2, "snapshot": {"private": ["orders"]}}]
+
+
+def test_a_reconnect_subscribes_the_channel_again_and_a_wait_returns_at_once_while_down(orders_made):
+    stream, connection, clock = orders_made
+    subscribe_orders(stream)
+    handle(stream, fill_delta(908))
+    stream._drop("ConnectionError: closed")
+    assert not stream.orders_live()
+    assert stream.wait_for_order(ORDER, 0, 5.0)[0]["filled"] == 40, "a state already pushed is still answered"
+    assert stream.wait_for_order("never-seen", 0, 5.0) == (None, 0)
+    assert stream.fill_events_after(0)["live"] is False and len(stream.fill_events_after(0)["events"]) == 1
+    stream._open()
+    assert stream._outgoing_frames() == [{"nonce": 1, "subscribe": {"private": ["orders"]}}]
+    handle(stream, orders_answer(1, 3))
+    assert stream.status()["orders"]["epoch"] == 2, "a new epoch: the source reads REST once"
+    assert stream.orders_live()
+
+
+def test_a_silent_line_takes_the_channel_off_live(orders_made):
+    stream, _connection, clock = orders_made
+    subscribe_orders(stream)
+    clock.now += nbs.STALE_VIEW_SEC + 1
+    assert not stream.orders_live()
+
+
+def test_wait_for_order_wakes_on_the_frame_from_the_stream_thread():
+    clock = Clock()
+    connection = FakeConnection()
+    stream = nbs.NovigBookStream(FakeClient(), "wss://novig.test/v3/ws", connect=lambda url, headers: connection, clock=clock,
+                                 orders_channel=True)
+    stream._open()
+    subscribe_orders(stream)
+    got = []
+
+    def waiter():
+        got.append(stream.wait_for_order(ORDER, 0, 5.0))
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    import time as _time
+    _time.sleep(0.05)
+    handle(stream, fill_delta(908, qty=110, remaining=0))
+    thread.join(timeout=5)
+    assert got and got[0][0]["final"] == "FILLED"

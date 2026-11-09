@@ -23,7 +23,11 @@ Rules, in order, for every request (validate_novig_place_request's shape):
      the Ticket's; a better one is taken;
   5. no open straight Novig bet is on the other outcome (sizing cannot price
      a hedge, as on Kalshi);
-  6. the Novig reads the stake was sized on are fresh and ok;
+  6. the Novig reads the stake was sized on are fresh and ok — a latest read
+     Novig throttled (HTTP 429, `NovigRateLimited`) is let through while the
+     last good read is under READ_BLIP_TOLERANCE_SEC old and came after the
+     newest Novig Place send (so no fill can have been missed by it; rule 7
+     still guards the game itself);
   7. no earlier Place on this game may have filled after the read the stake
      was sized on: a Novig Place after `novigReadAt`, a Kalshi Place after
      `kalshiReadAt`, a Polymarket US Place after `polymarketReadAt` (the
@@ -33,8 +37,17 @@ Rules, in order, for every request (validate_novig_place_request's shape):
   9. the row is INSERTED (status 'sending', with the board line, so Place's
      sub-account read can name the bet) BEFORE the send;
  10. ONE immediate-or-cancel buy at the live price (NovigOrderClient, the
-     Novig taker's), never re-sent; then the order is read until final and
-     its fills are read, the bot desk's way (novig_taker_desk.py). An order
+     Novig taker's), never re-sent; then its fill. While the Place key's
+     private orders channel is live (novig_book_stream.py, `order_stream`;
+     2026-11-09) the desk WAITS on Novig's pushed frames for the order — its
+     `fill`s, then `cancel` (an IOC's unfilled rest) or `reject` (nothing
+     filled) — instead of polling the order's status (which on 2026-11-07
+     lagged past the 10 s window on two orders that had filled within
+     seconds, leaving "has not said what filled" toasts). Final on the
+     stream, its fills are read from REST ONCE for the exact fee; that read
+     throttled or failing, the pushed numbers stand (fee from the quote's
+     rate: 0 pregame). With the channel down the order is read until final
+     and its fills read, the bot desk's way (novig_taker_desk.py). An order
      Novig shows OPEN (an IOC never should) is cancelled. One that never
      reads final still has its fills read: all its contracts filled is a
      definite 'filled' (it cannot fill more); else it stays 'unknown' with
@@ -62,6 +75,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
 from unabated_ticket.bets_service.manual_orders import (
     PRICE_TOLERANCE, STATUS_FILLED, STATUS_PARTIAL, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNKNOWN,
@@ -69,8 +83,8 @@ from unabated_ticket.bets_service.manual_orders import (
     unseen_manual_fill, validate_live_fields,
 )
 from unabated_ticket.bets_service.novig_orders import (FINAL_ORDER_STATUSES, GEO_STATUS, QTY_PER_DOLLAR, STATUS_OPEN,
-                                                       NovigError, NovigOrderClient, error_code_of, fill_outcome,
-                                                       is_on_price_grid, order_totals, qty_for_stake)
+                                                       NovigError, NovigOrderClient, NovigRateLimited, error_code_of,
+                                                       fill_outcome, is_on_price_grid, order_totals, qty_for_stake)
 from unabated_ticket.bets_service.novig_taker_desk import (DEFINITE_REJECTION_STATUSES, MAX_HOLDINGS_AGE_SEC,
                                                            UUID_PATTERN, line_context_of)
 from unabated_ticket.bets_service.store import BetsStore
@@ -97,6 +111,11 @@ PLACE_FINAL_READ_WINDOW_SEC = 12.0
 # The bets service's Novig reads the stake counted must be at most this old
 # (the Novig bot's holdings gate).
 NOVIG_READ_MAX_AGE = timedelta(seconds=MAX_HOLDINGS_AGE_SEC)
+# A counted read whose LATEST run Novig throttled still passes while its last
+# good run is this fresh (and after the newest Novig Place send).
+READ_BLIP_TOLERANCE = timedelta(seconds=60)
+# One wait on the orders channel before the window and the channel are checked again.
+STREAM_WAIT_SEC = 1.0
 # Bet types Place takes: 1 moneyline, 2 spread, 3 total. A moneyline carries
 # no Novig id on Unabated; the runner finds it in Novig's catalog.
 NOVIG_PLACE_BET_TYPES = (1, 2, 3)
@@ -174,16 +193,26 @@ def all_in_of(quote: dict) -> float | None:
     return round(price + fee_rate * price * (1 - price), 6)
 
 
+class OrderStream(Protocol):
+    """The Place key's private orders channel (novig_book_stream.NovigBookStream)."""
+
+    def orders_live(self) -> bool: ...
+
+    def wait_for_order(self, order_id: str, after_version: int, timeout_sec: float) -> tuple[dict | None, int]: ...
+
+
 class ManualNovigDesk:
     """Sends Cal's Novig Place-button orders from Place's sub-account, one per click."""
 
     def __init__(self, client: NovigOrderClient, store: BetsStore, quote_reader: Callable[[dict], dict],
                  read_sources: tuple[str, ...] = NOVIG_PLACE_READ_SOURCES,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-                 sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic):
+                 sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
+                 order_stream: OrderStream | None = None):
         """`client` signs with Place's own trading key (never the bot's).
         `read_sources`: the bets service's source names whose reads the
-        Ticket's stake counts; each must be ok and fresh."""
+        Ticket's stake counts; each must be ok and fresh. `order_stream`: the
+        Place key's private orders channel (pushed fills); None polls REST."""
         self._client = client
         self._store = store
         self._quote_reader = quote_reader
@@ -191,6 +220,7 @@ class ManualNovigDesk:
         self._now = now
         self._sleep = sleep
         self._clock = clock
+        self._order_stream = order_stream
         # One click at a time (panel and phone can click at once): the checks
         # read the orders already sent, so they must see each other's.
         self._lock = threading.Lock()
@@ -266,16 +296,31 @@ class ManualNovigDesk:
         return None
 
     def _stale_read(self) -> str | None:
-        """Words for a Novig read the stake counted that is failing or old, or None."""
+        """Words for a Novig read the stake counted that is failing or old, or
+        None. A latest run Novig throttled is a blip, not a failure, while the
+        last good run is under READ_BLIP_TOLERANCE old and came after the newest
+        Novig Place send (a fill from before it is in that good read; the
+        unseen-fill rule still guards the game itself)."""
         status = self._store.source_status()
+        now = self._now()
         for source in self._read_sources:
             read = status.get(source)
             fetched_at = _iso_time(read.get("fetchedAt")) if read else None
-            if not read or not read.get("ok") or fetched_at is None:
+            if not read or fetched_at is None:
                 return f"the {source} read is failing, so the stake may miss a bet. Try again once it reads."
-            if self._now() - fetched_at > NOVIG_READ_MAX_AGE:
+            if not read.get("ok") and not self._throttled_blip(read, fetched_at, now):
+                return f"the {source} read is failing, so the stake may miss a bet. Try again once it reads."
+            if now - fetched_at > NOVIG_READ_MAX_AGE:
                 return f"the {source} read is over {NOVIG_READ_MAX_AGE.seconds // 60} minutes old, so the stake may miss a bet."
         return None
+
+    def _throttled_blip(self, read: dict, last_ok_at: datetime, now: datetime) -> bool:
+        if NovigRateLimited.__name__ not in str(read.get("error") or ""):
+            return False
+        if now - last_ok_at > READ_BLIP_TOLERANCE:
+            return False
+        last_place_at = self._store.last_novig_place_at()
+        return last_place_at is None or last_place_at <= last_ok_at
 
     def _send(self, client_order_id: str, novig_client_id: str, quote: dict, quantity: int) -> dict:
         """ONE IOC buy, never re-sent; then the order read until final and its fills."""
@@ -303,10 +348,44 @@ class ManualNovigDesk:
         return self._follow_order(client_order_id, order_id, quote, quantity)
 
     def _follow_order(self, client_order_id: str, order_id: str, quote: dict, quantity: int) -> dict:
-        """Read the order until Novig shows it final (a few tries), then its
-        fills. An OPEN order (an IOC never should be) is cancelled."""
-        order_status = None
+        """What became of the order: off the orders channel's pushed frames
+        while it is live, else the order read until Novig shows it final (a
+        few tries) and then its fills. An OPEN order (an IOC never should be)
+        is cancelled."""
         deadline = self._clock() + PLACE_FINAL_READ_WINDOW_SEC
+        pushed = self._follow_on_stream(client_order_id, order_id, deadline)
+        if pushed is not None and pushed["final"] == STATUS_OPEN:
+            return self._cancel_resting(client_order_id, order_id)
+        if pushed is not None and pushed["final"] in FINAL_ORDER_STATUSES:
+            return self._read_fills(client_order_id, order_id, quote, quantity, pushed)
+        if pushed is not None:
+            # Live to the end of the window and never final: only fills so far. Novig's fills decide.
+            return self._unconfirmed(client_order_id, order_id, quote, quantity)
+        return self._follow_on_rest(client_order_id, order_id, quote, quantity, deadline)
+
+    def _follow_on_stream(self, client_order_id: str, order_id: str, deadline: float) -> dict | None:
+        """The order's pushed state at the end of the window (or as soon as it
+        is final), or None when the channel is not live (now, or before any
+        frame came), so REST takes over for what is left of the window."""
+        if self._order_stream is None or not self._order_stream.orders_live():
+            return None
+        version = 0
+        state = None
+        while self._clock() < deadline:
+            pushed, version = self._order_stream.wait_for_order(order_id, version, STREAM_WAIT_SEC)
+            if pushed is not None:
+                state = pushed
+                log.info("novig place %s: pushed: %s, %d filled, remaining %s", client_order_id, state["final"],
+                         state["filled"], state["remaining"])
+                if state["final"] is not None:
+                    return state
+            elif not self._order_stream.orders_live():
+                log.warning("novig place %s: the orders channel went down mid-wait; reading REST", client_order_id)
+                return None
+        return state if state is not None else {"final": None, "filled": 0, "cost": 0.0, "remaining": None, "fills": []}
+
+    def _follow_on_rest(self, client_order_id: str, order_id: str, quote: dict, quantity: int, deadline: float) -> dict:
+        order_status = None
         for attempt in range(PLACE_FINAL_READ_ATTEMPTS):
             if attempt:
                 if self._clock() >= deadline:
@@ -337,8 +416,9 @@ class ManualNovigDesk:
             self._update(client_order_id, {"status": STATUS_UNKNOWN, "error": f"never read final; fills read failed: {error}"})
             log.error("novig place %s: order %s never read final and its fills could not be read: %s",
                       client_order_id, order_id, error)
-            return {"status": STATUS_UNKNOWN, "message": "Novig took the order but has not said what filled, and its "
-                                                         "fills could not be read. Check Novig before placing again."}
+            return {"status": STATUS_UNKNOWN, "message": "Sent. Novig has not confirmed what filled yet and its fills "
+                                                         "could not be read; what filled shows in Bets within a minute. "
+                                                         "Check Bets before placing again."}
         if filled >= quantity:
             return self._record_fills(client_order_id, quote, quantity, filled, cost, fee)
         paid = round(cost + fee, 5)
@@ -347,11 +427,11 @@ class ManualNovigDesk:
         log.error("novig place %s: order %s never read final, %d of %d filled so far", client_order_id, order_id,
                   filled, quantity)
         if filled == 0:
-            return {"status": STATUS_UNKNOWN, "message": "Novig took the order but has not said what filled. "
-                                                         "Check Novig before placing again."}
+            return {"status": STATUS_UNKNOWN, "message": "Sent. Novig has not confirmed what filled yet; it shows in Bets "
+                                                         "within a minute. Check Bets before placing again."}
         return {"status": STATUS_UNKNOWN, "outcomeId": quote["outcomeId"], "count": quantity, "filled": filled, "cost": paid,
-                "message": f"Bet ${paid:,.2f} at {_cents(quote['price'])} on Novig so far; Novig has not said the order "
-                           "is done. Check Novig before placing again."}
+                "message": f"Bet ${paid:,.2f} at {_cents(quote['price'])} on Novig so far; Novig has not confirmed the order "
+                           "is done. It shows in Bets within a minute; check Bets before placing again."}
 
     def _cancel_resting(self, client_order_id: str, order_id: str) -> dict:
         log.error("novig place %s: order %s is OPEN on Novig after an IOC send; cancelling", client_order_id, order_id)
@@ -364,15 +444,34 @@ class ManualNovigDesk:
         return {"status": STATUS_UNKNOWN, "message": "Novig left the order resting, so a cancel was sent. "
                                                      "Check Novig before placing again."}
 
-    def _read_fills(self, client_order_id: str, order_id: str, quote: dict, quantity: int) -> dict:
+    def _read_fills(self, client_order_id: str, order_id: str, quote: dict, quantity: int,
+                    pushed: dict | None = None) -> dict:
+        """The final order's fills from REST (the exact fee). With the pushed
+        final state in hand, a REST read that fails or lags the pushed fills
+        is not waited on: the pushed numbers stand, the fee from the quote's
+        rate (0 pregame), and the hourly REST read of the sub-account corrects it."""
         try:
             filled, cost, fee = order_totals(self._client.fills(order_id=order_id))
         except (NovigError, OSError) as error:
-            self._update(client_order_id, {"status": STATUS_UNKNOWN, "error": f"fills read failed: {error}"})
-            log.error("novig place %s: fills read failed: %s", client_order_id, error)
-            return {"status": STATUS_UNKNOWN, "message": "Novig took the order but its fills could not be read. "
-                                                         "Check Novig before placing again."}
+            if pushed is None:
+                self._update(client_order_id, {"status": STATUS_UNKNOWN, "error": f"fills read failed: {error}"})
+                log.error("novig place %s: fills read failed: %s", client_order_id, error)
+                return {"status": STATUS_UNKNOWN, "message": "Novig took the order but its fills could not be read. "
+                                                             "Check Novig before placing again."}
+            log.warning("novig place %s: fills read failed after the pushed final (%s); recording the pushed fills",
+                        client_order_id, error)
+            return self._record_pushed_fills(client_order_id, quote, quantity, pushed)
+        if pushed is not None and filled < pushed["filled"]:
+            log.warning("novig place %s: REST lists %d filled, the stream %d; recording the pushed fills",
+                        client_order_id, filled, pushed["filled"])
+            return self._record_pushed_fills(client_order_id, quote, quantity, pushed)
         return self._record_fills(client_order_id, quote, quantity, filled, cost, fee)
+
+    def _record_pushed_fills(self, client_order_id: str, quote: dict, quantity: int, pushed: dict) -> dict:
+        fee_rate = quote.get("feeRate", 0) if _is_number(quote.get("feeRate", 0)) else 0
+        fee = round(sum(fill["qty"] * fee_rate * float(fill["price"]) * (1 - float(fill["price"])) / QTY_PER_DOLLAR
+                        for fill in pushed["fills"]), 5)
+        return self._record_fills(client_order_id, quote, quantity, pushed["filled"], pushed["cost"], fee)
 
     def _record_fills(self, client_order_id: str, quote: dict, quantity: int, filled: int, cost: float,
                       fee: float) -> dict:
