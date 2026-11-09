@@ -2717,9 +2717,11 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   `related` (the bets on the game with their tags and `fair then`) and
   `move` (`{kind, label, detail, sinceFill}` or null). The full shape is
   documented at the top of `server/edges_payload.js`. `GET /scenarios.json`
-  → `{generatedAt, scanner, betsService, games, coveredBetIds, finishedBetIds}`, the Bet
+  → `{generatedAt, scanner, betsService, games, coveredBetIds, finishedBetIds, filtered}`, the Bet
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
-  bets service passes it through at its own `/scenarios.json`). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
+  bets service passes it through at its own `/scenarios.json`, query
+  included; `?not_<origin|venue|league|kind>=` rebuilds the cards without
+  those bets, any other key is a 400). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
   {tau, measured, rungCount, sampleCount, covariance}}}`, the pooled tail-flex tau the
   panel ranks and gates on (Tail flex above; the pool's load state is on `/health`). `GET /live_prices.json` →
   `{generatedAt, maxAgeMs, bookIds, reads: {lineKey: {venue, points, allIn, depthDollars, readAtMs} |
@@ -2953,6 +2955,18 @@ visible. Its one write is the Bets page's Remove / Restore.
   start, whether or not the board still lists it: a game already under way
   when the runner (re)starts gets its card with "—" for every chance. The
   nav tab carries the live bet count.
+  **Filters** (2026-11-09): an **All / Mine / Bot** switch (Mine is every
+  bet the two bots did not place, Place clicks included) and a **Filters**
+  button with Venue, League and Type chips, a summary of what is hidden
+  beside it; kept on the device (`betTracker.prefs`). The page sends the
+  hidden values as `not_origin` / `not_venue` / `not_league` / `not_kind`
+  on `/scenarios.json` and the runner rebuilds the cards from only the
+  bets left (`scenarios.liveFilterOf` / `recordsInFilter`, labels from
+  `trackerstats.buildTickets`), so every ladder, range, KPI and EV counts
+  just those; `coveredBetIds` stay every bet's, so the Open tab and the nav
+  count are unchanged. The page draws filtered cards only from a reply
+  marked `filtered: true`, so a runner older than the page says so instead of
+  showing every bet's cards under the filter.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
   games (links to Live), then the open bets that are not live with price,

@@ -199,7 +199,10 @@ function createBoardClient(options) {
     pollBets: () => Promise.resolve(),
     edgesPayload: (opts) => payload("edges", opts),
     teasersPayload: (opts) => payload("teasers", opts),
-    scenariosPayload: () => payload("scenarios"),
+    // The Live tab's filtered cards are built on demand; the unfiltered page is served off its copy.
+    scenariosPayload: (params) => (params && [...params.keys()].length
+      ? call("scenariosFiltered", [params.toString()]).then((text) => new RawJson(text))
+      : payload("scenarios")),
     takerPayload: () => payload("taker"),
     tauPayload: () => payload("tau"),
     livePricesPayload: () => payload("livePrices"),
@@ -225,6 +228,7 @@ function serveBoardCalls(port, runner, logWarning) {
       return runner[method]();
     },
     attachPayload: (search) => runner.attachPayload(new URLSearchParams(search)),
+    scenariosFiltered: (search) => runner.scenariosPayload(new URLSearchParams(search)),
     kalshiQuote: (search) => runner.kalshiQuote(new URLSearchParams(search)),
     novigQuote: (search) => runner.novigQuote(new URLSearchParams(search)),
     polymarketQuote: (search) => runner.polymarketQuote(new URLSearchParams(search)),
