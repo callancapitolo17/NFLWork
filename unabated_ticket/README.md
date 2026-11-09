@@ -3557,7 +3557,7 @@ on the Mac's management key; a top-up is the same line with a new
 one does not).
 
 Desk statuses: `stopped`, `duplicate`, `env_mismatch`, `stale_decision`,
-`started`, `stale_holdings`, `unseen_fill`, `ceiling`, then the order's
+`started`, `stale_holdings`, `unseen_fill`, `ceiling`, `no_cash`, then the order's
 `sending`, `unknown` (no definite answer: full cost held, looked up by
 `clientId` a minute on), `sent` (an order Novig took but never shows final is
 settled off its listing by `clientId` a minute on), `resting`, `filled` /
@@ -3566,6 +3566,17 @@ market frees its orders' cost once it has left the bot's open positions
 (`GET /v3/portfolio/positions`, read at most every 5 min; Novig closes a
 position when its market settles); one still held 12 h after the start is
 logged once.
+
+**Out of cash (2026-11-09).** The $850 ceiling counts open cost only, so after
+a losing run the wallet can be empty with room left under it. Once Novig
+refuses an order `INSUFFICIENT_BALANCE`, the desk sends nothing (answers
+`no_cash`, no order row; the refused order's row is `rejected`) until its
+balance read, at most once a minute, pays for a contract; that order's qty
+is cut to the cash and sending is back to normal. A failed balance read sends
+nothing. Before this the desk sent ~50 refused orders a minute. The Bot tab
+shows it apart from the cap: the card reads **Out of cash** (amber) while the
+runner's last desk answer was `no_cash`, and the "why it passed" list has an
+**Out of cash** row next to **At the money cap**.
 
 ```sql
 -- taker.duckdb: the Novig bot's orders, newest first

@@ -40,6 +40,12 @@ Rules, in order, for every request:
      this stake on (`heldIds`) -> else "unseen_fill";
   7. ceiling: qty cut so open Novig exposure + this order stays at or under
      OPEN_COST_CEILING; none left -> "ceiling";
+  7b. cash: once Novig has refused an order INSUFFICIENT_BALANCE, no order is
+     sent until the subaccount's cash (read at most every CASH_RECHECK_SEC)
+     pays for at least one contract; qty is then cut to that cash -> else
+     "no_cash" (the cash ran out before the ceiling counted full: a losing run
+     leaves the wallet under $850, 2026-11-09: ~50 refused sends a minute).
+     The refusal itself answers "no_cash" too (its row is stored "rejected");
   8. the row is INSERTED (status "sending", full cost) BEFORE the send;
   9. one IOC buy; then the order is read until final, and its fills.
 
@@ -80,6 +86,10 @@ log = logging.getLogger(__name__)
 OPEN_COST_CEILING = 850.0
 # The bot subaccount's bets are recorded as "novig:<order id>:bot" (sources/novig_subaccount.py).
 BOT_ACCOUNT_NAME = "bot"
+# Novig's 422 code for an order the subaccount's cash cannot pay for.
+INSUFFICIENT_BALANCE_CODE = "INSUFFICIENT_BALANCE"
+# While short of cash, the balance is re-read at most this often (Novig's account throttle is 64 per 8 s).
+CASH_RECHECK_SEC = 60
 REFRESH_SEC = 30
 MAX_DECISION_AGE_SEC = 60
 # The stake is conditional on the held Novig bets: the app poll is 60 s, the subaccount poll 30 s.
@@ -241,6 +251,10 @@ class NovigTakerDesk:
         self._positions_read_at: datetime | None = None
         self._positions_tried_at: datetime | None = None
         self._unsettled_warned: set[str] = set()
+        # Set by an INSUFFICIENT_BALANCE refusal: sends wait on the cash read below until it pays for a contract.
+        self._cash_short = False
+        self._cash_read_at: datetime | None = None
+        self._cash: float | None = None
 
     def run_refresh_loop(self, stop: threading.Event) -> None:
         """The desk's own thread: open orders brought up to date every REFRESH_SEC."""
@@ -257,9 +271,10 @@ class NovigTakerDesk:
     def place(self, request: dict) -> dict:
         """One order (validate_order_request's shape). Returns {status, ...}:
         stopped | duplicate | stale_decision | started | env_mismatch |
-        stale_holdings | unseen_fill | ceiling (nothing sent), or the sent
+        stale_holdings | unseen_fill | ceiling | no_cash (nothing sent), or the sent
         order's filled | partial | unfilled | resting | rejected | unknown, or
-        geo_blocked (451: Novig refused it for the phone's location; nothing placed)."""
+        geo_blocked (451: Novig refused it for the phone's location; nothing placed)
+        or no_cash (422 INSUFFICIENT_BALANCE: nothing placed, sends wait on the cash)."""
         with self._lock:
             for stop_path in self._stop_paths:
                 if stop_path.exists():
@@ -282,7 +297,29 @@ class NovigTakerDesk:
             qty = min(request["qty"], qty_for_stake(max(headroom, 0.0), request["price"]))
             if qty < 1:
                 return {"status": "ceiling", "detail": f"${headroom:.2f} of ${OPEN_COST_CEILING:.0f} left"}
+            if self._cash_short:
+                cash = self._cash_on_hand()
+                qty = min(qty, qty_for_stake(max(cash or 0.0, 0.0), request["price"]))
+                if qty < 1:
+                    shown = "unread" if cash is None else f"${cash:.2f}"
+                    return {"status": "no_cash",
+                            "detail": f"{shown} cash in the bot subaccount, ${headroom:.2f} of ${OPEN_COST_CEILING:.0f} left"}
+                self._cash_short = False
             return self._send(request, qty)
+
+    def _cash_on_hand(self) -> float | None:
+        """The subaccount's cash, re-read at most every CASH_RECHECK_SEC; None
+        when no read has worked yet (fail closed: no send)."""
+        now = self._now()
+        if self._cash_read_at is not None and now - self._cash_read_at < timedelta(seconds=CASH_RECHECK_SEC):
+            return self._cash
+        self._cash_read_at = now
+        try:
+            self._cash = self._client.balance()
+        except (NovigError, OSError) as error:
+            log.warning("novig taker desk: cash read failed, no order sent until it works: %s", error)
+            self._cash = None
+        return self._cash
 
     def _refuse_unfit(self, request: dict) -> dict | None:
         now = self._now()
@@ -329,6 +366,15 @@ class NovigTakerDesk:
             code = error_code_of(reply)
             self._store.update_novig_order(client_id, {"status": "rejected", "open_cost": 0.0, "settled_at": self._now(),
                                                        "error": f"HTTP {status} {code or ''}: {str(reply)[:400]}"})
+            if code == INSUFFICIENT_BALANCE_CODE:
+                if not self._cash_short:
+                    log.warning("novig taker: Novig refused an order for cash: no order until the bot subaccount's cash pays for one")
+                # Treat the wallet as empty until the next read a minute on, so a balance Novig
+                # will not spend (one that reads enough but is refused) costs one send a minute, not a burst.
+                self._cash_short = True
+                self._cash_read_at = self._now()
+                self._cash = 0.0
+                return {"status": "no_cash", "qty": qty, "detail": f"Novig HTTP {status} {code}: the bot subaccount is out of cash"}
             if status == GEO_STATUS:
                 log.error("novig taker: Novig refused placement for location (%s): open the Novig app on Cal's phone", code)
                 return {"status": "geo_blocked", "qty": qty,

@@ -31,6 +31,14 @@ class FakeNovig:
         self.positions = [{"marketId": MARKET, "outcomeId": OUTCOME, "qty": 2150, "cost": "9.99750"}]
         self.positions_reads = 0
         self.cancelled = []
+        self.cash = 1000.0
+        self.balance_reads = 0
+
+    def balance(self):
+        self.balance_reads += 1
+        if isinstance(self.cash, Exception):
+            raise self.cash
+        return self.cash
 
     def place_ioc_order(self, outcome_id, price, qty, client_id):
         self.placed.append((outcome_id, price, qty, client_id))
@@ -174,6 +182,49 @@ def test_a_refusal_holds_nothing_and_a_lost_answer_holds_the_cost(setup):
     assert desk.place(lost)["status"] == "unknown"
     assert store.novig_open_exposure() == pytest.approx(9.9975)
     assert len(client.placed) == 2  # never retried
+
+
+def test_out_of_cash_sends_nothing_until_the_cash_pays_for_a_contract(setup):
+    desk, client, store, clock, *_ = setup
+    client.place_reply = (422, {"code": "INSUFFICIENT_BALANCE", "message": "Insufficient balance"})
+    assert desk.place(request())["status"] == "no_cash"
+    assert store.novig_open_exposure() == 0
+    assert store._con.execute("SELECT status FROM novig_taker_orders WHERE client_id = ?", [CLIENT_ID]).fetchone()[0] == "rejected"
+    client.place_reply = (201, {"orderId": ORDER_ID, "clientId": CLIENT_ID})
+    client.cash = 0.0026
+    ids = ["4b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a9%d" % n for n in range(4)]
+    for n in range(3):  # a burst inside the minute: no cash read, nothing sent, no row written
+        result = desk.place(request(clientId=ids[n], eventId=20 + n))
+        assert result["status"] == "no_cash" and result["detail"].startswith("$0.00 cash")
+    assert len(client.placed) == 1 and client.balance_reads == 0
+    assert not store.has_novig_order(ids[0])
+    # A minute on the read still shows nothing: one read, still nothing sent.
+    clock["now"] = NOW + timedelta(seconds=61)
+    assert desk.place(request(clientId=ids[1], eventId=21,
+                              decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat()))["status"] == "no_cash"
+    assert client.balance_reads == 1
+    # Another minute on, $5 has come back: qty is cut to it and sending resumes.
+    client.cash = 5.0
+    clock["now"] = NOW + timedelta(seconds=122)
+    desk.place(request(clientId=ids[3], eventId=30, decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat(),
+                       qty=300000))
+    assert client.placed[-1][2] == 1075  # $5 at 0.465 = 1075 1c contracts
+    assert client.balance_reads == 2
+    # Back to normal: the next order reads no cash.
+    desk.place(request(clientId="5b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a90", eventId=31,
+                       decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat()))
+    assert client.balance_reads == 2 and len(client.placed) == 3
+
+
+def test_a_failed_cash_read_sends_nothing(setup):
+    desk, client, _store, clock, *_ = setup
+    client.place_reply = (422, {"code": "INSUFFICIENT_BALANCE"})
+    desk.place(request())
+    client.cash = OSError("timed out")
+    clock["now"] = NOW + timedelta(seconds=61)
+    result = desk.place(request(clientId="6b3f5f20-9c1b-4d6e-8f3a-5c2d1e7b4a90", eventId=9,
+                                decidedAt=(clock["now"] - timedelta(seconds=5)).isoformat()))
+    assert result["status"] == "no_cash" and "unread" in result["detail"] and len(client.placed) == 1
 
 
 def test_a_lost_send_is_found_by_client_id_or_freed(setup):

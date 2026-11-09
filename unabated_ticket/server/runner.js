@@ -2586,9 +2586,11 @@ function createRunner(deps) {
     };
     try {
       const reply = await sendServiceJson(serviceFetch, `${deps.betsServiceUrl}/taker/novig_order.json`, "POST", body, TAKER_ORDER_TIMEOUT_MS);
+      // "no_cash" (the bot subaccount cannot pay; the desk waits on its cash) shows as "Out of cash" on the Bot tab.
       novigDeskStatus = reply.status === "geo_blocked" ? `geo_blocked: ${reply.detail}`
-        : reply.status === "stopped" ? `stopped: ${reply.detail}` : "armed";
-      if (!["ceiling", "stopped", "unseen_fill", "stale_holdings"].includes(reply.status)) {
+        : reply.status === "stopped" ? `stopped: ${reply.detail}`
+        : reply.status === "no_cash" ? `no_cash: ${reply.detail}` : "armed";
+      if (!["ceiling", "no_cash", "stopped", "unseen_fill", "stale_holdings"].includes(reply.status)) {
         logInfo(`taker novig order ${body.clientId} ${decision.ticker} x${decision.contracts} @ ${decision.liveAsk}: ${reply.status}${reply.detail ? ` (${reply.detail})` : ""}`);
       }
       return { clientId: body.clientId, ...reply };
