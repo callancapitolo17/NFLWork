@@ -1,0 +1,3 @@
+# The build needs one file; nothing else in the repo enters the build context.
+*
+!kalshi_parlay_quoter/requirements.txt

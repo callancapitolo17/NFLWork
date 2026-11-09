@@ -1881,7 +1881,12 @@ points (a spread +6 either side, an Over -6, an Under +6) and `(B+6)`, and the
 ticket must risk the stake to win 3x it; anything else turns the card red
 (2026-10-07, 0.19.1 — the first live ticket, 356677821, reads clean). The body
 is pinned by a test to the one the site sent
-for a ticket Cal placed by hand (356323496). Juice is not checked: in a
+for a ticket Cal placed by hand (356323496), except `RiskWin` / each pick's
+`RiskOrWinType`: the recording sent 1, which BFA's own betslip code reads as
+"Amount is the to-win"; BFA's server read it as the base amount (the risk, at
++300) until at least 2026-11-01 and as the to-win by 2026-11-07 (seven $200
+tickets, 359110156 to 359114763, risked $66.67 to win $200); the body now sends 2, "Amount is the risk",
+what the site sends when you type a risk. Juice is not checked: in a
 Buckeye teaser it does not change the payout.
 
 **Limits.** Unabated's fair at teaser numbers runs up to 3 points above the
@@ -2712,7 +2717,7 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   `related` (the bets on the game with their tags and `fair then`) and
   `move` (`{kind, label, detail, sinceFill}` or null). The full shape is
   documented at the top of `server/edges_payload.js`. `GET /scenarios.json`
-  → `{generatedAt, scanner, betsService, games, coveredBetIds}`, the Bet
+  → `{generatedAt, scanner, betsService, games, coveredBetIds, finishedBetIds}`, the Bet
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
   bets service passes it through at its own `/scenarios.json`). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
   {tau, measured, rungCount, sampleCount, covariance}}}`, the pooled tail-flex tau the
@@ -2921,7 +2926,13 @@ visible. Its one write is the Bets page's Remove / Restore.
   `NAMED_OVERTIMES` names it "OT" / "2OT" where read (NCAAB 1 and 2, read
   2026-11-07), and any other league or count shows the clock alone, never
   the regulation period's name. A copy the tracker kept through a failed
-  refresh also turns to "No recent score" at its `staleAt`. Started bets the
+  refresh also turns to "No recent score" at its `staleAt`. A game Unabated
+  marks final (event `statusId` 3, kept even once the reading is stale) gets
+  no card, and its open straight bets leave the Live tab until they settle
+  (`finishedBetIds`; Cal, 2026-11-08), or until the runner forgets the game
+  12 h after its start (`KICKOFF_MEMO_HOURS`), when an ungraded one falls to
+  **Not on a game card**; a parlay or teaser with a leg there stays under
+  the tickets riding, its leg on no card, so Worst case leaves it out. Started bets the
   runner could not place on a game
   (futures, props, a name or time the board doesn't share) are listed under
   **Not on a game card**; when `/scenarios.json` cannot be read the tab says
@@ -3040,7 +3051,9 @@ visible. Its one write is the Bets page's Remove / Restore.
   its count and stake at risk, re-split on every refresh. Bets whose game
   has started (a parlay's earliest leg), or that the runner placed on a live
   game card, are on the Live tab instead (`trackerstats.splitOpenForLive`).
-  A game that has ended stays live until its venue grades the bet.
+  A game Unabated marks final leaves the Live tab; its ungraded straights
+  are counted in the Open bets tile ("N finished, awaiting settlement") and
+  At risk, listed nowhere, and show as settled bets the day after grading.
 - **Sorting**: click any column header on any table to sort by it (numbers
   high to low first, text A to Z), click again to reverse. Blanks ("—") stay
   last either way; the bet log and the Bets list sort their whole match
@@ -3906,11 +3919,12 @@ board lists no alts or period lines); NFL, CFB, NBA, CBB and NHL boards are read
   `IdWagerType` the straight type and `TeaserPoints 0`, `AcceptChanges 0` (BFA
   refuses a moved price or number). **A straight bet has not been recorded off
   the site**: the shape is the teaser's with the straight codes the metadata
-  names. The first live click (2026-11-03, ticket 358850696) showed BFA reads
-  the pick's `Amount` as the **base amount**, the smaller of risk and to-win:
-  $17 at -110 booked risk $18.70 to win $17. So on a minus price the pick sends
-  the to-win that risks the stake ($15.45 for $17 at -110), on a plus price the
-  stake; the read-back allows a cent off on the risk. A 4xx is `rejected`; anything
+  names. The pick sends `Amount` = the stake with `RiskOrWinType` / `RiskWin`
+  2, "Amount is the risk" at any price, as BFA's own betslip does when you type
+  a risk (read off the site's code 2026-11-07; the first live click, ticket
+  358850696, had sent 1, "Amount is the to-win": $17 at -110 booked risk $18.70
+  to win $17); the read-back allows a cent off on the to-win. A
+  4xx is `rejected`; anything
   else is confirmed off the open bets (a new `STRAIGHT BET` on the game within
   20 s is `filled`, else `unknown`: check BFA before placing again). The placed
   ticket is read back (rotation, market, side, number, price, risk, to-win) and

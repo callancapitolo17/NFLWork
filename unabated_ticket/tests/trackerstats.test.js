@@ -62,6 +62,23 @@ test("Live tab split: straights on a game card, tickets riding, started bets off
   assert.deepEqual(unread.offCard.map((t) => t.id), ["carded", "started-off-card"]);
 });
 
+test("Live tab split: straights on a finished game leave the Live tab; a ticket with a leg there keeps riding", () => {
+  const now = Date.parse("2026-10-04T18:00:00Z");
+  const open = { status: "open", closedAt: null };
+  const tickets = stats.buildTickets([
+    straight({ id: "done", ...open, eventStart: "2026-10-04T13:00:00Z" }),
+    straight({ id: "betonline-done", ...open, eventStart: null }),
+    straight({ id: "carded", ...open, eventStart: "2026-10-04T17:00:00Z" }),
+    straight({ id: "t1:leg0", ...open, isParlayLeg: true, parlayId: "t1", legIndex: 0, legCount: 2, eventStart: "2026-10-04T13:00:00Z" }),
+    straight({ id: "t1:leg1", ...open, isParlayLeg: true, parlayId: "t1", legIndex: 1, legCount: 2, eventStart: "2026-10-04T22:00:00Z" }),
+  ], []);
+  const split = stats.splitOpenForLive(tickets, ["carded"], now, ["done", "betonline-done", "t1:leg0"]);
+  assert.deepEqual(split.finished.map((t) => t.id).sort(), ["betonline-done", "done"]);
+  assert.deepEqual(split.onCard.map((t) => t.id), ["carded"]);
+  assert.deepEqual(split.tickets.map((t) => t.id), ["t1"]);
+  assert.deepEqual([split.offCard, split.upcoming, split.noStart].map((list) => list.length), [0, 0, 0]);
+});
+
 test("open, closed-early and unknown bets carry no P&L and stay out of the summary", () => {
   const tickets = stats.buildTickets([
     straight({ id: "open", status: "open", closedAt: null }), straight({ id: "sold", status: "closed" }),

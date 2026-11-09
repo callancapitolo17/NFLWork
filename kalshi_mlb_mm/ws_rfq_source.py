@@ -81,16 +81,20 @@ INGESTION_DROP_LOG_EVERY = 25_000
 LATENCY_SAMPLE_EVERY = 100     # rfq_seen_latency is answered science; 1% sample
 
 
-def _door_verdict(msg: dict, *, max_legs: int, min_cost_usd: float) -> str:
+def _door_verdict(msg: dict, *, max_legs: int, min_cost_usd: float,
+                  leg_prefixes: tuple[str, ...] = (MLB_LEG_PREFIX,)) -> str:
     """'keep', or the drop-reason counter key.
 
     Legless frames pass the leg checks (fail-open — the tick's budgeted
     get_market fallback classifies), but the dollar floor still applies
     whenever the RFQ is dollar-denominated; contracts-denominated RFQs
-    (target_cost 0) pass the door and meet the tick's size gate instead."""
+    (target_cost 0) pass the door and meet the tick's size gate instead.
+
+    `leg_prefixes` widens the league check for other consumers (the parlay
+    quoter, issue #283); "non_mlb" then means "a leg outside leg_prefixes"."""
     legs = msg.get("mve_selected_legs")
     if isinstance(legs, list) and legs:
-        if not all(str(leg.get("market_ticker", "")).startswith(MLB_LEG_PREFIX)
+        if not all(str(leg.get("market_ticker", "")).startswith(leg_prefixes)
                    for leg in legs):
             return "non_mlb"
         if len(legs) > max_legs:
@@ -193,7 +197,8 @@ class WebSocketRFQSource:
                  subscribe_ack_timeout_sec: float = 10.0,
                  mirror_ttl_sec: float | None = None,
                  door_max_legs: int | None = None,
-                 door_min_cost_usd: float | None = None):
+                 door_min_cost_usd: float | None = None,
+                 door_leg_prefixes: tuple[str, ...] = (MLB_LEG_PREFIX,)):
         self._rest = rest_source
         self._transport_factory = transport_factory or (
             lambda: KalshiWSTransport(url=config.KALSHI_WS_URL))
@@ -222,6 +227,7 @@ class WebSocketRFQSource:
         self._door_min_cost_usd = (
             config.MIN_RFQ_TARGET_COST_USD if door_min_cost_usd is None
             else door_min_cost_usd)
+        self._door_leg_prefixes = tuple(door_leg_prefixes)
         self._lock = threading.Lock()
         self._open_rfqs: dict[str, dict] = {}
         self._rfq_arrived: dict[str, float] = {}   # rfq_id -> time.monotonic()
@@ -424,7 +430,8 @@ class WebSocketRFQSource:
         snapshot = {rfq["id"]: rfq for rfq in rest_rfqs
                     if rfq.get("id")
                     and _door_verdict(rfq, max_legs=self._door_max_legs,
-                                      min_cost_usd=self._door_min_cost_usd) == "keep"}
+                                      min_cost_usd=self._door_min_cost_usd,
+                                      leg_prefixes=self._door_leg_prefixes) == "keep"}
         now_mono = time.monotonic()
         with self._lock:
             had = len(self._open_rfqs)
@@ -481,7 +488,8 @@ class WebSocketRFQSource:
                 raise ValueError(f"{msg_type} missing rfq id")
             if msg_type == "rfq_created":
                 verdict = _door_verdict(msg, max_legs=self._door_max_legs,
-                                        min_cost_usd=self._door_min_cost_usd)
+                                        min_cost_usd=self._door_min_cost_usd,
+                                        leg_prefixes=self._door_leg_prefixes)
                 if verdict != "keep":
                     # Dropped silently by design: at ~500/s a per-RFQ log or
                     # research event would itself re-bloat what this filter

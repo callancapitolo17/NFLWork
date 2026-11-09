@@ -206,7 +206,10 @@ click; the button is also disabled while a placement is in flight), then
 win must match to $0.01 or it refuses) and submits it. A special is a PROP game,
 so it goes in with its rotation number as the Play and no points — what
 Wagerzon's own site sends. (Play=5 passes the preview but the submit fails
-"Couldn't find Game Line".) Every attempt
+"Couldn't find Game Line".) The server keeps one Wagerzon login per account; when
+the preview comes back logged out (an expired login), it logs in again and retries
+once (nothing was submitted yet). A logout at the submit is never retried: that bet
+may have gone through (2026-11-08). Every attempt
 is logged, whatever Wagerzon answered; a placed bet lowers the page's available
 balance right away. Wagerzon's minimum online wager on a special is $20.
 

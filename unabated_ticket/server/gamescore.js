@@ -82,6 +82,12 @@ function statusOf(statusId) {
   return "other";
 }
 
+// True when Unabated's last reading of the game said final, however old it
+// is: a final status is never reversed, unlike a live score.
+function isFinalState(gameState) {
+  return statusOf(gameState?.statusId) === "final";
+}
+
 function scoreLineOf(gameState, league, now) {
   if (!gameState) return null;
   if (gameState.snapshotAtMs === null || now - gameState.snapshotAtMs > STALE_AFTER_MS) return { status: "stale" };
@@ -100,4 +106,4 @@ function scoreLineOf(gameState, league, now) {
   };
 }
 
-module.exports = { STALE_AFTER_MS, scoreLineOf };
+module.exports = { STALE_AFTER_MS, scoreLineOf, isFinalState };

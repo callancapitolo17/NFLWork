@@ -148,6 +148,10 @@ def _network_error(msg: str) -> dict:
     }
 
 
+# Callers match this exact text to know nothing was submitted (safe to retry).
+PREFLIGHT_LOGGED_OUT_MSG = "Wagerzon returned HTML at preflight (session expired)"
+
+
 def _auth_error(msg: str = "session expired") -> dict:
     return {
         "status": "auth_error",
@@ -397,7 +401,7 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         # No auth_error retry: single placer is stateless; caller is expected to
         # retry on auth_error. The parlay placer retries internally because parlay
         # state is more complex to reconstruct. Singles are cheap to retry.
-        return _auth_error("Wagerzon returned HTML at preflight (session expired)")
+        return _auth_error(PREFLIGHT_LOGGED_OUT_MSG)
 
     confirm_json = confirm_resp.json()
     result_block = confirm_json.get("result") or {}
