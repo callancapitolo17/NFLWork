@@ -77,6 +77,11 @@
   // Tabs that read the header date range; the others hide it.
   // The Bot tab has its own range picker, which drives every panel on it.
   const RANGED_VIEWS = ["overview", "analysis"];
+  // The Live tab's own filters (Cal, 2026-11-09: watch only the bets he placed
+  // by hand). Who placed it: Mine is any bet the two bots did not place (Place
+  // clicks count as his); the value is the trackerstats origin each shows.
+  const LIVE_ORIGINS = { All: null, Mine: stats.ORIGINS.other, Bot: stats.ORIGINS.bot };
+  const LIVE_FILTERS = FILTERS.filter((f) => ["venue", "league", "kind"].includes(f.key));
   const CALENDAR_WEEKS = 6;
   const CI_SCALE = 0.3;
   const CHART_W = 1000;
@@ -107,6 +112,9 @@
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
+    // The Live tab's filters, kept on this device: liveOrigin a LIVE_ORIGINS key,
+    // liveOff[key] the values switched off (as state.off on Analysis).
+    liveOrigin: "All", liveOff: Object.fromEntries(LIVE_FILTERS.map((f) => [f.key, []])), liveFiltersOpen: false,
   }, loadPrefs(), { view: viewOfHash() });
   const BOT_COMBO_KIND = "Kalshi combo";
   let payload = null;
@@ -143,6 +151,9 @@
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
       const pick = saved.calendarPick;
       if (pick && stats.isDayKey(pick.day) && stats.isDayKey(pick.anchor) && RANGES.includes(pick.range)) prefs.calendarPick = pick;
+      if (Object.prototype.hasOwnProperty.call(LIVE_ORIGINS, saved.liveOrigin)) prefs.liveOrigin = saved.liveOrigin;
+      const liveOff = saved.liveOff || {};
+      prefs.liveOff = Object.fromEntries(LIVE_FILTERS.map((f) => [f.key, Array.isArray(liveOff[f.key]) ? liveOff[f.key].filter((v) => typeof v === "string") : []]));
       return prefs;
     } catch (_error) {
       return {};
@@ -151,7 +162,8 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, botRange: state.botRange, botCustomFirst: state.botCustomFirst, botCustomLast: state.botCustomLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, botRange: state.botRange, botCustomFirst: state.botCustomFirst, botCustomLast: state.botCustomLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick,
+        liveOrigin: state.liveOrigin, liveOff: state.liveOff }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
     }
@@ -1003,16 +1015,90 @@
     return split.onCard.concat(split.tickets, split.offCard);
   }
 
+  // ---- live filters ---------------------------------------------------------
+
+  function inLiveOrigin(ticket) {
+    const origin = LIVE_ORIGINS[state.liveOrigin];
+    return !origin || ticket.origin === origin;
+  }
+
+  function passesLiveFilters(ticket) {
+    return inLiveOrigin(ticket) && LIVE_FILTERS.every((f) => !state.liveOff[f.key].includes(f.value(ticket)));
+  }
+
+  function activeLiveFilters() {
+    return LIVE_FILTERS.filter((f) => state.liveOff[f.key].length);
+  }
+
+  /** /scenarios.json's query for the Live tab's filter (scenarios.js liveFilterOf): the values hidden, "" when none. */
+  function liveScenariosQuery() {
+    const params = new URLSearchParams();
+    const origin = LIVE_ORIGINS[state.liveOrigin];
+    if (origin) for (const other of Object.values(stats.ORIGINS)) if (other !== origin) params.append("not_origin", other);
+    for (const f of LIVE_FILTERS) for (const value of state.liveOff[f.key]) params.append("not_" + f.key, value);
+    return params.toString();
+  }
+
+  /** A filter change: save it, then read the cards for it before drawing them. */
+  async function setLiveFilter(change) {
+    change();
+    savePrefs();
+    render();
+    await refreshScenarios();
+    render();
+  }
+
+  function liveFilterRow(filter, counted) {
+    const counts = new Map(valuesByCount(counted, filter.value));
+    const off = state.liveOff[filter.key];
+    const values = Array.from(new Set(Array.from(counts.keys()).concat(off)));
+    return chipRow(filter.label, values, counts, off, (next) => setLiveFilter(() => { state.liveOff[filter.key] = next; }));
+  }
+
+  /** A switched-off filter's summary pill: the values it hides ("Venue: hiding BFA, Wagerzon"). */
+  function liveFilterWords(filter) {
+    return filter.label + ": hiding " + state.liveOff[filter.key].join(", ");
+  }
+
+  function liveFiltering() {
+    return Boolean(activeLiveFilters().length || LIVE_ORIGINS[state.liveOrigin]);
+  }
+
+  function renderLiveFilters(allLive, shown) {
+    const seg = document.getElementById("lv-origin");
+    fill("lv-origin", ...Object.keys(LIVE_ORIGINS).map((name) => el("button", {
+      text: name, attrs: { type: "button", "aria-pressed": String(state.liveOrigin === name) },
+      onClick: () => setLiveFilter(() => { state.liveOrigin = name; }),
+    })));
+    seg.title = "Mine: every bet the bots did not place, Place clicks included";
+    const active = activeLiveFilters();
+    showFiltersToggle("lv-f-toggle", "lv-f-body", state.liveFiltersOpen, active.length);
+    const pills = active.map((filter) => el("span", { className: "crumb" }, [
+      el("span", { className: "crumb-go", text: liveFilterWords(filter) }),
+      el("button", { className: "crumb-x", text: "×", title: "Show every " + filter.label.toLowerCase(), attrs: { type: "button", "aria-label": "Clear " + filter.label },
+        onClick: () => setLiveFilter(() => { state.liveOff[filter.key] = []; }) }),
+    ]));
+    fill("lv-f-summary", ...pills, liveFiltering() ? el("span", { className: "note", text: shown.length + " of " + allLive.length + " live bets" }) : null);
+    const counted = allLive.filter(inLiveOrigin);
+    fill("lv-f-rows", ...LIVE_FILTERS.map((filter) => liveFilterRow(filter, counted)),
+      el("span", { className: "note", text: "Counts are live bets after the All / Mine / Bot switch. Your picks are kept on this device." }));
+  }
+
   function renderLiveView() {
     const split = liveSplit();
-    const games = scenarios ? scenarios.games : [];
+    const allLive = split.onCard.concat(split.tickets, split.offCard);
+    for (const part of ["onCard", "tickets", "offCard"]) split[part] = split[part].filter(passesLiveFilters);
     const live = split.onCard.concat(split.tickets, split.offCard);
+    renderLiveFilters(allLive, live);
+    // A card read for another filter (a change still loading) is not drawn as this one's.
+    const cardsMatch = Boolean(scenarios) && scenarios.query === liveScenariosQuery();
+    const games = cardsMatch ? scenarios.games : [];
     const stake = live.reduce((sum, t) => sum + t.stake, 0);
     const pricedGroups = games.flatMap((game) => game.groups).filter((group) => group.ev !== null);
     const ev = pricedGroups.reduce((sum, group) => sum + group.ev, 0);
     const best = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.best, 0);
     const worst = worstCase(games.flatMap((game) => game.groups));
-    setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
+    setText("live-caption", scenarios && !cardsMatch ? "Loading…" : scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
     kpiTiles("lv-kpis", [
       { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
       { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
@@ -1023,7 +1109,10 @@
     const problem = scenariosError
       ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
       : null;
-    fill("lv-cards", problem, ...(games.length ? games.map(gameCard) : [problem ? null : emptyNote(live.length ? "No live bet could be placed on a game card." : "No games in progress.")]));
+    const emptyWords = scenarios && !cardsMatch ? "Loading the cards for these filters…"
+      : live.length ? "No live bet could be placed on a game card."
+      : liveFiltering() && allLive.length ? "No live bets match these filters." : "No games in progress.";
+    fill("lv-cards", problem, ...(games.length ? games.map(gameCard) : [problem ? null : emptyNote(emptyWords)]));
     const ticketRows = split.tickets;
     document.getElementById("lv-tickets-panel").hidden = !ticketRows.length;
     fill("lv-tickets", ticketRows.length ? openGroup("", ticketRows, "First leg", "", null, "liveTickets") : null);
@@ -1289,18 +1378,29 @@
 
   /** One filter row: label, All / None, then a chip per value with its count in the range. */
   function filterRow(filter, inRange) {
-    const allValues = orderedFilterValues(filter);
-    const inRangeCounts = new Map(valuesByCount(inRange, filter.value));
-    const off = state.off[filter.key];
+    const counts = new Map(valuesByCount(inRange, filter.value));
+    return chipRow(filter.label, orderedFilterValues(filter), counts, state.off[filter.key], (next) => setOff(filter.key, next));
+  }
+
+  /** A chip row (Analysis and Live): label, All / None, a chip per value with its count; onSet gets the new switched-off list. */
+  function chipRow(label, values, counts, off, onSet) {
     const quick = el("span", { className: "quick" }, [
-      el("button", { text: "All", attrs: { type: "button", "aria-pressed": String(off.length === 0) }, onClick: () => setOff(filter.key, []) }),
-      el("button", { text: "None", attrs: { type: "button", "aria-pressed": String(allValues.every((v) => off.includes(v))) }, onClick: () => setOff(filter.key, allValues.slice()) }),
+      el("button", { text: "All", attrs: { type: "button", "aria-pressed": String(off.length === 0) }, onClick: () => onSet([]) }),
+      el("button", { text: "None", attrs: { type: "button", "aria-pressed": String(values.length > 0 && values.every((v) => off.includes(v))) }, onClick: () => onSet(values.slice()) }),
     ]);
-    const chipNodes = allValues.map((value) => el("button", {
+    const chipNodes = values.map((value) => el("button", {
       className: "fchip", attrs: { type: "button", "aria-pressed": String(!off.includes(value)) },
-      onClick: () => setOff(filter.key, off.includes(value) ? off.filter((v) => v !== value) : off.concat(value)),
-    }, [document.createTextNode(value), el("span", { className: "n", text: String(inRangeCounts.get(value) || 0) })]));
-    return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: filter.label }), quick, ...chipNodes]);
+      onClick: () => onSet(off.includes(value) ? off.filter((v) => v !== value) : off.concat(value)),
+    }, [document.createTextNode(value), el("span", { className: "n", text: String(counts.get(value) || 0) })]));
+    return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: label }), quick, ...chipNodes]);
+  }
+
+  /** A "Filters" button that folds its chip rows: open state, and the count of filters in use when closed. */
+  function showFiltersToggle(toggleId, bodyId, open, activeCount) {
+    document.getElementById(bodyId).hidden = !open;
+    const toggle = document.getElementById(toggleId);
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.textContent = open ? "Hide filters" : "Filters" + (activeCount ? " (" + activeCount + ")" : "");
   }
 
   /** Parse a typed American price ("-120", "+120", "120"); null when blank, NaN when not a price. */
@@ -1347,10 +1447,7 @@
     fill("f-rows", ...shown.map((filter) => filterRow(filter, inRange)), oddsRangeRow(), (state.moreFilters || hiddenCount) ? toggle : null);
     document.getElementById("f-reset").hidden = !active.length;
     // The chip rows fold behind one button; the drill path above them always shows what is filtered.
-    document.getElementById("f-body").hidden = !state.filtersOpen;
-    const filtersToggle = document.getElementById("f-toggle");
-    filtersToggle.setAttribute("aria-expanded", String(state.filtersOpen));
-    filtersToggle.textContent = state.filtersOpen ? "Hide filters" : "Filters" + (active.length ? " (" + active.length + ")" : "");
+    showFiltersToggle("f-toggle", "f-body", state.filtersOpen, active.length);
     renderCrumbs();
   }
 
@@ -1766,18 +1863,27 @@
     applyBotComboFilter();
   }
 
-  // The live game cards; a failure keeps the last cards read and says why.
+  // The live game cards; a failure keeps the last cards read (drawn only while
+  // they match the filter) and says why.
+  // Each read is for the Live filter of the moment; a reply that lands after
+  // the filter changed again is dropped, and the newer read draws instead.
   async function refreshScenarios() {
+    const query = liveScenariosQuery();
     try {
-      const response = await fetch(SCENARIOS_URL, { cache: "no-store" });
+      const response = await fetch(SCENARIOS_URL + (query ? "?" + query : ""), { cache: "no-store" });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
       if (!body || !Array.isArray(body.games) || !Array.isArray(body.coveredBetIds)) throw new Error("scenarios.json has no games list");
       // A runner from before finished games were split out sends none.
       if (!Array.isArray(body.finishedBetIds)) body.finishedBetIds = [];
+      if (query !== liveScenariosQuery()) return;
+      // A runner from before the Live filters ignores them and would hand back every bet's cards.
+      if (query && body.filtered !== true) throw new Error("the server runner did not apply the Live filters; restart it on this version");
+      body.query = query;
       scenarios = body;
       scenariosError = null;
     } catch (error) {
+      if (query !== liveScenariosQuery()) return;
       scenariosError = error.message;
     }
   }
@@ -1849,6 +1955,7 @@
       setMoreOpen(false);
     });
     document.getElementById("f-toggle").addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; render(); });
+    document.getElementById("lv-f-toggle").addEventListener("click", () => { state.liveFiltersOpen = !state.liveFiltersOpen; render(); });
     document.getElementById("group-by").addEventListener("change", (event) => { state.groupBy = event.target.value; render(); });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });

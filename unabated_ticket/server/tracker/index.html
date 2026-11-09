@@ -110,6 +110,16 @@
 
     <section id="view-live" class="stack" aria-label="Live" hidden>
       <div class="title-row"><h1>Live</h1><span class="note" id="live-caption"></span></div>
+      <section class="panel filters" aria-label="Live filters">
+        <div class="filter-bar">
+          <div class="seg" id="lv-origin" role="group" aria-label="Who placed the bet"></div>
+          <button type="button" class="filters-toggle" id="lv-f-toggle" aria-expanded="false" aria-controls="lv-f-body">Filters</button>
+          <div class="crumbs" id="lv-f-summary"></div>
+        </div>
+        <div class="stack" id="lv-f-body" hidden>
+          <div id="lv-f-rows" class="stack"></div>
+        </div>
+      </section>
       <div class="kpis" id="lv-kpis"></div>
       <p class="note muted">Each game in progress, cut into the results that change your money. Chance is Unabated's fair before the start, not the live score. Parlay and teaser dollars stay out of a game's P&amp;L; a leg shows where it loses.</p>
       <div class="stack" id="lv-cards"></div>
