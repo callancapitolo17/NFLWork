@@ -42,6 +42,7 @@
   const betsLib = globalThis.UnabatedBets;
   const betsView = globalThis.UnabatedBetsView;
   const teaserView = globalThis.UnabatedTeaserView;
+  const teaserLib = globalThis.UnabatedTeaser;
   const balancesView = globalThis.UnabatedBalancesView;
   const venuePlace = globalThis.UnabatedPlace;
 
@@ -97,6 +98,7 @@
     ticketMoved: el("ticket-moved"),
     ticketVenuePlace: el("ticket-venue-place"), ticketVenueRow: el("ticket-venue-row"), ticketVenueStake: el("ticket-venue-stake"),
     ticketVenueButtons: el("ticket-venue-buttons"), ticketVenueMsg: el("ticket-venue-msg"), ticketFoot: el("ticket-foot"),
+    ticketFp: el("ticket-fp"), ticketFpInput: el("ticket-fp-input"), ticketFpLabel: el("ticket-fp-label"), ticketFpNote: el("ticket-fp-note"),
     toasts: el("toasts"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
     teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
@@ -139,6 +141,11 @@
     // {phase: "confirm" | "placing" | "placed" | "refused" | "unconfirmed",
     // message, legsMatch, armedAt}.
     teaserPlace: new Map(),
+    // BFA free play (Cal 2026-11-09): the last GET /bfa_free_play.json body
+    // ({ok, freePlay, maxPayout, oddsLimit} | {ok: false, error}), when it was
+    // asked for, and the teaser tickets (by signature) switched to free play.
+    freePlay: { payload: null, askedAt: 0, loading: false },
+    teaserFreePlay: new Set(),
     // Bet ids whose Dismiss, Restore or Undo is being saved.
     betsSaving: new Set(),
     // The open Attach: {betId, step: "pick" | "confirm", query, picks (the
@@ -229,6 +236,22 @@
     } catch (error) {
       pollFailed(state.teasers, error);
     }
+    renderAll();
+  }
+
+  // BFA's free play balance, read only while a BFA Ticket or the Teasers tab
+  // shows (the bets service holds a read 30 s; a Place re-reads it at BFA).
+  const FREE_PLAY_ASK_MS = 30 * 1000;
+  async function readFreePlay() {
+    const held = state.freePlay;
+    if (held.loading || Date.now() - held.askedAt < FREE_PLAY_ASK_MS) return;
+    Object.assign(held, { loading: true, askedAt: Date.now() });
+    try {
+      held.payload = await requestJson("GET", "/bfa_free_play.json");
+    } catch (error) {
+      held.payload = { ok: false, error: error.message };
+    }
+    held.loading = false;
     renderAll();
   }
 
@@ -682,7 +705,8 @@
   // venueName, phase: null | "confirm", armedAt,
   // message, tone, edited (Cal typed in the box)}.
   // sizedOn: edges.json's betsService.sources when the box last took the stake (the reads it was sized on).
-  let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null };
+  // freePlay: the BFA Ticket's Use free play switch is on.
+  let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
 
   function venuePlaceLine(row) {
     return {
@@ -702,14 +726,38 @@
     if (placeState.rowKey !== row.key) {
       const venue = venuePlace.venueOf(row.book ? row.book.id : null);
       placeState = { rowKey: row.key, venueName: venue ? venue.name : "the venue", phase: null, armedAt: 0, message: null,
-        tone: null, edited: false, sizedOn: null };
+        tone: null, edited: false, sizedOn: null, freePlay: false };
     }
+    const venue = venuePlace.venueOf(row.book ? row.book.id : null);
+    const offersFreePlay = Boolean(venue && venue.freePlay);
+    if (offersFreePlay) readFreePlay();
+    // A failed read never flips the switch: an armed free play must not turn
+    // into a cash bet. The bets service re-reads the balance at the click.
+    const freePlay = state.freePlay.payload;
     // The box follows the stake until Cal types in it, and holds still once Place is pressed.
+    // With free play on it takes the stake capped at the balance and BFA's payout cap.
     if (!placeState.edited && placeState.phase !== "confirm" && document.activeElement !== view.ticketVenueStake) {
-      view.ticketVenueStake.value = venuePlace.stakeText(acted, row.book ? row.book.id : null);
+      const boxStake = placeState.freePlay ? phoneView.freePlayStake(acted, freePlay, phoneView.netOddsOf(row)) : acted;
+      view.ticketVenueStake.value = venuePlace.stakeText(boxStake, row.book ? row.book.id : null);
       placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
     }
+    renderFreePlay(row, offersFreePlay);
     renderPlaceControls();
+  }
+
+  // The Use free play switch: its balance, and what free play is worth on this line.
+  function renderFreePlay(row, offersFreePlay) {
+    // "expected on $X" only with the switch on: the box is then the free play stake.
+    const shown = offersFreePlay ? phoneView.freePlayView(state.freePlay.payload, phoneView.fairProbOf(row), phoneView.netOddsOf(row),
+      placeState.freePlay ? venuePlace.parseStake(view.ticketVenueStake.value) : null) : null;
+    view.ticketFp.hidden = !shown;
+    if (!shown) return;
+    view.ticketFpLabel.textContent = shown.label;
+    view.ticketFpInput.checked = placeState.freePlay;
+    view.ticketFpInput.disabled = (shown.failed && !placeState.freePlay) || placeState.phase === "confirm";
+    view.ticketFpNote.hidden = !shown.note;
+    view.ticketFpNote.className = `fp-note${shown.failed ? " bad" : ""}`;
+    view.ticketFpNote.textContent = shown.note || "";
   }
 
   function renderPlaceControls() {
@@ -726,8 +774,9 @@
     };
     if (phase === "confirm") {
       const stake = venuePlace.parseStake(view.ticketVenueStake.value);
+      const paidWith = placeState.freePlay ? " free play" : "";
       view.ticketVenueButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
-        button("btn sm primary", `Bet ${phoneView.fmtDollars(stake)} at ${placeState.venueName}`, "confirm"));
+        button("btn sm primary", `Bet ${phoneView.fmtDollars(stake)}${paidWith} at ${placeState.venueName}`, "confirm"));
     } else {
       view.ticketVenueButtons.replaceChildren(button("btn sm", "Place", "arm"));
     }
@@ -770,13 +819,14 @@
   // Once sent, the Ticket closes and the order is followed in its own toast, so
   // Cal can keep browsing and send more; each Place is independent of the others.
   async function placeOnVenue() {
-    const { rowKey, venueName } = placeState;
+    const { rowKey, freePlay } = placeState;
+    const venueName = freePlay ? `${placeState.venueName} (free play)` : placeState.venueName;
     const found = state.ticket ? findTicketRow(state.ticket) : null;
     // The reads the runner sized the box's stake on, frozen with the box (not this page's own
     // /bets.json poll, nor a later edges poll): a Place filled since must still count as unseen.
     const readAts = venuePlace.readAtsOf(placeState.sizedOn || {});
     const request = found && found.row.key === rowKey ? venuePlace.placeRequestOf({
-      line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(),
+      line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(), freePlay,
     }) : { error: "the line has left the Edges list" };
     if (request.error) {
       Object.assign(placeState, { phase: null, message: `Not placed: ${request.error}.`, tone: "refused" });
@@ -785,7 +835,9 @@
     }
     const sideLabel = phoneView.ticketView(found.row, Date.now()).sideLabel;
     const toast = showToast(phoneView.placeToastPlacingText(venuePlace.parseStake(view.ticketVenueStake.value), sideLabel, venueName), "wait");
-    placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null };
+    placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
+    // The balance just changed: the next BFA Ticket reads it again.
+    if (freePlay) state.freePlay.askedAt = 0;
     closeTicket();
     let next;
     try {
@@ -882,17 +934,45 @@
 
   // The panel's Place row: Place -> Cancel / Bet $X at BFA -> Placing… ->
   // placed, or why not. An unconfirmed ticket shows no Place: it may be booked.
+  // The teaser ticket's free play stake in whole dollars (its stake capped at
+  // the balance and BFA's payout cap), or null when free play cannot cover $1.
+  function teaserFreePlayStake(ticket) {
+    const freePlay = state.freePlay.payload;
+    if (!ticket.place.body || !freePlay || !freePlay.ok) return null;
+    return phoneView.freePlayStake(ticket.place.body.stake, freePlay, teaserLib.TICKET_NET_ODDS);
+  }
+
   function appendPlaceControls(actions, ticket) {
     const placeState = state.teaserPlace.get(ticket.signature) || null;
     const phase = placeState ? placeState.phase : null;
+    // Once armed, the free play stake is the one the Bet button showed (held in its state).
+    const freePlayStake = phase === "confirm" && placeState.freePlayStake != null ? placeState.freePlayStake : teaserFreePlayStake(ticket);
+    const onFreePlay = freePlayStake != null && state.teaserFreePlay.has(ticket.signature);
+    // The switch stays while it is on, so a failed balance read can still be switched off.
+    const switchedOn = state.teaserFreePlay.has(ticket.signature);
+    if ((freePlayStake != null || switchedOn) && (phase === null || phase === "refused" || phase === "confirm")) {
+      const check = makeEl("label", "check fp-check");
+      const input = makeEl("input");
+      input.type = "checkbox";
+      input.checked = switchedOn;
+      input.disabled = phase === "confirm";
+      input.dataset.teaserFreePlay = ticket.signature;
+      check.append(input, makeEl("span", null, "Free play"));
+      actions.append(check);
+      if (onFreePlay) {
+        const shown = phoneView.freePlayView(state.freePlay.payload, ticket.winAll, teaserLib.TICKET_NET_ODDS, freePlayStake);
+        if (shown && shown.note) actions.append(makeEl("span", "tk-fp-note", `${shown.label} · ${shown.note}`));
+      }
+    }
     if (placeState && placeState.message) {
       // A placed ticket whose legs BFA shows differently is red: it is booked, and wrong.
       const tone = phase === "placed" && placeState.legsMatch !== false ? "ok" : phase === "placing" ? "wait" : "bad";
       actions.append(makeEl("span", `tk-place-msg ${tone}`, placeState.message));
     }
     if (phase === "confirm") {
+      const betText = onFreePlay ? `Bet ${phoneView.fmtDollars(freePlayStake)} free play at BFA` : `Bet ${ticket.stake} at BFA`;
       actions.append(placeButton("btn sm", "Cancel", "cancel", ticket.signature),
-        placeButton("btn sm primary", `Bet ${ticket.stake} at BFA`, "confirm", ticket.signature));
+        placeButton("btn sm primary", betText, "confirm", ticket.signature));
     } else if (phase === null || phase === "refused") {
       actions.append(placeButton("btn sm", "Place", "arm", ticket.signature));
     }
@@ -910,11 +990,20 @@
       renderAll();
       return;
     }
-    state.teaserPlace.set(signature, { phase: "placing", message: "Placing at BFA…" });
+    // Free play: the stake its Bet button showed (held when Place was armed).
+    const armed = state.teaserPlace.get(signature);
+    const freePlayStake = state.teaserFreePlay.has(signature) && armed ? armed.freePlayStake : null;
+    const body = freePlayStake != null ? { ...request.body, stake: freePlayStake, freePlay: true } : request.body;
+    if (state.teaserFreePlay.has(signature) && freePlayStake == null) {
+      state.teaserPlace.set(signature, { phase: "refused", message: "Not placed: the BFA free play balance is not read" });
+      renderAll();
+      return;
+    }
+    state.teaserPlace.set(signature, { phase: "placing", message: freePlayStake != null ? "Placing free play at BFA…" : "Placing at BFA…" });
     renderAll();
     let next;
     try {
-      const reply = await requestJson("POST", "/place_teaser.json", request.body, PLACE_TIMEOUT_MS);
+      const reply = await requestJson("POST", "/place_teaser.json", body, PLACE_TIMEOUT_MS);
       next = { phase: reply.status, message: reply.message, legsMatch: reply.legsMatch };
     } catch (error) {
       next = error.status
@@ -922,6 +1011,7 @@
         : { phase: "unconfirmed", message: `The bets service did not answer (${error.message}). Check BFA's open bets before placing it again.` };
     }
     state.teaserPlace.set(signature, next);
+    if (freePlayStake != null) state.freePlay.askedAt = 0;
     renderAll();
     if (next.phase === "placed") await Promise.all([pollBets(), pollTeasers(true)]);
   }
@@ -931,7 +1021,17 @@
     const action = button.dataset.placeAction;
     if (action === "arm") {
       const armedAt = Date.now();
-      state.teaserPlace.set(signature, { phase: "confirm", message: null, armedAt });
+      const ticket = (state.teasers.payload ? state.teasers.payload.tickets : []).find((shown) => shown.signature === signature);
+      const freePlayStake = ticket && state.teaserFreePlay.has(signature) ? teaserFreePlayStake(ticket) : null;
+      if (state.teaserFreePlay.has(signature) && freePlayStake == null) {
+        // Free play is switched on but its balance is not read: never arm a cash bet in its place.
+        state.teaserPlace.set(signature, { phase: "refused", message: "Not placed: the BFA free play balance is not read. Try again in a moment." });
+        state.freePlay.askedAt = 0;
+        readFreePlay();
+        renderAll();
+        return;
+      }
+      state.teaserPlace.set(signature, { phase: "confirm", message: null, armedAt, freePlayStake });
       setTimeout(() => {
         const held = state.teaserPlace.get(signature);
         if (held && held.phase === "confirm" && held.armedAt === armedAt) {
@@ -1040,6 +1140,8 @@
     view.teasersOpenList.replaceChildren(...payload.open.map(openTeaserEl));
 
     const tickets = payload.tickets;
+    // A ticket's Free play switch needs the BFA free play balance.
+    if (tickets.length) readFreePlay();
     view.teasersListLabel.hidden = tickets.length === 0;
     view.teasersListCount.textContent = tickets.length ? String(tickets.length) : "";
     view.teasersList.replaceChildren(...tickets.slice(0, teaserView.TICKETS_SHOWN).map(teaserTicketEl));
@@ -1700,6 +1802,18 @@
   view.ticketVenueButtons.addEventListener("click", onPlaceClick);
   view.ticketVenueStake.addEventListener("input", () => {
     placeState.edited = true;
+  });
+  view.ticketFpInput.addEventListener("change", () => {
+    // The box retakes its stake: capped for free play, the plain stake without.
+    Object.assign(placeState, { freePlay: view.ticketFpInput.checked, edited: false });
+    renderAll();
+  });
+  view.viewTeasers.addEventListener("change", (event) => {
+    const signature = event.target.dataset ? event.target.dataset.teaserFreePlay : null;
+    if (!signature) return;
+    if (event.target.checked) state.teaserFreePlay.add(signature);
+    else state.teaserFreePlay.delete(signature);
+    renderAll();
   });
   view.sheetClose.addEventListener("click", closeTicket);
   view.sheetBackdrop.addEventListener("click", closeTicket);

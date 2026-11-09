@@ -139,6 +139,8 @@ CLIENT_ID = "bfagaming"
 REDIRECT_URI = "https://bfagaming.com/"
 HISTORY_URL = "https://api.bfagaming.com/history/api/GetPlayerHistory"
 OPEN_BETS_URL = "https://api.bfagaming.com/history/api/GetPlayerOpenBets"
+# The account's balances, its free play among them (freePlayAmount; bfa_free_play.py).
+BALANCE_URL = "https://api.bfagaming.com/balance/api/GetPlayerBalanceByPlayerId"
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
 BASE_HEADERS = {"Accept": "application/json", "Origin": "https://bfagaming.com",
@@ -203,6 +205,11 @@ VERSUS_RE = re.compile(r"\s+vrs\s+", re.IGNORECASE)
 
 
 # ---- pure parser --------------------------------------------------------------------
+
+def is_number(value: object) -> bool:
+    """A real number: not a bool, not NaN (BFA's JSON money and price fields)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value
+
 
 def normalize_description(raw: str) -> str:
     """One line, single spaces, the teaser's bought-points bracket dropped."""

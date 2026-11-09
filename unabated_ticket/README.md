@@ -3940,6 +3940,41 @@ SELECT placed_at, label, ticker AS bfa_game_id, ticket_all_in, ask_price, stake,
 FROM manual_orders WHERE venue = 'bfa' ORDER BY placed_at DESC;
 ```
 
+### BFA free play on Place (`bets_service/bfa_free_play.py`, phone page, 2026-11-09)
+
+Cal, 2026-11-09: a **Use free play** switch on the phone's BFA Ticket and a
+**Free play** switch on each Teasers ticket bet the account's free play
+instead of cash. A free play pays only the to-win and costs no cash on a loss,
+so its worth per $1 is the fair chance to win times the net odds (more on plus
+prices and teasers); the switch shows it with the balance. With it on, the
+amount box (a teaser: the ticket's stake) takes the **normal stake capped at
+the free play balance and at BFA's most a free play may win**, rounded down
+(Cal's option A); Cal can edit the Ticket's box. Panel unchanged.
+
+- From BFA's site code and read-only GETs (2026-11-09): the wager is the cash
+  wager with `UseFreePlay true` on every pick, `RiskOrWinType` / `RiskWin` 2
+  and `Amount` the free play risked. The balance is `freePlayAmount` off
+  `GET api.bfagaming.com/balance/api/GetPlayerBalanceByPlayerId?playerId=`
+  (served held 30 s at the bets service's `GET /bfa_free_play.json`). Each
+  metadata `betType` row carries `freePlay`, `fpOddsLimit` (+800) and
+  `fpMaxPayout` ($1,000).
+- `POST /place_bfa.json` and `/place_teaser.json` take `freePlay: true`. Before
+  anything is sent the bets service refuses a type without free play, a
+  straight priced over the odds limit, a to-win over the cap, or a stake over
+  the balance **read at the click** (BFA never covers the rest with cash). BFA's
+  own server can still refuse one on a game already bet (`FREEPLAYDUPLICATES`,
+  `FREEPLAYBOTHSIDES`): that 4xx comes back as rejected (a straight) or
+  refused (a teaser), nothing placed.
+- Confirmation takes only a `(FP)` ticket for a free play and only a cash one
+  for cash; a free play's risk may read 0 or the stake (history shows 0, the
+  open list was unseen). The `manual_orders` row carries `free_play`, with
+  `cost_filled` 0. A held free play straight on the other side now refuses a
+  BFA Place too. A failed balance read never turns an armed free play into
+  cash: the switch stays on and the click is refused until BFA is read.
+- **Unverified until the first live click**: the open-bets risk on a free play
+  and whether `FREEPLAYDUPLICATES` counts cash bets. Held free play bets carry
+  stake 0, so the Kelly sizing still leaves them out (named as unpriceable).
+
 ### Open at Underdog on the phone Ticket (`server/phone/phoneview.js`, 2026-11-05)
 
 Underdog (book name `Underdog Prediction Market`) has no API Cal can use: its
