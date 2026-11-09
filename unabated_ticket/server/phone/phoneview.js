@@ -589,6 +589,50 @@
     return tone === "ok" ? PLACE_TOAST_FILLED_HIDE_MS : null;
   }
 
+  // ---- Free play at BFA (Cal 2026-11-09) --------------------------------------
+  // A free play pays only the to-win; the free play balance pays the risk, so
+  // a loss costs no cash. Its worth per $1 is the fair chance to win times the
+  // net odds, which grows with the price: free play is worth most on plus
+  // prices and teasers. The bets service re-reads the balance and BFA's own
+  // limits at the click (bfa_free_play.py); these only size the box.
+
+  // The box's free play stake in whole dollars: the normal stake, capped at the
+  // balance and at BFA's most a free play may win, rounded down; null under $1.
+  //   stake      the Ticket's acted stake (or the teaser ticket's)
+  //   freePlay   /bfa_free_play.json {freePlay, maxPayout} (maxPayout null: no cap read)
+  //   netOdds    dollars won per $1 risked
+  function freePlayStake(stake, freePlay, netOdds) {
+    if (!(stake > 0) || !freePlay || !(freePlay.freePlay >= 1) || !(netOdds > 0)) return null;
+    const payoutCap = freePlay.maxPayout > 0 ? freePlay.maxPayout / netOdds : Infinity;
+    const dollars = Math.floor(Math.min(stake, freePlay.freePlay, payoutCap) + 1e-9);
+    return dollars >= 1 ? dollars : null;
+  }
+
+  // What the free play switch says: {label, note} or null when there is no
+  // read. label "Use free play · $530.00 left"; note "Worth 48¢ per $1 · +$47.62
+  // expected on $100.00" (no expected without a stake, no worth without a fair).
+  //   fairProb  the chance the bet wins (Unabated's fair; a teaser's all four legs)
+  function freePlayView(freePlay, fairProb, netOdds, stakeDollars) {
+    if (!freePlay) return null;
+    if (!freePlay.ok) return { label: "Use free play", note: `BFA free play read failed: ${freePlay.error}`, failed: true };
+    const label = `Use free play · ${fmtDollars(freePlay.freePlay)} left`;
+    if (!(fairProb > 0 && fairProb < 1) || !(netOdds > 0)) return { label, note: null, failed: false };
+    const worth = fairProb * netOdds;
+    const expected = stakeDollars > 0 ? ` · +${fmtDollars(worth * stakeDollars)} expected on ${fmtDollars(stakeDollars)}` : "";
+    return { label, note: `Worth ${Math.round(worth * 100)}¢ per $1${expected}`, failed: false };
+  }
+
+  // The Ticket's net odds at its price (American), for freePlayStake / freePlayView.
+  function netOddsOf(row) {
+    const decimal = kelly.americanToDecimal(row.price);
+    return decimal > 1 ? decimal - 1 : null;
+  }
+
+  // The fair chance of the Ticket's side, or null without a fair.
+  function fairProbOf(row) {
+    return row.fair == null ? null : kelly.bookProbOf({ bookPrice: row.fair, sourceFormat: SOURCE_FORMAT_AMERICAN, sourcePrice: null });
+  }
+
   const api = {
     EDGES_POLL_MS, BETS_POLL_MS, EDGES_STALE_MS,
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
@@ -597,7 +641,7 @@
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
-    placeToastPlacingText, placeToastHideAfterMs,
+    placeToastPlacingText, placeToastHideAfterMs, freePlayStake, freePlayView, netOddsOf, fairProbOf,
   };
 
   if (inNode) {

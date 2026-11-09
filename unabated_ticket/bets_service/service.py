@@ -127,7 +127,7 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     updatedAt} — the Edges settings the server
                                     runner (unabated_ticket/server/runner.js) reads every cycle;
                                     null = the panel's default (extension/edgerows.js)
-           POST /place_teaser.json  body {stake, legs: [4 x {league, betType, side, rotation, points,
+           POST /place_teaser.json  body {stake, freePlay?, legs: [4 x {league, betType, side, rotation, points,
                                     eventStart, label}]} -> {ok, status: placed | refused |
                                     unconfirmed, message, ticket?} (the Teasers tab's Place
                                     button: ONE 4-team 6-point teaser at BFA, real money —
@@ -162,8 +162,13 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     on Cal's main account with the PROPHETX_* key pair, real money —
                                     prophetx_place.py checks the live price against the Ticket's
                                     first; 503 while that key pair is unset or refused)
+           GET /bfa_free_play.json  {ok, freePlay, maxPayout, oddsLimit} | {ok: false, error}: the
+                                    BFA account's free play balance (held 30 s) and the tightest
+                                    free play limits its bet types carry, for the Ticket's Use
+                                    free play switch (bfa_free_play.py; reads only; 503 when no
+                                    BFA account is read)
            POST /place_bfa.json     body {clickId, eventId, periodTypeId, betTypeId, sideIndex,
-                                    points, stake (whole dollars), ticketAllIn, bfaReadAt,
+                                    points, stake (whole dollars), freePlay?, ticketAllIn, bfaReadAt,
                                     kalshiReadAt, novigReadAt, polymarketReadAt, prophetxReadAt}
                                     -> {ok, status: filled | refused | rejected | unknown, message,
                                     ticket?, legsMatch?} (the Ticket's Place button at BFA: ONE
@@ -1554,6 +1559,12 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/balances.json":
                 self._send_json(200, balances_payload(balance_book or BalanceBook()))
+                return
+            if url.path == "/bfa_free_play.json":
+                if bfa_placer is None:
+                    self._send_json(503, {"error": "no BFA account is read: set BFA_USERNAME and BFA_PASSWORD"})
+                    return
+                self._send_json(200, bfa_placer.free_play())
                 return
             if url.path == "/bot.json":
                 self._send_bot_report(url.query)

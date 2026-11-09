@@ -303,3 +303,21 @@ test("place toasts: the placing line names stake, bet and venue; only a fill fad
   assert.equal(phoneView.placeToastHideAfterMs("ok"), 8000);
   for (const tone of ["wait", "refused", "warn", "bad"]) assert.equal(phoneView.placeToastHideAfterMs(tone), null);
 });
+
+test("free play: the box takes the stake capped at the balance and the payout cap, and says what free play is worth", () => {
+  const freePlay = { ok: true, freePlay: 530, maxPayout: 1000, oddsLimit: 800 };
+  assert.equal(phoneView.freePlayStake(100, freePlay, 100 / 110), 100);
+  assert.equal(phoneView.freePlayStake(900, freePlay, 100 / 110), 530, "the balance caps it");
+  // A +300 teaser wins 3x: $1,000 / 3 = $333.33, rounded down.
+  assert.equal(phoneView.freePlayStake(600, { ...freePlay, freePlay: 900 }, 3), 333);
+  assert.equal(phoneView.freePlayStake(100, { ...freePlay, freePlay: 0.5 }, 1), null, "under $1 of free play");
+  assert.equal(phoneView.freePlayStake(0, freePlay, 1), null, "no stake");
+  assert.equal(phoneView.freePlayStake(100, null, 1), null, "no read");
+  // A fair 25% at +300 is worth 75¢ per $1 of free play.
+  assert.deepEqual(phoneView.freePlayView(freePlay, 0.25, 3, 200),
+    { label: "Use free play · $530.00 left", note: "Worth 75¢ per $1 · +$150.00 expected on $200.00", failed: false });
+  assert.deepEqual(phoneView.freePlayView(freePlay, null, 3, 200), { label: "Use free play · $530.00 left", note: null, failed: false });
+  assert.deepEqual(phoneView.freePlayView({ ok: false, error: "HTTP 503" }, 0.5, 1, 10),
+    { label: "Use free play", note: "BFA free play read failed: HTTP 503", failed: true });
+  assert.equal(phoneView.freePlayView(null, 0.5, 1, 10), null);
+});

@@ -23,7 +23,10 @@ place(request), in order — every check before the POST refuses with nothing se
   2. one placement at a time, and never the same legs twice within RECENT_TICKET_SEC of a
      placement that went out (placed or unconfirmed).
   3. the account's teaser type from its metadata (cached METADATA_TTL_SEC): the one 4-team type
-     at TEASER_POINTS for every leg's sport, paying +300 — what teaser.js prices.
+     at TEASER_POINTS for every leg's sport, paying +300 — what teaser.js prices. A free play
+     request (freePlay true, Cal 2026-11-09) also needs that type to offer free play, the
+     balance read now to cover the stake and the to-win within its cap (bfa_free_play.py); its
+     picks then send UseFreePlay true, and the ticket it confirms on is a "(FP)" one.
   4. BFA's board now (the leagues' popular lists, as the site reads them): each leg's game by
      rotation, a spread's team on the same side (home or away) BFA lists it, its main
      full-game market, open, and the SAME number the list was built on.
@@ -54,6 +57,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from unabated_ticket.bets_service.bfa_free_play import free_play_problem, free_play_rules_of, read_free_play_balance
 from unabated_ticket.bets_service.sources.bfa import BFASource, new_session, parse_leg
 
 log = logging.getLogger(__name__)
@@ -113,6 +117,8 @@ METADATA_TTL_SEC = 3600.0
 # How long a ticket that went out blocks the same legs (the panel drops it once BFA lists it).
 RECENT_TICKET_SEC = 15 * 60
 TEASER_HEADER_RE = re.compile(r"TEASER", re.IGNORECASE)
+# BFA's header on a free play ticket: "STRAIGHT BET (FP)", "4 TEAM TEASERS (FP)".
+FREE_PLAY_TAG = "(FP)"
 DETAIL_ROTATION_RE = re.compile(r"\[(\d+)\]")
 # A teaser leg's bought points as BFA writes them: "(B+6)".
 BOUGHT_POINTS_TAG_RE = re.compile(r"\(B\+(?P<points>\d+(?:\.\d+)?)\)")
@@ -176,7 +182,8 @@ def parse_iso(value: object) -> datetime | None:
 def validate_place_request(body: object) -> dict | str:
     """{stake, legs} of a POST /place_teaser.json body, or an error naming the first problem.
 
-    body {stake: whole dollars, legs: [{league "nfl"|"cfb", betType "spread"|"total",
+    body {stake: whole dollars, freePlay (optional, default false: bet the account's free
+          play, not its cash), legs: [{league "nfl"|"cfb", betType "spread"|"total",
           side "away"|"home"|"over"|"under", rotation (the side's own, a total's either team's),
           points (Buckeye's number BEFORE the teaser), eventStart (ISO, required: a rotation
           repeats week to week), label}]}
@@ -186,6 +193,9 @@ def validate_place_request(body: object) -> dict | str:
     stake = body.get("stake")
     if not isinstance(stake, int) or isinstance(stake, bool) or stake <= 0:
         return f"stake must be a whole number of dollars above 0, got {stake!r}"
+    free_play = body.get("freePlay", False)
+    if not isinstance(free_play, bool):
+        return f"freePlay must be true or false, got {free_play!r}"
     legs = body.get("legs")
     if not isinstance(legs, list) or len(legs) != LEGS_PER_TICKET:
         count = len(legs) if isinstance(legs, list) else type(legs).__name__
@@ -197,7 +207,7 @@ def validate_place_request(body: object) -> dict | str:
     clean = [{"league": raw["league"], "betType": raw["betType"], "side": raw["side"], "rotation": raw["rotation"],
               "points": float(raw["points"]), "eventStart": raw["eventStart"], "label": raw["label"]}
              for raw in legs]
-    return {"stake": stake, "legs": clean}
+    return {"stake": stake, "freePlay": free_play, "legs": clean}
 
 
 def ticket_key(legs: list[dict]) -> tuple:
@@ -350,8 +360,9 @@ def match_leg(games: list[dict], leg: dict, now: datetime) -> dict | str:
     return {"game": game, "fixture": fixture, "market": market, "odds": odds}
 
 
-def pick_of(match: dict, stake: int) -> dict:
-    """One Picks[] entry, field for field as the site sends it."""
+def pick_of(match: dict, stake: int, free_play: bool = False) -> dict:
+    """One Picks[] entry, field for field as the site sends it; `free_play` bets the account's
+    free play (the site sets UseFreePlay on every pick and changes nothing else)."""
     odds = match["odds"]
     return {
         "EventId": match["game"]["id"],
@@ -368,7 +379,7 @@ def pick_of(match: dict, stake: int) -> dict:
         "PointsPurchased": 0.0,
         "PitcherAction": 0,
         "RoundRobinCombinations": 0,
-        "UseFreePlay": False,
+        "UseFreePlay": free_play,
         "RiskOrWinType": RISK_OR_WIN_RISK,
         "IdGameType": odds["dGtId"],
         "IdSport": odds["dSpId"],
@@ -399,6 +410,11 @@ def _is_teaser(wager: dict) -> bool:
     return bool(TEASER_HEADER_RE.search(str(wager.get("headerDescription") or "")))
 
 
+def is_free_play(wager: dict) -> bool:
+    """Whether BFA's open ticket was bet with free play: only its header says so."""
+    return FREE_PLAY_TAG in str(wager.get("headerDescription") or "").upper()
+
+
 def _detail_rotation(detail: dict) -> int | None:
     found = DETAIL_ROTATION_RE.search(str(detail.get("detailDescription") or ""))
     return int(found.group(1)) if found else None
@@ -416,11 +432,13 @@ def open_teaser_with_sides(open_wagers: list[dict], sides: set[tuple[int, int]])
     return None
 
 
-def new_teasers_on_games(open_wagers: list[dict], game_ids: set[int], known_ids: set) -> list[dict]:
-    """The teasers not open before the POST whose legs sit on exactly these BFA games."""
+def new_teasers_on_games(open_wagers: list[dict], game_ids: set[int], known_ids: set,
+                         free_play: bool = False) -> list[dict]:
+    """The teasers not open before the POST whose legs sit on exactly these BFA games, bet
+    with free play when `free_play` and with cash when not."""
     found = []
     for wager in open_wagers:
-        if wager.get("idWager") in known_ids or not _is_teaser(wager):
+        if wager.get("idWager") in known_ids or not _is_teaser(wager) or is_free_play(wager) != free_play:
             continue
         if {detail.get("idGame") for detail in wager.get("betDetails") or []} == game_ids:
             found.append(wager)
@@ -474,9 +492,18 @@ def _leg_difference(want: dict, details: list[dict]) -> str | None:
     return None
 
 
-def leg_mismatches(wager: dict, expected: list[dict], stake: int) -> list[str]:
+def risk_matches(risk: object, stake: int, free_play: bool) -> bool:
+    """Whether BFA's ticket risk reads as `stake` sent. A free play ticket's history risk is 0
+    (2026-11-09); its open-bets risk has not been seen, so the stake or 0 both pass."""
+    if not is_number(risk):
+        return False
+    return abs(risk - stake) <= MONEY_TOLERANCE or (free_play and abs(risk) <= MONEY_TOLERANCE)
+
+
+def leg_mismatches(wager: dict, expected: list[dict], stake: int, free_play: bool = False) -> list[str]:
     """Every way a placed ticket differs from what was sent, in words; [] when it is exactly
-    the ticket: one leg per expected game reading the sent leg, the stake risked to win 3x it."""
+    the ticket: one leg per expected game reading the sent leg, the stake risked to win 3x it
+    (risk_matches: a free play's risk may read 0)."""
     details_by_game: dict = {}
     for detail in wager.get("betDetails") or []:
         details_by_game.setdefault(detail.get("idGame"), []).append(detail)
@@ -486,7 +513,7 @@ def leg_mismatches(wager: dict, expected: list[dict], stake: int) -> list[str]:
     if leg_count != len(expected):
         problems.append(f"BFA's ticket has {leg_count} legs, {len(expected)} were sent")
     risk, to_win = wager.get("riskAmount"), wager.get("winAmount")
-    if (not is_number(risk) or not is_number(to_win) or abs(risk - stake) > MONEY_TOLERANCE
+    if (not risk_matches(risk, stake, free_play) or not is_number(to_win)
             or abs(to_win - stake * TICKET_NET_ODDS) > MONEY_TOLERANCE):
         problems.append(f"BFA's ticket risks {risk} to win {to_win}, ${stake} to win "
                         f"${stake * TICKET_NET_ODDS:g} was sent")
@@ -568,6 +595,12 @@ class BFATeaserPlacer:
             return _refused(teaser_type)
         if teaser_type["maxRisk"] is not None and request["stake"] > teaser_type["maxRisk"]:
             return _refused(f"${request['stake']} is over BFA's ${teaser_type['maxRisk']:g} limit on this teaser")
+        if request["freePlay"]:
+            refusal = self._free_play_refusal(metadata, teaser_type["wagerTypeId"],
+                                              {SPORT_CODES[leg["league"]] for leg in request["legs"]},
+                                              request["stake"], headers, player_id)
+            if refusal:
+                return _refused(refusal)
         matches = self._match_legs(request["legs"], headers, player_id, metadata.get("agentId"))
         if isinstance(matches, str):
             return _refused(matches)
@@ -578,9 +611,9 @@ class BFATeaserPlacer:
             return _refused(f"this ticket is already open at BFA (ticket {ticket_of(already)['ticketNumber']})")
         transaction_id = self._new_transaction_id()
         body = wager_body(transaction_id, player_id, teaser_type["wagerTypeId"],
-                          [pick_of(match, request["stake"]) for match in matches])
-        log.info("bfa teaser: posting %s, $%d, transaction %s", " / ".join(leg["label"] for leg in request["legs"]),
-                 request["stake"], transaction_id)
+                          [pick_of(match, request["stake"], request["freePlay"]) for match in matches])
+        log.info("bfa teaser: posting %s, $%d%s, transaction %s", " / ".join(leg["label"] for leg in request["legs"]),
+                 request["stake"], " free play" if request["freePlay"] else "", transaction_id)
         # Held before the POST: from here on the legs may be bet, so they never go out twice.
         self._sent[key] = {"at": self._clock(), "ticket": None}
         try:
@@ -594,13 +627,23 @@ class BFATeaserPlacer:
             return _refused(posted["refused"])
         expected = expected_legs(request["legs"], matches)
         try:
-            return self._confirm(key, expected, request["stake"], {wager.get("idWager") for wager in open_before},
-                                 transaction_id, posted["note"])
+            return self._confirm(key, expected, request["stake"], request["freePlay"],
+                                 {wager.get("idWager") for wager in open_before}, transaction_id, posted["note"])
         except Exception as error:  # noqa: BLE001 — the wager went out: never "Not placed" from here
             log.exception("bfa teaser: confirming transaction %s failed", transaction_id)
             return {"status": STATUS_UNCONFIRMED,
                     "message": (f"Sent to BFA, but reading the open bets failed ({type(error).__name__}). "
                                 "Check BFA's open bets before placing it again.")}
+
+    def _free_play_refusal(self, metadata: dict, wager_type_id: int, sport_codes: set[str], stake: int,
+                           headers: dict, player_id: str) -> str | None:
+        """Why this teaser cannot go out on free play (bfa_free_play), or None. The balance is
+        read now: a free play spent since the Ticket last read it must not go out twice."""
+        rules = free_play_rules_of(metadata, wager_type_id, sport_codes)
+        if isinstance(rules, str):
+            return rules
+        balance = read_free_play_balance(self._session_factory(), headers, player_id)
+        return free_play_problem(rules, balance, stake, stake * TICKET_NET_ODDS, None)
 
     def _recent(self, key: tuple) -> str | None:
         """Why the same legs cannot go out again yet, or None."""
@@ -658,8 +701,8 @@ class BFATeaserPlacer:
             return {"refused": None, "note": None}
         return {"refused": None, "note": f"BFA answered HTTP {response.status_code} {shown}"}
 
-    def _confirm(self, key: tuple, expected: list[dict], stake: int, known_ids: set, transaction_id: str,
-                 note: str | None) -> dict:
+    def _confirm(self, key: tuple, expected: list[dict], stake: int, free_play: bool, known_ids: set,
+                 transaction_id: str, note: str | None) -> dict:
         game_ids = {want["gameId"] for want in expected}
         deadline = self._clock() + CONFIRM_TIMEOUT_SEC
         open_wagers: list[dict] = []
@@ -670,9 +713,9 @@ class BFATeaserPlacer:
             except Exception as error:  # noqa: BLE001 — a failed read is one more try, not a failed wager
                 log.warning("bfa teaser: open bets read failed while confirming %s: %s", transaction_id, error)
                 open_wagers = []
-            candidates = new_teasers_on_games(open_wagers, game_ids, known_ids)
+            candidates = new_teasers_on_games(open_wagers, game_ids, known_ids, free_play)
             if candidates:
-                return self._placed(key, candidates, expected, stake, transaction_id, open_wagers)
+                return self._placed(key, candidates, expected, stake, free_play, transaction_id, open_wagers)
             if self._clock() >= deadline:
                 log.warning("bfa teaser: transaction %s sent, no ticket after %.0f s (%s)", transaction_id,
                             CONFIRM_TIMEOUT_SEC, note or "BFA took it for processing")
@@ -682,11 +725,11 @@ class BFATeaserPlacer:
                                     "Check BFA's open bets before placing it again."),
                         "openWagers": open_wagers}
 
-    def _placed(self, key: tuple, candidates: list[dict], expected: list[dict], stake: int, transaction_id: str,
-                open_wagers: list[dict]) -> dict:
+    def _placed(self, key: tuple, candidates: list[dict], expected: list[dict], stake: int, free_play: bool,
+                transaction_id: str, open_wagers: list[dict]) -> dict:
         """The placed result for the new ticket that reads exactly as sent, else the first new
         one on those games with every difference named (a booked bet cannot be undone)."""
-        checked = [(wager, leg_mismatches(wager, expected, stake)) for wager in candidates]
+        checked = [(wager, leg_mismatches(wager, expected, stake, free_play)) for wager in candidates]
         wager, problems = next(((wager, found) for wager, found in checked if not found), checked[0])
         ticket = ticket_of(wager)
         self._sent[key]["ticket"] = ticket["ticketNumber"]
@@ -700,7 +743,8 @@ class BFATeaserPlacer:
             return result
         log.info("bfa teaser: transaction %s placed as ticket %s, all %d legs as sent", transaction_id,
                  ticket["ticketNumber"], len(expected))
-        result["message"] = f"Placed · ticket {ticket['ticketNumber']} · all {len(expected)} legs match BFA"
+        paid_with = " · free play" if free_play else ""
+        result["message"] = f"Placed{paid_with} · ticket {ticket['ticketNumber']} · all {len(expected)} legs match BFA"
         return result
 
 

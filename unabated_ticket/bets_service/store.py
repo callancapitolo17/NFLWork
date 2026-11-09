@@ -325,6 +325,9 @@ ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS polymarket_order_id VARCHAR;
 -- `cost_filled`), `count_requested` the stake in whole cents (a ProphetX
 -- order's quantity is dollars). `external_id` is the client order id.
 ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS prophetx_order_id VARCHAR;
+-- BFA free play (bfa_place.py, 2026-11-09): the stake was the account's free play, not cash;
+-- `cost_filled` is then 0 (no cash paid) and `count_filled` the free play risked.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS free_play BOOLEAN DEFAULT false;
 CREATE TABLE IF NOT EXISTS tau_samples (
     sample_key      VARCHAR PRIMARY KEY,   -- '<bookId>|<eventId>:<period>:<betType>:<side>:<points>|<sideIndex>'
     market_key      VARCHAR NOT NULL,      -- '<leagueId>:<periodTypeId>:<betTypeId>' (tailflex.marketKeyOf)
@@ -345,7 +348,10 @@ MANUAL_ORDER_NOVIG_LINE_COLUMNS = (
 )
 MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "polymarket_order_id",
                                "prophetx_order_id", "count_filled", "cost_filled", "error")
-_INSERT_MANUAL_ORDER_COLUMNS = MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
+# Whether a BFA row bet free play; every other row leaves it false.
+MANUAL_ORDER_FREE_PLAY_COLUMN = "free_play"
+_INSERT_MANUAL_ORDER_COLUMNS = (MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
+                                + (MANUAL_ORDER_FREE_PLAY_COLUMN,))
 _INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
                         f"VALUES ({', '.join(['?'] * len(_INSERT_MANUAL_ORDER_COLUMNS))})")
 # Every Novig Place order Novig gave an id, as the sub-account read's
@@ -1380,7 +1386,8 @@ class BetsStore:
             if held:
                 return False
             values = ([order[column] for column in MANUAL_ORDER_INSERT_COLUMNS]
-                      + [order.get(column) for column in MANUAL_ORDER_NOVIG_LINE_COLUMNS])
+                      + [order.get(column) for column in MANUAL_ORDER_NOVIG_LINE_COLUMNS]
+                      + [bool(order.get(MANUAL_ORDER_FREE_PLAY_COLUMN, False))])
             self._con.execute(_INSERT_MANUAL_ORDER, values)
         return True
 
