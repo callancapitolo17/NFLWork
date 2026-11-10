@@ -147,6 +147,8 @@ test("WNBA / NBA / NHL come from the same snapshots", () => {
   assert.equal(teams.teamKey("wnba", "Golden State Valkyries"), keyOf("wnba", "Golden State Valkyries"));
   assert.equal(teams.teamKey("wnba", "Valkyries"), keyOf("wnba", "Golden State Valkyries"));
   assert.equal(teams.teamKey("nba", "LA Clippers"), keyOf("nba", "LA Clippers"));
+  assert.equal(teams.teamKey("nba", "Los Angeles Clippers"), keyOf("nba", "LA Clippers")); // ProphetX (alias)
+  assert.equal(teams.teamKey("nba", "Los Angeles Lakers"), keyOf("nba", "Los Angeles Lakers")); // the alias touches only the Clippers
   assert.equal(teams.teamKey("nhl", "Vegas Golden Knights"), keyOf("nhl", "Vegas Golden Knights"));
 });
 
