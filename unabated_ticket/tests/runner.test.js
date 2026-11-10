@@ -2763,31 +2763,155 @@ test("scenarios: a game under way carries the score of the newest snapshot, its 
 
 // ---- a Place refusal's reread of one line (rereadLiveLine, /edges.json?fresh=1&reread=) ----
 
-test("live reread: one line read now is live on the next list, with no pass run, and only that line's venue is asked", async () => {
+// A clock the test moves, a Novig stream whose book the test swaps, and a
+// Kalshi orderbook the test can hold or move.
+function rereadRunner() {
+  const clock = { now: TAKER_NOW };
+  let streamView = novigStreamBooks();
+  const kalshiBase = kalshiFetch();
+  const kalshiBook = { hold: null, noDollars: "0.4300", calls: 0 };
+  const kalshi = async (url) => {
+    if (!url.endsWith(`/markets/${TAKER_TICKER}/orderbook`)) return kalshiBase(url);
+    kalshiBook.calls += 1;
+    const noDollars = kalshiBook.noDollars;
+    if (kalshiBook.hold) await kalshiBook.hold;
+    return response({ body: JSON.stringify({ orderbook_fp: { yes_dollars: [["0.5500", "100"]], no_dollars: [[noDollars, "40"]] } }) });
+  };
   const novig = novigFetch();
-  const { runner, service } = liveRunner({ novig });
+  const service = takerService({ "/bets.json": novigTakerBetsBody(), "/settings.json": LIVE_SETTINGS, "/novig_books.json": (body) => streamView(body) });
+  const logs = [];
+  const runner = runnerLib.createRunner({
+    fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers,
+    logInfo: (message) => logs.push(message), logWarning: (message) => logs.push(message),
+  });
+  return { runner, service, novig, clock, kalshiBook, logs, setStream: (view) => { streamView = novigStreamBooks(view); } };
+}
+
+const until = async (done) => {
+  for (let tries = 0; tries < 1000 && !done(); tries += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(done(), "the awaited state never came");
+};
+
+test("live reread: a moved Novig book shows on the next list, off the held catalog and stream only", async () => {
+  const { runner, service, novig, clock, logs, setStream } = rereadRunner();
   await runner.start();
+  await runner.livePricePass();
   const before = edgeRowsOf(runner.edgesPayload()).find((row) => row.book.id === 89);
-  assert.notEqual(before.liveCheck, "live", "no pass has run: the line is at Unabated's copy");
+  assert.equal(before.sourcePrice, 0.555);
+  // DUQ's resting order moves to 42c: WSU now costs 58c.
+  setStream({ orders: { [NOVIG_DUQ_OUTCOME]: [{ order: "r2", price: "0.42", qty: 500000 }], [NOVIG_WSU_OUTCOME]: [] } });
+  clock.now += 5000;
+  const novigCallsBefore = novig.calls.length;
+  const streamAsksBefore = service.posts.filter((post) => post.route === "/novig_books.json").length;
   const answer = await runner.rereadLiveLine(before.key);
-  assert.equal(answer.venue, "novig");
-  assert.equal(answer.counts.live, 1);
+  assert.deepEqual(answer, { venue: "novig", counts: { rows: 1, live: 1, empty: 0, unchecked: 0, lastError: null } });
   const after = edgeRowsOf(runner.edgesPayload()).find((row) => row.key === before.key);
   assert.equal(after.liveCheck, "live");
-  assert.equal(after.sourcePrice, 0.555);
-  const kalshiRow = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key));
-  assert.notEqual(kalshiRow.liveCheck, "live", "the other venue's line is left to the pass");
-  assert.equal(service.posts.filter((post) => post.route === "/novig_books.json").length, 1);
+  assert.equal(after.sourcePrice, 0.58);
+  assert.equal(after.liquidity, 2900);
+  assert.equal(novig.calls.length, novigCallsBefore, "no catalog or keyed REST book read for a reread");
+  const asks = service.posts.filter((post) => post.route === "/novig_books.json").slice(streamAsksBefore).map((post) => post.body);
+  assert.deepEqual(asks, [{ marketIds: [NOVIG_MARKET], waitMs: 0, priority: false, background: true }]);
+  assert.ok(logs.some((line) => line.startsWith(`live reread of ${before.key}: novig `)));
+  runner.stop();
+});
+
+test("live reread: a Kalshi line is read at its market, and a second ask within 2 s of its read reads nothing", async () => {
+  const { runner, clock, kalshiBook } = rereadRunner();
+  await runner.start();
+  const key = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key)).key;
+  kalshiBook.noDollars = "0.4250";
+  assert.deepEqual(await runner.rereadLiveLine(key), { venue: "kalshi", counts: { rows: 1, live: 1, empty: 0, unchecked: 0, lastError: null } });
+  const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => candidate.key === key);
+  // 57.5c ask plus Kalshi's 7% x p x (1 - p) fee.
+  assert.equal(row.sourcePrice, 0.592106);
+  assert.equal(row.liveCheck, "live");
+  const calls = kalshiBook.calls;
+  clock.now += 1000;
+  assert.deepEqual(await runner.rereadLiveLine(key), { skipped: "read 1000 ms ago" });
+  assert.equal(kalshiBook.calls, calls);
+  runner.stop();
+});
+
+test("live reread: a pass batch that finishes after a reread does not put its older book back", async () => {
+  const { runner, clock, kalshiBook } = rereadRunner();
+  await runner.start();
+  const key = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key)).key;
+  let release;
+  kalshiBook.hold = new Promise((resolve) => { release = resolve; });
+  const pass = runner.livePricePass();
+  await until(() => kalshiBook.calls === 1);
+  // The pass asked at 43c; the venue moves and a refused Place rereads it at 40c.
+  kalshiBook.hold = null;
+  kalshiBook.noDollars = "0.4250";
+  clock.now += 3000;
+  await runner.rereadLiveLine(key);
+  clock.now += 3000;
+  release();
+  await pass;
+  const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => candidate.key === key);
+  assert.equal(row.sourcePrice, 0.592106, "the reread's newer book stays");
+  assert.equal(runner.livePricesPayload().reads[key].readAtMs, TAKER_NOW + 3000);
+  runner.stop();
+});
+
+test("live reread: a read still going after 2.5 s answers so, and the line's older read goes (unchecked, not the refused price)", async (t) => {
+  const { runner, clock, kalshiBook } = rereadRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const key = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key)).key;
+  assert.equal(edgeRowsOf(runner.edgesPayload()).find((row) => row.key === key).liveCheck, "live");
+  clock.now += 5000;
+  kalshiBook.hold = new Promise(() => {});
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const calls = kalshiBook.calls;
+  const answer = runner.rereadLiveLine(key);
+  await until(() => kalshiBook.calls === calls + 1);
+  t.mock.timers.tick(2500);
+  assert.deepEqual(await answer, { skipped: "still reading after 2500 ms" });
+  assert.equal(key in runner.livePricesPayload().reads, false);
+  assert.notEqual(edgeRowsOf(runner.edgesPayload()).find((row) => row.key === key).liveCheck, "live");
+  assert.deepEqual(await runner.rereadLiveLine(key), { skipped: "a reread of this line is still going" });
   runner.stop();
 });
 
 test("live reread: a line not on the list reads nothing and says why", async () => {
-  const { runner, service } = liveRunner();
+  const { runner, service, logs } = rereadRunner();
   await runner.start();
   const posted = service.posts.length;
   assert.deepEqual(await runner.rereadLiveLine("no-such-line"), { skipped: "line not on the Edges list" });
   assert.equal(service.posts.length, posted);
+  assert.ok(logs.includes("live reread of no-such-line: skipped: line not on the Edges list"));
   runner.stop();
+});
+
+test("live reread: the HTTP route on a runner on its own thread rereads beside the bets read; /teasers.json ignores it", async () => {
+  const calls = [];
+  const runner = {
+    pollBets: async () => { calls.push("bets"); },
+    rereadLiveLine: async (key) => { calls.push(`reread ${key}`); return { skipped: "test" }; },
+    edgesPayload: () => ({ ok: true }), teasersPayload: () => ({ ok: true }),
+  };
+  const server = runnerLib.createHttpServer(runner, { host: "127.0.0.1" });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const get = (route) => new Promise((resolve, reject) => {
+    const request = require("node:http").request({ host: "127.0.0.1", port, path: route, method: "GET" }, (reply) => {
+      reply.resume();
+      reply.on("end", resolve);
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  try {
+    await get("/edges.json?fresh=1&reread=a%3Ab");
+    await get("/teasers.json?fresh=1&reread=a%3Ab");
+    await get("/edges.json?reread=a%3Ab");
+    assert.deepEqual(calls, ["bets", "reread a:b", "bets"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("board thread: /edges.json?fresh=1&reread= rereads that line before the build; without fresh it is ignored", async () => {
@@ -2810,10 +2934,13 @@ test("board thread: /edges.json?fresh=1&reread= rereads that line before the bui
   });
   try {
     await get("/edges.json?reread=a%3Ab");
+    await get("/teasers.json?fresh=1&reread=a%3Ab");
     assert.deepEqual(runner.rereads, []);
+    const polls = runner.betsPolls;
     const built = await get("/edges.json?fresh=1&reread=a%3Ab");
-    // Read before the build that answered: the list carries the new read.
+    // Read before the build that answered (the list carries the new read), beside its bets read.
     assert.deepEqual(runner.rereads, [["a:b", built.build - 1]]);
+    assert.equal(runner.betsPolls, polls + 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     client.stop();
