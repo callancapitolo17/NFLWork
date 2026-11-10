@@ -14,9 +14,8 @@
 //                       crosswalk and the shared Dismiss marks
 //   GET /attach.json    while an Attach is open — the runner's games and plan
 //   GET /ticket_line.json?key=  every 2 s while a Ticket is open and the page in
-//                       view — its line read off the venue's book now and sized
-//                       (phoneview.js ticketLiveStep; the Ticket closes after two
-//                       reads in a row under Min edge or with nothing to bet)
+//                       view — its line read off the venue's book now (phoneview.js
+//                       "the open Ticket's live refresh" says when it closes)
 //   GET /settings.json  on load, on opening Settings and after a save
 // The polls run only while the page is visible, and refresh at once when it
 // becomes visible again. After a write the lists are read with ?fresh=1, so
@@ -676,16 +675,17 @@
 
   // The Ticket's line as it shows now: the live answer while fresh (its row,
   // or none when the line has nothing to bet), else the list's row.
-  //   {row, card, onList} | null (not on the list and no fresh live row)
+  //   {row, card} | null (not on the list and no fresh live row)
   function currentTicketRow(ticket, now) {
     const listed = findTicketRow(ticket);
     const live = ticket.live;
-    if (!phoneView.ticketLiveFresh(live, now)) return listed ? { ...listed, onList: true } : null;
+    if (!phoneView.ticketLiveFresh(live, now)) return listed;
     if (!live.row) return null;
-    return { row: live.row, card: listed ? listed.card : null, onList: true };
+    return { row: live.row, card: listed ? listed.card : null };
   }
 
   function openTicket(rowKey, cardKey) {
+    if (state.ticket && state.ticket.pollTimer) clearTimeout(state.ticket.pollTimer);
     state.ticket = { rowKey, cardKey, last: null, opened: null, booksOpen: false, live: null, pollTimer: null, polling: false };
     view.sheet.hidden = false;
     document.body.classList.add("sheet-open");
@@ -696,6 +696,8 @@
   function closeTicket() {
     if (state.ticket && state.ticket.pollTimer) clearTimeout(state.ticket.pollTimer);
     state.ticket = null;
+    // An armed Place belongs to this Ticket: reopening it starts from Place again.
+    placeState = { ...EMPTY_PLACE_STATE };
     view.sheet.hidden = true;
     document.body.classList.remove("sheet-open");
   }
@@ -719,16 +721,22 @@
     }
     ticket.polling = false;
     if (state.ticket !== ticket) return;
-    ticket.live = phoneView.ticketLiveStep(ticket.live, answer, Date.now(), failure);
-    if (phoneView.ticketShouldClose(ticket.live)) {
-      const text = phoneView.ticketClosedText(ticket.live);
-      closeTicket();
-      showToast(text, "refused");
-      renderEdges(Date.now());
-      return;
+    try {
+      ticket.live = phoneView.ticketLiveStep(ticket.live, answer, Date.now(), failure);
+      if (phoneView.ticketShouldClose(ticket.live)) {
+        const text = phoneView.ticketClosedText(ticket.live);
+        closeTicket();
+        showToast(text, "refused");
+        renderEdges(Date.now());
+        return;
+      }
+      renderTicket(Date.now());
+    } catch (error) {
+      console.error("[unabated-ticket] ticket refresh failed", error);
+    } finally {
+      // A drawing fault must not stop the refresh; a closed or replaced Ticket ends its own.
+      if (state.ticket === ticket && !ticket.pollTimer) ticket.pollTimer = setTimeout(pollTicketLine, phoneView.TICKET_POLL_MS);
     }
-    renderTicket(Date.now());
-    ticket.pollTimer = setTimeout(pollTicketLine, phoneView.TICKET_POLL_MS);
   }
 
   function renderTicket(now) {
@@ -737,7 +745,7 @@
     if (found) state.ticket.last = found;
     const liveNote = phoneView.ticketLiveNote(state.ticket.live, now);
     view.ticketLive.hidden = !liveNote;
-    view.ticketLive.className = `ticket-live ${liveNote ? liveNote.tone : ""}`;
+    view.ticketLive.className = liveNote && liveNote.tone ? `warning${liveNote.tone === "bad" ? " bad" : ""}` : "ticket-live";
     view.ticketLive.textContent = liveNote ? liveNote.text : "";
     // A live answer of nothing to bet says why in its own note.
     view.ticketGone.hidden = Boolean(found) || Boolean(liveNote && liveNote.tone === "bad");
@@ -819,7 +827,9 @@
   // message, tone, edited (Cal typed in the box)}.
   // sizedOn: edges.json's betsService.sources when the box last took the stake (the reads it was sized on).
   // freePlay: the BFA Ticket's Use free play switch is on.
-  let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
+  // armedLine: the row's {price, points} at the first tap; a move before the second disarms.
+  const EMPTY_PLACE_STATE = { rowKey: null, venueName: null, phase: null, armedAt: 0, armedLine: null, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
+  let placeState = { ...EMPTY_PLACE_STATE };
 
   // The bet reads the shown stake was sized on: the live answer's when the Ticket shows it, else the list's.
   function ticketSizedOn() {
@@ -845,8 +855,17 @@
     if (view.ticketVenuePlace.hidden) return;
     if (placeState.rowKey !== row.key) {
       const venue = venuePlace.venueOf(row.book ? row.book.id : null);
-      placeState = { rowKey: row.key, venueName: venue ? venue.name : "the venue", phase: null, armedAt: 0, message: null,
-        tone: null, edited: false, sizedOn: null, freePlay: false };
+      placeState = { ...EMPTY_PLACE_STATE, rowKey: row.key, venueName: venue ? venue.name : "the venue" };
+    }
+    // The live refresh moved the price or number between the two taps: the
+    // stake on the button was sized for the old one, so start again from Place.
+    const armed = placeState.armedLine;
+    if (placeState.phase === "confirm" && armed && (armed.price !== row.price || (armed.points ?? null) !== (row.points ?? null))) {
+      Object.assign(placeState, { phase: null, armedLine: null, message: "The price moved before you confirmed: check the amount and press Place again.", tone: "refused" });
+    }
+    // Under Min edge on the newest read: no Place until it is back (the Ticket closes if it stays there).
+    if (state.ticket && phoneView.ticketUnderMinEdge(state.ticket.live, Date.now()) && placeState.phase === "confirm") {
+      Object.assign(placeState, { phase: null, armedLine: null });
     }
     const venue = venuePlace.venueOf(row.book ? row.book.id : null);
     const offersFreePlay = Boolean(venue && venue.freePlay);
@@ -898,7 +917,9 @@
       view.ticketVenueButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
         button("btn sm primary", `Bet ${phoneView.fmtDollars(stake)}${paidWith} at ${placeState.venueName}`, "confirm"));
     } else {
-      view.ticketVenueButtons.replaceChildren(button("btn sm", "Place", "arm"));
+      const place = button("btn sm", "Place", "arm");
+      place.disabled = Boolean(state.ticket && phoneView.ticketUnderMinEdge(state.ticket.live, Date.now()));
+      view.ticketVenueButtons.replaceChildren(place);
     }
   }
 
@@ -913,7 +934,9 @@
         return;
       }
       const armedAt = Date.now();
-      Object.assign(placeState, { phase: "confirm", armedAt, message: null, tone: null });
+      const shown = state.ticket ? currentTicketRow(state.ticket, armedAt) : null;
+      const armedLine = shown ? { price: shown.row.price, points: shown.row.points ?? null } : null;
+      Object.assign(placeState, { phase: "confirm", armedAt, armedLine, message: null, tone: null });
       setTimeout(() => {
         if (placeState.phase === "confirm" && placeState.armedAt === armedAt) {
           placeState.phase = null;
@@ -945,7 +968,9 @@
     // The reads the runner sized the box's stake on, frozen with the box (not this page's own
     // /bets.json poll, nor a later edges poll): a Place filled since must still count as unseen.
     const readAts = venuePlace.readAtsOf(placeState.sizedOn || {});
-    const request = found && found.row.key === rowKey ? venuePlace.placeRequestOf({
+    const underMinEdge = state.ticket ? phoneView.ticketUnderMinEdge(state.ticket.live, Date.now()) : false;
+    const request = underMinEdge ? { error: "the edge is under your Min edge on the latest read" }
+      : found && found.row.key === rowKey ? venuePlace.placeRequestOf({
       line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(), freePlay,
     }) : { error: "the line has left the Edges list" };
     if (request.error) {
@@ -958,7 +983,7 @@
     const toast = showToast(phoneView.placeToastPlacingText(stake, sideLabel, venueName), "wait");
     const mark = { stake, sentAt: Date.now(), repliedAt: null, betsReadAfter: null, cardKey: state.ticket.cardKey ?? null };
     state.placedMarks.set(rowKey, mark);
-    placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
+    placeState = { ...EMPTY_PLACE_STATE };
     // The balance just changed: the next BFA Ticket reads it again.
     if (freePlay) state.freePlay.askedAt = 0;
     closeTicket();

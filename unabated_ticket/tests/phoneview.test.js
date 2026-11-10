@@ -371,38 +371,61 @@ test("a placed mark shows from the tap until the list's bets read is newer than 
 // ---- the open Ticket's live refresh (GET /ticket_line.json) ----
 
 const TICKET_ROW = { key: "k", edgePct: 3.1, liveCheck: "live", liveReadAtMs: NOW - 1000 };
-const ticketAnswer = (fields = {}) => ({ key: "k", row: TICKET_ROW, underMinEdge: false, minEdgePct: 2.5, minShrunkEdgePct: 0, reason: null, detail: null, betsService: { sources: { kalshi: { okAt: "x" } } }, ...fields });
+const ticketAnswer = (fields = {}) => ({
+  key: "k", row: TICKET_ROW, underMinEdge: false, minEdgePct: 2.5, minShrunkEdgePct: 0, venueReadAtMs: NOW - 1000, readError: null,
+  reason: null, detail: null, betsService: { sources: { kalshi: { okAt: "x" } } }, ...fields,
+});
+const underAt = (readAt) => ticketAnswer({ underMinEdge: true, venueReadAtMs: readAt, row: { ...TICKET_ROW, edgePct: 2.1, liveReadAtMs: readAt } });
 
-test("ticket live: two answers in a row under Min edge close the Ticket; one does not, and a good answer resets the count", () => {
-  let live = phoneView.ticketLiveStep(null, ticketAnswer({ underMinEdge: true, row: { ...TICKET_ROW, edgePct: 2.1 } }), NOW);
-  assert.equal(phoneView.ticketShouldClose(live), false);
-  assert.deepEqual(phoneView.ticketLiveNote(live, NOW), { text: "Edge +2.10% is under your 2.5% Min edge. Closing if it stays there.", tone: "warn" });
-  live = phoneView.ticketLiveStep(live, ticketAnswer(), NOW + 2000);
-  assert.equal(live.misses, 0, "one tick back over resets it");
-  live = phoneView.ticketLiveStep(live, ticketAnswer({ underMinEdge: true }), NOW + 4000);
-  live = phoneView.ticketLiveStep(live, ticketAnswer({ underMinEdge: true }), NOW + 6000);
+test("ticket live: two new reads in a row under Min edge close the Ticket; one does not, and a good read resets the count", () => {
+  let live = phoneView.ticketLiveStep(null, underAt(NOW), NOW);
+  assert.deepEqual([live.misses, phoneView.ticketShouldClose(live), phoneView.ticketUnderMinEdge(live, NOW)], [1, false, true]);
+  assert.deepEqual(phoneView.ticketLiveNote(live, NOW),
+    { text: "Edge +2.10% is under your 2.5% Min edge. Place is off; closing if it stays there.", tone: "warn" });
+  live = phoneView.ticketLiveStep(live, ticketAnswer({ venueReadAtMs: NOW + 2000 }), NOW + 2000);
+  assert.equal(live.misses, 0, "one read back over resets it");
+  live = phoneView.ticketLiveStep(live, underAt(NOW + 4000), NOW + 4000);
+  live = phoneView.ticketLiveStep(live, underAt(NOW + 6000), NOW + 6000);
   assert.equal(phoneView.ticketShouldClose(live), true);
   assert.equal(phoneView.ticketClosedText(live), "Ticket closed: the edge fell under your 2.5% Min edge.");
 });
 
-test("ticket live: nothing to bet counts toward closing and says why; a failed ask keeps the last answer and does not count", () => {
-  let live = phoneView.ticketLiveStep(null, ticketAnswer({ row: null, reason: "empty", detail: "nothing rests to buy at Novig" }), NOW);
-  assert.deepEqual(phoneView.ticketLiveNote(live, NOW), { text: "Nothing rests to buy at Novig. Closing if it stays that way.", tone: "bad" });
-  live = phoneView.ticketLiveStep(live, null, NOW + 2000, "HTTP 502");
-  assert.deepEqual([live.misses, live.error, live.answeredAt], [1, "HTTP 502", NOW]);
-  live = phoneView.ticketLiveStep(live, ticketAnswer({ row: null, reason: "empty", detail: "nothing rests to buy at Novig" }), NOW + 4000);
-  assert.equal(phoneView.ticketClosedText(live), "Ticket closed: nothing rests to buy at Novig.");
-  assert.equal(phoneView.ticketShouldClose(live), true);
+test("ticket live: two answers off the same venue read (the next read failed) count once; a pause past 10 s starts the count again", () => {
+  let live = phoneView.ticketLiveStep(null, underAt(NOW), NOW);
+  live = phoneView.ticketLiveStep(live, { ...underAt(NOW), readError: "HTTP 429" }, NOW + 2000);
+  assert.deepEqual([live.misses, phoneView.ticketShouldClose(live)], [1, false]);
+  assert.deepEqual(phoneView.ticketLiveNote({ ...live, underMinEdge: false }, NOW + 2000),
+    { text: "Price read 2s ago; the latest read failed: HTTP 429.", tone: "warn" });
+  // The page was hidden 30 s: the old miss no longer counts.
+  live = phoneView.ticketLiveStep(live, underAt(NOW + 32000), NOW + 32000);
+  assert.deepEqual([live.misses, phoneView.ticketShouldClose(live)], [1, false]);
+  // A failed ask keeps the last answer and its count.
+  live = phoneView.ticketLiveStep(live, null, NOW + 34000, "HTTP 502");
+  assert.deepEqual([live.misses, live.error, live.answeredAt], [1, "HTTP 502", NOW + 32000]);
 });
 
-test("ticket live: a fresh answer shows its read time; past 10 s it is stale and the list's price is shown", () => {
+test("ticket live: nothing to bet counts toward closing and says why; a sportsbook line counts every answer", () => {
+  const empty = ticketAnswer({ row: null, reason: "empty", detail: "nothing rests to buy at Novig", venueReadAtMs: null });
+  let live = phoneView.ticketLiveStep(null, empty, NOW);
+  assert.deepEqual(phoneView.ticketLiveNote(live, NOW), { text: "Nothing rests to buy at Novig. Closing if it stays that way.", tone: "bad" });
+  live = phoneView.ticketLiveStep(live, empty, NOW + 2000);
+  assert.equal(phoneView.ticketShouldClose(live), true);
+  assert.equal(phoneView.ticketClosedText(live), "Ticket closed: nothing rests to buy at Novig.");
+});
+
+test("ticket live: a fresh answer shows its read time; an old read or a stale answer warns", () => {
   const live = phoneView.ticketLiveStep(null, ticketAnswer(), NOW);
   assert.deepEqual(live.sources, { kalshi: { okAt: "x" } });
   assert.deepEqual(phoneView.ticketLiveNote(live, NOW + 1000), { text: "Live · read 2s ago", tone: "" });
+  assert.equal(phoneView.ticketLiveNote(live, NOW + 9500).tone, "warn", "a read over 10 s old is called out");
   assert.equal(phoneView.ticketLiveFresh(live, NOW + 10 * 1000), true);
   assert.equal(phoneView.ticketLiveFresh(live, NOW + 10 * 1000 + 1), false);
-  assert.equal(phoneView.ticketLiveNote(live, NOW + 30 * 1000).tone, "warn");
-  const sportsbook = phoneView.ticketLiveStep(null, ticketAnswer({ row: { ...TICKET_ROW, liveCheck: null } }), NOW);
-  assert.equal(phoneView.ticketLiveNote(sportsbook, NOW + 3000).text, "Unabated's price · updated 3s ago");
-  assert.equal(phoneView.ticketLiveNote(phoneView.ticketLiveStep(null, null, NOW, "timeout"), NOW).text, "Live refresh failed: timeout. Showing the list's price.");
+  assert.equal(phoneView.ticketUnderMinEdge({ ...live, underMinEdge: true }, NOW + 11 * 1000), false, "a stale answer gates nothing");
+  assert.match(phoneView.ticketLiveNote(live, NOW + 30 * 1000).text, /^Live refresh stalled \(last 30s ago\)/);
+  const sportsbook = phoneView.ticketLiveStep(null, ticketAnswer({ row: { ...TICKET_ROW, liveCheck: null }, venueReadAtMs: null }), NOW);
+  assert.deepEqual(phoneView.ticketLiveNote(sportsbook, NOW + 3000), { text: "Unabated's price · checked 3s ago", tone: "" });
+  const unread = phoneView.ticketLiveStep(null, ticketAnswer({ row: { ...TICKET_ROW, liveCheck: "unchecked" }, readError: "stream down" }), NOW);
+  assert.deepEqual(phoneView.ticketLiveNote(unread, NOW), { text: "Not read at the venue: stream down. Unabated's price.", tone: "warn" });
+  assert.deepEqual(phoneView.ticketLiveNote(phoneView.ticketLiveStep(null, null, NOW, "timeout"), NOW),
+    { text: "Live refresh failed: timeout. Showing the list's price.", tone: "warn" });
 });

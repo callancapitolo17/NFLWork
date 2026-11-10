@@ -2778,9 +2778,9 @@ test("ticket line: a Kalshi line is read off its book at the ask and sized as ed
   assert.deepEqual([first.key, first.reason, first.underMinEdge, first.minEdgePct], [key, null, false, 1]);
   assert.equal(first.row.liveCheck, "live");
   assert.equal(first.row.sourcePrice, 0.587157);
+  assert.deepEqual([first.venueReadAtMs, first.readError], [TAKER_NOW, null]);
   const listed = edgeRowsOf(runner.edgesPayload()).find((row) => row.key === key);
-  assert.deepEqual([first.row.price, first.row.edgePct, first.row.stake, first.row.advice.bet], [listed.price, listed.edgePct, listed.stake, listed.advice.bet],
-    "the Ticket's numbers are the Edges list's on the same read");
+  assert.deepEqual(first.row, listed, "the Ticket's row is the Edges list's on the same read, field for field");
   clock.now += 1000;
   await runner.ticketLinePayload(new URLSearchParams({ key }));
   assert.equal(bookReads(), 1, "a read 1 s old is reused");
@@ -2859,4 +2859,57 @@ test("board thread: ticket_line reaches the board thread and its HTTP route", as
     await new Promise((resolve) => server.close(resolve));
     client.stop();
   }
+});
+
+test("ticket line: a failed venue read keeps the last read, says so, and is not asked again for 10 s", async () => {
+  const clock = { now: TAKER_NOW };
+  const good = kalshiFetch();
+  let failing = false;
+  const sent = [];
+  const kalshi = async (url, init) => {
+    sent.push(url);
+    return failing && url.endsWith("/orderbook") ? response({ status: 429, body: JSON.stringify({ error: "too many requests" }) }) : good(url, init);
+  };
+  const { runner } = liveRunner({ kalshi, clock });
+  await runner.start();
+  const key = boardKeyOf(runner, (row) => WSU36_KALSHI_KEY_RE.test(row.key));
+  await runner.ticketLinePayload(new URLSearchParams({ key }));
+  failing = true;
+  clock.now += 2000;
+  const bookReads = () => sent.length;
+  const failed = await runner.ticketLinePayload(new URLSearchParams({ key }));
+  assert.match(failed.readError, /429/);
+  assert.deepEqual([failed.venueReadAtMs, failed.row.liveCheck, failed.row.liveReadAtMs], [TAKER_NOW, "live", TAKER_NOW], "the last good read, with its own time");
+  assert.match(runner.health().livePrices.ticketLastError.error, /429/);
+  const readsAfterFailure = bookReads();
+  clock.now += 2000;
+  const held = await runner.ticketLinePayload(new URLSearchParams({ key }));
+  assert.match(held.readError, /429/);
+  assert.equal(bookReads(), readsAfterFailure, "no venue read inside the 10 s hold");
+  failing = false;
+  clock.now += 10 * 1000;
+  const back = await runner.ticketLinePayload(new URLSearchParams({ key }));
+  assert.deepEqual([back.readError, back.venueReadAtMs, runner.health().livePrices.ticketLastError], [null, clock.now, null]);
+  runner.stop();
+});
+
+test("ticket line: a line the list's other gates drop answers no row (filtered); a started game answers started", async () => {
+  const thin = { ...LIVE_SETTINGS, settings: { ...LIVE_SETTINGS.settings, minLiquidityToWin: 1e9 } };
+  const clock = { now: TAKER_NOW };
+  const { runner } = liveRunner({ settings: LIVE_SETTINGS, clock });
+  await runner.start();
+  const key = boardKeyOf(runner, (row) => WSU36_KALSHI_KEY_RE.test(row.key));
+  runner.stop();
+  const { runner: strict } = liveRunner({ settings: thin });
+  await strict.start();
+  const filtered = await strict.ticketLinePayload(new URLSearchParams({ key }));
+  assert.deepEqual([filtered.row, filtered.reason], [null, "filtered"]);
+  strict.stop();
+  const later = { now: TAKER_NOW };
+  const { runner: open } = liveRunner({ clock: later });
+  await open.start();
+  later.now = Date.parse(WSU_UNABATED_START) + 1000;
+  const started = await open.ticketLinePayload(new URLSearchParams({ key }));
+  assert.deepEqual([started.row, started.reason, started.detail], [null, "started", "the game has started"]);
+  open.stop();
 });

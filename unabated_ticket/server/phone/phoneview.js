@@ -490,29 +490,35 @@
   }
 
   // ---- the open Ticket's live refresh (GET /ticket_line.json, Cal 2026-11-10) ------
-  // While a Ticket is open the page asks the runner for its one line every
-  // TICKET_POLL_MS; the runner reads the venue's book then and sizes the line
-  // as the Edges list does, with no Min edge cut. The Ticket shows the newest
-  // answer while it is under TICKET_LIVE_MAX_AGE_MS old (else the list's row),
-  // and closes after TICKET_CLOSE_AFTER_READS answers in a row with the edge
-  // under Min edge or nothing to bet (one tick across the line never closes it).
+  // While a Ticket is open and the page in view, the page asks the runner for
+  // its one line every TICKET_POLL_MS; the runner reads the venue's book then
+  // and answers the line as the Edges list would, with no Min edge cut. The
+  // Ticket shows the newest answer while it is under TICKET_LIVE_MAX_AGE_MS old
+  // (else the list's row), and closes after TICKET_CLOSE_AFTER_READS answers in
+  // a row with the edge under Min edge or nothing to bet, each off a new venue
+  // read (Cal: one tick across the line never closes it). A pause (page hidden,
+  // failed asks) longer than TICKET_LIVE_MAX_AGE_MS starts the count again.
   const TICKET_POLL_MS = 2 * 1000;
   const TICKET_CLOSE_AFTER_READS = 2;
   const TICKET_LIVE_MAX_AGE_MS = 10 * 1000;
+  // A venue read this old is called out even though the answer is new (its later reads failed).
+  const TICKET_READ_STALE_MS = 10 * 1000;
 
-  // The live state after one answer (or a failed ask, `error`).
-  //   live    the previous state, or null before the first answer
-  //   answer  the /ticket_line.json body
-  //   state   {row, reason, detail, underMinEdge, minEdgePct, minShrunkEdgePct, sources, misses, answeredAt, error}
+  // The live state after one answer, or after a failed ask (`error`, the answer null).
+  //   state  {row, detail, underMinEdge, minEdgePct, minShrunkEdgePct, sources, readError,
+  //           misses, missReadAtMs (the venue read the last miss was counted on), answeredAt, error}
   function ticketLiveStep(live, answer, at, error = null) {
-    const previous = live || { row: null, reason: null, detail: null, underMinEdge: false, minEdgePct: null, minShrunkEdgePct: null, sources: null, misses: 0, answeredAt: null, error: null };
-    if (error) return { ...previous, error };
+    if (error) return { ...(live || { row: null, misses: 0, missReadAtMs: null, answeredAt: null }), error };
+    const counting = ticketLiveFresh(live, at) ? live : null;
     const miss = !answer.row || answer.underMinEdge === true;
+    const readAt = answer.venueReadAtMs ?? null;
+    const sameRead = Boolean(counting && readAt != null && readAt === counting.missReadAtMs);
+    const misses = !miss ? 0 : (counting ? counting.misses : 0) + (sameRead ? 0 : 1);
     return {
-      row: answer.row || null, reason: answer.reason || null, detail: answer.detail || null, underMinEdge: answer.underMinEdge === true,
+      row: answer.row || null, detail: answer.detail || null, underMinEdge: answer.underMinEdge === true,
       minEdgePct: answer.minEdgePct ?? null, minShrunkEdgePct: answer.minShrunkEdgePct ?? null,
-      sources: answer.betsService ? answer.betsService.sources ?? null : null,
-      misses: miss ? previous.misses + 1 : 0, answeredAt: at, error: null,
+      sources: answer.betsService ? answer.betsService.sources ?? null : null, readError: answer.readError || null,
+      misses, missReadAtMs: miss ? readAt : null, answeredAt: at, error: null,
     };
   }
 
@@ -525,6 +531,11 @@
     return Boolean(live && live.misses >= TICKET_CLOSE_AFTER_READS);
   }
 
+  // Whether Place must refuse: the Ticket is showing a fresh answer whose edge is under Min edge.
+  function ticketUnderMinEdge(live, now) {
+    return ticketLiveFresh(live, now) && live.underMinEdge;
+  }
+
   // Why the Ticket closed, for its toast: "Ticket closed: the edge fell under your 2.5% Min edge."
   function ticketClosedText(live) {
     return `Ticket closed: ${live.row ? `the edge fell under your ${minEdgeText(live)}` : (live.detail || "the line is gone")}.`;
@@ -535,16 +546,23 @@
     return `${live.minEdgePct}% Min edge${shrunk}`;
   }
 
-  // The line under the Ticket's top: {text, tone: "" | "warn" | "bad"}.
-  // "Live · updated 2s ago", the edge under Min edge, nothing to bet, or a read that failed.
+  // The line under the Ticket's top: {text, tone: "" | "warn" | "bad"}, or null before any answer.
+  // "Live · read 2s ago", the edge under Min edge, nothing to bet, or a read that failed or is old.
   function ticketLiveNote(live, now) {
     if (!live || live.answeredAt == null) return live && live.error ? { text: `Live refresh failed: ${live.error}. Showing the list's price.`, tone: "warn" } : null;
     if (!ticketLiveFresh(live, now)) return { text: `Live refresh stalled (last ${fmtAge(now - live.answeredAt)}${live.error ? `: ${live.error}` : ""}). Showing the list's price.`, tone: "warn" };
     if (!live.row) return { text: `${capitalize(live.detail || "the line is gone")}. Closing if it stays that way.`, tone: "bad" };
-    if (live.underMinEdge) return { text: `Edge ${fmtEdgePct(live.row.edgePct)} is under your ${minEdgeText(live)}. Closing if it stays there.`, tone: "warn" };
-    const age = live.row.liveCheck === "live" && live.row.liveReadAtMs != null ? `read ${fmtAge(Math.max(0, now - live.row.liveReadAtMs))}` : `updated ${fmtAge(now - live.answeredAt)}`;
-    const source = { live: "Live", unchecked: "Not read at the venue yet" }[live.row.liveCheck] || "Unabated's price";
-    return { text: `${source} · ${age}`, tone: "" };
+    if (live.underMinEdge) return { text: `Edge ${fmtEdgePct(live.row.edgePct)} is under your ${minEdgeText(live)}. Place is off; closing if it stays there.`, tone: "warn" };
+    const row = live.row;
+    if (row.liveCheck === "live" && row.liveReadAtMs != null) {
+      const readAge = Math.max(0, now - row.liveReadAtMs);
+      if (live.readError || readAge > TICKET_READ_STALE_MS) {
+        return { text: `Price read ${fmtAge(readAge)}${live.readError ? `; the latest read failed: ${live.readError}` : ""}.`, tone: "warn" };
+      }
+      return { text: `Live · read ${fmtAge(readAge)}`, tone: "" };
+    }
+    if (row.liveCheck === "unchecked") return { text: `Not read at the venue${live.readError ? `: ${live.readError}` : " yet"}. Unabated's price.`, tone: "warn" };
+    return { text: `Unabated's price · checked ${fmtAge(now - live.answeredAt)}`, tone: "" };
   }
 
   function capitalize(text) {
@@ -785,7 +803,7 @@
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
     placeToastPlacingText, placeToastHideAfterMs, freePlayStake,
-    TICKET_POLL_MS, TICKET_CLOSE_AFTER_READS, TICKET_LIVE_MAX_AGE_MS, ticketLiveStep, ticketLiveFresh, ticketShouldClose, ticketClosedText, ticketLiveNote,
+    TICKET_POLL_MS, ticketLiveStep, ticketLiveFresh, ticketShouldClose, ticketUnderMinEdge, ticketClosedText, ticketLiveNote,
     withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 
