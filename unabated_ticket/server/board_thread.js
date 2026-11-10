@@ -16,7 +16,7 @@
 //   /health  from the health the board thread posts every HEALTH_POST_MS, plus
 //       the board thread's own state (running, restarting, restarts); ok is
 //       false while it restarts or has posted nothing for HEALTH_STALE_MS.
-//   /attach.json and the Place quotes (/kalshi_quote.json, /novig_quote.json,
+//   /attach.json, /ticket_line.json (the open Ticket's 2 s refresh) and the Place quotes (/kalshi_quote.json, /novig_quote.json,
 //   /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json)  one message to the
 //       board thread, answered when it is free (after the work in progress).
 // If the board thread dies, every waiting request answers 503, the copies are
@@ -209,6 +209,7 @@ function createBoardClient(options) {
     tauPayload: () => payload("tau"),
     livePricesPayload: () => payload("livePrices"),
     attachPayload: (params) => call("attachPayload", [params.toString()]).then((text) => new RawJson(text)),
+    ticketLinePayload: (params) => call("ticketLinePayload", [params.toString()]).then((text) => new RawJson(text)),
     kalshiQuote: (params) => call("kalshiQuote", [params.toString()]).then((text) => new RawJson(text)),
     novigQuote: (params) => call("novigQuote", [params.toString()]).then((text) => new RawJson(text)),
     polymarketQuote: (params) => call("polymarketQuote", [params.toString()]).then((text) => new RawJson(text)),
@@ -231,6 +232,7 @@ function serveBoardCalls(port, runner, logWarning) {
       return runner[method]();
     },
     attachPayload: (search) => runner.attachPayload(new URLSearchParams(search)),
+    ticketLinePayload: (search) => runner.ticketLinePayload(new URLSearchParams(search)),
     scenariosFiltered: (search) => runner.scenariosPayload(new URLSearchParams(search)),
     kalshiQuote: (search) => runner.kalshiQuote(new URLSearchParams(search)),
     novigQuote: (search) => runner.novigQuote(new URLSearchParams(search)),

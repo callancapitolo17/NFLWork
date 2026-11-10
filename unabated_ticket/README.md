@@ -2657,8 +2657,8 @@ build; with the bets poll every 10 s, a list can stand on bets read up to
 ~70 s before, which Place covers by sending the reads its stake was sized
 on). `/health` answers from the health the board thread posts every 5 s,
 with `boardThread: {state, startedAt, restarts, lastExit, healthPostedAt}`;
-`ok` is false while it restarts or has posted nothing for 15 s. `/attach.json`
-and the Place quotes are one message to the board thread, answered after
+`ok` is false while it restarts or has posted nothing for 15 s. `/attach.json`,
+`/ticket_line.json` and the Place quotes are one message to the board thread, answered after
 the work in progress. A board thread that dies fails the requests waiting
 on it with 503 and is replaced after 5 s (doubling per death in a row, up
 to 5 min; reset after 10 min alive) with a fresh board (as a restart
@@ -2732,7 +2732,11 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   panel ranks and gates on (Tail flex above; the pool's load state is on `/health`). `GET /live_prices.json` →
   `{generatedAt, maxAgeMs, bookIds, reads: {lineKey: {venue, points, allIn, depthDollars, readAtMs} |
   {venue, points, empty: true, readAtMs}}, lastPass}`, the exchanges' live prices the Edges list is priced
-  through (Live exchange prices above; the bets service passes it through). `GET /health` →
+  through (Live exchange prices above; the bets service passes it through). `GET /ticket_line.json?key=<line key>` →
+  `{key, readAt, minEdgePct, minShrunkEdgePct, betsService: {sources}, row, underMinEdge, venueReadAtMs, readError, readingId, reason, detail}`,
+  the phone's open Ticket (Live Ticket refresh below): that one line's venue book read now and the
+  line answered as `/edges.json` would, with every list gate but Min edge and Min shrunk edge; `row`
+  null with `reason` `gone` / `started` / `empty` / `no_fair` / `filtered`. `GET /health` →
   `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
@@ -2853,6 +2857,20 @@ node unabated_ticket/server/runner.js                     # must be running too 
   set field has Reset (sends null). The runner picks a change up within 10 s.
 - **Polling**: `/edges.json` every 15 s and `/bets.json` every 30 s, only while
   the page is visible; at once on becoming visible and after a save.
+- **Live Ticket refresh (2026-11-10)**: while a Ticket is open and the page in
+  view it asks `GET /ticket_line.json` every 2 s (one ask in flight). The runner
+  reads that line's book then: Novig, Polymarket US and ProphetX off the bets
+  service's streams (no venue request; the stream subscribes the market first),
+  Kalshi one REST book read (0.5/s per open Ticket); a read under 1.5 s old is
+  reused and a failed one is not retried for 10 s. Price, edge, stake and the
+  Place box follow the answer while it is under 10 s old (else the list's row),
+  with a note: `Live · read 2s ago`, or amber when the read is old or failed.
+  Under Min edge on the newest read, Place is off; the Ticket closes (with a
+  toast saying why) after two answers in a row under Min edge or with nothing to
+  bet, each off a new reading (a venue read, or a board snapshot at a book with
+  none), so one tick never closes it (Cal); a pause over
+  10 s starts the count again. A price or number that moves between Place and
+  its confirm disarms it. Phone only; the panel's Ticket is unchanged.
 - **Reuse**: `phoneview.js` (pure, tested in `tests/phoneview.test.js`) formats
   on top of the extension's `kelly.js`, `feed.js`, `teams.js`, `bets.js`,
   `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
@@ -3322,16 +3340,18 @@ subaccount is set up on both pots (`taker_orders.BOT_SHARDS`). Since
 send stays a `rejected` row) does the desk read the market's pot (the runner's
 `exchangeIndex`) in the bot's subaccount, move exactly the shortfall from the
 subaccount's other pot with the bot's own key (`kalshi_shards.top_up_bot_pot`,
-ONE transfer, never re-sent: a subaccount transfer takes no idempotency id),
+ONE transfer, never re-sent: a subaccount transfer takes no idempotency id; the
+other pot is not read first, since 2026-11-09, because Kalshi answered that
+second balance read with HTTP 429 and no money moved from 2026-11-06 on),
 wait up to 5 s for Kalshi to finish it, and send the order ONCE more as
 `<id>-r` (`taker_orders.retry_order_id`), re-checking the decision's age and
 the start first; a second refusal is not resent.
 A locked key's transfer can only name its own subaccount on both ends, so no
 money ever comes in from the primary account. Any doubt refuses the resend as
-`pot_short` (no pot named, a pot the bot is not on, an unreadable balance, both
-pots together short, a pot that reads as covering it after Kalshi said it does
-not, a failed or unfinished move). The $6,000 ceiling covers
-both pots together. The key needs `write::transfer`, so the setup's key has
+`pot_short` (no pot named, a pot the bot is not on, an unreadable balance, a
+pot that reads as covering it after Kalshi said it does not, a failed or
+unfinished move, including one Kalshi refuses because the other pot is short
+too). The $6,000 ceiling covers both pots together. The key needs `write::transfer`, so the setup's key has
 scopes `read` + `write::trade` + `write::transfer`. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
 (on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a
 read-only one stops before anything changes at Kalshi) puts the stop file in place first,

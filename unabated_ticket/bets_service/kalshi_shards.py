@@ -109,9 +109,9 @@ def top_up_bot_pot(client: KalshiOrderClient, subaccount: int, shard: int | None
     """Make sure the bot subaccount's pot `shard` holds `cost` dollars, moving
     the shortfall from its other pot in `bot_shards` when it does not. Unlike
     Place, every doubt refuses: a pot outside `bot_shards`, an unknown pot, an
-    unreadable balance, a source pot that cannot cover the whole shortfall
-    (a partial move would leave the order short anyway), or a move that fails
-    or does not complete in time."""
+    unreadable balance, or a move that fails or does not complete in time.
+    The other pot is never read: Kalshi answers a second balance read right
+    after the first with HTTP 429, so its refusal of the move is the check."""
     if shard is None:
         return TopUp(refusal="Kalshi did not say which cash pot the market draws on")
     if shard not in bot_shards:
@@ -127,14 +127,7 @@ def top_up_bot_pot(client: KalshiOrderClient, subaccount: int, shard: int | None
     if len(sources) != 1:
         return TopUp(refusal=f"the bot's {shard_name(shard)} pot is ${shortfall_cents / 100:.2f} short and it has "
                              f"{len(sources)} other pots to draw on, expected 1")
-    source = sources[0]
-    source_cash = _shard_cash(client, source, sleep, subaccount)
-    if source_cash is None:
-        return TopUp(refusal=f"the bot's {shard_name(source)} pot balance is unreadable")
-    if source_cash * 100 < shortfall_cents - 1e-9:
-        return TopUp(refusal=f"the bot's pots hold ${pot_cash:.2f} ({shard_name(shard)}) and ${source_cash:.2f} "
-                             f"({shard_name(source)}), short of the ${cost:.2f} order")
-    return _transfer(client, source, shard, shortfall_cents, pot_cash, sleep, monotonic, subaccount)
+    return _transfer(client, sources[0], shard, shortfall_cents, pot_cash, sleep, monotonic, subaccount)
 
 
 def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], None],
