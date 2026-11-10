@@ -3958,7 +3958,7 @@ snapshot then every change; a book is served as the REST `/orderbook`'s
 resubscribes the whole subscription, after a gap that starts at 1 s and
 doubles while gaps keep coming (to 60 s), serving none of its books until the
 fresh snapshots land (a reread or Place waits for them only when they are due
-within 3 s); a crossed book is never served; a snapshot whose sides
+within its wait); a crossed book is never served; a snapshot whose sides
 come under other yes/no names drops the connection rather than serve an empty
 book. Every subscription is renewed every 10 min for fresh snapshots (a stream
 that quietly stopped sending would look like a still market). Three

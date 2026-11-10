@@ -1893,7 +1893,7 @@ function createRunner(deps) {
     }
   }
 
-  // A parsed Kalshi book's best bid on each side, for a log line.
+  // A parsed Kalshi book's best bid on each side: what the parity check compares and logs.
   function topLevelsOf(book) {
     return { yes: book.yesBids[0] || null, no: book.noBids[0] || null };
   }

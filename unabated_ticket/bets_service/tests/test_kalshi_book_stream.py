@@ -362,9 +362,10 @@ def test_a_resubscribe_further_off_than_any_wait_is_not_waited_for(made):
         handle(stream, delta(11, seq + 10, "0.4300", "1.00"))
         tick(stream, clock, 0.3)
     with stream._cond:
-        stream._groups[0]["resyncAfter"] = clock.now + kbs.MAX_WAIT_SEC + 1
-    answer = stream._view_of(WSU)
+        stream._groups[0]["resyncAfter"] = clock.now + 2
+    answer = stream._view_of(WSU, 1.5)
     assert "resubscribing" in answer["error"] and "pending" not in answer
+    assert stream._view_of(WSU, 2.5).get("pending") is True, "due within the wait: worth waiting for"
 
 
 def test_a_rate_limit_pauses_commands_and_asks_the_markets_again(made):

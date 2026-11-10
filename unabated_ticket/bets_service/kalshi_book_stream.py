@@ -96,7 +96,7 @@ REFUSED_RETRY_SEC = 60
 WATCH_IDLE_SEC = 10 * 60
 # Kalshi publishes no per-subscription market limit (error 26 names one), so
 # markets are packed into subscriptions of this many; a subscribe Kalshi
-# answers 26 halves it for the stream, an add answered 26 closes that subscription.
+# answers 26 halves it for the connection, an add answered 26 closes that subscription.
 MARKETS_PER_SUBSCRIPTION = 50
 MAX_SUBSCRIPTIONS = 20
 # A subscribe this small that Kalshi still answers 26 refuses its markets instead of halving again.
@@ -288,8 +288,8 @@ class KalshiBookStream:
             self._cond.notify_all()
             deadline = now + wait_sec
             while True:
-                views = {ticker: self._view_of(ticker) for ticker in tickers if ticker not in capped}
                 remaining = deadline - self._clock()
+                views = {ticker: self._view_of(ticker, remaining) for ticker in tickers if ticker not in capped}
                 if remaining <= 0 or not any(view.get("pending") for view in views.values()):
                     break
                 self._cond.wait(remaining)
@@ -323,7 +323,7 @@ class KalshiBookStream:
             "lastResync": self._last_resync,
         }
 
-    def _view_of(self, ticker: str) -> dict:
+    def _view_of(self, ticker: str, wait_left_sec: float = 0.0) -> dict:
         if self._connection is None:
             return {"error": f"the Kalshi stream is not connected ({self._last_error or 'connecting'})"}
         refused = self._refused.get(ticker)
@@ -339,8 +339,8 @@ class KalshiBookStream:
             return view
         if group is not None and group["resync"]:
             why = f"the stream is resubscribing {ticker} after a missed message"
-            # A resubscribe further off than any caller waits is no reason to wait.
-            if group["resyncAfter"] - self._clock() > MAX_WAIT_SEC:
+            # A resubscribe further off than the caller waits is no reason to wait.
+            if group["resyncAfter"] - self._clock() > wait_left_sec:
                 return {"error": why}
             return {"pending": True, "error": why}
         sent_at = self._sent_at.get(ticker)
