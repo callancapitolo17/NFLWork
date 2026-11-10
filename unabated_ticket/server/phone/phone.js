@@ -972,8 +972,8 @@
   // While a Ticket is open its toasts live in the sheet as a drop-down under
   // the chip, so nothing covers the Ticket; closed, they are the bottom stack again.
   function foldToastsIntoTicket(folded) {
-    if (view.toasts.classList.contains("dropped")) view.toasts.classList.remove("dropped");
-    if (folded) view.toastChip.after(view.toasts);
+    view.toasts.classList.remove("dropped");
+    if (folded) view.toastChip.parentElement.append(view.toasts);
     else document.body.insertBefore(view.toasts, view.sheet);
     renderToastChip();
   }
@@ -985,7 +985,7 @@
     // Only when it is set: the observer below sees every class write, even one that changes nothing.
     if (!chip && view.toasts.classList.contains("dropped")) view.toasts.classList.remove("dropped");
     if (chip) {
-      view.toastChip.className = `toast-chip ${chip.tone}`;
+      view.toastChip.className = `sheet-close toast-chip chip-${chip.tone}`;
       view.toastChip.textContent = chip.text;
     }
     view.toastChip.setAttribute("aria-expanded", String(view.toasts.classList.contains("dropped")));
@@ -1938,6 +1938,11 @@
   view.sheetClose.addEventListener("click", closeTicket);
   view.toastChip.addEventListener("click", () => {
     view.toasts.classList.toggle("dropped");
+    // The drop-down covers the Ticket and shrinks as fills fade: an armed confirm must not sit under a tap meant for a toast.
+    if (placeState.phase === "confirm") {
+      placeState.phase = null;
+      renderPlaceControls();
+    }
     renderToastChip();
   });
   // A tap anywhere else on the Ticket folds the drop-down again.
@@ -1952,7 +1957,14 @@
   new MutationObserver(renderToastChip).observe(view.toasts, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
   view.sheetBackdrop.addEventListener("click", closeTicket);
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && state.ticket) closeTicket();
+    if (event.key !== "Escape" || !state.ticket) return;
+    // The first Escape folds an open drop-down, the next closes the Ticket.
+    if (view.toasts.classList.contains("dropped")) {
+      view.toasts.classList.remove("dropped");
+      renderToastChip();
+    } else {
+      closeTicket();
+    }
   });
 
   view.settingsForm.addEventListener("input", () => {
