@@ -2824,7 +2824,19 @@ node unabated_ticket/server/runner.js                     # must be running too 
   list; the row stays grey until the list's runner bets read
   (`betsService.generatedAt`) is newer than that `/bets.json` read (both
   the bets service's clock, whole seconds), at most a minute after the reply
-  (`phoneView.placedMarkShows`). A refusal ungreys it. A line sized to $0
+  (`phoneView.placedMarkShows`). A refusal ungreys it. A refusal, or an
+  order sent that filled nothing or the venue rejected (`unfilled`,
+  `rejected`), asks for
+  `/edges.json?fresh=1&reread=<line key>` (2026-11-10): the runner reads that
+  one line at its venue beside the bets read (`rereadLiveLine`, waiting at most
+  2.5 s; the catalog, event lists and stream as held, no extra Novig or
+  Polymarket US catalog read; one per line at a time, none within 2 s of its
+  last reread), so a moved price shows its new price, edge and stake at once, or
+  the line drops when the edge is gone, instead of waiting up to a minute for
+  the next pass and poll. A read that fails or is still going drops the
+  line's older read, so the card shows `unchecked`, not the refused price; a
+  pass batch that ends later never puts its older book back (a read already
+  held that is newer than the moment a read was asked for stays). A line sized to $0
   (`add $0`, the rail's `atSize`, also a line an open teaser sizes to zero;
   a card by its best line) is not listed at all (`phoneView.withoutFullyBet`,
   phone only; the panel still lists it); when that empties the list it says
@@ -2876,7 +2888,8 @@ the open panel used to do.
   `GET /attach.json?betId=&query=` (pick a game) /
   `?betId=&eventId=&swapped=0|1` (the plan and the `/pins.json` body).
   `?fresh=1` on `/edges.json` or `/teasers.json` re-reads `/bets.json` first,
-  so a mark or pin the page just wrote shows at once. The bets service
+  so a mark or pin the page just wrote shows at once. `&reread=<line key>` on a fresh `/edges.json`
+  also reads that one line at its venue (above). The bets service
   proxies both routes with the query string and passes the runner's own
   400/404 through.
 - **The phone** gains the Teasers tab (Can't tease / Restore on college
