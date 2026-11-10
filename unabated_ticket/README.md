@@ -3994,8 +3994,8 @@ does not read fails closed with the reason.
   home/away `side`, the number off the offer's signed `display_strike`; a
   spread whose two sides are not one number each way does not read; player
   props and team totals, typed `total` like the game total and named without
-  "player", are dropped by their `player_id` or a `sub_type` naming a player or
-  team, 2026-11-10). Only the
+  "player", are dropped by their `player_id` or a `sub_type` containing
+  `player` or `team_total`, 2026-11-10). Only the
   **matched** dollars are a bet (`prophetx:<order_id>`), priced off its fills
   (a fill can beat the limit); a resting remainder is a separate unmatchable
   `prophetx:<order_id>:order`. `void` / `invalid` void it; settled orders grade

@@ -51,8 +51,8 @@ OTHER_PERIOD_RE = re.compile(
     r"\b(2nd|second|3rd|third|4th|fourth)\s+(half|quarter|period)\b|\b(1st|first)\s+(quarter|period|inning)\b"
     r"|\bquarter\b|\binning\b|\bovertime\b|\bteam total\b|\bplayer\b", re.IGNORECASE)
 TEAM_SIDES = ("away", "home")
-# sub_type words that mark a market as not the game's own line (a player prop, a team total).
-NOT_GAME_LINE_SUB_TYPE_WORDS = ("player", "team")
+# Narrow on purpose: spread and moneyline sub_types are unread, and a bare "team" could name a game line.
+NOT_GAME_LINE_SUB_TYPE_WORDS = ("player", "team_total")
 
 
 def _text(value: object) -> str:
@@ -110,9 +110,7 @@ def period_of(market: dict, league: str) -> str | None:
 
 
 def game_line_market(market: dict) -> bool:
-    """False for a player prop or a team total, which ProphetX types "total"
-    like the game total and names without the word "player": a player_id, or
-    a sub_type naming a player or a team, marks one."""
+    """False for a player prop or a team total: a player_id, or a sub_type naming either."""
     if market.get("player_id") not in (None, "", 0):
         return False
     sub_type = _text(market.get("sub_type")).lower()

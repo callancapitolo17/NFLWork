@@ -93,6 +93,30 @@ def test_player_props_and_team_totals_are_not_read_as_game_totals():
     assert sorted(line["strike_id"] for line in lines) == ["g" * 32, "h" * 32, "k" * 32, "l" * 32]
 
 
+def test_a_prop_parent_drops_its_nested_strikes_and_game_lines_with_a_sub_type_stay():
+    prop_parent = {**PLAYER_PROP, "market_strikes": [{**TOTAL_ALT_38_5, "sub_type": None}]}
+    assert prophetx_markets.lines_of_event(EVENT, [prop_parent]) == []
+    typed_spread = {**SPREAD, "sub_type": "spread"}
+    typed_moneyline = {**MONEYLINE, "sub_type": "moneyline"}
+    strikes = {line["strike_id"] for line in prophetx_markets.lines_of_event(EVENT, [typed_spread, typed_moneyline])}
+    assert strikes == {"a" * 32, "b" * 32, "c" * 32, "d" * 32, "e" * 32, "f" * 32}
+
+
+def test_place_buys_unabated_strike_when_a_prop_shares_its_number(store):
+    """End to end: a prop reads as the same Under 38.5; Unabated's own strike picks the game total."""
+    unmarked_prop = {**PLAYER_PROP, "player_id": None, "sub_type": None}
+    markets = [{**TOTAL, "market_strikes": [TOTAL_ALT_38_5]}, unmarked_prop]
+    client = ScriptedProphetX(markets=markets)
+    under = {**LINE, "betType": "total", "side": "under", "points": 38.5}
+    no_strike = desk_with(store, client, {**QUOTE, "line": under, "lineStrikeId": None}).place(
+        request(betTypeId=3, sideIndex=1, points=38.5, clickId="abc12345-0002"))
+    assert no_strike["status"] == "refused" and "2 ProphetX strikes" in no_strike["message"]
+    placed = desk_with(store, client, {**QUOTE, "line": under, "lineStrikeId": "l" * 32}).place(
+        request(betTypeId=3, sideIndex=1, points=38.5, ticketAllIn=0.37, clickId="abc12345-0003"))
+    assert placed["status"] == "filled", placed
+    assert [submit[0] for submit in client.submits] == ["l" * 32]
+
+
 def test_a_main_number_listed_again_under_its_alt_numbers_is_one_line():
     repeated = {**SPREAD, "market_strikes": SPREAD["market_strikes"] + [{**SPREAD, "market_strikes": None}]}
     strikes = [line["strike_id"] for line in prophetx_markets.lines_of_event(EVENT, [repeated])]

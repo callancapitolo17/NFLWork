@@ -22,9 +22,10 @@ Rules, in order, for every request (validate_prophetx_place_request's shape):
      /team_keys.json, teams.js + the crosswalk, as bet matching does) and equal
      the board line's ids (a swapped or unresolved team refuses: the side
      would be wrong);
-  4. the one strike among the game's markets that reads as the board line
-     (prophetx_markets.lines_of_event; the line's own strike id when Unabated
-     names one), and its best offer now;
+  4. the strike: Unabated's own strike id for the line when it names one
+     (alt rungs), which must also read as the board line; else the one strike
+     among the game's markets that reads as the board line
+     (prophetx_markets.lines_of_event); and its best offer now;
   5. that offer's implied probability is at most PRICE_TOLERANCE (0.1c) worse
      than the Ticket's; a better one is taken. ProphetX's fee is set per
      account and unpublished, so it is not counted (Cal, 2026-10-31: use
@@ -228,7 +229,7 @@ def line_target(lines: list[dict], wanted: dict, own_strike: str | None, label: 
     that reads as the board line."""
     if own_strike:
         own = [candidate for candidate in lines if candidate["strike_id"] == own_strike]
-        if len(own) != 1:
+        if not own:
             return f"Unabated's ProphetX strike {own_strike} for {label} is not among ProphetX's game lines on game {px_event_id}."
         if not matching_lines(own, wanted):
             reads = own[0]
