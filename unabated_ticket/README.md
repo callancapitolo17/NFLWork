@@ -3938,35 +3938,50 @@ age, subscriptions, subscribed, held and wanted markets, last error).
 **Kalshi live books (`bets_service/kalshi_book_stream.py`, 2026-11-10, Cal's
 option A).** The live price pass read Kalshi books off REST, at most 120 a
 pass, so an Edges Kalshi price could be up to 2 min old. Now the bets service
-keeps ONE websocket, `wss://external-api-ws.kalshi.com/trade-api/ws/v2`
-(`KALSHI_WS_URL`), signed with the **read-only** Kalshi key
-(`KALSHI_API_KEY_ID`, the one the Kalshi source polls with) over `GET
-/trade-api/ws/v2`, **reads only**; it runs whenever that key is set (and not
-when `KALSHI_BASE_URL` and `KALSHI_WS_URL` disagree on demo vs prod). The
-runner asks `POST /kalshi_books.json` (loopback only) for the tickers it needs:
-each is subscribed on the `orderbook_delta` channel on first ask (a Ticket
-reread's or Place quote's first, the live pass's last and at most 900), packed
-into at most 20 subscriptions of 50 markets (Kalshi publishes no limit; a
-subscription it answers error 26 takes no more), new markets added with
-`update_subscription add_markets` at most once a second a subscription.
-Kalshi sends each market's snapshot then every change; a book is served as
-the REST `/orderbook`'s `orderbook_fp` body while the line is up and its
-subscription has missed no `seq`. A gap (or a delta before its snapshot, or a
-level below zero) resubscribes the whole subscription and serves none of its
-books until the fresh snapshots land; a crossed book is never served. A still
-market's book stays exact, so books carry `ageMs` (since the last change) but
-are not refused for age. The stream pings every 15 s and reconnects after 45 s
-of silence; a market nobody asked about for 10 min is deleted from its
-subscription; a refused one is asked again a minute later. Anything the stream
-lacks falls back to REST: the live pass reads at most 120 REST books a pass,
-a reread and the Place quote (`GET /kalshi_quote.json`, which waits up to
-1.5 s for a market the stream was not watching) one each. The Place quote's
-market check stays REST. **The automated taker stays on REST** (its decisions
-are unchanged). `/health` carries `kalshiStream` (connected, last frame age,
-subscriptions, subscribed, held, wanted and refused markets, resyncs, last
-error); the runner's `/health` `livePrices.byVenue.kalshi` counts
-`fromStream` / `fromRest`. Frame shapes are from Kalshi's docs; the first live
-read is on the VM.
+keeps ONE websocket, `wss://api.elections.kalshi.com/trade-api/ws/v2`
+(`KALSHI_WS_URL`; the host the MLB maker streams from), signed with the
+**read-only** Kalshi key (`KALSHI_API_KEY_ID`, the one the Kalshi source polls
+with) over `GET /trade-api/ws/v2`, **reads only**; it runs whenever that key is
+set (and not when `KALSHI_BASE_URL` and `KALSHI_WS_URL` disagree on demo vs
+prod). The runner asks `POST /kalshi_books.json` (loopback only) for the
+tickers it needs: each is subscribed on the `orderbook_delta` channel on first
+ask (a reread's or Place quote's first, the live pass's last and at most 900),
+packed into at most 20 subscriptions of 50 markets (Kalshi publishes no limit:
+error 26 on a subscribe halves that for the stream, on an add closes that
+subscription), new markets added with `update_subscription add_markets`. One
+command goes out at most every 0.2 s; Kalshi's rate-limit refusal (error 27)
+pauses commands 5 s and asks the markets again. Kalshi sends each market's
+snapshot then every change; a book is served as the REST `/orderbook`'s
+`orderbook_fp` body while the line is up and its subscription has missed no
+`seq`. A gap (or a delta before its snapshot, or a level below zero)
+resubscribes the whole subscription, after a gap that starts at 1 s and
+doubles while gaps keep coming (to 60 s), serving none of its books until the
+fresh snapshots land; a crossed book is never served; a snapshot whose sides
+come under other yes/no names drops the connection rather than serve an empty
+book. Every subscription is renewed every 10 min for fresh snapshots (a stream
+that quietly stopped sending would look like a still market). Three
+subscribes in a row with no answer drop the connection. The stream pings every
+15 s and reconnects after 45 s of silence; a market nobody asked about for
+10 min is deleted from its subscription; a market refused for another reason
+is asked again a minute later.
+
+The runner prices a stream book only while the stream says it is connected
+and its last frame is under 20 s old. Anything the stream lacks falls back to
+REST: the live pass reads at most 120 REST books a pass (the rest wait a pass,
+uncounted); a reread and the Place quote (`GET /kalshi_quote.json`) wait up to
+1.5 s for a market the stream was not watching, then read REST. A Place quote
+whose stream book has nothing on its side reads REST too. Each pass also reads
+2 stream books off REST and compares every level (round robin); a ticker whose
+two reads differ is priced off REST and logged. The Place quote's market check
+stays REST, and it logs `kalshi quote ...` with where its book came from.
+**The automated taker stays on REST** (its decisions are unchanged). `/health`
+on the bets service carries `kalshiStream` (url, connected, last frame age,
+subscriptions answered, subscribed, held, wanted and refused markets, markets
+per subscription, resyncs and the last one's cause, last error); the runner's
+`/health` `livePrices.byVenue.kalshi` counts `fromStream` / `fromRest` and
+`livePrices.kalshiStreamParity` the stream-vs-REST checks (checked, agreed,
+disagreed, failed, the last disagreement). Frame shapes are from Kalshi's docs;
+the first live read is on the VM.
 
 ### ProphetX source and Place (`bets_service/sources/prophetx.py`, `prophetx_place.py`, `server/prophetx.js`, 2026-10-31)
 

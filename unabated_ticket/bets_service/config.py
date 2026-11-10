@@ -70,8 +70,9 @@ KALSHI_PLACE_PRIVATE_KEY_PATH = _get("KALSHI_PLACE_PRIVATE_KEY_PATH")
 KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
                        "https://api.elections.kalshi.com/trade-api/v2")
 # The orderbook websocket the live Kalshi book stream reads on the read key
-# (kalshi_book_stream.py); a demo KALSHI_BASE_URL needs the demo one here too.
-KALSHI_WS_URL = _get("KALSHI_WS_URL", "wss://external-api-ws.kalshi.com/trade-api/ws/v2")
+# (kalshi_book_stream.py): the host the MLB maker streams from live
+# (kalshi_mlb_mm/config.py). A demo KALSHI_BASE_URL needs the demo one here too.
+KALSHI_WS_URL = _get("KALSHI_WS_URL", "wss://api.elections.kalshi.com/trade-api/ws/v2")
 
 # Where the store lives. The server deploy (unabated_ticket/deploy/) points it
 # at a writable data directory, since the repo is mounted read-only there.

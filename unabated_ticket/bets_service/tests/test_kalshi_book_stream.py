@@ -68,12 +68,15 @@ class FakeConnection:
         self.closed = True
 
 
+URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+
+
 @pytest.fixture
 def made():
     clock = Clock()
     signer = FakeSigner()
     connection = FakeConnection()
-    stream = kbs.KalshiBookStream(signer, kbs.DEFAULT_STREAM_URL, connect=lambda url, headers: connection, clock=clock)
+    stream = kbs.KalshiBookStream(signer, URL, connect=lambda url, headers: connection, clock=clock)
     stream._open()
     return stream, connection, clock, signer
 
@@ -82,6 +85,12 @@ def handle(stream, *messages):
     with stream._cond:
         for message in messages:
             stream._handle(message)
+
+
+def tick(stream, clock, sec=0.3):
+    """The pump's next send after `sec` (past the housekeeping and command gaps)."""
+    clock.now += sec
+    return stream._outgoing_frames()
 
 
 def snapshot(sid, seq, ticker=WSU, yes=(("0.5500", "100.00"),), no=(("0.4300", "40.00"),)):
@@ -99,12 +108,23 @@ def delta(sid, seq, price, change, side="no", ticker=WSU):
                     "delta_fp": change, "side": side, "ts_ms": 1}}
 
 
-def subscribe(stream, ticker=WSU, sid=11, **book):
+def subscribed(command_id, sid):
+    return {"id": command_id, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": sid}}
+
+
+def subscribe(stream, clock, ticker=WSU, sid=11, **book):
     """Ask for `ticker`, send its subscribe, answer it and snapshot the market; returns the subscribe frame."""
     stream.books_for([ticker], 0.0)
-    (frame,) = stream._outgoing_frames()
-    handle(stream, {"id": frame["id"], "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": sid}},
-           snapshot(sid, 1, ticker, **book))
+    (frame,) = tick(stream, clock)
+    handle(stream, subscribed(frame["id"], sid), snapshot(sid, 1, ticker, **book))
+    return frame
+
+
+def add(stream, clock, ticker=DUQ):
+    """Ask for `ticker` with WSU's subscription answered: the add it sends."""
+    stream.books_for([ticker], 0.0)
+    (frame,) = tick(stream, clock)
+    assert frame["params"]["action"] == "add_markets"
     return frame
 
 
@@ -137,160 +157,238 @@ def test_the_read_key_signs_the_handshake_as_kalshi_documents(tmp_path):
 def test_a_new_market_is_subscribed_and_its_snapshot_served_as_the_rest_orderbook(made):
     stream, _connection, clock, _signer = made
     assert "waiting for" in view(stream)["error"]
-    frames = stream._outgoing_frames()
-    assert frames == [{"id": 1, "cmd": "subscribe",
-                       "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
-    handle(stream, {"id": 1, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 11}})
+    assert stream._outgoing_frames() == [{"id": 1, "cmd": "subscribe",
+                                          "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
+    handle(stream, subscribed(1, 11))
     assert "waiting for" in view(stream)["error"], "no book before the snapshot"
     handle(stream, snapshot(11, 1, yes=(("0.5500", "100.00"), ("0.5600", "5.00"))))
     clock.now += 2
     assert view(stream) == {"orderbook_fp": {"yes_dollars": [["0.5600", "5.00"], ["0.5500", "100.00"]],
                                              "no_dollars": [["0.4300", "40.00"]]}, "ageMs": 2000}
-    assert stream._outgoing_frames() == [], "subscribed once, not again every loop"
+    assert tick(stream, clock) == [], "subscribed once, not again every loop"
 
 
 def test_an_empty_side_is_absent_from_the_snapshot_and_served_empty(made):
-    stream, _connection, _clock, _signer = made
-    subscribe(stream, no=())
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock, no=())
     assert view(stream)["orderbook_fp"]["no_dollars"] == []
+
+
+def test_a_snapshot_whose_sides_are_renamed_stops_the_connection_rather_than_serve_an_empty_book(made):
+    stream, _connection, clock, _signer = made
+    stream.books_for([WSU], 0.0)
+    (frame,) = tick(stream, clock)
+    renamed = {"type": "orderbook_snapshot", "sid": 11, "seq": 1,
+               "msg": {"market_ticker": WSU, "yes": [[55, 100]], "no": [[43, 40]]}}
+    with pytest.raises(TypeError, match="expected Kalshi snapshot sides"):
+        handle(stream, subscribed(frame["id"], 11), renamed)
 
 
 def test_deltas_change_add_and_remove_levels(made):
     stream, _connection, clock, _signer = made
-    subscribe(stream)
+    subscribe(stream, clock)
     clock.now += 5
-    handle(stream, delta(11, 2, "0.4300", "-15.00"), delta(11, 3, "0.4400", "7.00"), delta(11, 4, "0.5500", "-100.00", side="yes"))
+    handle(stream, delta(11, 2, "0.4300", "-15.00"), delta(11, 3, "0.4400", "7.00"),
+           delta(11, 4, "0.5500", "-100.00", side="yes"))
     assert view(stream) == {"orderbook_fp": {"yes_dollars": [], "no_dollars": [["0.4400", "7.00"], ["0.4300", "25.00"]]},
                             "ageMs": 0}
 
 
-def test_a_seq_gap_withholds_the_books_and_resubscribes_the_subscription(made):
-    stream, connection, _clock, _signer = made
-    subscribe(stream)
+def test_a_seq_gap_withholds_the_books_and_resubscribes_after_a_doubling_gap(made):
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
     handle(stream, delta(11, 3, "0.4300", "-15.00"))
     assert "resubscribing" in view(stream)["error"]
-    frames = stream._outgoing_frames()
+    assert stream.status()["lastResync"] == "seq 3 after 1"
+    assert tick(stream, clock, 0.5) == [], "the first resubscribe waits RESYNC_MIN_GAP_SEC"
+    frames = tick(stream, clock, 0.6)
     assert frames == [{"id": 2, "cmd": "unsubscribe", "params": {"sids": [11]}},
                       {"id": 3, "cmd": "subscribe", "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
     handle(stream, delta(11, 4, "0.4300", "5.00"))
     assert "waiting for" in view(stream)["error"], "the old sid's frames are not applied"
-    handle(stream, {"id": 3, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 12}},
-           snapshot(12, 1, no=(("0.4200", "9.00"),)))
+    handle(stream, subscribed(3, 12), snapshot(12, 1, no=(("0.4200", "9.00"),)))
     assert view(stream)["orderbook_fp"]["no_dollars"] == [["0.4200", "9.00"]]
-    assert stream.status()["resyncs"] == 1
+    # A second gap soon after waits twice as long.
+    handle(stream, delta(12, 5, "0.4200", "1.00"))
+    assert tick(stream, clock, 1.5) == []
+    assert [frame["cmd"] for frame in tick(stream, clock, 0.6)] == ["unsubscribe", "subscribe"]
+    assert stream.status()["resyncs"] == 2
 
 
 def test_a_delta_before_its_snapshot_resubscribes(made):
     stream, _connection, clock, _signer = made
-    subscribe(stream)
-    stream.books_for([DUQ], 0.0)
-    clock.now += kbs.COMMAND_GAP_SEC
-    assert [frame["params"]["action"] for frame in stream._outgoing_frames()] == ["add_markets"]
+    subscribe(stream, clock)
+    add(stream, clock)
     handle(stream, {"id": 2, "sid": 11, "seq": 2, "type": "ok", "msg": {"market_tickers": [WSU, DUQ]}})
     handle(stream, delta(11, 3, "0.4300", "1.00", ticker=DUQ))
     assert "resubscribing" in view(stream)["error"]
 
 
 def test_a_level_driven_below_zero_resubscribes(made):
-    stream, _connection, _clock, _signer = made
-    subscribe(stream)
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
     handle(stream, delta(11, 2, "0.4300", "-41.00"))
     assert "resubscribing" in view(stream)["error"]
 
 
 def test_a_crossed_book_is_never_served(made):
-    stream, _connection, _clock, _signer = made
-    subscribe(stream)
-    handle(stream, delta(11, 2, "0.5800", "3.00"))
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
+    handle(stream, delta(11, 2, "0.4500", "3.00", side="yes"))
+    assert "orderbook_fp" in view(stream), "0.55 + 0.43 is not crossed"
+    handle(stream, delta(11, 3, "0.5800", "3.00"))
     assert "crossed" in view(stream)["error"]
-    handle(stream, delta(11, 3, "0.5800", "-3.00"))
+    handle(stream, delta(11, 4, "0.5800", "-3.00"))
     assert "orderbook_fp" in view(stream)
 
 
-def test_a_new_market_is_added_to_the_answered_subscription_at_most_once_a_second(made):
+def test_a_new_market_is_added_to_the_answered_subscription(made):
     stream, _connection, clock, _signer = made
-    subscribe(stream)
-    stream.books_for([DUQ], 0.0)
-    assert stream._outgoing_frames() == [], "within COMMAND_GAP_SEC of the subscribe"
-    clock.now += kbs.COMMAND_GAP_SEC
-    assert stream._outgoing_frames() == [{"id": 2, "cmd": "update_subscription",
-                                          "params": {"sid": 11, "market_tickers": [DUQ], "action": "add_markets"}}]
+    subscribe(stream, clock)
+    frame = add(stream, clock)
+    assert frame == {"id": 2, "cmd": "update_subscription",
+                     "params": {"sid": 11, "market_tickers": [DUQ], "action": "add_markets"}}
     # The docs' ok carries the sid's next seq: counted, so the next snapshot is no gap.
     handle(stream, {"id": 2, "sid": 11, "seq": 2, "type": "ok", "msg": {"market_tickers": [WSU, DUQ]}},
            snapshot(11, 3, DUQ))
     assert "orderbook_fp" in view(stream, DUQ) and "orderbook_fp" in view(stream, WSU)
 
 
+def test_a_market_added_to_an_old_subscription_is_waited_for_from_its_add(made):
+    """The snapshot wait runs from the add, not from when the subscription was first answered."""
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
+    clock.now += 30
+    add(stream, clock)
+    assert "waiting for" in view(stream, DUQ)["error"]
+    assert stream.books_for([DUQ], 0.0)["books"][DUQ] and stream._view_of(DUQ).get("pending") is True
+    clock.now += kbs.ANSWER_WAIT_SEC + 1
+    assert "sent no snapshot of" in view(stream, DUQ)["error"]
+
+
+def test_commands_go_out_one_at_a_time_and_pack_into_few_subscriptions(made, monkeypatch):
+    stream, _connection, clock, _signer = made
+    monkeypatch.setattr(kbs, "MARKETS_PER_SUBSCRIPTION", 2)
+    stream.books_for(["A", "B", "C", "D", "E"], 0.0)
+    sent = [tick(stream, clock) for _ in range(4)]
+    assert [[frame["params"]["market_tickers"] for frame in frames] for frames in sent] == [[["A", "B"]], [["C", "D"]], [["E"]], []]
+    assert stream._outgoing_frames() == [], "nothing within the housekeeping gap"
+
+
 def test_an_ok_whose_seq_is_not_next_is_not_counted(made):
-    stream, _connection, _clock, _signer = made
-    subscribe(stream)
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
     handle(stream, {"id": 9, "sid": 11, "seq": 50, "type": "ok"}, delta(11, 2, "0.4300", "1.00"))
     assert view(stream)["orderbook_fp"]["no_dollars"] == [["0.4300", "41.00"]]
 
 
-def test_an_idle_market_is_deleted_from_its_subscription(made):
+def test_an_idle_market_is_deleted_and_a_late_frame_for_it_is_ignored(made, monkeypatch):
     stream, _connection, clock, _signer = made
-    subscribe(stream)
-    stream.books_for([DUQ], 0.0)
-    clock.now += kbs.COMMAND_GAP_SEC
-    stream._outgoing_frames()
+    monkeypatch.setattr(kbs, "RENEW_SEC", 3 * kbs.WATCH_IDLE_SEC)
+    subscribe(stream, clock)
+    add(stream, clock)
+    handle(stream, {"id": 2, "sid": 11, "seq": 2, "type": "ok"}, snapshot(11, 3, DUQ))
     clock.now += kbs.WATCH_IDLE_SEC - 1
     stream.books_for([WSU], 0.0)
-    clock.now += 2
-    assert stream._outgoing_frames() == [{"id": 3, "cmd": "update_subscription",
-                                          "params": {"sid": 11, "market_tickers": [DUQ], "action": "delete_markets"}}]
+    assert tick(stream, clock, 2) == [{"id": 3, "cmd": "update_subscription",
+                                       "params": {"sid": 11, "market_tickers": [DUQ], "action": "delete_markets"}}]
+    handle(stream, delta(11, 4, "0.4300", "1.00", ticker=DUQ), delta(11, 5, "0.4300", "1.00"))
+    assert view(stream)["orderbook_fp"]["no_dollars"] == [["0.4300", "41.00"]], "seq still counted, no resync"
     clock.now += kbs.WATCH_IDLE_SEC
-    assert stream._outgoing_frames() == [{"id": 4, "cmd": "unsubscribe", "params": {"sids": [11]}}]
+    assert tick(stream, clock) == [{"id": 4, "cmd": "unsubscribe", "params": {"sids": [11]}}]
     assert stream.status()["subscriptions"] == 0
 
 
-def test_a_refused_add_refuses_its_markets_and_a_market_limit_closes_the_subscription(made, monkeypatch):
+def test_a_market_re_asked_before_its_delete_goes_back_to_its_own_subscription(made, monkeypatch):
     stream, _connection, clock, _signer = made
-    monkeypatch.setattr(kbs, "MAX_SUBSCRIPTIONS", 1)
-    subscribe(stream)
-    stream.books_for([DUQ], 0.0)
-    clock.now += kbs.COMMAND_GAP_SEC
-    stream._outgoing_frames()
-    handle(stream, {"id": 2, "type": "error", "msg": {"code": 26, "msg": "per-subscription market limit exceeded"}})
-    assert "code 26" in view(stream, DUQ)["error"]
+    monkeypatch.setattr(kbs, "RENEW_SEC", 3 * kbs.WATCH_IDLE_SEC)
+    subscribe(stream, clock)
+    clock.now += kbs.WATCH_IDLE_SEC + 1
+    with stream._cond:
+        stream._forget_idle(clock.now)
+    stream.books_for([WSU], 0.0)
+    assert tick(stream, clock) == [], "no delete and no second subscription"
+    assert "orderbook_fp" in view(stream)
+
+
+def test_a_market_limit_on_an_add_closes_that_subscription_and_places_the_market_elsewhere(made, monkeypatch):
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
+    frame = add(stream, clock)
+    handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 26, "msg": "per-subscription market limit exceeded"}})
     assert "orderbook_fp" in view(stream, WSU), "the subscription's other books stay served"
-    clock.now += kbs.REFUSED_RETRY_SEC + 1
-    stream._outgoing_frames()
-    assert "subscriptions of 50 markets are full" in view(stream, DUQ)["error"], "no add to a subscription Kalshi capped"
+    (again,) = tick(stream, clock)
+    assert again["cmd"] == "subscribe" and again["params"]["market_tickers"] == [DUQ]
+
+
+def test_a_market_limit_on_a_subscribe_halves_the_subscriptions(made, monkeypatch):
+    stream, _connection, clock, _signer = made
+    monkeypatch.setattr(kbs, "MARKETS_PER_SUBSCRIPTION", 4)
+    stream.books_for(["A", "B", "C", "D"], 0.0)
+    (frame,) = tick(stream, clock)
+    handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 26, "msg": "per-subscription market limit exceeded"}})
+    assert stream.status()["marketsPerSubscription"] == 2
+    assert [tick(stream, clock)[0]["params"]["market_tickers"] for _ in range(2)] == [["A", "B"], ["C", "D"]]
+
+
+def test_a_rate_limit_pauses_commands_and_asks_the_markets_again(made):
+    stream, _connection, clock, _signer = made
+    stream.books_for([WSU], 0.0)
+    (frame,) = tick(stream, clock)
+    handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 27, "msg": "exceeded its command rate limit"}})
+    assert "waiting for" in view(stream)["error"], "not refused"
+    assert tick(stream, clock, 1) == []
+    assert [frame["cmd"] for frame in tick(stream, clock, kbs.RATE_LIMIT_PAUSE_SEC)] == ["subscribe"]
 
 
 def test_a_refused_subscribe_refuses_its_markets_then_asks_again_after_a_minute(made):
     stream, _connection, clock, _signer = made
     stream.books_for([WSU], 0.0)
-    stream._outgoing_frames()
+    tick(stream, clock)
     handle(stream, {"id": 1, "type": "error", "msg": {"code": 8, "msg": "Unknown channel name"}})
     assert view(stream)["error"] == "Kalshi refused the stream subscription to " + WSU + ": code 8: Unknown channel name"
-    assert stream._outgoing_frames() == []
-    clock.now += kbs.REFUSED_RETRY_SEC + 1
-    assert [frame["cmd"] for frame in stream._outgoing_frames()] == ["subscribe"]
+    assert tick(stream, clock) == []
+    assert [frame["cmd"] for frame in tick(stream, clock, kbs.REFUSED_RETRY_SEC + 1)] == ["subscribe"]
 
 
 def test_an_unanswered_subscribe_is_sent_again_and_its_late_answer_unsubscribed(made):
-    stream, connection, clock, _signer = made
+    stream, _connection, clock, _signer = made
     stream.books_for([WSU], 0.0)
-    stream._outgoing_frames()
-    clock.now += kbs.ANSWER_WAIT_SEC + 1
-    assert stream._outgoing_frames() == [{"id": 2, "cmd": "subscribe",
-                                          "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
-    handle(stream, {"id": 1, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 5}})
-    assert connection.sent == [{"id": 3, "cmd": "unsubscribe", "params": {"sids": [5]}}]
+    tick(stream, clock)
+    assert tick(stream, clock, kbs.ANSWER_WAIT_SEC + 1) == [
+        {"id": 2, "cmd": "subscribe", "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
+    handle(stream, subscribed(1, 5))
+    assert tick(stream, clock) == [{"id": 3, "cmd": "unsubscribe", "params": {"sids": [5]}}], "sent by the pump, not under the lock"
     handle(stream, snapshot(5, 1))
     assert "waiting for" in view(stream)["error"]
 
 
-def test_a_ticket_or_place_market_is_placed_ahead_of_the_live_pass(made, monkeypatch):
-    stream, _connection, _clock, _signer = made
+def test_subscribes_that_are_never_answered_drop_the_connection(made):
+    stream, _connection, clock, _signer = made
+    stream.books_for([WSU], 0.0)
+    tick(stream, clock)
+    for _ in range(kbs.MAX_UNANSWERED_SUBSCRIBES - 1):
+        tick(stream, clock, kbs.ANSWER_WAIT_SEC + 1)
+    with pytest.raises(ConnectionError, match="answered none of 3 subscribes"):
+        tick(stream, clock, kbs.ANSWER_WAIT_SEC + 1)
+
+
+def test_every_subscription_is_renewed_for_fresh_snapshots(made):
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
+    stream.books_for([WSU], 0.0)
+    assert [frame["cmd"] for frame in tick(stream, clock, kbs.RENEW_SEC)] == ["unsubscribe", "subscribe"]
+
+
+def test_a_reread_or_place_market_is_placed_ahead_of_the_live_pass(made, monkeypatch):
+    stream, _connection, clock, _signer = made
     monkeypatch.setattr(kbs, "MAX_SUBSCRIPTIONS", 1)
     monkeypatch.setattr(kbs, "MARKETS_PER_SUBSCRIPTION", 2)
     stream.books_for(["Z-LIVE-A", "A-LIVE-B"], 0.0, background=True)
     stream.books_for([DUQ], 0.0, priority=True)
-    (frame,) = stream._outgoing_frames()
+    (frame,) = tick(stream, clock)
     assert frame["params"]["market_tickers"] == sorted([DUQ, "A-LIVE-B"])
+    assert "subscriptions of 2 markets are full" in view(stream, "Z-LIVE-A")["error"]
 
 
 def test_the_live_pass_is_capped_below_the_subscriptions_room(made, monkeypatch):
@@ -301,21 +399,26 @@ def test_the_live_pass_is_capped_below_the_subscriptions_room(made, monkeypatch)
     assert "already watches 1 Kalshi markets" in books[DUQ]["error"]
 
 
-def test_a_dropped_connection_serves_no_book(made):
-    stream, _connection, _clock, _signer = made
-    subscribe(stream)
+def test_a_dropped_connection_serves_no_book_and_a_new_one_subscribes_afresh(made):
+    stream, connection, clock, _signer = made
+    subscribe(stream, clock)
     stream._drop("ConnectionError: Kalshi closed the stream")
     assert view(stream)["error"] == "the Kalshi stream is not connected (ConnectionError: Kalshi closed the stream)"
+    assert stream.status()["lastFrameAgeMs"] is None
+    stream._open()
+    assert "waiting for" in view(stream)["error"], "no book from the old connection"
+    assert tick(stream, clock) == [{"id": 1, "cmd": "subscribe",
+                                    "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
 
 
 def test_a_ticket_ask_waits_for_a_new_markets_snapshot(made):
-    stream, _connection, _clock, _signer = made
+    stream, _connection, clock, _signer = made
     stream.books_for([WSU], 0.0)
-    (frame,) = stream._outgoing_frames()
+    (frame,) = tick(stream, clock)
 
     def answer():
         with stream._cond:
-            stream._handle({"id": frame["id"], "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 11}})
+            stream._handle(subscribed(frame["id"], 11))
             stream._handle(snapshot(11, 1))
             stream._cond.notify_all()
 
@@ -340,6 +443,31 @@ def test_silence_reconnects(made):
     connection.recv = silent_recv
     with pytest.raises(ConnectionError, match="no frame, ping or pong"):
         stream._pump(stop)
+
+
+def test_run_reconnects_after_an_unreadable_frame_and_stops_cleanly(monkeypatch):
+    clock = Clock()
+    connections = []
+
+    def connect(url, headers):
+        connection = FakeConnection()
+        connection.incoming = ["not json"]
+        connections.append(connection)
+        return connection
+
+    stream = kbs.KalshiBookStream(FakeSigner(), URL, connect=connect, clock=clock)
+    stop = threading.Event()
+    waits = []
+
+    def wait(sec):
+        waits.append(sec)
+        return len(waits) >= 2
+
+    monkeypatch.setattr(stop, "wait", wait)
+    stream.run(stop)
+    assert len(connections) == 2 and all(connection.closed for connection in connections)
+    assert waits == [kbs.RECONNECT_MIN_SEC, kbs.RECONNECT_MIN_SEC * 2], "the backoff doubles"
+    assert "JSONDecodeError" in stream.status()["error"]
 
 
 @pytest.fixture
@@ -368,8 +496,8 @@ def _serve(handler):
 
 
 def test_post_kalshi_books_answers_the_streams_books(bets_store, made):
-    stream, _connection, _clock, _signer = made
-    subscribe(stream)
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
     server, base = _serve(service.make_handler(bets_store, 0.0, ["kalshi"], kalshi_book_stream=stream,
                                                extra_hosts=("mlb-stack.test",)))
     try:

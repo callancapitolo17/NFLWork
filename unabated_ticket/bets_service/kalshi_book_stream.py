@@ -1,20 +1,17 @@
 """Kalshi's live order books over ONE websocket (Kalshi's `orderbook_delta`
 channel), signed with the bets service's READ-ONLY Kalshi key
 (KALSHI_API_KEY_ID) and used for reads only. The runner asks POST
-/kalshi_books.json (service.py) for the books its live price pass, a Ticket
-refresh and a Place quote need, and the stream subscribes to those markets on
-demand. Before it, the live price pass polled GET /markets/<ticker>/orderbook
-at most 120 markets a pass, so an Edges Kalshi price could be up to 2 min old
-(2026-11-10, thread "Stream Kalshi books into the bets service"). The
-automated taker still reads REST on its own pass (Cal's option A: the bot's
-decisions are unchanged).
+/kalshi_books.json (service.py) for the books its live price pass, a line's
+reread and a Place quote need, and the stream subscribes to those markets on
+demand. The automated taker reads REST on its own pass, never this.
 
 Kalshi facts this rests on (docs.kalshi.com/websockets/websocket-connection,
 /orderbook-updates and /getting_started/quick_start_websockets, read
 2026-11-10; NOT yet seen live, since the cloud container cannot reach Kalshi):
-  * wss://external-api-ws.kalshi.com/trade-api/ws/v2. The upgrade carries
-    KALSHI-ACCESS-KEY / -TIMESTAMP (ms) / -SIGNATURE, the REST scheme signed
-    over timestamp + "GET" + "/trade-api/ws/v2".
+  * wss://api.elections.kalshi.com/trade-api/ws/v2 (the host the MLB maker
+    streams from live; the docs also list external-api-ws.kalshi.com). The
+    upgrade carries KALSHI-ACCESS-KEY / -TIMESTAMP (ms) / -SIGNATURE, the REST
+    scheme signed over timestamp + "GET" + "/trade-api/ws/v2".
   * Commands are {"id": n, "cmd": ..., "params": {...}}, ids unique per
     connection. {"cmd": "subscribe", "params": {"channels":
     ["orderbook_delta"], "market_tickers": [..]}} answers {"id", "type":
@@ -35,14 +32,21 @@ Kalshi facts this rests on (docs.kalshi.com/websockets/websocket-connection,
     `ok` that is the next number is counted and one that is not is ignored.
 
 A book is served while the connection is up and its subscription has missed
-no message since the market's snapshot. A still market gets no frames, and
-its book stays exact, so a book is never refused for its age; `ageMs` says
-how long since it last changed. A gap, or a delta for a market with no
-snapshot, resubscribes the whole subscription (fresh snapshots) and serves
-none of its books until they land. A crossed book (best yes bid + best no bid
-at or over $1) is never served: one exchange action sends several deltas, so
-it may be crossed between them. Anything else answers an `error` naming why,
-never an old book; the runner then reads REST.
+no message since the market's snapshot; `ageMs` says how long since it last
+changed. A still market gets no frames and its book stays exact, but a stream
+that quietly stopped sending would look the same, so every subscription is
+renewed for fresh snapshots each RENEW_SEC (the runner also checks a few stream
+books against REST each pass). A gap, a delta before its snapshot or a level
+below zero resubscribes the whole subscription, no sooner than a backoff that
+doubles while it keeps happening, and serves none of its books until the new
+snapshots land. A crossed book (best yes bid + best no bid at or over $1) is
+never served: one exchange action sends several deltas. A snapshot with
+neither documented side key but a yes/no key of another name stops the
+connection loudly rather than serving an empty book. Anything else answers an
+`error` naming why, never an old book; the runner then reads REST.
+
+Commands go out at most one every COMMAND_GAP_SEC across the connection (a
+rate-limit refusal pauses them, and the markets are asked again, not refused).
 
 Side effects: one outbound websocket to Kalshi on the read-only key (reads
 only: nothing here can place, cancel or move money). Nothing on disk; books
@@ -59,7 +63,6 @@ from unabated_ticket.bets_service.novig_book_stream import websocket_client_conn
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STREAM_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 STREAM_PATH = "/trade-api/ws/v2"
 ORDERBOOK_CHANNEL = "orderbook_delta"
 PING_SEC = 15
@@ -71,32 +74,47 @@ RECONNECT_MAX_SEC = 30
 # Only a connection that held this long resets the backoff.
 STABLE_CONNECTION_SEC = 60
 REPEAT_FAILURE_LOG_SEC = 10 * 60
-# A subscribe with no `subscribed` answer this long is sent again; a market in
-# an answered subscription with no snapshot this long reads as an error.
+# A subscribe with no `subscribed` answer this long is sent again; a market
+# sent in a subscribe or add with no snapshot this long reads as an error.
 ANSWER_WAIT_SEC = 10
-# One update_subscription per subscription at most this often (error 27 is a command rate limit).
-COMMAND_GAP_SEC = 1.0
+# This many subscribes in a row with no answer: the connection is useless, so it is dropped (and the error shown).
+MAX_UNANSWERED_SUBSCRIBES = 3
+# One command (subscribe, add, delete, resubscribe) at most this often per connection.
+COMMAND_GAP_SEC = 0.2
+# After Kalshi's command rate-limit refusal (error 27), no command for this long.
+RATE_LIMIT_PAUSE_SEC = 5
+# Every subscription is resubscribed this often, for fresh snapshots of every market.
+RENEW_SEC = 10 * 60
+# A missed message resubscribes no sooner than this after the last one, doubling
+# while they keep coming (up to the max) and starting over after a quiet spell.
+RESYNC_MIN_GAP_SEC = 1
+RESYNC_MAX_GAP_SEC = 60
+RESYNC_RESET_SEC = 10 * 60
 # A market Kalshi refused is asked for again no sooner than this.
 REFUSED_RETRY_SEC = 60
 # A market nobody asked about for this long is dropped (games end).
 WATCH_IDLE_SEC = 10 * 60
 # Kalshi publishes no per-subscription market limit (error 26 names one), so
-# markets are packed into subscriptions of this many; a subscription Kalshi
-# answers 26 takes no more.
+# markets are packed into subscriptions of this many; a subscribe Kalshi
+# answers 26 halves it for the stream, an add answered 26 closes that subscription.
 MARKETS_PER_SUBSCRIPTION = 50
 MAX_SUBSCRIPTIONS = 20
 # The most a caller may wait for a new market's first book (the runner's own timeouts sit above it).
 MAX_WAIT_SEC = 3.0
 # The runner's live price pass may hold at most this many markets (of the
 # subscriptions' 1,000); past it a background market answers an error, so a
-# Ticket's or Place's market always has room.
+# reread's or Place's market always has room.
 MAX_BACKGROUND_MARKETS = 900
-# Kalshi's error code for "per-subscription market limit exceeded".
+# Kalshi's error codes: "per-subscription market limit exceeded" and "exceeded its command rate limit".
 MARKET_LIMIT_ERROR_CODE = 26
+COMMAND_RATE_ERROR_CODE = 27
 # Prices are held in ten-thousandths of a dollar (Kalshi's sub-cent ticks are 0.001).
 PRICE_UNITS_PER_DOLLAR = 10000
 # A level whose contracts fall to this or under is gone (Kalshi sends 2-decimal counts).
 EMPTY_LEVEL_QTY = 1e-9
+# A level driven below this many contracts means a delta was misapplied or missed.
+NEGATIVE_LEVEL_TOLERANCE = -0.005
+SNAPSHOT_SIDE_KEYS = ("yes_dollars_fp", "no_dollars_fp")
 
 
 class Signer(Protocol):
@@ -137,7 +155,7 @@ def price_units_of(price_dollars: object) -> int:
 
 
 def levels_of(raw_levels: object, what: str) -> dict[int, float]:
-    """A snapshot side's [[price, contracts], ..] -> {price units: contracts}."""
+    """A snapshot side's [[price, contracts], ..] -> {price units: contracts}; None (an empty side) -> {}."""
     if raw_levels is None:
         return {}
     if not isinstance(raw_levels, list):
@@ -150,6 +168,16 @@ def levels_of(raw_levels: object, what: str) -> dict[int, float]:
         if quantity > EMPTY_LEVEL_QTY:
             levels[price_units_of(level[0])] = quantity
     return levels
+
+
+def check_snapshot_keys(msg: dict) -> None:
+    """Raise when a snapshot carries neither documented side key but some other
+    yes/no key: Kalshi renamed them, and reading it would serve an empty book."""
+    if any(key in msg for key in SNAPSHOT_SIDE_KEYS):
+        return
+    other = [key for key in msg if "yes" in key or "no" in key]
+    if other:
+        raise TypeError(f"expected Kalshi snapshot sides {SNAPSHOT_SIDE_KEYS}, got keys {sorted(msg)}")
 
 
 def rest_shape_of(book: dict) -> dict:
@@ -172,19 +200,25 @@ class KalshiBookStream:
     """The books of the Kalshi markets the runner prices, kept live on one
     websocket. run(stop) is the thread's loop; books_for() is called from HTTP threads."""
 
-    def __init__(self, signer: Signer, url: str = DEFAULT_STREAM_URL, connect: Connect = kalshi_connect,
+    def __init__(self, signer: Signer, url: str, connect: Connect = kalshi_connect,
                  clock: Callable[[], float] = time.monotonic):
         self._signer = signer
         self._url = url
         self._connect = connect
         self._clock = clock
         self._cond = threading.Condition()
-        # Kept across connections: ticker -> when last asked for, the Ticket's/Place's, the live pass's alone, refusals.
+        # Kept across connections: ticker -> when last asked for, a reread's/Place's, the live pass's alone, refusals.
         self._wanted: dict[str, float] = {}
         self._priority: set[str] = set()
         self._background: set[str] = set()
         self._refused: dict[str, tuple[float, str]] = {}
+        # Kept across connections, since a cause that misses messages outlives one:
+        # group index -> (resyncs in a row, when the last one was).
+        self._resync_streaks: dict[int, tuple[int, float]] = {}
         self._resyncs = 0
+        self._last_resync: str | None = None
+        # A smaller markets-per-subscription cap Kalshi taught with error 26 on a subscribe.
+        self._learned_market_limit: int | None = None
         self._reset_connection_state()
         self._connection: Connection | None = None
         self._connected_at: float | None = None
@@ -196,22 +230,36 @@ class KalshiBookStream:
     def _reset_connection_state(self) -> None:
         # Command ids are per connection.
         self._command_seq = 0
+        self._last_command_at = -float("inf")
+        self._commands_paused_until = -float("inf")
+        self._unanswered_subscribes = 0
+        # Frames the frame handler wants sent (it runs under the lock; the pump sends).
+        self._queued: list[dict] = []
         # group index -> its subscription on this connection: {subscribeId, sid, tickers (on Kalshi's
-        # side, pending adds included), sentAt, answeredAt, lastCommandAt, lastSeq, resync, full}.
+        # side, pending adds included), sentAt, answeredAt, lastSeq, resync, resyncAfter, full}.
         self._groups: dict[int, dict] = {}
         # command id -> (group index, "subscribe" | "add_markets" | "delete_markets", tickers).
         self._commands: dict[int, tuple[int, str, tuple[str, ...]]] = {}
         self._group_of_sid: dict[int, int] = {}
         # ticker -> group index it is (or is to be) subscribed in.
         self._group_of_ticker: dict[str, int] = {}
+        # ticker -> when it was last sent in a subscribe or add (its snapshot's wait runs from it).
+        self._sent_at: dict[str, float] = {}
         # ticker -> {"yes": {price units: contracts}, "no": {...}, "changedAt"}, this connection's books only.
         self._books: dict[str, dict] = {}
+        self._housekeeping_due = True
+        self._last_housekeeping_at = -float("inf")
+
+    def _markets_per_subscription(self) -> int:
+        if self._learned_market_limit is None:
+            return MARKETS_PER_SUBSCRIPTION
+        return min(MARKETS_PER_SUBSCRIPTION, self._learned_market_limit)
 
     # ---- what the HTTP route calls ----
 
     def books_for(self, tickers: list[str], wait_sec: float, priority: bool = False, background: bool = False) -> dict:
         """{stream: status, books: {ticker: view}}. Marks each market wanted
-        (subscribing it if new; `priority` ahead of the rest, for a Ticket or
+        (subscribing it if new; `priority` ahead of the rest, for a reread or
         Place; `background` behind the rest and capped, for the live price
         pass, until a priority ask names it) and waits up to wait_sec (capped
         at MAX_WAIT_SEC) for every new market's snapshot. A view is
@@ -229,6 +277,8 @@ class KalshiBookStream:
                     self._background.add(ticker)
                 elif not background:
                     self._background.discard(ticker)
+                if ticker not in self._wanted:
+                    self._housekeeping_due = True
                 self._wanted[ticker] = now
                 if priority:
                     self._priority.add(ticker)
@@ -253,16 +303,21 @@ class KalshiBookStream:
     def _status_locked(self) -> dict:
         now = self._clock()
         return {
+            "url": self._url,
             "connected": self._connection is not None,
             "connectedForSec": None if self._connected_at is None else round(now - self._connected_at),
-            "lastFrameAgeMs": None if self._last_frame_at is None else int((now - self._last_frame_at) * 1000),
+            "lastFrameAgeMs": None if self._connection is None or self._last_frame_at is None
+            else int((now - self._last_frame_at) * 1000),
             "error": self._last_error,
             "subscriptions": len(self._groups),
+            "answeredSubscriptions": sum(1 for group in self._groups.values() if group["sid"] is not None),
             "subscribedMarkets": sum(len(group["tickers"]) for group in self._groups.values()),
             "booksHeld": len(self._books),
             "wantedMarkets": len(self._wanted),
             "refusedMarkets": len(self._refused),
+            "marketsPerSubscription": self._markets_per_subscription(),
             "resyncs": self._resyncs,
+            "lastResync": self._last_resync,
         }
 
     def _view_of(self, ticker: str) -> dict:
@@ -281,16 +336,18 @@ class KalshiBookStream:
             return view
         if group is not None and group["resync"]:
             return {"pending": True, "error": f"the stream is resubscribing {ticker} after a missed message"}
-        if group is not None and ticker in group["tickers"] and group["answeredAt"] is not None \
-                and self._clock() - group["answeredAt"] > ANSWER_WAIT_SEC:
-            return {"error": f"Kalshi's stream answered its subscription with no snapshot of {ticker}"}
+        sent_at = self._sent_at.get(ticker)
+        if group is not None and group["sid"] is not None and ticker in group["tickers"] and sent_at is not None \
+                and self._clock() - sent_at > ANSWER_WAIT_SEC:
+            return {"error": f"Kalshi's stream sent no snapshot of {ticker} within {ANSWER_WAIT_SEC} s of subscribing it"}
         if ticker in self._wanted and ticker not in self._group_of_ticker and self._no_room():
-            return {"error": f"the stream's {MAX_SUBSCRIPTIONS} subscriptions of {MARKETS_PER_SUBSCRIPTION} markets are full"}
+            return {"error": f"the stream's {MAX_SUBSCRIPTIONS} subscriptions of "
+                             f"{self._markets_per_subscription()} markets are full"}
         return {"pending": True, "error": f"waiting for Kalshi's stream snapshot of {ticker}"}
 
     def _room_of(self, index: int, sizes: dict[int, int]) -> bool:
         group = self._groups.get(index)
-        return sizes[index] < MARKETS_PER_SUBSCRIPTION and not (group is not None and group["full"])
+        return sizes[index] < self._markets_per_subscription() and not (group is not None and group["full"])
 
     def _no_room(self) -> bool:
         sizes = self._assigned_sizes()
@@ -335,7 +392,6 @@ class KalshiBookStream:
             self._connection = connection
             self._connected_at = self._last_frame_at = self._last_ping_at = self._clock()
             self._last_error = None
-            self._last_logged_failure = None
             self._cond.notify_all()
         log.info("kalshi stream: connected to %s on read key %s", self._url, self._signer.key_id[:8])
 
@@ -350,14 +406,13 @@ class KalshiBookStream:
             self._cond.notify_all()
         if connection is not None:
             connection.close()
-            log.warning("kalshi stream: disconnected: %s", reason)
-            return
         if reason == "stopped":
             return
+        # The same failure on every reconnect is logged once per REPEAT_FAILURE_LOG_SEC.
         now = self._clock()
         last = self._last_logged_failure
         if last is None or last[0] != reason or now - last[1] > REPEAT_FAILURE_LOG_SEC:
-            log.warning("kalshi stream: could not connect: %s", reason)
+            log.warning("kalshi stream: %s: %s", "disconnected" if connection is not None else "could not connect", reason)
             self._last_logged_failure = (reason, now)
 
     def _pump(self, stop: threading.Event) -> None:
@@ -380,18 +435,33 @@ class KalshiBookStream:
                     self._handle(json.loads(text))
                 self._cond.notify_all()
 
-    def _command(self, index: int, kind: str, tickers: tuple[str, ...], cmd: str, params: dict) -> dict:
+    def _next_id(self) -> int:
         self._command_seq += 1
-        self._commands[self._command_seq] = (index, kind, tickers)
-        return {"id": self._command_seq, "cmd": cmd, "params": params}
+        return self._command_seq
+
+    def _command(self, index: int, kind: str, tickers: tuple[str, ...], cmd: str, params: dict) -> dict:
+        command_id = self._next_id()
+        self._commands[command_id] = (index, kind, tickers)
+        return {"id": command_id, "cmd": cmd, "params": params}
+
+    def _unsubscribe_frame(self, sid: int) -> dict:
+        return {"id": self._next_id(), "cmd": "unsubscribe", "params": {"sids": [sid]}}
 
     def _outgoing_frames(self) -> list[dict]:
-        """Drop idle and refused markets, put new markets in a subscription
-        with room (a Ticket's or Place's first, the live pass's last), then per
-        subscription: subscribe it, resubscribe it (a missed message or an
-        unanswered subscribe), or send one add or delete of the markets that changed."""
+        """The frames to send now: any the frame handler queued, then, with the
+        housekeeping due (a new ask, or RECV_POLL_SEC since the last), drop
+        idle and refused markets and place new ones (a reread's or Place's
+        first, the live pass's last), then at most ONE command if
+        COMMAND_GAP_SEC has passed and no rate-limit pause is on: the first
+        subscription (by index) that needs a subscribe, a resubscribe (missed
+        message, unanswered subscribe, renewal) or an add or delete."""
         with self._cond:
+            frames, self._queued = self._queued, []
             now = self._clock()
+            if not self._housekeeping_due and now - self._last_housekeeping_at < RECV_POLL_SEC:
+                return frames
+            self._housekeeping_due = False
+            self._last_housekeeping_at = now
             for ticker, (refused_at, _reason) in list(self._refused.items()):
                 if now - refused_at > REFUSED_RETRY_SEC:
                     del self._refused[ticker]
@@ -399,9 +469,13 @@ class KalshiBookStream:
             for ticker in [ticker for ticker in self._group_of_ticker if ticker in self._refused]:
                 del self._group_of_ticker[ticker]
             self._assign_new_markets()
-            frames: list[dict] = []
+            if now - self._last_command_at < COMMAND_GAP_SEC or now < self._commands_paused_until:
+                return frames
             for index in range(MAX_SUBSCRIPTIONS):
-                frames.extend(self._group_frames(index, now))
+                command_frames = self._group_frames(index, now)
+                if command_frames:
+                    self._last_command_at = now
+                    return frames + command_frames
             return frames
 
     def _forget_idle(self, now: float) -> None:
@@ -414,23 +488,31 @@ class KalshiBookStream:
     def _assign_new_markets(self) -> None:
         new = [ticker for ticker in self._wanted if ticker not in self._group_of_ticker and ticker not in self._refused]
         new.sort(key=lambda ticker: (ticker not in self._priority, ticker in self._background, ticker))
+        # A market still on a subscription (its delete not sent yet) goes back to that one, never a second.
+        still_on = {ticker: index for index, group in self._groups.items() for ticker in group["tickers"]}
         sizes = self._assigned_sizes()
         for ticker in new:
+            if ticker in still_on:
+                self._group_of_ticker[ticker] = still_on[ticker]
+                sizes[still_on[ticker]] += 1
+                continue
             room = [index for index in range(MAX_SUBSCRIPTIONS) if self._room_of(index, sizes)]
             if not room:
-                return
-            # A subscription already answered first (an add lands at once), then the emptiest.
-            index = min(room, key=lambda candidate: (self._groups.get(candidate, {}).get("sid") is None,
-                                                     sizes[candidate], candidate))
+                continue
+            # Packed: an answered subscription first (an add lands at once), then the lowest index, so
+            # few subscriptions carry the markets and a reconnect sends few subscribes.
+            index = min(room, key=lambda candidate: (self._groups.get(candidate, {}).get("sid") is None, candidate))
             self._group_of_ticker[ticker] = index
             sizes[index] += 1
 
-    def _subscribe_frame(self, index: int, tickers: list[str], now: float) -> dict:
+    def _subscribe_frame(self, index: int, tickers: list[str], now: float, full: bool = False) -> dict:
         frame = self._command(index, "subscribe", tuple(tickers), "subscribe",
                               {"channels": [ORDERBOOK_CHANNEL], "market_tickers": tickers})
         self._groups[index] = {"subscribeId": frame["id"], "sid": None, "tickers": set(tickers), "sentAt": now,
-                               "answeredAt": None, "lastCommandAt": now, "lastSeq": None, "resync": False,
-                               "full": False}
+                               "answeredAt": None, "lastSeq": None, "resync": False, "resyncAfter": now,
+                               "full": full}
+        for ticker in tickers:
+            self._sent_at[ticker] = now
         return frame
 
     def _end_group(self, index: int) -> list[dict]:
@@ -441,34 +523,36 @@ class KalshiBookStream:
         if group["sid"] is None:
             return []
         self._group_of_sid.pop(group["sid"], None)
-        return [{"id": self._next_plain_id(), "cmd": "unsubscribe", "params": {"sids": [group["sid"]]}}]
-
-    def _next_plain_id(self) -> int:
-        self._command_seq += 1
-        return self._command_seq
+        return [self._unsubscribe_frame(group["sid"])]
 
     def _group_frames(self, index: int, now: float) -> list[dict]:
         assigned = sorted(ticker for ticker, of in self._group_of_ticker.items() if of == index)
         group = self._groups.get(index)
         if group is None:
             return [self._subscribe_frame(index, assigned, now)] if assigned else []
-        unanswered = group["sid"] is None and now - group["sentAt"] > ANSWER_WAIT_SEC
-        if group["resync"] or unanswered or not assigned:
-            if unanswered:
-                log.warning("kalshi stream: subscribe %s of %d market(s) unanswered after %d s, sending it again",
-                            group["subscribeId"], len(group["tickers"]), ANSWER_WAIT_SEC)
-            full = group["full"]
-            frames = self._end_group(index)
-            if assigned:
-                frames.append(self._subscribe_frame(index, assigned, now))
-                self._groups[index]["full"] = full
-            return frames
-        if group["sid"] is None or now - group["lastCommandAt"] < COMMAND_GAP_SEC:
-            return []
+        if not assigned:
+            return self._end_group(index)
+        if group["resync"]:
+            if now < group["resyncAfter"]:
+                return []
+            return self._resubscribe(index, assigned, now)
+        if group["sid"] is None:
+            if now - group["sentAt"] <= ANSWER_WAIT_SEC:
+                return []
+            self._unanswered_subscribes += 1
+            if self._unanswered_subscribes >= MAX_UNANSWERED_SUBSCRIBES:
+                raise ConnectionError(f"Kalshi answered none of {self._unanswered_subscribes} subscribes in a row "
+                                      f"within {ANSWER_WAIT_SEC} s")
+            log.warning("kalshi stream: subscribe %s of %d market(s) unanswered after %d s, sending it again",
+                        group["subscribeId"], len(group["tickers"]), ANSWER_WAIT_SEC)
+            return self._resubscribe(index, assigned, now)
+        if now - group["sentAt"] >= RENEW_SEC:
+            return self._resubscribe(index, assigned, now)
         to_add = [ticker for ticker in assigned if ticker not in group["tickers"]]
         if to_add:
             group["tickers"].update(to_add)
-            group["lastCommandAt"] = now
+            for ticker in to_add:
+                self._sent_at[ticker] = now
             return [self._command(index, "add_markets", tuple(to_add), "update_subscription",
                                   {"sid": group["sid"], "market_tickers": to_add, "action": "add_markets"})]
         to_delete = sorted(group["tickers"].difference(assigned))
@@ -476,10 +560,15 @@ class KalshiBookStream:
             group["tickers"].difference_update(to_delete)
             for ticker in to_delete:
                 self._books.pop(ticker, None)
-            group["lastCommandAt"] = now
             return [self._command(index, "delete_markets", tuple(to_delete), "update_subscription",
                                   {"sid": group["sid"], "market_tickers": to_delete, "action": "delete_markets"})]
         return []
+
+    def _resubscribe(self, index: int, assigned: list[str], now: float) -> list[dict]:
+        full = self._groups[index]["full"]
+        frames = self._end_group(index)
+        frames.append(self._subscribe_frame(index, assigned, now, full))
+        return frames
 
     # ---- frames from Kalshi (called with the lock held) ----
 
@@ -504,15 +593,17 @@ class KalshiBookStream:
         if command is None or command[1] != "subscribe" or not isinstance(sid, int):
             log.warning("kalshi stream: a subscribed answer to no subscribe of ours: %s", json.dumps(message)[:300])
             return
+        self._unanswered_subscribes = 0
         group = self._groups.get(command[0])
         if group is None or group["subscribeId"] != message.get("id"):
-            # An older subscribe of a resubscribed group: end it on Kalshi's side too.
-            self._connection.send(json.dumps({"id": self._next_plain_id(), "cmd": "unsubscribe",
-                                              "params": {"sids": [sid]}}))
+            # An older subscribe of a group already sent again: end it on Kalshi's side too.
+            self._queued.append(self._unsubscribe_frame(sid))
+            self._housekeeping_due = True
             return
         group["sid"] = sid
         group["answeredAt"] = self._clock()
         self._group_of_sid[sid] = command[0]
+        self._housekeeping_due = True
 
     def _handle_ok(self, message: dict) -> None:
         self._commands.pop(message.get("id"), None)
@@ -523,8 +614,11 @@ class KalshiBookStream:
             group["lastSeq"] = seq
 
     def _handle_error(self, message: dict) -> None:
-        """A refused command. A subscribe or add refuses its markets for
-        REFUSED_RETRY_SEC; a market-limit refusal also closes that subscription to new markets."""
+        """A refused command. A rate-limit refusal pauses commands and asks the
+        markets again; a market-limit refusal shrinks the subscriptions (a
+        subscribe) or closes that one to new markets (an add), the markets
+        placed again; any other refusal of a subscribe or add refuses its
+        markets for REFUSED_RETRY_SEC."""
         msg = message.get("msg") if isinstance(message.get("msg"), dict) else {}
         code = msg.get("code")
         reason = f"code {code}: {str(msg.get('msg'))[:200]}"
@@ -534,26 +628,52 @@ class KalshiBookStream:
             return
         index, kind, tickers = command
         group = self._groups.get(index)
-        log.error("kalshi stream: %s of %d market(s) refused: %s", kind, len(tickers), reason)
+        self._housekeeping_due = True
         if kind == "delete_markets":
+            log.error("kalshi stream: delete of %d market(s) refused: %s", len(tickers), reason)
             return
-        if kind == "subscribe" and (group is None or group["subscribeId"] != message.get("id")):
+        current = group is not None and (kind != "subscribe" or group["subscribeId"] == message.get("id"))
+        if not current:
             # An older subscribe of a group already sent again: the new one answers for its markets.
             return
+        if code == COMMAND_RATE_ERROR_CODE:
+            log.warning("kalshi stream: %s of %d market(s) rate-limited (%s), pausing commands %d s",
+                        kind, len(tickers), reason, RATE_LIMIT_PAUSE_SEC)
+            self._commands_paused_until = self._clock() + RATE_LIMIT_PAUSE_SEC
+            self._unsend(index, kind, tickers)
+            return
+        if code == MARKET_LIMIT_ERROR_CODE:
+            if kind == "subscribe":
+                self._learned_market_limit = max(1, len(tickers) // 2)
+                for ticker in tickers:
+                    self._group_of_ticker.pop(ticker, None)
+            else:
+                group["full"] = True
+                for ticker in tickers:
+                    if self._group_of_ticker.get(ticker) == index:
+                        del self._group_of_ticker[ticker]
+            log.error("kalshi stream: %s of %d market(s) over Kalshi's per-subscription limit (%s); %s",
+                      kind, len(tickers), reason, f"subscriptions now hold {self._markets_per_subscription()}"
+                      if kind == "subscribe" else "that subscription takes no more")
+            self._unsend(index, kind, tickers)
+            return
+        log.error("kalshi stream: %s of %d market(s) refused: %s", kind, len(tickers), reason)
         now = self._clock()
         for ticker in tickers:
             self._refused[ticker] = (now, reason)
             if self._group_of_ticker.get(ticker) == index:
                 del self._group_of_ticker[ticker]
-            self._books.pop(ticker, None)
-        if group is None:
-            return
+        self._unsend(index, kind, tickers)
+
+    def _unsend(self, index: int, kind: str, tickers: tuple[str, ...]) -> None:
+        """Undo a refused subscribe (the subscription is forgotten) or add (its markets leave it)."""
         if kind == "subscribe":
-            self._groups.pop(index)
-            return
-        group["tickers"].difference_update(tickers)
-        if code == MARKET_LIMIT_ERROR_CODE:
-            group["full"] = True
+            self._groups.pop(index, None)
+        else:
+            self._groups[index]["tickers"].difference_update(tickers)
+        for ticker in tickers:
+            self._books.pop(ticker, None)
+            self._sent_at.pop(ticker, None)
 
     def _handle_book(self, kind: str, message: dict) -> None:
         index = self._group_of_sid.get(message.get("sid"))
@@ -576,6 +696,7 @@ class KalshiBookStream:
             # A market just deleted from the subscription.
             return
         if kind == "orderbook_snapshot":
+            check_snapshot_keys(msg)
             self._books[ticker] = {"yes": levels_of(msg.get("yes_dollars_fp"), f"{ticker} yes"),
                                    "no": levels_of(msg.get("no_dollars_fp"), f"{ticker} no"),
                                    "changedAt": self._clock()}
@@ -589,7 +710,7 @@ class KalshiBookStream:
             raise ValueError(f"expected side yes or no on a Kalshi delta for {ticker}, got {side!r}")
         units = price_units_of(msg.get("price_dollars"))
         quantity = book[side].get(units, 0.0) + float(msg.get("delta_fp"))
-        if quantity < -0.005:
+        if quantity < NEGATIVE_LEVEL_TOLERANCE:
             self._resync(index, f"{ticker} {side} at {msg.get('price_dollars')} went to {quantity:.2f} contracts")
             return
         if quantity > EMPTY_LEVEL_QTY:
@@ -599,8 +720,18 @@ class KalshiBookStream:
         book["changedAt"] = self._clock()
 
     def _resync(self, index: int, why: str) -> None:
-        """Serve none of the subscription's books until it is resubscribed (next _outgoing_frames)."""
-        self._groups[index]["resync"] = True
+        """Serve none of the subscription's books until it is resubscribed,
+        after a gap that doubles while missed messages keep coming."""
+        now = self._clock()
+        streak, last_at = self._resync_streaks.get(index, (0, -float("inf")))
+        streak = 0 if now - last_at > RESYNC_RESET_SEC else streak
+        gap = min(RESYNC_MAX_GAP_SEC, RESYNC_MIN_GAP_SEC * 2 ** streak)
+        self._resync_streaks[index] = (streak + 1, now)
+        group = self._groups[index]
+        group["resync"] = True
+        group["resyncAfter"] = now + gap
         self._resyncs += 1
-        log.warning("kalshi stream: subscription %s missed a message (%s), resubscribing its %d market(s)",
-                    self._groups[index]["sid"], why, len(self._groups[index]["tickers"]))
+        self._last_resync = why
+        self._housekeeping_due = True
+        log.warning("kalshi stream: subscription %s missed a message (%s), resubscribing its %d market(s) in %d s",
+                    group["sid"], why, len(group["tickers"]), gap)

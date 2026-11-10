@@ -277,6 +277,15 @@ const KALSHI_STREAM_WAIT_MS = 1500;
 const KALSHI_STREAM_READ_TIMEOUT_MS = KALSHI_STREAM_WAIT_MS + 3000;
 // The most tickers one POST /kalshi_books.json may name (service.py MAX_KALSHI_BOOK_TICKERS).
 const KALSHI_BOOK_TICKERS_PER_ASK = 500;
+// A stream whose last frame (Kalshi pings every 10 s) is older than this is
+// read as down: its books may be frozen, so every ticker goes to REST.
+const KALSHI_STREAM_MAX_SILENCE_MS = 20 * 1000;
+// Stream books a live pass also reads off REST to compare (round robin, the
+// longest unchecked first): /health's livePrices.kalshiStreamParity says how
+// often the two agree, and a row whose two reads disagree is priced off REST.
+const KALSHI_PARITY_CHECKS_PER_PASS = 2;
+// The parity round robin's memory is pruned of tickers unread for 2 min once it holds more than this.
+const MAX_BACKGROUND_KALSHI_PARITY_TICKERS = 1000;
 // How long a Novig book ask may wait for the stream's first snapshot of a game it was not watching.
 const NOVIG_STREAM_WAIT_MS = 2000;
 // The live price pass (livePricePass, run right after each taker pass): how long a read
@@ -677,6 +686,10 @@ function createRunner(deps) {
   // Whether the bets service reads ProphetX's live prices (false while it answers 503: no live key pair).
   let prophetxLiveOn = false;
   let liveLastPass = { startedAt: null, finishedAt: null, rows: 0, byVenue: {}, error: null };
+  // The Kalshi stream books checked against REST (KALSHI_PARITY_CHECKS_PER_PASS):
+  // ticker -> when last checked, and the running tally.
+  const kalshiParityCheckedAt = new Map();
+  const kalshiParity = { checked: 0, agreed: 0, disagreed: 0, failed: 0, lastDisagreement: null };
   // How long the event loop stalled since the last Novig quote (logged with it):
   // a quote slow on a stalled loop is the runner's own work, not Novig.
   const loopDelay = monitorEventLoopDelay({ resolution: 20 });
@@ -1825,9 +1838,15 @@ function createRunner(deps) {
     const tickers = Array.from(new Set(checked.map(({ contract }) => contract.ticker)));
     const books = await readKalshiBooksStreamFirst(tickers, priority
       ? { priority: true, restBudget: Infinity } : { background: true, restBudget: LIVE_KALSHI_READS_PER_PASS });
+    if (!priority) await checkKalshiStreamParity(books);
     const readAt = now();
     for (const { row, contract } of checked) {
       const read = books.get(contract.ticker);
+      if (read && read.deferred) {
+        // Past the pass's REST budget: it waits a pass, uncounted, as a line past the check budget does.
+        counts.rows -= 1;
+        continue;
+      }
       if (!read || !read.book) {
         noteUnchecked(counts, `${contract.ticker}: ${read ? read.error : "no read"}`);
         continue;
@@ -1837,6 +1856,45 @@ function createRunner(deps) {
       else counts.fromRest += 1;
     }
     return counts;
+  }
+
+  // Up to KALSHI_PARITY_CHECKS_PER_PASS of `books`' stream books, the longest
+  // unchecked first, read again off REST and compared side by side (every
+  // level's price and size). A disagreement is logged and that ticker's book
+  // replaced by the REST one (the newer read); /health counts both.
+  async function checkKalshiStreamParity(books) {
+    const streamed = Array.from(books).filter(([, read]) => read.from === "stream").map(([ticker]) => ticker)
+      .sort((a, b) => (kalshiParityCheckedAt.get(a) ?? -Infinity) - (kalshiParityCheckedAt.get(b) ?? -Infinity))
+      .slice(0, KALSHI_PARITY_CHECKS_PER_PASS);
+    if (!streamed.length) return;
+    const rest = await readBooks(streamed, readKalshiBook);
+    for (const ticker of streamed) {
+      kalshiParityCheckedAt.set(ticker, now());
+      const read = rest.get(ticker);
+      if (!read || !read.book) {
+        kalshiParity.failed += 1;
+        continue;
+      }
+      kalshiParity.checked += 1;
+      const streamBook = books.get(ticker).book;
+      if (JSON.stringify(streamBook) === JSON.stringify(read.book)) {
+        kalshiParity.agreed += 1;
+        continue;
+      }
+      kalshiParity.disagreed += 1;
+      kalshiParity.lastDisagreement = { ticker, at: isoOrNull(now()), stream: topLevelsOf(streamBook), rest: topLevelsOf(read.book) };
+      logWarning(`kalshi stream: ${ticker}'s stream book differs from REST (stream ${JSON.stringify(topLevelsOf(streamBook))}, `
+        + `REST ${JSON.stringify(topLevelsOf(read.book))}); priced off REST`);
+      books.set(ticker, { book: read.book, from: "rest" });
+    }
+    if (kalshiParityCheckedAt.size > MAX_BACKGROUND_KALSHI_PARITY_TICKERS) {
+      for (const [ticker, at] of kalshiParityCheckedAt) if (now() - at > livePrices.LIVE_READ_MAX_AGE_MS) kalshiParityCheckedAt.delete(ticker);
+    }
+  }
+
+  // A parsed Kalshi book's best bid on each side, for a log line.
+  function topLevelsOf(book) {
+    return { yes: book.yesBids[0] || null, no: book.noBids[0] || null };
   }
 
   // Kalshi's books off the bets service's stream (POST /kalshi_books.json,
@@ -1857,6 +1915,11 @@ function createRunner(deps) {
         for (const ticker of chunk) books.set(ticker, { error: `Kalshi stream books unread: ${error.message}` });
         continue;
       }
+      const silence = kalshiStreamSilence(reply && reply.stream);
+      if (silence) {
+        for (const ticker of chunk) books.set(ticker, { error: silence });
+        continue;
+      }
       for (const ticker of chunk) {
         const view = reply && reply.books && typeof reply.books === "object" ? reply.books[ticker] : null;
         if (!view || !view.orderbook_fp || typeof view.orderbook_fp !== "object") {
@@ -1873,7 +1936,16 @@ function createRunner(deps) {
     return books;
   }
 
-  // ticker -> {book, from: "stream" | "rest"} | {error}: the stream's book
+  // Why the stream's books must not be priced (down, or silent too long), or null.
+  function kalshiStreamSilence(stream) {
+    if (!stream || stream.connected !== true) return `the Kalshi stream is down (${(stream && stream.error) || "not connected"})`;
+    if (typeof stream.lastFrameAgeMs !== "number" || stream.lastFrameAgeMs > KALSHI_STREAM_MAX_SILENCE_MS) {
+      return `the Kalshi stream's last frame is ${stream.lastFrameAgeMs} ms old (over ${KALSHI_STREAM_MAX_SILENCE_MS} ms)`;
+    }
+    return null;
+  }
+
+  // ticker -> {book, from: "stream" | "rest"} | {error, deferred?}: the stream's book
   // where it has one, else Kalshi's REST /orderbook for at most `restBudget`
   // tickers (in the order given); past it a ticker keeps the stream's error.
   async function readKalshiBooksStreamFirst(tickers, { priority = false, background = false, restBudget = Infinity } = {}) {
@@ -1885,7 +1957,7 @@ function createRunner(deps) {
       const read = streamed.get(ticker);
       if (read && read.book) books.set(ticker, { book: read.book, from: "stream" });
       else if (restTickers.length < restBudget) restTickers.push(ticker);
-      else books.set(ticker, { error: `${read ? read.error : "no stream read"}; its REST read waits a pass` });
+      else books.set(ticker, { deferred: true, error: `${read ? read.error : "no stream read"}; its REST read waits a pass` });
     }
     const rest = await readBooks(restTickers, readKalshiBook);
     for (const [ticker, read] of rest) {
@@ -2154,6 +2226,7 @@ function createRunner(deps) {
     return {
       startedAt: isoOrNull(liveLastPass.startedAt), finishedAt: isoOrNull(liveLastPass.finishedAt),
       rows: liveLastPass.rows, due: liveLastPass.due ?? null, reads: liveReads.size, error: liveLastPass.error, byVenue: liveLastPass.byVenue,
+      kalshiStreamParity: { ...kalshiParity },
     };
   }
 
@@ -2281,6 +2354,14 @@ function createRunner(deps) {
   // contract, answers {ok: false, reason, detail}; bad params are a 400.
   //   params  URLSearchParams {eventId, periodTypeId, betTypeId, sideIndex, points?}
   async function kalshiQuoteNow(params) {
+    const startedAt = now();
+    const answer = await kalshiQuoteOfParams(params);
+    logInfo(`kalshi quote ${params.get("eventId")} ${answer.label || `bet type ${params.get("betTypeId")} side ${params.get("sideIndex")} ${params.get("points")}`}: `
+      + `${answer.ok ? `ok ${answer.ticker} ${answer.side} @ ${answer.ask} (book from ${answer.bookFrom})` : `${answer.reason}: ${answer.detail}`} in ${now() - startedAt} ms`);
+    return answer;
+  }
+
+  async function kalshiQuoteOfParams(params) {
     const spec = kalshiLineSpecOf(params);
     const { board, reason, detail } = quoteBoardOf(spec);
     if (!board) return { ok: false, reason, detail };
@@ -2301,7 +2382,15 @@ function createRunner(deps) {
     } catch (error) {
       return { ok: false, ...position, reason: "no_book", detail: error.message };
     }
-    const bookRead = (await readKalshiBooksStreamFirst([contract.ticker], { priority: true })).get(contract.ticker);
+    let bookRead = (await readKalshiBooksStreamFirst([contract.ticker], { priority: true })).get(contract.ticker);
+    // An empty side on the stream is read again off REST: a misread stream must not refuse a real book.
+    if (bookRead.from === "stream" && !taker.quoteOf(bookRead.book, contract.side)) {
+      try {
+        bookRead = { book: await readKalshiBook(contract.ticker), from: "rest" };
+      } catch (error) {
+        return { ok: false, ...position, reason: "no_book", detail: `nothing rests on the stream's ${contract.side} side; REST: ${error.message}` };
+      }
+    }
     if (!bookRead.book) return { ok: false, ...position, reason: "no_book", detail: bookRead.error };
     const book = bookRead.book;
     position.bookFrom = bookRead.from;

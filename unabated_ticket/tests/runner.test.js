@@ -2992,20 +2992,48 @@ function kalshiStreamLiveRunner(kalshiBooks) {
 
 const kalshiBookReadsOf = (kalshi, ticker) => kalshi.calls.filter((url) => url.endsWith(`/markets/${ticker}/orderbook`)).length;
 
-test("kalshi stream: the live pass prices a Kalshi line off the stream's book, asked behind the rest with no wait, and reads no REST book for it", async () => {
-  const { runner, service, kalshi } = kalshiStreamLiveRunner(kalshiStreamBooks("0.4250"));
+test("kalshi stream: the live pass prices a Kalshi line off the stream's book, asked behind the rest with no wait; its one REST read is the parity check, which agrees", async () => {
+  const { runner, service, kalshi } = kalshiStreamLiveRunner(kalshiStreamBooks("0.4300"));
   await runner.start();
   await runner.livePricePass();
   const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => WSU36_KALSHI_KEY_RE.test(candidate.key));
   assert.equal(row.liveCheck, "live");
-  // 57.5c ask plus Kalshi's 7% x p x (1 - p) fee.
-  assert.equal(row.sourcePrice, 0.592106);
+  // 57c ask plus Kalshi's 7% x p x (1 - p) fee.
+  assert.equal(row.sourcePrice, 0.587157);
   const asks = service.posts.filter((post) => post.route === "/kalshi_books.json").map((post) => post.body);
   assert.equal(asks.length, 1);
   assert.equal(asks[0].tickers.includes(TAKER_TICKER), true);
   assert.deepEqual({ waitMs: asks[0].waitMs, priority: asks[0].priority, background: asks[0].background }, { waitMs: 0, priority: false, background: true });
-  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 0, "a stream book needs no REST orderbook read");
-  assert.equal(runner.health().livePrices.byVenue.kalshi.fromStream >= 1, true);
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 1, "one REST read: the parity check");
+  const health = runner.health().livePrices;
+  assert.deepEqual(health.kalshiStreamParity, { checked: 1, agreed: 1, disagreed: 0, failed: 0, lastDisagreement: null });
+  // The board's other Kalshi line (WSU -41.5) has no stream book yet, so it reads REST.
+  assert.deepEqual({ fromStream: health.byVenue.kalshi.fromStream, fromRest: health.byVenue.kalshi.fromRest }, { fromStream: 1, fromRest: 1 });
+  runner.stop();
+});
+
+test("kalshi stream: a stream book REST disagrees with is priced off REST, logged and counted", async () => {
+  const { runner } = kalshiStreamLiveRunner(kalshiStreamBooks("0.4250"));
+  await runner.start();
+  await runner.livePricePass();
+  const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => WSU36_KALSHI_KEY_RE.test(candidate.key));
+  assert.equal(row.sourcePrice, 0.587157, "REST's 57c, not the stream's 57.5c");
+  const health = runner.health().livePrices;
+  assert.equal(health.kalshiStreamParity.disagreed, 1);
+  assert.deepEqual(health.kalshiStreamParity.lastDisagreement.stream.no, { price: 0.425, quantity: 40 });
+  assert.deepEqual(health.kalshiStreamParity.lastDisagreement.rest.no, { price: 0.43, quantity: 40 });
+  assert.deepEqual({ fromStream: health.byVenue.kalshi.fromStream, fromRest: health.byVenue.kalshi.fromRest }, { fromStream: 0, fromRest: 2 });
+  runner.stop();
+});
+
+test("kalshi stream: a stream silent over 20 s is not priced; every line reads REST", async () => {
+  const silent = (body) => ({ ...kalshiStreamBooks("0.4250")(body), stream: { connected: true, lastFrameAgeMs: 21000, error: null } });
+  const { runner, kalshi } = kalshiStreamLiveRunner(silent);
+  await runner.start();
+  await runner.livePricePass();
+  assert.equal(edgeRowsOf(runner.edgesPayload()).find((candidate) => WSU36_KALSHI_KEY_RE.test(candidate.key)).sourcePrice, 0.587157);
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 1);
+  assert.equal(runner.health().livePrices.byVenue.kalshi.fromStream, 0);
   runner.stop();
 });
 
@@ -3055,6 +3083,15 @@ test("kalshi stream: the Place quote takes the stream's book (priority), and fal
   const ask = streamed.service.posts.find((post) => post.route === "/kalshi_books.json").body;
   assert.deepEqual(ask, { tickers: [TAKER_TICKER], waitMs: 1500, priority: true, background: false });
 
+  const emptySide = await quoteRunner({}, {}, WSU_UNABATED_START, { "/kalshi_books.json": (body) => ({
+    stream: { connected: true, lastFrameAgeMs: 100 },
+    books: Object.fromEntries(body.tickers.map((ticker) => [ticker, { orderbook_fp: { yes_dollars: [], no_dollars: [] }, ageMs: 0 }])),
+  }) });
+  const emptyQuote = await emptySide.runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  emptySide.runner.stop();
+  assert.deepEqual({ ok: emptyQuote.ok, ask: emptyQuote.ask, bookFrom: emptyQuote.bookFrom }, { ok: true, ask: 0.57, bookFrom: "rest" },
+    "an empty side on the stream is read again off REST, never refused on the stream's word");
+
   const fallback = await quoteRunner();
   const restQuote = await fallback.runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
   fallback.runner.stop();
@@ -3070,3 +3107,4 @@ test("kalshi stream: the taker's own pass never asks the stream (the bot stays o
   assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER) >= 1, true);
   runner.stop();
 });
+
