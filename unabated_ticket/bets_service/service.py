@@ -263,6 +263,9 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /tau.json, /live_prices.json  the server runner's pooled tail-flex tau and
                                     its live exchange price reads (extension/liveprices.js),
                                     passed through the same way for the panel
+           GET /ticket_line.json?key=...  the server runner's read of the open
+                                    Ticket's one line (the phone's 2 s refresh), query
+                                    string passed on, the same way
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
                                     the page loads under /ext/; the Bet Tracker,
@@ -1407,7 +1410,8 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
 
 
 # The runner's JSON routes the bets service passes through (one origin for the pages).
-RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json", "/tau.json", "/live_prices.json")
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json", "/tau.json", "/live_prices.json",
+                 "/ticket_line.json")
 # The runner's own answer about the request (no such open bet, a game gone
 # from the board) passes through as it came; any other failure is a 502.
 RUNNER_PASSTHROUGH_ERRORS = (400, 404)
