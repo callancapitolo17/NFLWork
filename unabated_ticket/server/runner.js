@@ -1993,8 +1993,9 @@ function createRunner(deps) {
       if (now() - held.at >= TICKET_FAILED_READ_HOLD_MS) ticketFailedReads.delete(key);
     }
     const failed = ticketFailedReads.get(row.key);
-    if (failed && now() - failed.at < TICKET_FAILED_READ_HOLD_MS) return failed.error;
     const last = liveReads.get(row.key);
+    // A read the live pass landed since the failure ends the hold.
+    if (failed && now() - failed.at < TICKET_FAILED_READ_HOLD_MS && !(last && last.readAtMs > failed.at)) return failed.error;
     if (last && (last.points ?? null) === (row.points ?? null) && now() - last.readAtMs < TICKET_REREAD_MIN_MS) return null;
     if (!ticketReadsInFlight.has(row.key)) {
       const reading = (async () => {
@@ -2026,9 +2027,9 @@ function createRunner(deps) {
 
   // GET /ticket_line.json?key=<line key>:
   //   {key, readAt, minEdgePct, minShrunkEdgePct, betsService: {sources},
-  //    row: rowView | null, underMinEdge, venueReadAtMs, readError, reason, detail}
+  //    row: rowView | null, underMinEdge, venueReadAtMs, readError, readingId, reason, detail}
   // row null: reason "gone" (off Unabated's board), "started", "empty" (its
-  // exchange book has nothing to buy) or "filtered" (a list gate other than
+  // exchange book has nothing to buy), "no_fair" or "filtered" (a list gate other than
   // Min edge drops it: off the board at its book, line age, liquidity, an alt
   // gate, the fair clamp, the settings' books or leagues). venueReadAtMs: when
   // the venue read the price shown was taken (null at a book with no venue
@@ -2040,10 +2041,14 @@ function createRunner(deps) {
     const board = feedState;
     if (!board || !scannerStatus || scannerStatus.phase !== "live") throw httpError(503, "the board is not live yet");
     const edgeSettings = settings.edgeSettings;
+    // What the answer was read off, so the phone counts each reading once
+    // toward closing the Ticket: a venue line's venue read, else the board
+    // snapshot (null: a venue line no read has reached, which never counts).
+    const boardReadingId = `board:${scannerStatus.snapshotBuiltAt ?? ""}`;
     const answer = (fields) => ({
       key, readAt: new Date(now()).toISOString(), minEdgePct: edgeSettings.minEdgePct, minShrunkEdgePct: edgeSettings.minShrunkEdgePct,
       betsService: { sources: betsStatus.sources ?? null }, row: null, underMinEdge: false, venueReadAtMs: null, readError: null,
-      reason: null, detail: null, ...fields,
+      readingId: boardReadingId, reason: null, detail: null, ...fields,
     });
     const line = board.lines[key];
     const event = line ? board.events[line.eventId] : null;
@@ -2052,10 +2057,12 @@ function createRunner(deps) {
     const readError = await readTicketLine(board, { ...feedLib.describeLine(line, board), liveCheck: null });
     const read = liveReads.get(key);
     const venueReadAtMs = read ? read.readAtMs : null;
+    const readingId = liveVenueOf(board, line.bookId) ? (read ? `venue:${read.readAtMs}` : null) : boardReadingId;
     const at = now();
     const fullView = liveLineView();
     const view = fullView ? fullView(line) : { line, liveCheck: null };
-    if (!view) return answer({ reason: "empty", detail: `nothing rests to buy at ${board.books[line.bookId].name}`, venueReadAtMs, readError });
+    if (!view) return answer({ reason: "empty", detail: `nothing rests to buy at ${board.books[line.bookId].name}`, venueReadAtMs, readError, readingId });
+    if (view.line.ge == null) return answer({ reason: "no_fair", detail: "Unabated has no fair price on this line now", venueReadAtMs, readError, readingId });
     const effective = edgeRows.effectiveFilter(edgeSettings, board, null, null);
     const [sized] = edgeRows.sizedEdgeRows(board, {
       edgeSettings: { ...edgeSettings, minShrunkEdgePct: 0 }, stakeSettings: settings.stakeSettings, effective, minEdgePct: -Infinity,
@@ -2063,12 +2070,12 @@ function createRunner(deps) {
       lineView: (candidate) => (candidate.key === key ? view : null), priceIndex: ticketPriceIndex(board, fullView, at),
     });
     if (!sized) {
-      return answer({ reason: "filtered", detail: "the line no longer passes your Edges settings (off the board, too old, too thin or an alt gate)", venueReadAtMs, readError });
+      return answer({ reason: "filtered", detail: "the line no longer passes your Edges settings (off the board, too old, too thin or an alt gate)", venueReadAtMs, readError, readingId });
     }
     // The list's own cuts: raw edge against Min edge (feed.selectEdges), shrunk edge against its floor.
     const underMinEdge = !(view.line.ge >= edgeSettings.minEdgePct / 100) || !edgeRows.meetsShrunkFloor(sized.shrunkEdgePct, edgeSettings.minShrunkEdgePct);
     const moveContext = { history, fillFairIndex, now: at };
-    return answer({ row: edgesPayload.rowView(sized, moveContext), underMinEdge, venueReadAtMs, readError });
+    return answer({ row: edgesPayload.rowView(sized, moveContext), underMinEdge, venueReadAtMs, readError, readingId });
   }
 
   // The /live_prices.json body (liveprices.createLineView's input): the read

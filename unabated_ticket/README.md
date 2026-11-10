@@ -2727,10 +2727,10 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   `{generatedAt, maxAgeMs, bookIds, reads: {lineKey: {venue, points, allIn, depthDollars, readAtMs} |
   {venue, points, empty: true, readAtMs}}, lastPass}`, the exchanges' live prices the Edges list is priced
   through (Live exchange prices above; the bets service passes it through). `GET /ticket_line.json?key=<line key>` →
-  `{key, readAt, minEdgePct, minShrunkEdgePct, betsService: {sources}, row, underMinEdge, venueReadAtMs, readError, reason, detail}`,
+  `{key, readAt, minEdgePct, minShrunkEdgePct, betsService: {sources}, row, underMinEdge, venueReadAtMs, readError, readingId, reason, detail}`,
   the phone's open Ticket (Live Ticket refresh below): that one line's venue book read now and the
   line answered as `/edges.json` would, with every list gate but Min edge and Min shrunk edge; `row`
-  null with `reason` `gone` / `started` / `empty` / `filtered`. `GET /health` →
+  null with `reason` `gone` / `started` / `empty` / `no_fair` / `filtered`. `GET /health` →
   `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
@@ -2846,7 +2846,8 @@ node unabated_ticket/server/runner.js                     # must be running too 
   with a note: `Live · read 2s ago`, or amber when the read is old or failed.
   Under Min edge on the newest read, Place is off; the Ticket closes (with a
   toast saying why) after two answers in a row under Min edge or with nothing to
-  bet, each off a new venue read, so one tick never closes it (Cal); a pause over
+  bet, each off a new reading (a venue read, or a board snapshot at a book with
+  none), so one tick never closes it (Cal); a pause over
   10 s starts the count again. A price or number that moves between Place and
   its confirm disarms it. Phone only; the panel's Ticket is unchanged.
 - **Reuse**: `phoneview.js` (pure, tested in `tests/phoneview.test.js`) formats

@@ -2778,7 +2778,7 @@ test("ticket line: a Kalshi line is read off its book at the ask and sized as ed
   assert.deepEqual([first.key, first.reason, first.underMinEdge, first.minEdgePct], [key, null, false, 1]);
   assert.equal(first.row.liveCheck, "live");
   assert.equal(first.row.sourcePrice, 0.587157);
-  assert.deepEqual([first.venueReadAtMs, first.readError], [TAKER_NOW, null]);
+  assert.deepEqual([first.venueReadAtMs, first.readError, first.readingId], [TAKER_NOW, null, `venue:${TAKER_NOW}`]);
   const listed = edgeRowsOf(runner.edgesPayload()).find((row) => row.key === key);
   assert.deepEqual(first.row, listed, "the Ticket's row is the Edges list's on the same read, field for field");
   clock.now += 1000;

@@ -373,16 +373,16 @@ test("a placed mark shows from the tap until the list's bets read is newer than 
 const TICKET_ROW = { key: "k", edgePct: 3.1, liveCheck: "live", liveReadAtMs: NOW - 1000 };
 const ticketAnswer = (fields = {}) => ({
   key: "k", row: TICKET_ROW, underMinEdge: false, minEdgePct: 2.5, minShrunkEdgePct: 0, venueReadAtMs: NOW - 1000, readError: null,
-  reason: null, detail: null, betsService: { sources: { kalshi: { okAt: "x" } } }, ...fields,
+  readingId: `venue:${NOW - 1000}`, reason: null, detail: null, betsService: { sources: { kalshi: { okAt: "x" } } }, ...fields,
 });
-const underAt = (readAt) => ticketAnswer({ underMinEdge: true, venueReadAtMs: readAt, row: { ...TICKET_ROW, edgePct: 2.1, liveReadAtMs: readAt } });
+const underAt = (readAt) => ticketAnswer({ underMinEdge: true, venueReadAtMs: readAt, readingId: `venue:${readAt}`, row: { ...TICKET_ROW, edgePct: 2.1, liveReadAtMs: readAt } });
 
 test("ticket live: two new reads in a row under Min edge close the Ticket; one does not, and a good read resets the count", () => {
   let live = phoneView.ticketLiveStep(null, underAt(NOW), NOW);
   assert.deepEqual([live.misses, phoneView.ticketShouldClose(live), phoneView.ticketUnderMinEdge(live, NOW)], [1, false, true]);
   assert.deepEqual(phoneView.ticketLiveNote(live, NOW),
     { text: "Edge +2.10% is under your 2.5% Min edge. Place is off; closing if it stays there.", tone: "warn" });
-  live = phoneView.ticketLiveStep(live, ticketAnswer({ venueReadAtMs: NOW + 2000 }), NOW + 2000);
+  live = phoneView.ticketLiveStep(live, ticketAnswer({ venueReadAtMs: NOW + 2000, readingId: `venue:${NOW + 2000}` }), NOW + 2000);
   assert.equal(live.misses, 0, "one read back over resets it");
   live = phoneView.ticketLiveStep(live, underAt(NOW + 4000), NOW + 4000);
   live = phoneView.ticketLiveStep(live, underAt(NOW + 6000), NOW + 6000);
@@ -404,11 +404,20 @@ test("ticket live: two answers off the same venue read (the next read failed) co
   assert.deepEqual([live.misses, live.error, live.answeredAt], [1, "HTTP 502", NOW + 32000]);
 });
 
-test("ticket live: nothing to bet counts toward closing and says why; a sportsbook line counts every answer", () => {
-  const empty = ticketAnswer({ row: null, reason: "empty", detail: "nothing rests to buy at Novig", venueReadAtMs: null });
-  let live = phoneView.ticketLiveStep(null, empty, NOW);
+test("ticket live: nothing to bet counts toward closing and says why; a sportsbook line counts once per board snapshot; no reading never counts", () => {
+  const empty = (readAt) => ticketAnswer({ row: null, reason: "empty", detail: "nothing rests to buy at Novig", venueReadAtMs: readAt, readingId: `venue:${readAt}` });
+  let live = phoneView.ticketLiveStep(null, empty(NOW), NOW);
   assert.deepEqual(phoneView.ticketLiveNote(live, NOW), { text: "Nothing rests to buy at Novig. Closing if it stays that way.", tone: "bad" });
-  live = phoneView.ticketLiveStep(live, empty, NOW + 2000);
+  const board = (builtAt) => ticketAnswer({ underMinEdge: true, row: { ...TICKET_ROW, liveCheck: null }, venueReadAtMs: null, readingId: `board:${builtAt}` });
+  let book = phoneView.ticketLiveStep(null, board(1), NOW);
+  book = phoneView.ticketLiveStep(book, board(1), NOW + 2000);
+  assert.deepEqual([book.misses, phoneView.ticketShouldClose(book)], [1, false], "the same snapshot twice is one reading");
+  book = phoneView.ticketLiveStep(book, board(2), NOW + 4000);
+  assert.equal(phoneView.ticketShouldClose(book), true);
+  let unread = phoneView.ticketLiveStep(null, ticketAnswer({ underMinEdge: true, readingId: null, readError: "stream down" }), NOW);
+  unread = phoneView.ticketLiveStep(unread, ticketAnswer({ underMinEdge: true, readingId: null, readError: "stream down" }), NOW + 2000);
+  assert.deepEqual([unread.misses, phoneView.ticketUnderMinEdge(unread, NOW + 2000)], [0, true], "no reading: Place off, nothing counted");
+  live = phoneView.ticketLiveStep(live, empty(NOW + 2000), NOW + 2000);
   assert.equal(phoneView.ticketShouldClose(live), true);
   assert.equal(phoneView.ticketClosedText(live), "Ticket closed: nothing rests to buy at Novig.");
 });

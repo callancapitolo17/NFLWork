@@ -495,8 +495,9 @@
   // and answers the line as the Edges list would, with no Min edge cut. The
   // Ticket shows the newest answer while it is under TICKET_LIVE_MAX_AGE_MS old
   // (else the list's row), and closes after TICKET_CLOSE_AFTER_READS answers in
-  // a row with the edge under Min edge or nothing to bet, each off a new venue
-  // read (Cal: one tick across the line never closes it). A pause (page hidden,
+  // a row with the edge under Min edge or nothing to bet, each off a new
+  // reading (a new venue read, or a new board snapshot at a book with none;
+  // Cal: one tick across the line never closes it). A pause (page hidden,
   // failed asks) longer than TICKET_LIVE_MAX_AGE_MS starts the count again.
   const TICKET_POLL_MS = 2 * 1000;
   const TICKET_CLOSE_AFTER_READS = 2;
@@ -506,19 +507,20 @@
 
   // The live state after one answer, or after a failed ask (`error`, the answer null).
   //   state  {row, detail, underMinEdge, minEdgePct, minShrunkEdgePct, sources, readError,
-  //           misses, missReadAtMs (the venue read the last miss was counted on), answeredAt, error}
+  //           misses, missReading (the reading the last miss was counted on), answeredAt, error}
   function ticketLiveStep(live, answer, at, error = null) {
-    if (error) return { ...(live || { row: null, misses: 0, missReadAtMs: null, answeredAt: null }), error };
+    if (error) return { ...(live || { row: null, misses: 0, missReading: null, answeredAt: null }), error };
     const counting = ticketLiveFresh(live, at) ? live : null;
     const miss = !answer.row || answer.underMinEdge === true;
-    const readAt = answer.venueReadAtMs ?? null;
-    const sameRead = Boolean(counting && readAt != null && readAt === counting.missReadAtMs);
-    const misses = !miss ? 0 : (counting ? counting.misses : 0) + (sameRead ? 0 : 1);
+    // readingId: what the runner read the answer off (a venue read or the board snapshot); null never counts.
+    const reading = answer.readingId ?? null;
+    const counts = reading != null && !(counting && reading === counting.missReading);
+    const misses = !miss ? 0 : (counting ? counting.misses : 0) + (counts ? 1 : 0);
     return {
       row: answer.row || null, detail: answer.detail || null, underMinEdge: answer.underMinEdge === true,
       minEdgePct: answer.minEdgePct ?? null, minShrunkEdgePct: answer.minShrunkEdgePct ?? null,
       sources: answer.betsService ? answer.betsService.sources ?? null : null, readError: answer.readError || null,
-      misses, missReadAtMs: miss ? readAt : null, answeredAt: at, error: null,
+      misses, missReading: miss ? reading : null, answeredAt: at, error: null,
     };
   }
 
