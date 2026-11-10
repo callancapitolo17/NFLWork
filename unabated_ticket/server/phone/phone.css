@@ -580,7 +580,7 @@ button, select, input { font: inherit; color: inherit; }
   padding: 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--ground); box-shadow: 0 10px 28px rgba(0, 0, 0, .3); }
 .sheet-panel .toasts.dropped { display: flex; }
 .sheet-panel .toast { box-shadow: none; }
-.toast-chip { min-width: 0; padding: 4px 12px; font-size: 13px; text-align: right; }
+.toast-chip { flex: 0 1 auto; min-width: 0; padding: 4px 12px; font-size: 13px; text-align: right; }
 .toast-chip.chip-ok { background: color-mix(in srgb, var(--edge-strong) 14%, var(--ground)); color: var(--edge-strong); }
 .toast-chip.chip-warn { background: var(--warn-bg); color: var(--warn-fg); }
 .toast-chip.chip-bad { background: var(--against-bg); color: var(--against-fg); }
