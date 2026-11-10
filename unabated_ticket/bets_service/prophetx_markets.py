@@ -19,6 +19,13 @@ Market Data guide and the v4 schemas; NOT a live capture):
                a buyer takes (mlb_sgp/prophetx.py reads the top entry as the
                standalone price); `quantity` is the money resting there.
   periods      only in the market's name ("1st Half Spread").
+  sub_type     live read 2026-11-10 (Kent State @ Bowling Green): the game
+               total is "total"; team totals "team_total_points"; player
+               props "player_total_receiving_yards" etc., which also carry a
+               player_id and are typed "total" with names like "Winn Sharp
+               Receiving Yards" (no word "player"). Spread and moneyline
+               sub_types are unread, so props are dropped by what marks them
+               (game_line_market), not by a list of game sub_types.
 
 Unverified until the first live reads, and so failing closed: whether a spread
 offer's `strike` is its own side's number (+3.5 on the dog) or the market's
@@ -44,6 +51,8 @@ OTHER_PERIOD_RE = re.compile(
     r"\b(2nd|second|3rd|third|4th|fourth)\s+(half|quarter|period)\b|\b(1st|first)\s+(quarter|period|inning)\b"
     r"|\bquarter\b|\binning\b|\bovertime\b|\bteam total\b|\bplayer\b", re.IGNORECASE)
 TEAM_SIDES = ("away", "home")
+# Narrow on purpose: spread and moneyline sub_types are unread, and a bare "team" could name a game line.
+NOT_GAME_LINE_SUB_TYPE_WORDS = ("player", "team_total")
 
 
 def _text(value: object) -> str:
@@ -98,6 +107,14 @@ def period_of(market: dict, league: str) -> str | None:
     if HALF_RE.search(name):
         return "F5" if league == "mlb" else "1H"
     return "FG"
+
+
+def game_line_market(market: dict) -> bool:
+    """False for a player prop or a team total: a player_id, or a sub_type naming either."""
+    if market.get("player_id") not in (None, "", 0):
+        return False
+    sub_type = _text(market.get("sub_type")).lower()
+    return not any(word in sub_type for word in NOT_GAME_LINE_SUB_TYPE_WORDS)
 
 
 def sub_markets_of(market: dict) -> list[dict]:
@@ -186,7 +203,7 @@ def lines_of_event(event: dict, markets: list[dict]) -> list[dict] | str:
     """Every side of every game market of one game as a board line: [{league,
     betType, period, side, points, strike_id, otherStrikeId (the same pair's
     other side), marketId, ladder, awayTeam, homeTeam}], or what made the game unreadable. Markets whose period or
-    sides do not read are left out, never guessed."""
+    sides do not read, and player props and team totals (game_line_market), are left out, never guessed."""
     league = league_of(event)
     if league is None:
         return f"league not supported ({event.get('tournament_name') or event.get('tournament_id')})"
@@ -197,12 +214,14 @@ def lines_of_event(event: dict, markets: list[dict]) -> list[dict] | str:
     seen_strikes: set[str] = set()
     for market in markets:
         bet_type = BET_TYPES.get(_text(market.get("type")).lower())
-        if bet_type is None:
+        if bet_type is None or not game_line_market(market):
             continue
         period = period_of(market, league)
         if period is None:
             continue
         for sub in sub_markets_of(market):
+            if not game_line_market(sub):
+                continue
             sides = sides_of_market(sub, bet_type, teams)
             if isinstance(sides, str):
                 continue
