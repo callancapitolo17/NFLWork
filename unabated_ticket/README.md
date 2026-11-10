@@ -2815,6 +2815,9 @@ node unabated_ticket/server/runner.js                     # must be running too 
   follows the order in a toast above the tab bar (`Placing $X on <bet> at
   <venue>…`, then the service's reply), so several Places can run while you
   browse; a fill fades after 8 s, a refusal or an unsure reply stays until ✕.
+  While a Ticket is open the toasts fold into one chip beside Close
+  (`✓ 1 filled · 1 placing`, red on a refusal, amber on no answer) so they
+  never cover the Ticket; a tap drops them down under it (2026-11-10).
   A toast lives in the open page only: leave Safari mid-Place and the bet still
   goes through, but its result shows on Bets, not as a toast.
   **Already-bet lines (2026-11-09)**: the row a Place was sent from (a

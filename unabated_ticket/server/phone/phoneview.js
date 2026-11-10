@@ -620,6 +620,28 @@
     return `Placing ${fmtDollars(stakeDollars)} on ${sideLabel} at ${venueName}\u2026`;
   }
 
+  // The chip on an open Ticket that the Place toasts fold into (Cal
+  // 2026-11-10: the stack covered the Ticket). `tones` is each toast's tone;
+  // returns {text, tone} with the worst outcome first and the chip's tone the
+  // worst one (a refusal reads red, an unsure reply amber), or null with none.
+  const TOAST_CHIP_PARTS = [
+    { tones: ["refused", "bad"], word: "refused", mark: "\u26a0 " },
+    { tones: ["warn"], word: "no answer", mark: "\u26a0 " },
+    { tones: ["ok"], word: "filled", mark: "\u2713 " },
+    { tones: ["wait"], word: "placing", mark: "" },
+  ];
+
+  function toastChipView(tones) {
+    const parts = [];
+    for (const part of TOAST_CHIP_PARTS) {
+      const count = tones.filter((tone) => part.tones.includes(tone)).length;
+      if (count > 0) parts.push({ text: `${part.mark}${count} ${part.word}`, tone: part.tones[0] });
+    }
+    if (parts.length === 0) return null;
+    const worst = parts[0].tone;
+    return { text: parts.map((part) => part.text).join(" \u00b7 "), tone: worst === "refused" ? "bad" : worst };
+  }
+
   // ---- lines already bet (Cal 2026-11-09) ----------------------------------
   // A line bet to full size ("add $0", stakeRail's atSize) leaves the Edges
   // list: it has nothing left to do and kept Cal guessing what he had placed.
@@ -722,7 +744,7 @@
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
-    placeToastPlacingText, placeToastHideAfterMs, freePlayStake,
+    placeToastPlacingText, placeToastHideAfterMs, toastChipView, freePlayStake,
     withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 

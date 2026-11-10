@@ -323,6 +323,15 @@ test("place toasts: the placing line names stake, bet and venue; only a fill fad
   for (const tone of ["wait", "refused", "warn", "bad"]) assert.equal(phoneView.placeToastHideAfterMs(tone), null);
 });
 
+test("toast chip: folds every Place toast into one line, worst outcome first and in the chip's tone", () => {
+  assert.equal(phoneView.toastChipView([]), null);
+  assert.deepEqual(phoneView.toastChipView(["ok", "wait"]), { text: "\u2713 1 filled \u00b7 1 placing", tone: "ok" });
+  assert.deepEqual(phoneView.toastChipView(["wait"]), { text: "1 placing", tone: "wait" });
+  assert.deepEqual(phoneView.toastChipView(["ok", "refused", "bad", "wait"]),
+    { text: "\u26a0 2 refused \u00b7 \u2713 1 filled \u00b7 1 placing", tone: "bad" });
+  assert.deepEqual(phoneView.toastChipView(["warn", "ok"]), { text: "\u26a0 1 no answer \u00b7 \u2713 1 filled", tone: "warn" });
+});
+
 test("free play: the box takes the stake capped at the balance and the payout cap, and says what free play is worth", () => {
   const freePlay = { ok: true, freePlay: 530, maxPayout: 1000, oddsLimit: 800 };
   assert.equal(phoneView.freePlayStake(100, freePlay, 100 / 110), 100);

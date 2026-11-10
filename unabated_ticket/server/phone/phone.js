@@ -100,7 +100,7 @@
     ticketVenuePlace: el("ticket-venue-place"), ticketVenueRow: el("ticket-venue-row"), ticketVenueStake: el("ticket-venue-stake"),
     ticketVenueButtons: el("ticket-venue-buttons"), ticketVenueMsg: el("ticket-venue-msg"), ticketFoot: el("ticket-foot"),
     ticketFp: el("ticket-fp"), ticketFpInput: el("ticket-fp-input"), ticketFpLabel: el("ticket-fp-label"), ticketFpNote: el("ticket-fp-note"),
-    toasts: el("toasts"),
+    toasts: el("toasts"), toastChip: el("toast-chip"), sheetPanel: document.querySelector(".sheet-panel"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
     teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
     teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
@@ -678,6 +678,7 @@
     state.ticket = { rowKey, cardKey, last: null, opened: null, booksOpen: false };
     view.sheet.hidden = false;
     document.body.classList.add("sheet-open");
+    foldToastsIntoTicket(true);
     renderTicket(Date.now());
   }
 
@@ -685,6 +686,7 @@
     state.ticket = null;
     view.sheet.hidden = true;
     document.body.classList.remove("sheet-open");
+    foldToastsIntoTicket(false);
   }
 
   function renderTicket(now) {
@@ -941,7 +943,7 @@
   }
 
   // ---- Place toasts ---------------------------------------------------------
-  // One per Place, stacked above the tab bar and over the Ticket sheet. Tone is
+  // One per Place, stacked above the tab bar; folded into a chip on an open Ticket. Tone is
   // "wait" while placing, then place.js replyTone's; only a fill fades on its own.
   function showToast(text, tone) {
     const toast = makeEl("div", "toast");
@@ -965,6 +967,28 @@
     }
     const hideAfterMs = phoneView.placeToastHideAfterMs(tone);
     if (hideAfterMs != null) setTimeout(() => toast.remove(), hideAfterMs);
+  }
+
+  // While a Ticket is open its toasts live in the sheet as a drop-down under
+  // the chip, so nothing covers the Ticket; closed, they are the bottom stack again.
+  function foldToastsIntoTicket(folded) {
+    if (view.toasts.classList.contains("dropped")) view.toasts.classList.remove("dropped");
+    if (folded) view.toastChip.after(view.toasts);
+    else document.body.insertBefore(view.toasts, view.sheet);
+    renderToastChip();
+  }
+
+  function renderToastChip() {
+    const tones = Array.from(view.toasts.children, (toast) => Array.from(toast.classList).find((name) => name !== "toast"));
+    const chip = state.ticket ? phoneView.toastChipView(tones) : null;
+    view.toastChip.hidden = !chip;
+    // Only when it is set: the observer below sees every class write, even one that changes nothing.
+    if (!chip && view.toasts.classList.contains("dropped")) view.toasts.classList.remove("dropped");
+    if (chip) {
+      view.toastChip.className = `toast-chip ${chip.tone}`;
+      view.toastChip.textContent = chip.text;
+    }
+    view.toastChip.setAttribute("aria-expanded", String(view.toasts.classList.contains("dropped")));
   }
 
   // Another line of the same card: rung, book and price, its edge and standalone stake. Tap to open it.
@@ -1912,6 +1936,20 @@
     renderAll();
   });
   view.sheetClose.addEventListener("click", closeTicket);
+  view.toastChip.addEventListener("click", () => {
+    view.toasts.classList.toggle("dropped");
+    renderToastChip();
+  });
+  // A tap anywhere else on the Ticket folds the drop-down again.
+  view.sheetPanel.addEventListener("click", (event) => {
+    // composedPath, not contains: a toast's ✕ has already removed it by the time the tap reaches here.
+    const path = event.composedPath();
+    if (!view.toasts.classList.contains("dropped") || path.includes(view.toastChip) || path.includes(view.toasts)) return;
+    view.toasts.classList.remove("dropped");
+    renderToastChip();
+  });
+  // Every toast change (added, answered, faded, dismissed) redraws the chip.
+  new MutationObserver(renderToastChip).observe(view.toasts, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
   view.sheetBackdrop.addEventListener("click", closeTicket);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.ticket) closeTicket();
