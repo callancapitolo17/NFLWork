@@ -3322,7 +3322,8 @@ subaccount's other pot with the bot's own key (`kalshi_shards.top_up_bot_pot`,
 ONE transfer, never re-sent: a subaccount transfer takes no idempotency id; the
 other pot is not read first, since 2026-11-09, because Kalshi answered that
 second balance read with HTTP 429 and no money moved from 2026-11-06 on),
-wait up to 5 s for Kalshi to finish it, and send the order ONCE more as
+pause 1 s (the locked key gets HTTP 403 from Kalshi's transfer status
+endpoint, so it cannot ask whether the move finished), and send the order ONCE more as
 `<id>-r` (`taker_orders.retry_order_id`), re-checking the decision's age and
 the start first; a second refusal is not resent.
 A locked key's transfer can only name its own subaccount on both ends, so no

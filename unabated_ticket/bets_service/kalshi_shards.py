@@ -52,6 +52,9 @@ TRANSFER_STATUS_PATH = "/portfolio/intra_exchange_instance_transfers"
 # waits this long for "complete" before giving up without ordering.
 TRANSFER_WAIT_SEC = 5.0
 TRANSFER_POLL_SEC = 0.25
+# A subaccount-locked key gets HTTP 403 from the transfer status endpoint, so
+# the bot pauses this long after Kalshi accepts its move, then resends.
+BOT_TRANSFER_SETTLE_SEC = 1.0
 # The main account's balance read meets Kalshi's rate limit now and then: one
 # retry, then the order goes without the check (Kalshi still refuses a short pot).
 RATE_LIMITED = 429
@@ -158,9 +161,9 @@ def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], 
 def _transfer(client: KalshiOrderClient, source: int, shard: int, shortfall_cents: int, pot_cash: float,
               sleep: Callable[[float], None], monotonic: Callable[[], float], subaccount: int | None = None) -> TopUp:
     """ONE transfer of `shortfall_cents` from pot `source` to pot `shard`, then
-    a wait for Kalshi to finish it. Never re-sent: a subaccount's transfer
-    takes no client_transfer_id (Kalshi rejects it there), so a resend could
-    move the money twice."""
+    a wait for Kalshi to finish it (for a subaccount, a fixed pause instead).
+    Never re-sent: a subaccount's transfer takes no client_transfer_id (Kalshi
+    rejects it there), so a resend could move the money twice."""
     name = shard_name(shard)
     amount = shortfall_cents / 100
     body = {"source": "event_contract", "destination": "event_contract",
@@ -193,6 +196,9 @@ def _transfer(client: KalshiOrderClient, source: int, shard: int, shortfall_cent
                              f"{shard_name(source)} pot failed "
                              f"(HTTP {status}{': ' + _error_text(reply) if _error_text(reply) else ''}).")
     log.info("kalshi pots: %smoving $%.2f from pot %d to pot %d (transfer %s)", whose, amount, source, shard, transfer_id)
+    if subaccount is not None:
+        sleep(BOT_TRANSFER_SETTLE_SEC)
+        return TopUp(note=f"sent ${amount:.2f} into the {name} pot first")
     deadline = monotonic() + TRANSFER_WAIT_SEC
     while True:
         if _transfer_complete(client, transfer_id):
