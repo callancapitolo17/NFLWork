@@ -1859,8 +1859,8 @@ function createRunner(deps) {
   }
 
   // Up to KALSHI_PARITY_CHECKS_PER_PASS of `books`' stream books, the longest
-  // unchecked first, read again off REST and compared side by side (every
-  // level's price and size). A disagreement is logged and that ticker's book
+  // unchecked first, read again off REST and compared side by side (each
+  // side's best bid, price and size). A disagreement is logged and that ticker's book
   // replaced by the REST one (the newer read); /health counts both.
   async function checkKalshiStreamParity(books) {
     const streamed = Array.from(books).filter(([, read]) => read.from === "stream").map(([ticker]) => ticker)
@@ -1877,7 +1877,8 @@ function createRunner(deps) {
       }
       kalshiParity.checked += 1;
       const streamBook = books.get(ticker).book;
-      if (JSON.stringify(streamBook) === JSON.stringify(read.book)) {
+      // Top of book only: the REST read lands a round trip later, so deeper levels on a busy market differ for no fault.
+      if (JSON.stringify(topLevelsOf(streamBook)) === JSON.stringify(topLevelsOf(read.book))) {
         kalshiParity.agreed += 1;
         continue;
       }

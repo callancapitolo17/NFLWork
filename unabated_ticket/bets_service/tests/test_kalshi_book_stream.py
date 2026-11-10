@@ -324,11 +324,47 @@ def test_a_market_limit_on_an_add_closes_that_subscription_and_places_the_market
 def test_a_market_limit_on_a_subscribe_halves_the_subscriptions(made, monkeypatch):
     stream, _connection, clock, _signer = made
     monkeypatch.setattr(kbs, "MARKETS_PER_SUBSCRIPTION", 4)
+    monkeypatch.setattr(kbs, "MIN_MARKETS_PER_SUBSCRIPTION", 1)
     stream.books_for(["A", "B", "C", "D"], 0.0)
     (frame,) = tick(stream, clock)
     handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 26, "msg": "per-subscription market limit exceeded"}})
     assert stream.status()["marketsPerSubscription"] == 2
     assert [tick(stream, clock)[0]["params"]["market_tickers"] for _ in range(2)] == [["A", "B"], ["C", "D"]]
+
+
+def test_a_market_limit_on_a_small_subscribe_refuses_its_markets_instead_of_halving_for_ever(made):
+    stream, _connection, clock, _signer = made
+    stream.books_for(["A", "B"], 0.0)
+    (frame,) = tick(stream, clock)
+    handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 26, "msg": "per-subscription market limit exceeded"}})
+    assert stream.status()["marketsPerSubscription"] == kbs.MARKETS_PER_SUBSCRIPTION
+    assert "code 26" in view(stream, "A")["error"]
+    assert tick(stream, clock) == [], "refused for a minute, not sent again at once"
+
+
+def test_an_error_for_an_add_sent_before_its_subscription_was_renewed_is_ignored(made, monkeypatch):
+    stream, _connection, clock, _signer = made
+    monkeypatch.setattr(kbs, "RENEW_SEC", 30)
+    subscribe(stream, clock)
+    old_add = add(stream, clock)
+    frames = tick(stream, clock, kbs.RENEW_SEC)
+    resubscribe = frames[-1]
+    assert resubscribe["params"]["market_tickers"] == [DUQ, WSU]
+    handle(stream, subscribed(resubscribe["id"], 12), snapshot(12, 1, DUQ),
+           {"id": old_add["id"], "type": "error", "msg": {"code": 7, "msg": "Unknown subscription ID"}})
+    assert "orderbook_fp" in view(stream, DUQ), "the renewed subscription's book stands"
+
+
+def test_a_resubscribe_further_off_than_any_wait_is_not_waited_for(made):
+    stream, _connection, clock, _signer = made
+    subscribe(stream, clock)
+    for seq in (3, 1):
+        handle(stream, delta(11, seq + 10, "0.4300", "1.00"))
+        tick(stream, clock, 0.3)
+    with stream._cond:
+        stream._groups[0]["resyncAfter"] = clock.now + kbs.MAX_WAIT_SEC + 1
+    answer = stream._view_of(WSU)
+    assert "resubscribing" in answer["error"] and "pending" not in answer
 
 
 def test_a_rate_limit_pauses_commands_and_asks_the_markets_again(made):

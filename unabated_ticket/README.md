@@ -3947,7 +3947,8 @@ prod). The runner asks `POST /kalshi_books.json` (loopback only) for the
 tickers it needs: each is subscribed on the `orderbook_delta` channel on first
 ask (a reread's or Place quote's first, the live pass's last and at most 900),
 packed into at most 20 subscriptions of 50 markets (Kalshi publishes no limit:
-error 26 on a subscribe halves that for the stream, on an add closes that
+error 26 on a subscribe halves that for the connection, down to 5, below
+which its markets are refused for a minute; on an add it closes that
 subscription), new markets added with `update_subscription add_markets`. One
 command goes out at most every 0.2 s; Kalshi's rate-limit refusal (error 27)
 pauses commands 5 s and asks the markets again. Kalshi sends each market's
@@ -3956,7 +3957,8 @@ snapshot then every change; a book is served as the REST `/orderbook`'s
 `seq`. A gap (or a delta before its snapshot, or a level below zero)
 resubscribes the whole subscription, after a gap that starts at 1 s and
 doubles while gaps keep coming (to 60 s), serving none of its books until the
-fresh snapshots land; a crossed book is never served; a snapshot whose sides
+fresh snapshots land (a reread or Place waits for them only when they are due
+within 3 s); a crossed book is never served; a snapshot whose sides
 come under other yes/no names drops the connection rather than serve an empty
 book. Every subscription is renewed every 10 min for fresh snapshots (a stream
 that quietly stopped sending would look like a still market). Three
@@ -3971,7 +3973,7 @@ REST: the live pass reads at most 120 REST books a pass (the rest wait a pass,
 uncounted); a reread and the Place quote (`GET /kalshi_quote.json`) wait up to
 1.5 s for a market the stream was not watching, then read REST. A Place quote
 whose stream book has nothing on its side reads REST too. Each pass also reads
-2 stream books off REST and compares every level (round robin); a ticker whose
+2 stream books off REST and compares each side's best bid (round robin); a ticker whose
 two reads differ is priced off REST and logged. The Place quote's market check
 stays REST, and it logs `kalshi quote ...` with where its book came from.
 **The automated taker stays on REST** (its decisions are unchanged). `/health`
