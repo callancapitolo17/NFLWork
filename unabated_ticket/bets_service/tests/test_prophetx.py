@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from unabated_ticket.bets_service import prophetx_markets
+from unabated_ticket.bets_service import prophetx_place as prophetx_place_module
 from unabated_ticket.bets_service.prophetx_client import ProphetXBlocked, ProphetXClient, ProphetXError, fill_or_kill_body
 from unabated_ticket.bets_service.prophetx_place import (ManualProphetXDesk, settle_unconfirmed_place_orders,
                                                          teams_mismatch,
@@ -66,6 +67,30 @@ def test_every_game_market_side_reads_as_a_board_line():
         "i" * 32: ("spread", "1H", "away", 1.5), "j" * 32: ("spread", "1H", "home", -1.5),
     }, "the quarter market is left out, never read as a full game"
     assert {line["awayTeam"] for line in lines} == {"Buffalo Bills"}
+
+
+# Live read 2026-11-10 (Kent State @ Bowling Green): props and team totals are typed
+# "total" like the game total; their names carry no "player" or "team total".
+TOTAL_ALT_38_5 = {"id": 903, "name": "Total Points", "type": "total", "sub_type": "total", "selections": [
+    [offer("k" * 32, 150, 100, None, "Over 38.5", 38.5)],
+    [offer("l" * 32, 170, 100, None, "Under 38.5", 38.5)],
+]}
+PLAYER_PROP = {"id": 1700062016, "name": "Winn Sharp Receiving Yards", "type": "total",
+               "sub_type": "player_total_receiving_yards", "player_id": 1700046736, "category_name": "Receiving Yards",
+               "selections": [[offer("m" * 32, -110, 100, None, "Over 38.5", 38.5)],
+                              [offer("n" * 32, -110, 100, None, "Under 38.5", 38.5)]]}
+PLAYER_PROP_NO_ID = {**PLAYER_PROP, "id": 1700062017, "player_id": None, "selections": [
+    [offer("o" * 32, -110, 100, None, "Over 38.5", 38.5)], [offer("p" * 32, -110, 100, None, "Under 38.5", 38.5)]]}
+TEAM_TOTAL = {"id": 1700053934, "name": "Kansas City Chiefs Points", "type": "total", "sub_type": "team_total_points",
+              "selections": [[offer("q" * 32, -110, 100, None, "Over 38.5", 38.5)],
+                             [offer("r" * 32, -110, 100, None, "Under 38.5", 38.5)]]}
+
+
+def test_player_props_and_team_totals_are_not_read_as_game_totals():
+    markets = [{**TOTAL, "sub_type": "total", "market_strikes": [TOTAL_ALT_38_5, {**PLAYER_PROP, "id": 903}]},
+               PLAYER_PROP, PLAYER_PROP_NO_ID, TEAM_TOTAL]
+    lines = prophetx_markets.lines_of_event(EVENT, markets)
+    assert sorted(line["strike_id"] for line in lines) == ["g" * 32, "h" * 32, "k" * 32, "l" * 32]
 
 
 def test_a_main_number_listed_again_under_its_alt_numbers_is_one_line():
@@ -544,7 +569,8 @@ def test_the_same_click_is_never_sent_twice(store):
     ({"line": {**LINE, "betType": "total", "side": "over", "points": 47.5, "awayTeam": "Miami Dolphins", "awayTeamId": "3"}},
      {}, "does not read as"),
     ({"line": {**LINE, "homeTeamId": None}}, {}, "names no team ids"),
-    ({"lineStrikeId": "e" * 32}, {}, "is not the one"),
+    ({"lineStrikeId": "e" * 32}, {}, "reads as away 2.5 FG spread on ProphetX, not"),
+    ({"lineStrikeId": "z" * 32}, {}, "is not among ProphetX's game lines"),
     ({"line": {**LINE, "betType": "moneyline", "period": "1H", "points": None}}, {}, "tied period"),
     ({"ok": False, "detail": "the board holds 0 ProphetX lines"}, {}, "the board holds 0"),
     ({}, {"markets": [{**SPREAD, "selections": [[offer("c" * 32, -110, 0, 12, "Buffalo Bills", 3.5, "+3.5")],
@@ -863,3 +889,14 @@ def test_live_place_refuses_a_game_prophetx_does_not_show_live_a_stale_fair_and_
 def test_a_pregame_click_still_refuses_a_game_prophetx_shows_live(store):
     result = desk_with(store, ScriptedProphetX(events=[LIVE_EVENT])).place(validate_prophetx_place_request(BODY))
     assert result == {"status": "refused", "message": "Not placed: the game has started."}
+
+
+def test_unabated_strike_id_picks_the_line_and_must_read_as_it():
+    under = {**LINE, "betType": "total", "side": "under", "points": 38.5}
+    two_reads = [{"strike_id": "l" * 32, "betType": "total", "period": "FG", "side": "under", "points": 38.5},
+                 {"strike_id": "n" * 32, "betType": "total", "period": "FG", "side": "under", "points": 38.5}]
+    wanted = prophetx_place_module.board_line_of(under)
+    assert prophetx_place_module.line_target(two_reads, wanted, "l" * 32, "under 38.5 FG", 1)["strike_id"] == "l" * 32
+    assert "2 ProphetX strikes" in prophetx_place_module.line_target(two_reads, wanted, None, "under 38.5 FG", 1)
+    over = prophetx_place_module.board_line_of({**under, "side": "over"})
+    assert "not over 38.5 FG" in prophetx_place_module.line_target(two_reads, over, "l" * 32, "over 38.5 FG", 1)

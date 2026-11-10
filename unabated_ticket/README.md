@@ -3992,7 +3992,10 @@ does not read fails closed with the reason.
   once (`prophetx_markets.py` reads a strike as a board line: the market's
   `type`, the period off its name, the side by the offer's competitor and its
   home/away `side`, the number off the offer's signed `display_strike`; a
-  spread whose two sides are not one number each way does not read). Only the
+  spread whose two sides are not one number each way does not read; player
+  props and team totals, typed `total` like the game total and named without
+  "player", are dropped by their `player_id` or a `sub_type` naming a player or
+  team, 2026-11-10). Only the
   **matched** dollars are a bet (`prophetx:<order_id>`), priced off its fills
   (a fill can beat the limit); a resting remainder is a separate unmatchable
   `prophetx:<order_id>:order`. `void` / `invalid` void it; settled orders grade
@@ -4010,7 +4013,9 @@ does not read fails closed with the reason.
   Unabated team id — the runner's `GET /team_keys.json?venue=prophetx&league=..&away=..&home=..`
   resolves ProphetX's two names through teams.js and the crosswalk, as every
   bet record is, so "Sam Houston State" is the board's "Sam Houston St"
-  (2026-11-03); swapped, or a name nothing resolves, refuses — finds the one strike that reads as the line, and takes
+  (2026-11-03); swapped, or a name nothing resolves, refuses — finds the strike: Unabated's own strike id for
+  the line when it carries one (alt rungs), which must also read as the line,
+  else the one strike that reads as the line (main lines; 2026-11-10), and takes
   its best offer (the highest American price on that side's ladder). It
   refuses, sending nothing, on a started or unlisted game, a half moneyline
   (tie rule unchecked), an implied price more than **0.1c worse** than the
