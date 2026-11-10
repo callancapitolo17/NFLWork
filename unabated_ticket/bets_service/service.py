@@ -125,6 +125,14 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     else — sources/draftkings.py parses; a settled bet
                                     carries the venue's result, an open bet neither list
                                     carries is closed with no result)
+           POST /underdog.json      body {fetchedAt, active: page, settled: [page], complete}
+                                    -> {ok, count, closed}, or {error} -> {ok, recorded:
+                                    "error"} (pushed like Bet105: Underdog's login server
+                                    is behind a Cloudflare bot wall, so the extension reads
+                                    the slips on the app's own login in Cal's Chrome —
+                                    sources/underdog.py parses; a settled slip is graded
+                                    off what it paid, a stored open slip the settled pages
+                                    passed without seeing is closed with no result)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
                                     minLiquidityToWin, includeAlts, sortBy, groupByMarket,
@@ -363,7 +371,7 @@ from unabated_ticket.bets_service.novig_catalog_reads import NovigCatalogReads, 
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
 from unabated_ticket.bets_service.novig_taker_desk import NovigTakerDesk, account_problem, novig_unseen_fill
 from unabated_ticket.bets_service.novig_taker_desk import validate_order_request as validate_novig_order_request
-from unabated_ticket.bets_service.sources import Source, bet105, draftkings
+from unabated_ticket.bets_service.sources import Source, bet105, draftkings, underdog
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
@@ -374,8 +382,6 @@ from unabated_ticket.bets_service.sources.polymarket_us import source_if_configu
 from unabated_ticket.bets_service.sources.prophetx import VENUE as PROPHETX_VENUE
 from unabated_ticket.bets_service.sources.prophetx import ProphetXSource
 from unabated_ticket.bets_service.sources.prophetx import source_if_configured as prophetx_source_if_configured
-from unabated_ticket.bets_service.sources.underdog import VENUE as UNDERDOG_VENUE
-from unabated_ticket.bets_service.sources.underdog import source_if_connected as underdog_source_if_connected
 from unabated_ticket.bets_service.sources.wagerzon import source_if_configured as wagerzon_source_if_configured
 from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
 from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
@@ -531,10 +537,10 @@ PAGE_SECURITY_HEADERS = {
 _RUNNER_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 # Sources with no poll here: the extension POSTs their records (/bet105.json,
-# /draftkings.json).
+# /draftkings.json, /underdog.json).
 # Listed so the panel reads "no completed poll yet" before the first push, not
 # "no source configured".
-PUSHED_SOURCES = (bet105.VENUE, draftkings.VENUE)
+PUSHED_SOURCES = (bet105.VENUE, draftkings.VENUE, underdog.VENUE)
 
 
 def _now() -> datetime:
@@ -1637,7 +1643,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/fill_snapshots.json", "/close_snapshots.json", "/tau_samples.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
-                                "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
+                                "/draftkings.json", "/underdog.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/place_prophetx.json", "/place_bfa.json", "/taker_decisions.json", "/ladders.json",
                                 "/edge_segments.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json",
                                 "/prophetx_live.json", "/polymarket_books.json"):
@@ -1686,6 +1692,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/draftkings.json":
                 self._push_draftkings(body)
+                return
+            if url.path == "/underdog.json":
+                self._push_underdog(body)
                 return
             if url.path == "/place_teaser.json":
                 self._place_teaser(body)
@@ -2018,6 +2027,26 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             store.upsert_bets(records + closed, started_at)
             store.log_source_run(draftkings.VENUE, started_at, _now(), True, None, len(records))
             self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed), "skipped": len(skipped)})
+
+        # POST /underdog.json: the extension's read of the account's slips, as one source
+        # run — a complete push UPSERTs the prediction slips and closes the stored open ones
+        # the settled pages passed without seeing; an error push is a failed run and the
+        # records stand.
+        def _push_underdog(self, body: object) -> None:
+            push = underdog.validate_push(body)
+            if isinstance(push, str):
+                self._send_json(400, {"error": push})
+                return
+            started_at = _now()
+            if "error" in push:
+                store.log_source_run(underdog.VENUE, started_at, _now(), False, push["error"], 0)
+                self._send_json(200, {"ok": True, "recorded": "error"})
+                return
+            stored = store.load_records_of_venue(underdog.VENUE)
+            records, closed = underdog.records_of_push(push, stored)
+            store.upsert_bets(records + closed, started_at)
+            store.log_source_run(underdog.VENUE, started_at, _now(), True, None, len(records))
+            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed)})
 
         # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
         # place() is raised before the wager goes out, so it reads "Not placed". The open
@@ -2729,7 +2758,6 @@ OPTIONAL_SOURCE_FACTORIES: tuple[tuple[str, Callable[[], Source | None]], ...] =
     ("wagerzon", wagerzon_source_if_configured),
     ("polymarket_us", polymarket_us_source_if_configured),
     ("prophetx", prophetx_source_if_configured),
-    ("underdog", underdog_source_if_connected),
 )
 
 
@@ -2745,10 +2773,6 @@ def main() -> None:
             # Its order history also settles Place's unconfirmed ProphetX orders.
             optional = factory(lambda: store.load_records_of_venue("prophetx"),
                                lambda orders, trades: settle_prophetx_place_orders(store, orders, trades, _now()))
-        elif venue == "underdog":
-            # The stored records: open slips to chase down the settled list, and game fields
-            # and settle times to keep when an answer leaves them out.
-            optional = factory(lambda: store.load_records_of_venue(UNDERDOG_VENUE))
         else:
             optional = factory()
         if optional is not None:
