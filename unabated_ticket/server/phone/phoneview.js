@@ -489,6 +489,68 @@
     return `Line moved: now ${fmtAmerican(row.price)}${at(row.points)} (opened ${fmtAmerican(opened.price)}${at(opened.points)}). Stake re-sized.`;
   }
 
+  // ---- the open Ticket's live refresh (GET /ticket_line.json, Cal 2026-11-10) ------
+  // While a Ticket is open the page asks the runner for its one line every
+  // TICKET_POLL_MS; the runner reads the venue's book then and sizes the line
+  // as the Edges list does, with no Min edge cut. The Ticket shows the newest
+  // answer while it is under TICKET_LIVE_MAX_AGE_MS old (else the list's row),
+  // and closes after TICKET_CLOSE_AFTER_READS answers in a row with the edge
+  // under Min edge or nothing to bet (one tick across the line never closes it).
+  const TICKET_POLL_MS = 2 * 1000;
+  const TICKET_CLOSE_AFTER_READS = 2;
+  const TICKET_LIVE_MAX_AGE_MS = 10 * 1000;
+
+  // The live state after one answer (or a failed ask, `error`).
+  //   live    the previous state, or null before the first answer
+  //   answer  the /ticket_line.json body
+  //   state   {row, reason, detail, underMinEdge, minEdgePct, minShrunkEdgePct, sources, misses, answeredAt, error}
+  function ticketLiveStep(live, answer, at, error = null) {
+    const previous = live || { row: null, reason: null, detail: null, underMinEdge: false, minEdgePct: null, minShrunkEdgePct: null, sources: null, misses: 0, answeredAt: null, error: null };
+    if (error) return { ...previous, error };
+    const miss = !answer.row || answer.underMinEdge === true;
+    return {
+      row: answer.row || null, reason: answer.reason || null, detail: answer.detail || null, underMinEdge: answer.underMinEdge === true,
+      minEdgePct: answer.minEdgePct ?? null, minShrunkEdgePct: answer.minShrunkEdgePct ?? null,
+      sources: answer.betsService ? answer.betsService.sources ?? null : null,
+      misses: miss ? previous.misses + 1 : 0, answeredAt: at, error: null,
+    };
+  }
+
+  // Whether the newest answer is recent enough to show instead of the list's row.
+  function ticketLiveFresh(live, now) {
+    return Boolean(live && live.answeredAt != null && now - live.answeredAt <= TICKET_LIVE_MAX_AGE_MS);
+  }
+
+  function ticketShouldClose(live) {
+    return Boolean(live && live.misses >= TICKET_CLOSE_AFTER_READS);
+  }
+
+  // Why the Ticket closed, for its toast: "Ticket closed: the edge fell under your 2.5% Min edge."
+  function ticketClosedText(live) {
+    return `Ticket closed: ${live.row ? `the edge fell under your ${minEdgeText(live)}` : (live.detail || "the line is gone")}.`;
+  }
+
+  function minEdgeText(live) {
+    const shrunk = live.minShrunkEdgePct > 0 ? ` (or ${live.minShrunkEdgePct}% Min shrunk edge)` : "";
+    return `${live.minEdgePct}% Min edge${shrunk}`;
+  }
+
+  // The line under the Ticket's top: {text, tone: "" | "warn" | "bad"}.
+  // "Live · updated 2s ago", the edge under Min edge, nothing to bet, or a read that failed.
+  function ticketLiveNote(live, now) {
+    if (!live || live.answeredAt == null) return live && live.error ? { text: `Live refresh failed: ${live.error}. Showing the list's price.`, tone: "warn" } : null;
+    if (!ticketLiveFresh(live, now)) return { text: `Live refresh stalled (last ${fmtAge(now - live.answeredAt)}${live.error ? `: ${live.error}` : ""}). Showing the list's price.`, tone: "warn" };
+    if (!live.row) return { text: `${capitalize(live.detail || "the line is gone")}. Closing if it stays that way.`, tone: "bad" };
+    if (live.underMinEdge) return { text: `Edge ${fmtEdgePct(live.row.edgePct)} is under your ${minEdgeText(live)}. Closing if it stays there.`, tone: "warn" };
+    const age = live.row.liveCheck === "live" && live.row.liveReadAtMs != null ? `read ${fmtAge(Math.max(0, now - live.row.liveReadAtMs))}` : `updated ${fmtAge(now - live.answeredAt)}`;
+    const source = { live: "Live", unchecked: "Not read at the venue yet" }[live.row.liveCheck] || "Unabated's price";
+    return { text: `${source} · ${age}`, tone: "" };
+  }
+
+  function capitalize(text) {
+    return text ? text[0].toUpperCase() + text.slice(1) : text;
+  }
+
   // ---- Teasers tab ---------------------------------------------------------------
 
   // "Bills @ Jets · NFL · Sun, Oct 11, 1:00 PM · " (the time to kickoff follows).
@@ -723,6 +785,7 @@
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
     placeToastPlacingText, placeToastHideAfterMs, freePlayStake,
+    TICKET_POLL_MS, TICKET_CLOSE_AFTER_READS, TICKET_LIVE_MAX_AGE_MS, ticketLiveStep, ticketLiveFresh, ticketShouldClose, ticketClosedText, ticketLiveNote,
     withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 

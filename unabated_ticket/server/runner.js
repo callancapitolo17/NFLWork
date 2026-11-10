@@ -125,6 +125,9 @@
 //   GET /teasers.json  the panel's Teasers tab, as words (server/teasers_payload.js)
 //   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, so a
 //                    Dismiss, Can't tease or Attach the page just wrote shows at once
+//   GET /ticket_line.json?key=<line key>  the open Ticket's line read off its
+//                    venue's book now and sized as /edges.json sizes it, with no
+//                    Min edge cut (ticketLinePayloadNow; the phone polls it every 2 s)
 //   GET /attach.json?betId=..&query=..  Attach step 1: the board games to pick
 //                    from for an open bet, best fit first (attach.js)
 //   GET /attach.json?betId=..&eventId=..&swapped=0|1  Attach step 2: the plan
@@ -264,6 +267,12 @@ const NOVIG_STREAM_WAIT_MS = 2000;
 const LIVE_REREAD_MS = 20 * 1000;
 const KALSHI_MARKET_CHECK_TTL_MS = 10 * 60 * 1000;
 const POLYMARKET_EVENTS_REUSE_MS = 5 * 60 * 1000;
+// The open Ticket's refresh (GET /ticket_line.json): a read of its line this
+// recent is reused rather than sent again (a second page on the same Ticket,
+// or a poll landing just after the live pass read it), and the other books'
+// prices its price check compares with are rebuilt at most this often.
+const TICKET_REREAD_MIN_MS = 1500;
+const TICKET_PRICE_INDEX_REUSE_MS = 5 * 1000;
 // The most Novig markets one POST /novig_books.json may name (service.py MAX_NOVIG_BOOK_MARKETS).
 const NOVIG_BOOK_MARKETS_PER_ASK = 500;
 // Rows whose Polymarket US contract the live pass looks up at once (the
@@ -637,6 +646,10 @@ function createRunner(deps) {
   const polymarketEventLists = new Map();
   const polymarketLineContracts = new Map();
   let liveBusy = false;
+  // The open Ticket's reads (ticketLinePayloadNow): line key -> its read in flight; the last failed read for /health.
+  const ticketReadsInFlight = new Map();
+  let ticketLastError = null;
+  let ticketPriceIndexCache = null;
   // Whether the bets service reads ProphetX's live prices (false while it answers 503: no live key pair).
   let prophetxLiveOn = false;
   let liveLastPass = { startedAt: null, finishedAt: null, rows: 0, byVenue: {}, error: null };
@@ -1721,7 +1734,10 @@ function createRunner(deps) {
     return counts;
   }
 
-  async function liveNovigReads(board, rows) {
+  //   ticket  an open Ticket's read (ticketLinePayloadNow): the stream subscribes the
+  //           market ahead of the bot's and waits for its first book, and no
+  //           keyed REST book is read (a 2 s poll would spend Novig's REST budget)
+  async function liveNovigReads(board, rows, { ticket = false } = {}) {
     const counts = newLiveCounts(rows.length);
     if (!rows.length) return counts;
     let index;
@@ -1742,10 +1758,10 @@ function createRunner(deps) {
     const marketIds = Array.from(new Set(wanted.map(({ contract }) => contract.marketId)));
     const books = new Map();
     for (let start = 0; start < marketIds.length; start += NOVIG_BOOK_MARKETS_PER_ASK) {
-      const read = await readStreamBooks(marketIds.slice(start, start + NOVIG_BOOK_MARKETS_PER_ASK), false, true);
+      const read = await readStreamBooks(marketIds.slice(start, start + NOVIG_BOOK_MARKETS_PER_ASK), ticket, !ticket);
       for (const [marketId, view] of read) books.set(marketId, view);
     }
-    const restBooks = await readNovigRestBooks(marketIds.filter((marketId) => {
+    const restBooks = ticket ? new Map() : await readNovigRestBooks(marketIds.filter((marketId) => {
       const read = books.get(marketId);
       return !read || (read.error && !read.final);
     }));
@@ -1798,7 +1814,8 @@ function createRunner(deps) {
   // contract's book in ONE ask of the bets service's book stream
   // (background: behind Place's markets, no wait). No
   // book is read off the public gateway here: its 429s once refused Place.
-  async function livePolymarketReads(rows) {
+  //   ticket  an open Ticket's read: the stream subscribes the market first and waits for its first book
+  async function livePolymarketReads(rows, { ticket = false } = {}) {
     const counts = newLiveCounts(rows.length);
     const found = [];
     const queue = [];
@@ -1833,7 +1850,7 @@ function createRunner(deps) {
 
     await Promise.all(Array.from({ length: POLYMARKET_CONTRACT_LOOKUPS_AT_ONCE }, worker));
     const slugs = Array.from(new Set(found.map((entry) => entry.slug))).slice(0, POLYMARKET_BOOK_SLUGS_PER_ASK);
-    const books = await readPolymarketStreamBooks(slugs, { background: true });
+    const books = await readPolymarketStreamBooks(slugs, ticket ? { priority: true } : { background: true });
     for (const { row, slug, side } of found) {
       const read = books.get(slug) || { error: `${slug}: more than ${POLYMARKET_BOOK_SLUGS_PER_ASK} markets in one pass` };
       if (read.error) {
@@ -1950,6 +1967,96 @@ function createRunner(deps) {
     return { side: found[0], readAtMs };
   }
 
+  // ---- the open Ticket's line (GET /ticket_line.json, the phone's 2 s refresh) ----
+  //
+  // While the phone's Ticket is open it asks for its one line every
+  // TICKET_POLL_MS (phoneview.js). Each ask reads that line's book now, as the
+  // live price pass does but for one row (Novig, Polymarket US and ProphetX
+  // off the bets service's streams, so no venue request; Kalshi one REST book
+  // read), keeps the read in liveReads (so the Edges list shows it too) and
+  // sizes the line exactly as /edges.json does, with no Min edge or Min shrunk
+  // edge cut: the answer says whether the line is under them, and the phone
+  // closes the Ticket after TICKET_CLOSE_AFTER_READS such answers in a row
+  // (Cal, 2026-11-10).
+
+  // The line as a describeLine row at Unabated's price (what the venue reads take), or null when off the board.
+  function ticketBaseRow(board, key) {
+    const line = board.lines[key];
+    if (!line || line.bookId === feedLib.UNABATED_LINE_BOOK_ID) return null;
+    return { ...feedLib.describeLine(line, board), liveCheck: null };
+  }
+
+  // Read the row's venue now, unless a read of it landed under TICKET_REREAD_MIN_MS ago
+  // (two pages on one Ticket share it) or one is in flight (awaited, not sent twice).
+  async function readTicketLine(board, row) {
+    const venue = liveVenueOf(board, row.book.id);
+    if (!venue) return;
+    const last = liveReads.get(row.key);
+    if (last && (last.points ?? null) === (row.points ?? null) && now() - last.readAtMs < TICKET_REREAD_MIN_MS) return;
+    if (ticketReadsInFlight.has(row.key)) {
+      await ticketReadsInFlight.get(row.key);
+      return;
+    }
+    const reading = (async () => {
+      if (venue === taker.VENUE_KALSHI) return liveKalshiReads(board, [row]);
+      if (venue === taker.VENUE_NOVIG) return liveNovigReads(board, [row], { ticket: true });
+      if (venue === polymarket.VENUE) return livePolymarketReads([row], { ticket: true });
+      return liveProphetxReads(board, [row]);
+    })();
+    ticketReadsInFlight.set(row.key, reading);
+    try {
+      const counts = await reading;
+      if (counts.lastError) ticketLastError = { key: row.key, at: now(), error: counts.lastError };
+    } finally {
+      ticketReadsInFlight.delete(row.key);
+    }
+  }
+
+  // Every book's price at every number for the line's price check, rebuilt at most every TICKET_PRICE_INDEX_REUSE_MS.
+  function ticketPriceIndex(board, lineView, at) {
+    if (!ticketPriceIndexCache || ticketPriceIndexCache.board !== board || at - ticketPriceIndexCache.builtAt > TICKET_PRICE_INDEX_REUSE_MS) {
+      ticketPriceIndexCache = { board, builtAt: at, index: edgeRows.createPriceIndex(board, settings.edgeSettings, at, lineView) };
+    }
+    return ticketPriceIndexCache.index;
+  }
+
+  // GET /ticket_line.json?key=<line key>:
+  //   {key, readAt, minEdgePct, minShrunkEdgePct, betsService: {sources},
+  //    row: rowView | null, underMinEdge, reason, detail}
+  // row null: the line is off the board, its game started, or its exchange
+  // book has nothing to buy (reason "gone" | "started" | "empty"). A failed
+  // venue read leaves the row on its last read, or "unchecked" past
+  // LIVE_READ_MAX_AGE_MS, as on the Edges list.
+  async function ticketLinePayloadNow(params) {
+    const key = params.get("key");
+    if (!key) throw httpError(400, "key is required (the Edges row's line key)");
+    const board = feedState;
+    if (!board || !scannerStatus || scannerStatus.phase !== "live") throw httpError(503, "the board is not live yet");
+    const edgeSettings = settings.edgeSettings;
+    const answer = (fields) => ({
+      key, readAt: new Date(now()).toISOString(), minEdgePct: edgeSettings.minEdgePct, minShrunkEdgePct: edgeSettings.minShrunkEdgePct,
+      betsService: { sources: betsStatus.sources ?? null }, row: null, underMinEdge: false, reason: null, detail: null, ...fields,
+    });
+    const base = ticketBaseRow(board, key);
+    if (!base) return answer({ reason: "gone", detail: "the line is no longer on Unabated's board" });
+    if (!(base.eventStartMs > now())) return answer({ reason: "started", detail: "the game has started" });
+    await readTicketLine(board, base);
+    const at = now();
+    const fullView = liveLineView();
+    const view = fullView ? fullView(board.lines[key]) : { line: board.lines[key], liveCheck: null };
+    if (!view) return answer({ reason: "empty", detail: `nothing rests to buy at ${base.book.name}` });
+    if (view.line.ge == null) return answer({ reason: "no_fair", detail: "Unabated has no fair price on this line now" });
+    const [sized] = edgeRows.withBetFlags([
+      edgeRows.withPriceCheck(edgeRows.withStakeAndRank({ ...feedLib.describeLine(view.line, board), liveCheck: view.liveCheck },
+        feedState ? tailFlexMeasurement() : null, settings.stakeSettings), ticketPriceIndex(board, fullView, at)),
+    ], {
+      records: held.records, boardLines: boardLines(), stakeSettings: settings.stakeSettings, ladderReaderOf, teasers: openTeasersNow(),
+    });
+    const moveContext = { history, fillFairIndex, now: at };
+    const underMinEdge = !(sized.edgePct >= edgeSettings.minEdgePct) || !edgeRows.meetsShrunkFloor(sized.shrunkEdgePct, edgeSettings.minShrunkEdgePct);
+    return answer({ row: edgesPayload.rowView(sized, moveContext), underMinEdge });
+  }
+
   // The /live_prices.json body (liveprices.createLineView's input): the read
   // venues' book ids on the board and every line's last read, for the panel.
   function livePricesPayloadNow() {
@@ -1970,6 +2077,8 @@ function createRunner(deps) {
     return {
       startedAt: isoOrNull(liveLastPass.startedAt), finishedAt: isoOrNull(liveLastPass.finishedAt),
       rows: liveLastPass.rows, due: liveLastPass.due ?? null, reads: liveReads.size, error: liveLastPass.error, byVenue: liveLastPass.byVenue,
+      // The open Ticket's last failed venue read (GET /ticket_line.json), or null.
+      ticketLastError: ticketLastError ? { key: ticketLastError.key, at: isoOrNull(ticketLastError.at), error: ticketLastError.error } : null,
     };
   }
 
@@ -2902,7 +3011,7 @@ function createRunner(deps) {
 
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postEdgeSegments, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
-    edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
+    edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, ticketLinePayload: ticketLinePayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
   };
@@ -2981,6 +3090,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/taker.json") return sendJson(response, 200, await runner.takerPayload());
       if (path === "/tau.json") return sendJson(response, 200, await runner.tauPayload());
       if (path === "/live_prices.json") return sendJson(response, 200, await runner.livePricesPayload());
+      if (path === "/ticket_line.json") return sendJson(response, 200, await runner.ticketLinePayload(url.searchParams));
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));

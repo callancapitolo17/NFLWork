@@ -13,6 +13,10 @@
 //   GET /bets.json      every 30 s — open bets, each venue's last poll, the
 //                       crosswalk and the shared Dismiss marks
 //   GET /attach.json    while an Attach is open — the runner's games and plan
+//   GET /ticket_line.json?key=  every 2 s while a Ticket is open and the page in
+//                       view — its line read off the venue's book now and sized
+//                       (phoneview.js ticketLiveStep; the Ticket closes after two
+//                       reads in a row under Min edge or with nothing to bet)
 //   GET /settings.json  on load, on opening Settings and after a save
 // The polls run only while the page is visible, and refresh at once when it
 // becomes visible again. After a write the lists are read with ?fresh=1, so
@@ -96,7 +100,7 @@
     ticketExposure: el("ticket-exposure"), ticketPayoutRow: el("ticket-payout-row"), ticketToWin: el("ticket-to-win"), ticketPayout: el("ticket-payout"),
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"), ticketRelatedCount: el("ticket-related-count"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
-    ticketMoved: el("ticket-moved"),
+    ticketMoved: el("ticket-moved"), ticketLive: el("ticket-live"),
     ticketVenuePlace: el("ticket-venue-place"), ticketVenueRow: el("ticket-venue-row"), ticketVenueStake: el("ticket-venue-stake"),
     ticketVenueButtons: el("ticket-venue-buttons"), ticketVenueMsg: el("ticket-venue-msg"), ticketFoot: el("ticket-foot"),
     ticketFp: el("ticket-fp"), ticketFpInput: el("ticket-fp-input"), ticketFpLabel: el("ticket-fp-label"), ticketFpNote: el("ticket-fp-note"),
@@ -323,6 +327,7 @@
     timers = [];
     if (document.visibilityState !== "visible") return;
     refreshNow();
+    pollTicketLine();
     timers = [
       setInterval(pollEdges, phoneView.EDGES_POLL_MS), setInterval(pollTeasers, phoneView.EDGES_POLL_MS),
       setInterval(pollBets, phoneView.BETS_POLL_MS), setInterval(pollBalances, phoneView.BETS_POLL_MS),
@@ -669,24 +674,73 @@
     return null;
   }
 
+  // The Ticket's line as it shows now: the live answer while fresh (its row,
+  // or none when the line has nothing to bet), else the list's row.
+  //   {row, card, onList} | null (not on the list and no fresh live row)
+  function currentTicketRow(ticket, now) {
+    const listed = findTicketRow(ticket);
+    const live = ticket.live;
+    if (!phoneView.ticketLiveFresh(live, now)) return listed ? { ...listed, onList: true } : null;
+    if (!live.row) return null;
+    return { row: live.row, card: listed ? listed.card : null, onList: true };
+  }
+
   function openTicket(rowKey, cardKey) {
-    state.ticket = { rowKey, cardKey, last: null, opened: null, booksOpen: false };
+    state.ticket = { rowKey, cardKey, last: null, opened: null, booksOpen: false, live: null, pollTimer: null, polling: false };
     view.sheet.hidden = false;
     document.body.classList.add("sheet-open");
     renderTicket(Date.now());
+    pollTicketLine();
   }
 
   function closeTicket() {
+    if (state.ticket && state.ticket.pollTimer) clearTimeout(state.ticket.pollTimer);
     state.ticket = null;
     view.sheet.hidden = true;
     document.body.classList.remove("sheet-open");
   }
 
+  // One ask for the open Ticket's line, then the next TICKET_POLL_MS after the
+  // answer (never two in flight). Paused while the page is hidden; onVisibility
+  // starts it again. An answer for a Ticket since closed or changed is dropped.
+  async function pollTicketLine() {
+    const ticket = state.ticket;
+    if (!ticket || ticket.polling) return;
+    if (ticket.pollTimer) clearTimeout(ticket.pollTimer);
+    ticket.pollTimer = null;
+    if (document.visibilityState !== "visible") return;
+    ticket.polling = true;
+    let answer = null;
+    let failure = null;
+    try {
+      answer = await requestJson("GET", `/ticket_line.json?key=${encodeURIComponent(ticket.rowKey)}`);
+    } catch (error) {
+      failure = error.message;
+    }
+    ticket.polling = false;
+    if (state.ticket !== ticket) return;
+    ticket.live = phoneView.ticketLiveStep(ticket.live, answer, Date.now(), failure);
+    if (phoneView.ticketShouldClose(ticket.live)) {
+      const text = phoneView.ticketClosedText(ticket.live);
+      closeTicket();
+      showToast(text, "refused");
+      renderEdges(Date.now());
+      return;
+    }
+    renderTicket(Date.now());
+    ticket.pollTimer = setTimeout(pollTicketLine, phoneView.TICKET_POLL_MS);
+  }
+
   function renderTicket(now) {
     if (!state.ticket) return;
-    const found = findTicketRow(state.ticket);
+    const found = currentTicketRow(state.ticket, now);
     if (found) state.ticket.last = found;
-    view.ticketGone.hidden = Boolean(found);
+    const liveNote = phoneView.ticketLiveNote(state.ticket.live, now);
+    view.ticketLive.hidden = !liveNote;
+    view.ticketLive.className = `ticket-live ${liveNote ? liveNote.tone : ""}`;
+    view.ticketLive.textContent = liveNote ? liveNote.text : "";
+    // A live answer of nothing to bet says why in its own note.
+    view.ticketGone.hidden = Boolean(found) || Boolean(liveNote && liveNote.tone === "bad");
     const shown = found || state.ticket.last;
     if (!shown) {
       closeTicket();
@@ -767,6 +821,13 @@
   // freePlay: the BFA Ticket's Use free play switch is on.
   let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
 
+  // The bet reads the shown stake was sized on: the live answer's when the Ticket shows it, else the list's.
+  function ticketSizedOn() {
+    const live = state.ticket ? state.ticket.live : null;
+    if (phoneView.ticketLiveFresh(live, Date.now()) && live.row) return live.sources;
+    return state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
+  }
+
   function venuePlaceLine(row) {
     return {
       bookId: row.book ? row.book.id : null, live: null, eventId: row.eventId, periodTypeId: row.periodTypeId, betTypeId: row.betTypeId,
@@ -798,7 +859,7 @@
     if (!placeState.edited && placeState.phase !== "confirm" && document.activeElement !== view.ticketVenueStake) {
       const boxStake = placeState.freePlay ? phoneView.freePlayStake(acted, freePlay, phoneView.netOddsOf(row)) : acted;
       view.ticketVenueStake.value = venuePlace.stakeText(boxStake, row.book ? row.book.id : null);
-      placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
+      placeState.sizedOn = ticketSizedOn();
     }
     renderFreePlay(row, offersFreePlay);
     renderPlaceControls();
@@ -880,7 +941,7 @@
   async function placeOnVenue() {
     const { rowKey, freePlay } = placeState;
     const venueName = freePlay ? `${placeState.venueName} (free play)` : placeState.venueName;
-    const found = state.ticket ? findTicketRow(state.ticket) : null;
+    const found = state.ticket ? currentTicketRow(state.ticket, Date.now()) : null;
     // The reads the runner sized the box's stake on, frozen with the box (not this page's own
     // /bets.json poll, nor a later edges poll): a Place filled since must still count as unseen.
     const readAts = venuePlace.readAtsOf(placeState.sizedOn || {});
