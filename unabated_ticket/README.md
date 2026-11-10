@@ -2824,7 +2824,12 @@ node unabated_ticket/server/runner.js                     # must be running too 
   list; the row stays grey until the list's runner bets read
   (`betsService.generatedAt`) is newer than that `/bets.json` read (both
   the bets service's clock, whole seconds), at most a minute after the reply
-  (`phoneView.placedMarkShows`). A refusal ungreys it. A line sized to $0
+  (`phoneView.placedMarkShows`). A refusal ungreys it and asks for
+  `/edges.json?fresh=1&reread=<line key>` (2026-11-10): the runner reads that
+  one line at its venue first (`rereadLiveLine`, the live price pass's reads
+  for one row, waiting at most 3 s), so a price that moved shows its new
+  price, edge and stake at once, or the line drops when the edge is gone,
+  instead of waiting up to ~45 s for the next pass and poll. A line sized to $0
   (`add $0`, the rail's `atSize`, also a line an open teaser sizes to zero;
   a card by its best line) is not listed at all (`phoneView.withoutFullyBet`,
   phone only; the panel still lists it); when that empties the list it says

@@ -2760,3 +2760,62 @@ test("scenarios: a game under way carries the score of the newest snapshot, its 
   assert.deepEqual([midGame.score.status, midGame.score.awayScore, midGame.score.homeScore, midGame.score.readAt], ["live", 10, 3, live.snapshotAt]);
   restarted.stop();
 });
+
+// ---- a Place refusal's reread of one line (rereadLiveLine, /edges.json?fresh=1&reread=) ----
+
+test("live reread: one line read now is live on the next list, with no pass run, and only that line's venue is asked", async () => {
+  const novig = novigFetch();
+  const { runner, service } = liveRunner({ novig });
+  await runner.start();
+  const before = edgeRowsOf(runner.edgesPayload()).find((row) => row.book.id === 89);
+  assert.notEqual(before.liveCheck, "live", "no pass has run: the line is at Unabated's copy");
+  const answer = await runner.rereadLiveLine(before.key);
+  assert.equal(answer.venue, "novig");
+  assert.equal(answer.counts.live, 1);
+  const after = edgeRowsOf(runner.edgesPayload()).find((row) => row.key === before.key);
+  assert.equal(after.liveCheck, "live");
+  assert.equal(after.sourcePrice, 0.555);
+  const kalshiRow = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key));
+  assert.notEqual(kalshiRow.liveCheck, "live", "the other venue's line is left to the pass");
+  assert.equal(service.posts.filter((post) => post.route === "/novig_books.json").length, 1);
+  runner.stop();
+});
+
+test("live reread: a line not on the list reads nothing and says why", async () => {
+  const { runner, service } = liveRunner();
+  await runner.start();
+  const posted = service.posts.length;
+  assert.deepEqual(await runner.rereadLiveLine("no-such-line"), { skipped: "line not on the Edges list" });
+  assert.equal(service.posts.length, posted);
+  runner.stop();
+});
+
+test("board thread: /edges.json?fresh=1&reread= rereads that line before the build; without fresh it is ignored", async () => {
+  const runner = countingRunner();
+  runner.rereads = [];
+  runner.rereadLiveLine = async (key) => { runner.rereads.push([key, runner.builds.edgesPayload]); return { skipped: "test" }; };
+  const clock = { now: NOW };
+  const { client } = boardClient([runner], clock);
+  const server = runnerLib.createHttpServer(client, { host: "127.0.0.1" });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const get = (route) => new Promise((resolve, reject) => {
+    const request = require("node:http").request({ host: "127.0.0.1", port, path: route, method: "GET" }, (reply) => {
+      let body = "";
+      reply.on("data", (chunk) => { body += chunk; });
+      reply.on("end", () => resolve(JSON.parse(body)));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  try {
+    await get("/edges.json?reread=a%3Ab");
+    assert.deepEqual(runner.rereads, []);
+    const built = await get("/edges.json?fresh=1&reread=a%3Ab");
+    // Read before the build that answered: the list carries the new read.
+    assert.deepEqual(runner.rereads, [["a:b", built.build - 1]]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    client.stop();
+  }
+});

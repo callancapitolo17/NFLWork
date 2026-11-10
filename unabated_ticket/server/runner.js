@@ -125,6 +125,9 @@
 //   GET /teasers.json  the panel's Teasers tab, as words (server/teasers_payload.js)
 //   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, so a
 //                    Dismiss, Can't tease or Attach the page just wrote shows at once
+//   ?fresh=1&reread=<line key> on /edges.json also reads that one line at its
+//                    venue first (rereadLiveLine), so a Place refused on a moved
+//                    price shows the new price, edge and stake at once
 //   GET /attach.json?betId=..&query=..  Attach step 1: the board games to pick
 //                    from for an open bet, best fit first (attach.js)
 //   GET /attach.json?betId=..&eventId=..&swapped=0|1  Attach step 2: the plan
@@ -262,6 +265,9 @@ const NOVIG_STREAM_WAIT_MS = 2000;
 // event list are reused (neither changes inside it; the book read every pass
 // still shows a closed market as empty).
 const LIVE_REREAD_MS = 20 * 1000;
+// How long a Place refusal's reread of one line (rereadLiveLine) holds up the
+// list it was asked with; under the bets service's 5 s runner proxy timeout.
+const LIVE_REREAD_WAIT_MS = 3000;
 const KALSHI_MARKET_CHECK_TTL_MS = 10 * 60 * 1000;
 const POLYMARKET_EVENTS_REUSE_MS = 5 * 60 * 1000;
 // The most Novig markets one POST /novig_books.json may name (service.py MAX_NOVIG_BOOK_MARKETS).
@@ -1675,6 +1681,41 @@ function createRunner(deps) {
     }
   }
 
+  // One Edges line read at its venue now, outside the pass (a Place refused
+  // because the price moved: the card should show the price the venue gave,
+  // not wait up to TAKER_PASS_MS for the next pass). The line's read is
+  // replaced as any pass read; a line not on the list, at no read venue, or
+  // before the board is live reads nothing. {venue, counts} or {skipped: why}.
+  async function rereadLiveLine(rowKey) {
+    const read = rereadLiveLineOrThrow(rowKey).catch((error) => {
+      // The list still builds off the reads held; the next pass tries again.
+      logWarning(`live reread of ${rowKey} failed: ${error.stack || error.message}`);
+      return { skipped: error.message };
+    });
+    // A slow read keeps going and lands for the next poll; the list answers in
+    // time for the bets service's runner proxy.
+    let timer;
+    const waited = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ skipped: `still reading after ${LIVE_REREAD_WAIT_MS} ms` }), LIVE_REREAD_WAIT_MS);
+    });
+    const answer = await Promise.race([read, waited]);
+    clearTimeout(timer);
+    return answer;
+  }
+
+  async function rereadLiveLineOrThrow(rowKey) {
+    const board = feedState;
+    if (!board || !scannerStatus || scannerStatus.phase !== "live") return { skipped: "board not live" };
+    const row = liveCandidateRows(board, now()).find((candidate) => candidate.key === rowKey);
+    if (!row) return { skipped: "line not on the Edges list" };
+    const venue = liveVenueOf(board, row.book.id);
+    if (venue === taker.VENUE_KALSHI) return { venue, counts: await liveKalshiReads(board, [row]) };
+    if (venue === taker.VENUE_NOVIG) return { venue, counts: await liveNovigReads(board, [row]) };
+    if (venue === polymarket.VENUE) return { venue, counts: await livePolymarketReads([row]) };
+    if (venue === VENUE_PROPHETX && prophetxLiveOn) return { venue, counts: await liveProphetxReads(board, [row]) };
+    return { skipped: `book ${row.book.id} is not read live` };
+  }
+
   function newLiveCounts(rows) {
     return { rows, live: 0, empty: 0, unchecked: 0, lastError: null };
   }
@@ -2901,7 +2942,7 @@ function createRunner(deps) {
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postEdgeSegments, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass,
+    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postEdgeSegments, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass, rereadLiveLine,
     edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
@@ -2974,7 +3015,9 @@ function createHttpServer(runner, { host }) {
       const fresh = url.searchParams.get("fresh") === "1" && (path === "/edges.json" || path === "/teasers.json");
       // A runner on this thread reads here; the board client's fresh build reads on the board thread.
       if (fresh) await runner.pollBets();
-      if (path === "/edges.json") return sendJson(response, 200, await runner.edgesPayload({ fresh }));
+      // ?fresh=1&reread=<line key>: that one line read at its venue first (a Place refused on a moved price).
+      const reread = path === "/edges.json" && fresh ? url.searchParams.get("reread") : null;
+      if (path === "/edges.json") return sendJson(response, 200, await runner.edgesPayload({ fresh, reread }));
       if (path === "/teasers.json") return sendJson(response, 200, await runner.teasersPayload({ fresh }));
       if (path === "/attach.json") return sendJson(response, 200, await runner.attachPayload(url.searchParams));
       if (path === "/scenarios.json") return sendJson(response, 200, await runner.scenariosPayload(url.searchParams));

@@ -229,9 +229,13 @@
   }
 
   // `fresh` asks the runner to re-read the bets service first (after a write here).
-  async function pollEdges(fresh) {
+  // rereadKey: one Edges line the runner reads at its venue before building
+  // the list (a Place refused: the card shows the price the venue has now).
+  async function pollEdges(fresh, rereadKey = null) {
+    const path = fresh !== true ? "/edges.json"
+      : (rereadKey ? `/edges.json?fresh=1&reread=${encodeURIComponent(rereadKey)}` : "/edges.json?fresh=1");
     try {
-      pollSucceeded(state.edges, await requestJson("GET", fresh === true ? "/edges.json?fresh=1" : "/edges.json"));
+      pollSucceeded(state.edges, await requestJson("GET", path));
     } catch (error) {
       pollFailed(state.edges, error);
     }
@@ -930,6 +934,8 @@
     } else {
       if (ownMark) state.placedMarks.delete(rowKey);
       renderAll();
+      // Most refusals are a moved price: read the line again now rather than at the next pass.
+      await pollEdges(true, rowKey);
     }
   }
 
