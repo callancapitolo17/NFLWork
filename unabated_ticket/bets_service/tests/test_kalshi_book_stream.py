@@ -1,0 +1,411 @@
+"""Kalshi's live books over the orderbook_delta websocket (kalshi_book_stream.py),
+driven frame by frame with a fake connection and a fake clock, in the frame
+shapes Kalshi's docs give (read 2026-11-10; not yet seen live): on-demand
+subscribes with a Ticket's/Place's first, snapshots served as the REST
+/orderbook's body, deltas applied, seq gaps and orphan deltas resubscribed,
+crossed books withheld, adds and deletes on a live subscription, refusals, the
+background cap, silence; plus the handshake signature and POST
+/kalshi_books.json over a real HTTP server."""
+import base64
+import json
+import threading
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+import pytest
+
+from unabated_ticket.bets_service import kalshi_book_stream as kbs
+from unabated_ticket.bets_service import service
+from unabated_ticket.bets_service.store import BetsStore
+from unabated_ticket.bets_service.taker_orders import KalshiOrderClient
+
+WSU = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36"
+DUQ = "KXNCAAFSPREAD-26SEP19DUQWSU-DUQ7"
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class FakeSigner:
+    key_id = "d518d266-test"
+
+    def __init__(self):
+        self.signed = []
+
+    def signed_ws_headers(self, ws_path):
+        self.signed.append(ws_path)
+        return {"KALSHI-ACCESS-KEY": self.key_id, "KALSHI-ACCESS-TIMESTAMP": "1", "KALSHI-ACCESS-SIGNATURE": "sig"}
+
+
+class FakeConnection:
+    def __init__(self):
+        self.sent = []
+        self.pings = 0
+        self.incoming = []
+        self.closed = False
+
+    def send(self, text):
+        self.sent.append(json.loads(text))
+
+    def recv(self, timeout_sec):
+        if not self.incoming:
+            return None
+        item = self.incoming.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item if isinstance(item, str) else json.dumps(item)
+
+    def ping(self):
+        self.pings += 1
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def made():
+    clock = Clock()
+    signer = FakeSigner()
+    connection = FakeConnection()
+    stream = kbs.KalshiBookStream(signer, kbs.DEFAULT_STREAM_URL, connect=lambda url, headers: connection, clock=clock)
+    stream._open()
+    return stream, connection, clock, signer
+
+
+def handle(stream, *messages):
+    with stream._cond:
+        for message in messages:
+            stream._handle(message)
+
+
+def snapshot(sid, seq, ticker=WSU, yes=(("0.5500", "100.00"),), no=(("0.4300", "40.00"),)):
+    msg = {"market_ticker": ticker, "market_id": "m-1", "clock": 7}
+    if yes:
+        msg["yes_dollars_fp"] = [list(level) for level in yes]
+    if no:
+        msg["no_dollars_fp"] = [list(level) for level in no]
+    return {"type": "orderbook_snapshot", "sid": sid, "seq": seq, "msg": msg}
+
+
+def delta(sid, seq, price, change, side="no", ticker=WSU):
+    return {"type": "orderbook_delta", "sid": sid, "seq": seq,
+            "msg": {"market_ticker": ticker, "market_id": "m-1", "clock": 8, "price_dollars": price,
+                    "delta_fp": change, "side": side, "ts_ms": 1}}
+
+
+def subscribe(stream, ticker=WSU, sid=11, **book):
+    """Ask for `ticker`, send its subscribe, answer it and snapshot the market; returns the subscribe frame."""
+    stream.books_for([ticker], 0.0)
+    (frame,) = stream._outgoing_frames()
+    handle(stream, {"id": frame["id"], "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": sid}},
+           snapshot(sid, 1, ticker, **book))
+    return frame
+
+
+def view(stream, ticker=WSU):
+    return stream.books_for([ticker], 0.0)["books"][ticker]
+
+
+def test_the_upgrade_is_signed_over_the_websocket_path(made):
+    _stream, _connection, _clock, signer = made
+    assert signer.signed == ["/trade-api/ws/v2"]
+
+
+def test_the_read_key_signs_the_handshake_as_kalshi_documents(tmp_path):
+    """timestamp + "GET" + "/trade-api/ws/v2", RSA-PSS SHA-256, base64 (docs quick_start_websockets)."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key_path = tmp_path / "read.pem"
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                           serialization.NoEncryption()))
+    client = KalshiOrderClient("d518d266-test", str(key_path), "https://kalshi.test/trade-api/v2")
+    headers = client.signed_ws_headers("/trade-api/ws/v2")
+    assert headers["KALSHI-ACCESS-KEY"] == "d518d266-test" and client.key_id == "d518d266-test"
+    message = f"{headers['KALSHI-ACCESS-TIMESTAMP']}GET/trade-api/ws/v2".encode()
+    key.public_key().verify(base64.b64decode(headers["KALSHI-ACCESS-SIGNATURE"]), message,
+                            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+                            hashes.SHA256())
+
+
+def test_a_new_market_is_subscribed_and_its_snapshot_served_as_the_rest_orderbook(made):
+    stream, _connection, clock, _signer = made
+    assert "waiting for" in view(stream)["error"]
+    frames = stream._outgoing_frames()
+    assert frames == [{"id": 1, "cmd": "subscribe",
+                       "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
+    handle(stream, {"id": 1, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 11}})
+    assert "waiting for" in view(stream)["error"], "no book before the snapshot"
+    handle(stream, snapshot(11, 1, yes=(("0.5500", "100.00"), ("0.5600", "5.00"))))
+    clock.now += 2
+    assert view(stream) == {"orderbook_fp": {"yes_dollars": [["0.5600", "5.00"], ["0.5500", "100.00"]],
+                                             "no_dollars": [["0.4300", "40.00"]]}, "ageMs": 2000}
+    assert stream._outgoing_frames() == [], "subscribed once, not again every loop"
+
+
+def test_an_empty_side_is_absent_from_the_snapshot_and_served_empty(made):
+    stream, _connection, _clock, _signer = made
+    subscribe(stream, no=())
+    assert view(stream)["orderbook_fp"]["no_dollars"] == []
+
+
+def test_deltas_change_add_and_remove_levels(made):
+    stream, _connection, clock, _signer = made
+    subscribe(stream)
+    clock.now += 5
+    handle(stream, delta(11, 2, "0.4300", "-15.00"), delta(11, 3, "0.4400", "7.00"), delta(11, 4, "0.5500", "-100.00", side="yes"))
+    assert view(stream) == {"orderbook_fp": {"yes_dollars": [], "no_dollars": [["0.4400", "7.00"], ["0.4300", "25.00"]]},
+                            "ageMs": 0}
+
+
+def test_a_seq_gap_withholds_the_books_and_resubscribes_the_subscription(made):
+    stream, connection, _clock, _signer = made
+    subscribe(stream)
+    handle(stream, delta(11, 3, "0.4300", "-15.00"))
+    assert "resubscribing" in view(stream)["error"]
+    frames = stream._outgoing_frames()
+    assert frames == [{"id": 2, "cmd": "unsubscribe", "params": {"sids": [11]}},
+                      {"id": 3, "cmd": "subscribe", "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
+    handle(stream, delta(11, 4, "0.4300", "5.00"))
+    assert "waiting for" in view(stream)["error"], "the old sid's frames are not applied"
+    handle(stream, {"id": 3, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 12}},
+           snapshot(12, 1, no=(("0.4200", "9.00"),)))
+    assert view(stream)["orderbook_fp"]["no_dollars"] == [["0.4200", "9.00"]]
+    assert stream.status()["resyncs"] == 1
+
+
+def test_a_delta_before_its_snapshot_resubscribes(made):
+    stream, _connection, clock, _signer = made
+    subscribe(stream)
+    stream.books_for([DUQ], 0.0)
+    clock.now += kbs.COMMAND_GAP_SEC
+    assert [frame["params"]["action"] for frame in stream._outgoing_frames()] == ["add_markets"]
+    handle(stream, {"id": 2, "sid": 11, "seq": 2, "type": "ok", "msg": {"market_tickers": [WSU, DUQ]}})
+    handle(stream, delta(11, 3, "0.4300", "1.00", ticker=DUQ))
+    assert "resubscribing" in view(stream)["error"]
+
+
+def test_a_level_driven_below_zero_resubscribes(made):
+    stream, _connection, _clock, _signer = made
+    subscribe(stream)
+    handle(stream, delta(11, 2, "0.4300", "-41.00"))
+    assert "resubscribing" in view(stream)["error"]
+
+
+def test_a_crossed_book_is_never_served(made):
+    stream, _connection, _clock, _signer = made
+    subscribe(stream)
+    handle(stream, delta(11, 2, "0.5800", "3.00"))
+    assert "crossed" in view(stream)["error"]
+    handle(stream, delta(11, 3, "0.5800", "-3.00"))
+    assert "orderbook_fp" in view(stream)
+
+
+def test_a_new_market_is_added_to_the_answered_subscription_at_most_once_a_second(made):
+    stream, _connection, clock, _signer = made
+    subscribe(stream)
+    stream.books_for([DUQ], 0.0)
+    assert stream._outgoing_frames() == [], "within COMMAND_GAP_SEC of the subscribe"
+    clock.now += kbs.COMMAND_GAP_SEC
+    assert stream._outgoing_frames() == [{"id": 2, "cmd": "update_subscription",
+                                          "params": {"sid": 11, "market_tickers": [DUQ], "action": "add_markets"}}]
+    # The docs' ok carries the sid's next seq: counted, so the next snapshot is no gap.
+    handle(stream, {"id": 2, "sid": 11, "seq": 2, "type": "ok", "msg": {"market_tickers": [WSU, DUQ]}},
+           snapshot(11, 3, DUQ))
+    assert "orderbook_fp" in view(stream, DUQ) and "orderbook_fp" in view(stream, WSU)
+
+
+def test_an_ok_whose_seq_is_not_next_is_not_counted(made):
+    stream, _connection, _clock, _signer = made
+    subscribe(stream)
+    handle(stream, {"id": 9, "sid": 11, "seq": 50, "type": "ok"}, delta(11, 2, "0.4300", "1.00"))
+    assert view(stream)["orderbook_fp"]["no_dollars"] == [["0.4300", "41.00"]]
+
+
+def test_an_idle_market_is_deleted_from_its_subscription(made):
+    stream, _connection, clock, _signer = made
+    subscribe(stream)
+    stream.books_for([DUQ], 0.0)
+    clock.now += kbs.COMMAND_GAP_SEC
+    stream._outgoing_frames()
+    clock.now += kbs.WATCH_IDLE_SEC - 1
+    stream.books_for([WSU], 0.0)
+    clock.now += 2
+    assert stream._outgoing_frames() == [{"id": 3, "cmd": "update_subscription",
+                                          "params": {"sid": 11, "market_tickers": [DUQ], "action": "delete_markets"}}]
+    clock.now += kbs.WATCH_IDLE_SEC
+    assert stream._outgoing_frames() == [{"id": 4, "cmd": "unsubscribe", "params": {"sids": [11]}}]
+    assert stream.status()["subscriptions"] == 0
+
+
+def test_a_refused_add_refuses_its_markets_and_a_market_limit_closes_the_subscription(made, monkeypatch):
+    stream, _connection, clock, _signer = made
+    monkeypatch.setattr(kbs, "MAX_SUBSCRIPTIONS", 1)
+    subscribe(stream)
+    stream.books_for([DUQ], 0.0)
+    clock.now += kbs.COMMAND_GAP_SEC
+    stream._outgoing_frames()
+    handle(stream, {"id": 2, "type": "error", "msg": {"code": 26, "msg": "per-subscription market limit exceeded"}})
+    assert "code 26" in view(stream, DUQ)["error"]
+    assert "orderbook_fp" in view(stream, WSU), "the subscription's other books stay served"
+    clock.now += kbs.REFUSED_RETRY_SEC + 1
+    stream._outgoing_frames()
+    assert "subscriptions of 50 markets are full" in view(stream, DUQ)["error"], "no add to a subscription Kalshi capped"
+
+
+def test_a_refused_subscribe_refuses_its_markets_then_asks_again_after_a_minute(made):
+    stream, _connection, clock, _signer = made
+    stream.books_for([WSU], 0.0)
+    stream._outgoing_frames()
+    handle(stream, {"id": 1, "type": "error", "msg": {"code": 8, "msg": "Unknown channel name"}})
+    assert view(stream)["error"] == "Kalshi refused the stream subscription to " + WSU + ": code 8: Unknown channel name"
+    assert stream._outgoing_frames() == []
+    clock.now += kbs.REFUSED_RETRY_SEC + 1
+    assert [frame["cmd"] for frame in stream._outgoing_frames()] == ["subscribe"]
+
+
+def test_an_unanswered_subscribe_is_sent_again_and_its_late_answer_unsubscribed(made):
+    stream, connection, clock, _signer = made
+    stream.books_for([WSU], 0.0)
+    stream._outgoing_frames()
+    clock.now += kbs.ANSWER_WAIT_SEC + 1
+    assert stream._outgoing_frames() == [{"id": 2, "cmd": "subscribe",
+                                          "params": {"channels": ["orderbook_delta"], "market_tickers": [WSU]}}]
+    handle(stream, {"id": 1, "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 5}})
+    assert connection.sent == [{"id": 3, "cmd": "unsubscribe", "params": {"sids": [5]}}]
+    handle(stream, snapshot(5, 1))
+    assert "waiting for" in view(stream)["error"]
+
+
+def test_a_ticket_or_place_market_is_placed_ahead_of_the_live_pass(made, monkeypatch):
+    stream, _connection, _clock, _signer = made
+    monkeypatch.setattr(kbs, "MAX_SUBSCRIPTIONS", 1)
+    monkeypatch.setattr(kbs, "MARKETS_PER_SUBSCRIPTION", 2)
+    stream.books_for(["Z-LIVE-A", "A-LIVE-B"], 0.0, background=True)
+    stream.books_for([DUQ], 0.0, priority=True)
+    (frame,) = stream._outgoing_frames()
+    assert frame["params"]["market_tickers"] == sorted([DUQ, "A-LIVE-B"])
+
+
+def test_the_live_pass_is_capped_below_the_subscriptions_room(made, monkeypatch):
+    stream, _connection, _clock, _signer = made
+    monkeypatch.setattr(kbs, "MAX_BACKGROUND_MARKETS", 1)
+    books = stream.books_for([WSU, DUQ], 0.0, background=True)["books"]
+    assert "waiting for" in books[WSU]["error"]
+    assert "already watches 1 Kalshi markets" in books[DUQ]["error"]
+
+
+def test_a_dropped_connection_serves_no_book(made):
+    stream, _connection, _clock, _signer = made
+    subscribe(stream)
+    stream._drop("ConnectionError: Kalshi closed the stream")
+    assert view(stream)["error"] == "the Kalshi stream is not connected (ConnectionError: Kalshi closed the stream)"
+
+
+def test_a_ticket_ask_waits_for_a_new_markets_snapshot(made):
+    stream, _connection, _clock, _signer = made
+    stream.books_for([WSU], 0.0)
+    (frame,) = stream._outgoing_frames()
+
+    def answer():
+        with stream._cond:
+            stream._handle({"id": frame["id"], "type": "subscribed", "msg": {"channel": "orderbook_delta", "sid": 11}})
+            stream._handle(snapshot(11, 1))
+            stream._cond.notify_all()
+
+    timer = threading.Timer(0.05, answer)
+    timer.start()
+    # A real clock for the wait: the fake one never moves, so a missed notify would hang to the cap.
+    stream._clock = __import__("time").monotonic
+    got = stream.books_for([WSU], 2.0, priority=True)
+    timer.join()
+    assert "orderbook_fp" in got["books"][WSU]
+
+
+def test_silence_reconnects(made):
+    stream, connection, clock, _signer = made
+    stop = threading.Event()
+    real_recv = connection.recv
+
+    def silent_recv(timeout_sec):
+        clock.now += kbs.SILENT_RECONNECT_SEC + 1
+        return real_recv(timeout_sec)
+
+    connection.recv = silent_recv
+    with pytest.raises(ConnectionError, match="no frame, ping or pong"):
+        stream._pump(stop)
+
+
+@pytest.fixture
+def bets_store(tmp_path):
+    store = BetsStore(tmp_path / "bets.duckdb", 7)
+    yield store
+    store.close()
+
+
+def _post(url, payload, host=None):
+    headers = {"Content-Type": "application/json"}
+    if host:
+        headers["Host"] = host
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+def _serve(handler):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_post_kalshi_books_answers_the_streams_books(bets_store, made):
+    stream, _connection, _clock, _signer = made
+    subscribe(stream)
+    server, base = _serve(service.make_handler(bets_store, 0.0, ["kalshi"], kalshi_book_stream=stream,
+                                               extra_hosts=("mlb-stack.test",)))
+    try:
+        status, body = _post(f"{base}/kalshi_books.json", {"tickers": [WSU, WSU], "waitMs": 0, "priority": True})
+        bad = _post(f"{base}/kalshi_books.json", {"tickers": [""]})
+        foreign = _post(f"{base}/kalshi_books.json", {"tickers": []}, host="mlb-stack.test")
+        with urllib.request.urlopen(f"{base}/health", timeout=5) as response:
+            health = json.loads(response.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 200 and body["books"] == {WSU: {"orderbook_fp": {"yes_dollars": [["0.5500", "100.00"]],
+                                                                      "no_dollars": [["0.4300", "40.00"]]}, "ageMs": 0}}
+    assert body["stream"]["connected"] is True
+    assert bad[0] == 400 and "tickers[0]" in bad[1]["error"]
+    assert foreign[0] == 403, "the runner's book route is loopback-only"
+    assert health["kalshiStream"]["booksHeld"] == 1
+
+
+def test_post_kalshi_books_is_503_without_the_read_key(bets_store):
+    server, base = _serve(service.make_handler(bets_store, 0.0, ["kalshi"]))
+    try:
+        status, body = _post(f"{base}/kalshi_books.json", {"tickers": [], "waitMs": 0})
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 503 and "KALSHI_API_KEY_ID" in body["error"]
+
+
+def test_the_stream_is_off_without_the_read_key_or_against_a_different_kalshi(monkeypatch):
+    monkeypatch.setattr(service.config, "KALSHI_API_KEY_ID", "")
+    assert service.open_kalshi_book_stream() is None
+    monkeypatch.setattr(service.config, "KALSHI_API_KEY_ID", "d518d266-test")
+    monkeypatch.setattr(service.config, "KALSHI_PRIVATE_KEY_PATH", "/data/kalshi.pem")
+    monkeypatch.setattr(service.config, "KALSHI_BASE_URL", "https://demo-api.kalshi.co/trade-api/v2")
+    assert service.open_kalshi_book_stream(client_factory=lambda *_args: object()) is None
+    monkeypatch.setattr(service.config, "KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2")
+    made_stream = service.open_kalshi_book_stream(client_factory=lambda *_args: FakeSigner())
+    assert isinstance(made_stream, kbs.KalshiBookStream)

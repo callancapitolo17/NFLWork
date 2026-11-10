@@ -28,7 +28,7 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     fill and at the close; opt-in, they are large)
            GET /health              {ok, generatedAt, uptimeSec, sources, novigStream?,
                                     novigPlaceStream?, prophetxStream?, prophetxLive?,
-                                    polymarketStream?}: each stream's status(); the two
+                                    polymarketStream?, kalshiStream?}: each stream's status(); the two
                                     Novig ones carry `orders` {live, subscribed, synced,
                                     seq, epoch, version, error}, the private orders
                                     channel of the bot's and Place's sub-accounts
@@ -210,6 +210,17 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     for a new market's first book. marketData is the REST
                                     gateway /book's. Loopback only (the runner); 503 {error}
                                     with no Polymarket US key
+           POST /kalshi_books.json  body {tickers: [..], waitMs, priority?, background?} -> {stream:
+                                    {connected, lastFrameAgeMs, error, resyncs, ...}, books:
+                                    {ticker: {orderbook_fp: {yes_dollars, no_dollars}, ageMs} |
+                                    {error}}}: Kalshi's live books off the READ-ONLY key's
+                                    orderbook_delta websocket (kalshi_book_stream.py; reads
+                                    only), each market subscribed on first ask (priority: a
+                                    Ticket refresh or Place quote; background: the runner's
+                                    live price pass), waiting up to waitMs (capped at
+                                    kalshi_book_stream.MAX_WAIT_SEC) for a new market's
+                                    snapshot. orderbook_fp is the REST /orderbook's. Loopback
+                                    only (the runner); 503 {error} with no Kalshi read key
            POST /novig_read.json    body {path, query?} -> {status, body}: one GET of Novig's
                                     keyed catalog (/v3/catalog/markets[?league,eventStatus,
                                     limit,after], /markets/<id>, /markets/<id>/book,
@@ -366,6 +377,7 @@ from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, 
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.novig_book_stream import NovigBookStream, stream_url
 from unabated_ticket.bets_service.polymarket_book_stream import PolymarketBookStream
+from unabated_ticket.bets_service.kalshi_book_stream import KalshiBookStream
 from unabated_ticket.bets_service.polymarket_book_stream import stream_url as polymarket_stream_url
 from unabated_ticket.bets_service.novig_catalog_reads import NovigCatalogReads, pooled_transport, validate_read_request
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
@@ -487,6 +499,10 @@ MAX_NOVIG_BOOK_MARKETS = 500
 NOVIG_BOOK_STREAM_OFF_REASON = "no bot Novig key is configured (NOVIG_TAKER_KEY_ID / NOVIG_TAKER_PRIVATE_KEY_PATH)"
 # POST /polymarket_books.json: the most markets one ask may name.
 MAX_POLYMARKET_BOOK_SLUGS = 500
+# POST /kalshi_books.json: the most markets one ask may name.
+MAX_KALSHI_BOOK_TICKERS = 500
+# Why POST /kalshi_books.json answers 503 when the Kalshi read key is unset or unreadable.
+KALSHI_BOOK_STREAM_OFF_REASON = "no Kalshi read key is configured (KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH)"
 # Why POST /polymarket_books.json answers 503: the stream signs with the Place key.
 POLYMARKET_BOOK_STREAM_OFF_REASON = POLYMARKET_PLACE_OFF_REASON
 # Why POST /novig_read.json answers 503: its reads are signed with the same key.
@@ -1438,7 +1454,8 @@ def health_payload(store: BetsStore, started_at: float, source_names: list[str] 
                    prophetx_order_stream: ProphetXOrderStream | None = None,
                    prophetx_live: ProphetXLiveBooks | None = None,
                    polymarket_book_stream: PolymarketBookStream | None = None,
-                   novig_place_stream: NovigBookStream | None = None) -> dict:
+                   novig_place_stream: NovigBookStream | None = None,
+                   kalshi_book_stream: KalshiBookStream | None = None) -> dict:
     payload = {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
                "sources": source_status(store, list(source_names))}
     if novig_book_stream is not None:
@@ -1451,6 +1468,8 @@ def health_payload(store: BetsStore, started_at: float, source_names: list[str] 
         payload["prophetxLive"] = prophetx_live.status()
     if polymarket_book_stream is not None:
         payload["polymarketStream"] = polymarket_book_stream.status()
+    if kalshi_book_stream is not None:
+        payload["kalshiStream"] = kalshi_book_stream.status()
     return payload
 
 
@@ -1464,6 +1483,11 @@ def validate_novig_books_request(body: object) -> tuple[list[str], float, bool, 
 def validate_polymarket_books_request(body: object) -> tuple[list[str], float, bool, bool] | str:
     """(slugs, wait seconds, priority, background) or why the body is refused (as for Novig's)."""
     return validate_book_stream_request(body, "slugs", MAX_POLYMARKET_BOOK_SLUGS, "market slugs")
+
+
+def validate_kalshi_books_request(body: object) -> tuple[list[str], float, bool, bool] | str:
+    """(tickers, wait seconds, priority, background) or why the body is refused (as for Novig's)."""
+    return validate_book_stream_request(body, "tickers", MAX_KALSHI_BOOK_TICKERS, "Kalshi tickers")
 
 
 def validate_book_stream_request(body: object, list_key: str, max_items: int,
@@ -1533,7 +1557,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  source_reader: SourceReader | None = None,
                  polymarket_book_stream: PolymarketBookStream | None = None,
                  novig_place_stream: NovigBookStream | None = None,
-                 ladder_store: LadderStore | None = None) -> type[BaseHTTPRequestHandler]:
+                 ladder_store: LadderStore | None = None,
+                 kalshi_book_stream: KalshiBookStream | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -1556,7 +1581,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     catalog reads on the same key (None: POST /novig_read.json 503s). `prophetx_live`
     serves ProphetX's live prices on the live key pair (None: POST /prophetx_live.json 503s).
     `polymarket_book_stream` serves Polymarket US's live books (None: POST
-    /polymarket_books.json 503s). `source_reader` reads a
+    /polymarket_books.json 503s), `kalshi_book_stream` Kalshi's on the read key
+    (None: POST /kalshi_books.json 503s). `source_reader` reads a
     Place's venue before its reply (None: the reply goes at once and the next
     scheduled poll counts the fill)."""
     names = list(source_names)
@@ -1572,7 +1598,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/health":
                 self._send_json(200, health_payload(store, started_at, names, novig_book_stream,
                                                              prophetx_order_stream, prophetx_live, polymarket_book_stream,
-                                                             novig_place_stream))
+                                                             novig_place_stream, kalshi_book_stream))
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
@@ -1646,7 +1672,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                 "/draftkings.json", "/underdog.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/place_prophetx.json", "/place_bfa.json", "/taker_decisions.json", "/ladders.json",
                                 "/edge_segments.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json",
-                                "/prophetx_live.json", "/polymarket_books.json"):
+                                "/prophetx_live.json", "/polymarket_books.json", "/kalshi_books.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -1715,7 +1741,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._place_bfa(body)
                 return
             if (url.path in ("/taker_decisions.json", "/ladders.json", "/edge_segments.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
-                             "/novig_read.json", "/prophetx_live.json", "/polymarket_books.json")
+                             "/novig_read.json", "/prophetx_live.json", "/polymarket_books.json", "/kalshi_books.json")
                     and self._refused_non_loopback()):
                 return
             if url.path == "/novig_books.json":
@@ -1723,6 +1749,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/polymarket_books.json":
                 self._polymarket_books(body)
+                return
+            if url.path == "/kalshi_books.json":
+                self._kalshi_books(body)
                 return
             if url.path == "/novig_read.json":
                 self._novig_read(body)
@@ -1953,6 +1982,18 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             slugs, wait_sec, priority, background = request
             self._send_json(200, polymarket_book_stream.books_for(slugs, wait_sec, priority, background))
+
+        # POST /kalshi_books.json: Kalshi's live books for the runner (kalshi_book_stream.py).
+        def _kalshi_books(self, body: object) -> None:
+            if kalshi_book_stream is None:
+                self._send_json(503, {"error": KALSHI_BOOK_STREAM_OFF_REASON})
+                return
+            request = validate_kalshi_books_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            tickers, wait_sec, priority, background = request
+            self._send_json(200, kalshi_book_stream.books_for(tickers, wait_sec, priority, background))
 
         # POST /prophetx_live.json: ProphetX's live prices for the runner's live price pass (prophetx_live.py).
         def _prophetx_live(self, body: object) -> None:
@@ -2461,6 +2502,27 @@ def open_polymarket_book_stream(client_factory: Callable[[str, str], PolymarketO
     return PolymarketBookStream(client, polymarket_stream_url(POLYMARKET_API_BASE_URL))
 
 
+def open_kalshi_book_stream(client_factory: Callable[[str, str, str], KalshiOrderClient] = KalshiOrderClient,
+                            ) -> KalshiBookStream | None:
+    """The live Kalshi book stream on the READ-ONLY key the Kalshi source polls
+    with (KALSHI_API_KEY_ID; its own client, never a trade key), or None
+    without it. Reads only."""
+    if not config.KALSHI_API_KEY_ID or not config.KALSHI_PRIVATE_KEY_PATH:
+        log.info("kalshi stream: %s, the runner reads Kalshi books over REST", KALSHI_BOOK_STREAM_OFF_REASON)
+        return None
+    if ("demo" in config.KALSHI_BASE_URL) != ("demo" in config.KALSHI_WS_URL):
+        log.error("kalshi stream: KALSHI_WS_URL %s and KALSHI_BASE_URL %s are not the same Kalshi; "
+                  "the runner reads Kalshi books over REST", config.KALSHI_WS_URL, config.KALSHI_BASE_URL)
+        return None
+    try:
+        client = client_factory(config.KALSHI_API_KEY_ID, config.KALSHI_PRIVATE_KEY_PATH, config.KALSHI_BASE_URL)
+    except (OSError, ValueError) as error:
+        log.error("kalshi stream: the read key %s could not be read: %s; the runner reads Kalshi books over REST",
+                  config.KALSHI_PRIVATE_KEY_PATH, error)
+        return None
+    return KalshiBookStream(client, config.KALSHI_WS_URL)
+
+
 def open_novig_catalog_reads() -> NovigCatalogReads | None:
     """The runner's keyed Novig catalog reads on the bot's Novig key (its own
     client and sessions, apart from the desk's), or None without that key."""
@@ -2670,6 +2732,7 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources, prophetx_order_stream,
                                                                               prophetx_live)
     polymarket_book_stream = open_polymarket_book_stream()
+    kalshi_book_stream = open_kalshi_book_stream()
     novig_catalog_reads = open_novig_catalog_reads()
     source_reader = SourceReader(sources, store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
@@ -2695,7 +2758,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             source_reader=source_reader,
                                                             polymarket_book_stream=polymarket_book_stream,
                                                             novig_place_stream=novig_place_stream,
-                                                            ladder_store=ladder_store))
+                                                            ladder_store=ladder_store,
+                                                            kalshi_book_stream=kalshi_book_stream))
     server.daemon_threads = True
     pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book, source_reader),
                                 name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
@@ -2710,6 +2774,9 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                    daemon=True))
     if polymarket_book_stream is not None:
         background_threads.append(threading.Thread(target=polymarket_book_stream.run, args=(stop,), name="polymarket-stream",
+                                                   daemon=True))
+    if kalshi_book_stream is not None:
+        background_threads.append(threading.Thread(target=kalshi_book_stream.run, args=(stop,), name="kalshi-stream",
                                                    daemon=True))
     if prophetx_live is not None:
         background_threads.append(threading.Thread(target=prophetx_live.run, args=(stop,), name="prophetx-live", daemon=True))

@@ -771,8 +771,11 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   Every line the Edges list could show at those three books (its settings,
   by Unabated's price, no liquidity gate) not read in the last 20 s, oldest
   read first. Kalshi: `GET /markets/<ticker>` once per ticker per 10 min
-  (the taker's `marketMismatch`) and `/markets/<ticker>/orderbook`, at most
-  120 a pass, two at a time. Novig: the bets service's book stream
+  (the taker's `marketMismatch`, at most 120 fresh checks a pass) and the
+  book off the bets service's Kalshi stream (`POST /kalshi_books.json` with
+  `background: true`, no wait; see **Kalshi live books** below), else
+  `/markets/<ticker>/orderbook` for a market the stream has no book of yet, at
+  most 120 a pass, two at a time. Novig: the bets service's book stream
   (`POST /novig_books.json` with `background: true`, subscribed behind the
   bot's and Place's markets, no wait); a market the stream has no book of
   yet is read off the keyed REST `/v3/catalog/markets/<id>/book` through
@@ -3931,6 +3934,39 @@ most 3 fresh event lists a pass there (each reused 5 min; a line's market,
 once found, is kept until the game starts), so the gateway is
 left to Place. `/health` carries `polymarketStream` (connected, last frame
 age, subscriptions, subscribed, held and wanted markets, last error).
+
+**Kalshi live books (`bets_service/kalshi_book_stream.py`, 2026-11-10, Cal's
+option A).** The live price pass read Kalshi books off REST, at most 120 a
+pass, so an Edges Kalshi price could be up to 2 min old. Now the bets service
+keeps ONE websocket, `wss://external-api-ws.kalshi.com/trade-api/ws/v2`
+(`KALSHI_WS_URL`), signed with the **read-only** Kalshi key
+(`KALSHI_API_KEY_ID`, the one the Kalshi source polls with) over `GET
+/trade-api/ws/v2`, **reads only**; it runs whenever that key is set (and not
+when `KALSHI_BASE_URL` and `KALSHI_WS_URL` disagree on demo vs prod). The
+runner asks `POST /kalshi_books.json` (loopback only) for the tickers it needs:
+each is subscribed on the `orderbook_delta` channel on first ask (a Ticket
+reread's or Place quote's first, the live pass's last and at most 900), packed
+into at most 20 subscriptions of 50 markets (Kalshi publishes no limit; a
+subscription it answers error 26 takes no more), new markets added with
+`update_subscription add_markets` at most once a second a subscription.
+Kalshi sends each market's snapshot then every change; a book is served as
+the REST `/orderbook`'s `orderbook_fp` body while the line is up and its
+subscription has missed no `seq`. A gap (or a delta before its snapshot, or a
+level below zero) resubscribes the whole subscription and serves none of its
+books until the fresh snapshots land; a crossed book is never served. A still
+market's book stays exact, so books carry `ageMs` (since the last change) but
+are not refused for age. The stream pings every 15 s and reconnects after 45 s
+of silence; a market nobody asked about for 10 min is deleted from its
+subscription; a refused one is asked again a minute later. Anything the stream
+lacks falls back to REST: the live pass reads at most 120 REST books a pass,
+a reread and the Place quote (`GET /kalshi_quote.json`, which waits up to
+1.5 s for a market the stream was not watching) one each. The Place quote's
+market check stays REST. **The automated taker stays on REST** (its decisions
+are unchanged). `/health` carries `kalshiStream` (connected, last frame age,
+subscriptions, subscribed, held, wanted and refused markets, resyncs, last
+error); the runner's `/health` `livePrices.byVenue.kalshi` counts
+`fromStream` / `fromRest`. Frame shapes are from Kalshi's docs; the first live
+read is on the VM.
 
 ### ProphetX source and Place (`bets_service/sources/prophetx.py`, `prophetx_place.py`, `server/prophetx.js`, 2026-10-31)
 

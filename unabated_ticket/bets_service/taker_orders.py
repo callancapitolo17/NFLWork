@@ -199,6 +199,22 @@ class KalshiOrderClient:
     def base_url(self) -> str:
         return self._base_url
 
+    @property
+    def key_id(self) -> str:
+        return self._api_key_id
+
+    def signed_ws_headers(self, ws_path: str) -> dict:
+        """The websocket handshake's headers: Kalshi signs it as a GET of the
+        websocket path itself, with no /trade-api/v2 prefix (kalshi_book_stream.py)."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+        timestamp_ms = str(int(time.time() * 1000))
+        signature = self._private_key.sign(
+            f"{timestamp_ms}GET{ws_path}".encode(),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH), hashes.SHA256())
+        return {"KALSHI-ACCESS-KEY": self._api_key_id, "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
+                "KALSHI-ACCESS-TIMESTAMP": timestamp_ms}
+
 
 def _parse(raw: bytes) -> object:
     text = raw.decode(errors="replace")

@@ -954,6 +954,12 @@ function takerService(script) {
         if (!books) return response({ status: 503, body: JSON.stringify({ error: "no Polymarket US key is configured" }) });
         return response({ body: JSON.stringify(books(body)) });
       }
+      if (route === "/kalshi_books.json") {
+        // No stream scripted = a bets service without the Kalshi read key.
+        const books = script["/kalshi_books.json"];
+        if (!books) return response({ status: 503, body: JSON.stringify({ error: "no Kalshi read key is configured" }) });
+        return response({ body: JSON.stringify(books(body)) });
+      }
       if (route === "/prophetx_live.json") {
         // No reads scripted = a bets service without the ProphetX live key pair.
         const reads = script["/prophetx_live.json"];
@@ -2822,7 +2828,7 @@ test("live reread: a Kalshi line is read at its market, and a second ask within 
   await runner.start();
   const key = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key)).key;
   kalshiBook.noDollars = "0.4250";
-  assert.deepEqual(await runner.rereadLiveLine(key), { venue: "kalshi", counts: { rows: 1, live: 1, empty: 0, unchecked: 0, lastError: null } });
+  assert.deepEqual(await runner.rereadLiveLine(key), { venue: "kalshi", counts: { rows: 1, live: 1, empty: 0, unchecked: 0, lastError: null, fromStream: 0, fromRest: 1 } });
   const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => candidate.key === key);
   // 57.5c ask plus Kalshi's 7% x p x (1 - p) fee.
   assert.equal(row.sourcePrice, 0.592106);
@@ -2958,4 +2964,109 @@ test("board thread: /edges.json?fresh=1&reread= rereads that line before the bui
     await new Promise((resolve) => server.close(resolve));
     client.stop();
   }
+});
+
+// ---- Kalshi books off the bets service's stream (kalshi_book_stream.py) ----
+
+// The stream's answer for every asked ticker: TAKER_TICKER's book with `noDollars`
+// as its best no bid (57c to buy yes at 43c), others still waiting.
+function kalshiStreamBooks(noDollars = "0.4300") {
+  return (body) => ({
+    stream: { connected: true, lastFrameAgeMs: 200, error: null },
+    books: Object.fromEntries(body.tickers.map((ticker) => [ticker, ticker === TAKER_TICKER
+      ? { orderbook_fp: { yes_dollars: [["0.5500", "100.00"]], no_dollars: [[noDollars, "40.00"]] }, ageMs: 1200 }
+      : { error: `waiting for Kalshi's stream snapshot of ${ticker}` }])),
+  });
+}
+
+function kalshiStreamLiveRunner(kalshiBooks) {
+  const kalshi = kalshiFetch();
+  const service = takerService({ "/bets.json": novigTakerBetsBody(), "/settings.json": LIVE_SETTINGS, "/novig_books.json": novigStreamBooks(),
+    "/kalshi_books.json": kalshiBooks });
+  const runner = runnerLib.createRunner({
+    fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    novigRead: keyedNovigRead(novigFetch()), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  return { runner, service, kalshi };
+}
+
+const kalshiBookReadsOf = (kalshi, ticker) => kalshi.calls.filter((url) => url.endsWith(`/markets/${ticker}/orderbook`)).length;
+
+test("kalshi stream: the live pass prices a Kalshi line off the stream's book, asked behind the rest with no wait, and reads no REST book for it", async () => {
+  const { runner, service, kalshi } = kalshiStreamLiveRunner(kalshiStreamBooks("0.4250"));
+  await runner.start();
+  await runner.livePricePass();
+  const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => WSU36_KALSHI_KEY_RE.test(candidate.key));
+  assert.equal(row.liveCheck, "live");
+  // 57.5c ask plus Kalshi's 7% x p x (1 - p) fee.
+  assert.equal(row.sourcePrice, 0.592106);
+  const asks = service.posts.filter((post) => post.route === "/kalshi_books.json").map((post) => post.body);
+  assert.equal(asks.length, 1);
+  assert.equal(asks[0].tickers.includes(TAKER_TICKER), true);
+  assert.deepEqual({ waitMs: asks[0].waitMs, priority: asks[0].priority, background: asks[0].background }, { waitMs: 0, priority: false, background: true });
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 0, "a stream book needs no REST orderbook read");
+  assert.equal(runner.health().livePrices.byVenue.kalshi.fromStream >= 1, true);
+  runner.stop();
+});
+
+test("kalshi stream: a market the stream has no book of yet is read off REST, and a stream that is off leaves every line on REST", async () => {
+  for (const kalshiBooks of [(body) => ({ stream: { connected: false }, books: Object.fromEntries(body.tickers.map((ticker) => [ticker, { error: "the Kalshi stream is not connected (connecting)" }])) }), undefined]) {
+    const { runner, kalshi } = kalshiStreamLiveRunner(kalshiBooks);
+    await runner.start();
+    await runner.livePricePass();
+    const row = edgeRowsOf(runner.edgesPayload()).find((candidate) => WSU36_KALSHI_KEY_RE.test(candidate.key));
+    assert.equal(row.liveCheck, "live");
+    assert.equal(row.sourcePrice, 0.587157);
+    assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 1);
+    assert.equal(runner.health().livePrices.byVenue.kalshi.fromStream, 0);
+    runner.stop();
+  }
+});
+
+test("kalshi stream: a stream book that does not parse is never priced; the line is read off REST", async () => {
+  const broken = (body) => ({ stream: { connected: true }, books: Object.fromEntries(body.tickers.map((ticker) => [ticker, { orderbook_fp: "nope" }])) });
+  const { runner, kalshi } = kalshiStreamLiveRunner(broken);
+  await runner.start();
+  await runner.livePricePass();
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 1);
+  assert.equal(edgeRowsOf(runner.edgesPayload()).find((candidate) => WSU36_KALSHI_KEY_RE.test(candidate.key)).sourcePrice, 0.587157);
+  runner.stop();
+});
+
+test("kalshi stream: a reread asks the stream ahead of the rest and waits for a new market's snapshot", async () => {
+  const { runner, service, kalshi } = kalshiStreamLiveRunner(kalshiStreamBooks("0.4250"));
+  await runner.start();
+  const key = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key)).key;
+  const answer = await runner.rereadLiveLine(key);
+  assert.deepEqual(answer.counts, { rows: 1, live: 1, empty: 0, unchecked: 0, lastError: null, fromStream: 1, fromRest: 0 });
+  const ask = service.posts.find((post) => post.route === "/kalshi_books.json").body;
+  assert.deepEqual(ask, { tickers: [TAKER_TICKER], waitMs: 1500, priority: true, background: false });
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 0);
+  runner.stop();
+});
+
+test("kalshi stream: the Place quote takes the stream's book (priority), and falls back to REST when the stream has none", async () => {
+  const streamed = await quoteRunner({}, {}, WSU_UNABATED_START, { "/kalshi_books.json": kalshiStreamBooks("0.4250") });
+  const quote = await streamed.runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  streamed.runner.stop();
+  assert.deepEqual({ ok: quote.ok, ask: quote.ask, depth: quote.depth, bookFrom: quote.bookFrom }, { ok: true, ask: 0.575, depth: 40, bookFrom: "stream" });
+  assert.equal(kalshiBookReadsOf(streamed.kalshi, TAKER_TICKER), 0);
+  assert.ok(streamed.kalshi.calls.includes(`https://kalshi.test/v2/markets/${TAKER_TICKER}`), "the market is still checked over REST");
+  const ask = streamed.service.posts.find((post) => post.route === "/kalshi_books.json").body;
+  assert.deepEqual(ask, { tickers: [TAKER_TICKER], waitMs: 1500, priority: true, background: false });
+
+  const fallback = await quoteRunner();
+  const restQuote = await fallback.runner.kalshiQuote(new URLSearchParams(WSU_36_LINE));
+  fallback.runner.stop();
+  assert.deepEqual({ ok: restQuote.ok, ask: restQuote.ask, bookFrom: restQuote.bookFrom }, { ok: true, ask: 0.57, bookFrom: "rest" });
+  assert.equal(kalshiBookReadsOf(fallback.kalshi, TAKER_TICKER), 1);
+});
+
+test("kalshi stream: the taker's own pass never asks the stream (the bot stays on REST)", async () => {
+  const { runner, service, kalshi } = kalshiStreamLiveRunner(kalshiStreamBooks("0.4250"));
+  await runner.start();
+  await runner.takerPass();
+  assert.equal(service.posts.some((post) => post.route === "/kalshi_books.json"), false);
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER) >= 1, true);
+  runner.stop();
 });
