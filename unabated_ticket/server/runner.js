@@ -2052,8 +2052,12 @@ function createRunner(deps) {
     });
     const line = board.lines[key];
     const event = line ? board.events[line.eventId] : null;
-    if (!line || !event || line.bookId === feedLib.UNABATED_LINE_BOOK_ID) return answer({ reason: "gone", detail: "the line is no longer on Unabated's board" });
-    if (!(event.eventStart > now())) return answer({ reason: "started", detail: "the game has started" });
+    // Off the board or started is final: every answer counts.
+    const finalReading = `final:${now()}`;
+    if (!line || !event || line.bookId === feedLib.UNABATED_LINE_BOOK_ID) {
+      return answer({ reason: "gone", detail: "the line is no longer on Unabated's board", readingId: finalReading });
+    }
+    if (!(event.eventStart > now())) return answer({ reason: "started", detail: "the game has started", readingId: finalReading });
     const readError = await readTicketLine(board, { ...feedLib.describeLine(line, board), liveCheck: null });
     const read = liveReads.get(key);
     const venueReadAtMs = read ? read.readAtMs : null;

@@ -2911,5 +2911,8 @@ test("ticket line: a line the list's other gates drop answers no row (filtered);
   later.now = Date.parse(WSU_UNABATED_START) + 1000;
   const started = await open.ticketLinePayload(new URLSearchParams({ key }));
   assert.deepEqual([started.row, started.reason, started.detail], [null, "started", "the game has started"]);
+  later.now += 2000;
+  const again = await open.ticketLinePayload(new URLSearchParams({ key }));
+  assert.notEqual(again.readingId, started.readingId, "a started game counts every answer toward closing");
   open.stop();
 });
