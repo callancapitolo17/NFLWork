@@ -23,7 +23,8 @@ own subaccount, but only after Kalshi refused an order `insufficient_balance`
 the short pot is topped up by exactly the
 shortfall from the bot's other pot (top_up_bot_pot), with the bot's own key,
 which Kalshi lets move money only between that subaccount's own pots. No
-money ever comes in from the primary account.
+money ever comes in from the primary account. That key cannot read a
+transfer's status, so the bot pauses instead of waiting for "complete".
 """
 from __future__ import annotations
 
@@ -107,12 +108,11 @@ def top_up_shard(client: KalshiOrderClient, shard: int | None, cost: float,
 
 def top_up_bot_pot(client: KalshiOrderClient, subaccount: int, shard: int | None, cost: float,
                    bot_shards: tuple[int, ...],
-                   sleep: Callable[[float], None] = time.sleep,
-                   monotonic: Callable[[], float] = time.monotonic) -> TopUp:
+                   sleep: Callable[[float], None] = time.sleep) -> TopUp:
     """Make sure the bot subaccount's pot `shard` holds `cost` dollars, moving
     the shortfall from its other pot in `bot_shards` when it does not. Unlike
     Place, every doubt refuses: a pot outside `bot_shards`, an unknown pot, an
-    unreadable balance, or a move that fails or does not complete in time.
+    unreadable balance, or a move Kalshi does not accept.
     The other pot is never read: Kalshi answers a second balance read right
     after the first with HTTP 429, so its refusal of the move is the check."""
     if shard is None:
@@ -130,7 +130,7 @@ def top_up_bot_pot(client: KalshiOrderClient, subaccount: int, shard: int | None
     if len(sources) != 1:
         return TopUp(refusal=f"the bot's {shard_name(shard)} pot is ${shortfall_cents / 100:.2f} short and it has "
                              f"{len(sources)} other pots to draw on, expected 1")
-    return _transfer(client, sources[0], shard, shortfall_cents, pot_cash, sleep, monotonic, subaccount)
+    return _transfer(client, sources[0], shard, shortfall_cents, pot_cash, sleep, time.monotonic, subaccount)
 
 
 def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], None],
