@@ -331,9 +331,13 @@ button, select, input { font: inherit; color: inherit; }
   padding: 8px 16px calc(20px + env(safe-area-inset-bottom));
 }
 .sheet-grip { width: 40px; height: 5px; border-radius: 3px; background: var(--border); margin: 0 auto 6px; }
+.sheet-top {
+  position: sticky; top: -8px; z-index: 3; display: flex; justify-content: flex-end; align-items: flex-start; gap: 8px;
+  margin: 0 -16px; padding: 0 16px 6px; background: var(--ground);
+}
 .sheet-close {
-  float: right; appearance: none; cursor: pointer; border: 0; background: var(--chip); color: var(--ink-2);
-  border-radius: 999px; padding: 0 16px; min-height: 40px; font: 600 14px system-ui, sans-serif; margin: 0 0 6px 8px;
+  flex: none; appearance: none; cursor: pointer; border: 0; background: var(--chip); color: var(--ink-2);
+  border-radius: 999px; padding: 0 16px; min-height: 40px; font: 600 14px system-ui, sans-serif; margin: 0;
 }
 #ticket-gone { margin: 0 0 10px; clear: both; }
 .side-caption { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; padding-top: 6px; }
@@ -574,6 +578,14 @@ button, select, input { font: inherit; color: inherit; }
   bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px);
   display: flex; flex-direction: column; gap: 6px; pointer-events: none;
 }
+.sheet-panel .toasts { position: absolute; top: 100%; left: 16px; right: 16px; bottom: auto; display: none; pointer-events: auto;
+  padding: 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--ground); box-shadow: 0 10px 28px rgba(0, 0, 0, .3); }
+.sheet-panel .toasts.dropped { display: flex; }
+.sheet-panel .toast { box-shadow: none; }
+.toast-chip { flex: 0 1 auto; min-width: 0; padding: 4px 12px; font-size: 13px; text-align: right; }
+.toast-chip.chip-ok { background: color-mix(in srgb, var(--edge-strong) 14%, var(--ground)); color: var(--edge-strong); }
+.toast-chip.chip-warn { background: var(--warn-bg); color: var(--warn-fg); }
+.toast-chip.chip-bad { background: var(--against-bg); color: var(--against-fg); }
 .toast {
   pointer-events: auto; display: flex; align-items: flex-start; gap: 8px;
   padding: 10px 12px; border-radius: 12px; font-size: 13px; line-height: 1.35;

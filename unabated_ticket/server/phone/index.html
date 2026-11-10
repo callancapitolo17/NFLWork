@@ -130,7 +130,7 @@
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false">Settings</button>
   </nav>
 
-  <!-- Place toasts (phone.js showToast): one per Place, above the tab bar and the Ticket. -->
+  <!-- Place toasts (phone.js showToast): one per Place, above the tab bar. -->
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <!-- The ticket: one line, read-only. Tapping a row opens it; Close, the
@@ -139,7 +139,11 @@
     <div class="sheet-backdrop" id="sheet-backdrop"></div>
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ticket-side">
       <div class="sheet-grip" aria-hidden="true"></div>
-      <button type="button" id="sheet-close" class="sheet-close" aria-label="Close ticket">Close</button>
+      <!-- Sticky, so the Place toasts' chip (phone.js renderToastChip) and their drop-down stay in view on a scrolled Ticket. -->
+      <div class="sheet-top">
+        <button type="button" id="toast-chip" class="sheet-close toast-chip" aria-expanded="false" aria-controls="toasts" hidden></button>
+        <button type="button" id="sheet-close" class="sheet-close" aria-label="Close ticket">Close</button>
+      </div>
       <div id="ticket-gone" class="warning" hidden>No longer listed: this is the line as it was last shown.</div>
       <div id="ticket-moved" class="warning" hidden></div>
       <!-- The 2 s live refresh: when the price was read, or why the Ticket is about to close. -->
