@@ -273,6 +273,42 @@
     return out;
   }
 
+  // The banners folded to one line (the Edges top, issue: UI audit B): the
+  // worst level, how many, and the first banner's text, which the chip shows
+  // cut to one line. Tapping the chip lists every banner in full.
+  function bannerSummary(list) {
+    if (!list || list.length === 0) return null;
+    const level = list.some((banner) => banner.level === "bad") ? "bad" : "warn";
+    const worst = list.find((banner) => banner.level === level);
+    const count = `${list.length} problem${list.length === 1 ? "" : "s"}`;
+    return { level, count, text: worst.text };
+  }
+
+  // The Edges status in one line: "NFL · 62 lines · 5 books · ≥1% · by edge · 20s ago".
+  // The full lines (scannerText, the books line, tail flex, price check) open under it.
+  function edgesStatusSummary(payload, sortLabel, now) {
+    const scanner = payload.scanner;
+    if (!scanner || scanner.phase === "starting" || (scanner.phase === "loading" && !(scanner.leaguesLoaded || []).length)) {
+      return scannerText(scanner, now);
+    }
+    const label = (id) => (feed.LEAGUES[id] || { label: `league ${id}` }).label;
+    const loaded = scanner.leaguesLoaded || [];
+    const leagues = loaded.length > 4 ? `${loaded.length} leagues` : loaded.map(label).join(" · ");
+    const books = payload.books;
+    const bookCount = !books ? null : books.ids ? books.ids.length : books.liveCount;
+    const settings = (payload.settings && payload.settings.edges) || {};
+    const stale = scanner.staleLeagues && scanner.staleLeagues.length ? `${scanner.staleLeagues.length} stale` : null;
+    return [
+      leagues || "no leagues",
+      `${(scanner.lineCount || 0).toLocaleString("en-US")} lines`,
+      bookCount == null ? null : `${bookCount} book${bookCount === 1 ? "" : "s"}`,
+      settings.minEdgePct == null ? null : `≥${settings.minEdgePct}%`,
+      sortLabel ? `by ${sortLabel}` : null,
+      scanner.snapshotBuiltAt ? fmtAge(now - scanner.snapshotBuiltAt) : "no data yet",
+      stale,
+    ].filter(Boolean).join(" · ");
+  }
+
   // "edges 4s ago · bets 12s ago"
   function freshnessText(edgesPoll, betsPoll, now) {
     const part = (name, poll) => {
@@ -584,6 +620,51 @@
     return `Placing ${fmtDollars(stakeDollars)} on ${sideLabel} at ${venueName}\u2026`;
   }
 
+  // ---- lines already bet (Cal 2026-11-09) ----------------------------------
+  // A line bet to full size ("add $0", stakeRail's atSize) leaves the Edges
+  // list: it has nothing left to do and kept Cal guessing what he had placed.
+  // A card leaves with its best line, the highest-growth line of the card,
+  // so a best at full size means no line of the card adds anything.
+  function isFullyBet(row) {
+    return Boolean(row && row.rail && row.rail.atSize);
+  }
+
+  // `items` is /edges.json's items: cards when `grouped`, else rows.
+  function withoutFullyBet(items, grouped) {
+    return items.filter((item) => !isFullyBet(grouped ? item.best : item));
+  }
+
+  // A Place sent from this page greys its row ("placed $X") from the tap
+  // until the Edges list counts it, so the old "add $X" never shows in
+  // between. The list counts it once the runner's bets read
+  // (edges.json betsService.generatedAt) is newer than a /bets.json read
+  // this page made after the venue replied (mark.betsReadAfter): both are the
+  // bets service's own clock, so a runner read already in flight, a failed
+  // runner read or the phone's clock cannot end it early. While the order is
+  // out the mark always shows (the send has its own timeout);
+  // PLACED_MARK_MAX_MS after the reply it ends anyway.
+  // mark {stake, sentAt, repliedAt (null while the order is out),
+  // betsReadAfter (ISO, null until that read lands)};
+  // listBetsReadAt: the shown list's betsService.generatedAt, or null.
+  const PLACED_MARK_MAX_MS = MINUTE_MS;
+
+  function placedMarkShows(mark, listBetsReadAt, now) {
+    if (mark.repliedAt == null) return true;
+    if (now - mark.repliedAt > PLACED_MARK_MAX_MS) return false;
+    if (mark.betsReadAfter == null || listBetsReadAt == null) return true;
+    // Strictly newer: the service stamps whole seconds, so a runner read
+    // begun just before the fill can carry the same second as the read after it.
+    return Date.parse(listBetsReadAt) <= Date.parse(mark.betsReadAfter);
+  }
+
+  // The greyed row's tag and rail words.
+  function placedMarkView(mark) {
+    return {
+      tag: `placed ${fmtDollars(mark.stake)}`,
+      rail: { text: mark.repliedAt == null ? "placing" : "placed", note: mark.repliedAt == null ? "sending…" : "updating…", atSize: true },
+    };
+  }
+
   // tone: place.js replyTone ("ok" | "refused" | "warn" | "bad") or "wait" while placing.
   function placeToastHideAfterMs(tone) {
     return tone === "ok" ? PLACE_TOAST_FILLED_HIDE_MS : null;
@@ -637,11 +718,12 @@
     EDGES_POLL_MS, BETS_POLL_MS, EDGES_STALE_MS,
     fmtEdgePct, fmtPriceBoth, fmtPoints, fmtStart, fmtUntil, untilLevel, fmtAge, fmtLineAge, fmtLiquidity, fmtClock,
     marketText, describeMatchup, bookPriceText, lineAgeText, contractsView, stakeBlockView, ticketView,
-    scannerText, booksText, banners, freshnessText, betItemView, betsTabView, applyDismissals,
+    scannerText, booksText, banners, bannerSummary, edgesStatusSummary, freshnessText, betItemView, betsTabView, applyDismissals,
     lineMovedText, teaserLegMeta, bfaRowOf, teasersWarningText, cutOffBodyText,
     settingsDefaults, effectiveSettings, settingsUpdate, resetUpdate, defaultText, sportsOfLeagues, leaguesForSports,
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
-    placeToastPlacingText, placeToastHideAfterMs, freePlayStake, freePlayView, netOddsOf, fairProbOf,
+    placeToastPlacingText, placeToastHideAfterMs, freePlayStake,
+    withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 
   if (inNode) {

@@ -72,6 +72,7 @@
   const el = (id) => document.getElementById(id);
   const view = {
     fresh: el("fresh"), banners: el("banners"),
+    edgesStatusToggle: el("edges-status-toggle"), edgesStatusSummary: el("edges-status-summary"), edgesStatusMore: el("edges-status-more"),
     edgesStatus: el("edges-status"), edgesBooks: el("edges-books"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"),
     edgesList: el("edges-list"), edgesEmpty: el("edges-empty"), edgesCount: el("edges-count"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTab: el("tab-bets"),
@@ -116,6 +117,9 @@
 
   const state = {
     activeView: "edges",
+    // The header's folded banners and the Edges status line: closed until tapped.
+    bannersOpen: false,
+    edgesStatusOpen: false,
     // What each poll left: {payload, okAt, error, errorAt, failingSince}.
     edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     teasers: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
@@ -134,6 +138,10 @@
     // skips every 30 s, so without this a tap would take that long to show.
     skipOverrides: new Map(),
     skipError: null,
+    // Places sent from this page, greyed on the Edges list until the list
+    // counts them (phoneView.placedMarkShows): row key -> {stake, sentAt,
+    // repliedAt, betsReadAfter, cardKey}.
+    placedMarks: new Map(),
     // Row keys whose every-book list is open; the Skipped fold's state.
     openPriceChecks: new Set(),
     skippedFoldOpen: false,
@@ -256,17 +264,21 @@
   }
 
   // The records as the panel holds them (edgeRows.applyBetsPayload: merged, pins applied).
+  // Returns this read's generatedAt (the bets service's clock), or null when it failed.
   async function pollBets() {
+    let generatedAt = null;
     try {
       const body = await requestJson("GET", "/bets.json");
       const applied = edgeRows.applyBetsPayload(state.held, body, Date.now());
       state.held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
       if (state.betsSaving.size === 0) state.dismissedIds = applied.dismissals ? applied.dismissals.map((row) => row.betId) : null;
       pollSucceeded(state.bets, { generatedAt: applied.generatedAt, sources: applied.sources });
+      generatedAt = applied.generatedAt ?? null;
     } catch (error) {
       pollFailed(state.bets, error);
     }
     renderAll();
+    return generatedAt;
   }
 
   // Each book's balance for the Edges tab's Balances line, on the bets poll's cadence;
@@ -321,8 +333,28 @@
 
   function renderTop(now) {
     view.fresh.textContent = phoneView.freshnessText(state.edges, state.bets, now);
-    view.banners.replaceChildren(...phoneView.banners(state.edges, state.bets, now)
-      .map((banner) => makeEl("div", `warning${banner.level === "bad" ? " bad" : ""}`, banner.text)));
+    const list = phoneView.banners(state.edges, state.bets, now);
+    const summary = phoneView.bannerSummary(list);
+    if (!summary) {
+      state.bannersOpen = false; // the next problem shows folded
+      view.banners.replaceChildren();
+      return;
+    }
+    const chip = makeEl("button", `banner-chip${summary.level === "bad" ? " bad" : ""}`);
+    chip.type = "button";
+    chip.setAttribute("aria-expanded", String(state.bannersOpen));
+    chip.append(makeEl("span", "banner-count", `⚠ ${summary.count}`),
+      makeEl("span", "banner-text", state.bannersOpen ? "" : summary.text),
+      makeEl("span", "banner-caret", state.bannersOpen ? "▴" : "▸"));
+    const full = state.bannersOpen
+      ? list.map((banner) => makeEl("div", `warning${banner.level === "bad" ? " bad" : ""}`, banner.text))
+      : [];
+    view.banners.replaceChildren(chip, ...full);
+  }
+
+  function renderEdgesStatusFold() {
+    view.edgesStatusMore.hidden = !state.edgesStatusOpen;
+    view.edgesStatusToggle.setAttribute("aria-expanded", String(state.edgesStatusOpen));
   }
 
   // ---- Edges -------------------------------------------------------------------------
@@ -536,11 +568,31 @@
     renderAll();
   }
 
+  // Drops the Place marks the shown list already counts; once per render.
+  function prunePlacedMarks(now) {
+    const listBetsReadAt = state.edges.payload ? state.edges.payload.betsService.generatedAt ?? null : null;
+    for (const [rowKey, mark] of state.placedMarks) {
+      if (!phoneView.placedMarkShows(mark, listBetsReadAt, now)) state.placedMarks.delete(rowKey);
+    }
+  }
+
+  // The Place mark on a row or its card, or null.
+  function placedMarkOf(row, card) {
+    if (state.placedMarks.has(row.key)) return state.placedMarks.get(row.key);
+    if (!card) return null;
+    for (const mark of state.placedMarks.values()) if (mark.cardKey === card.key) return mark;
+    return null;
+  }
+
   function edgeItem(row, card, now, skipped = false) {
-    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}${skipped ? " skipped" : ""}`);
+    const mark = placedMarkOf(row, card);
+    const words = mark ? phoneView.placedMarkView(mark) : null;
+    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}${skipped ? " skipped" : ""}${mark ? " placed" : ""}`);
     li.dataset.key = row.key;
     if (card) li.dataset.card = card.key;
-    li.append(mainEl(row, now, skipped), railEl(row, true));
+    // A just-placed row's rail reads "placed" where the stake was; no move tag or shrunk-edge hover on numbers about to change.
+    li.append(mainEl(row, now, skipped), mark ? railEl({ ...row, rail: words.rail, shrunkEdgePct: null }, false) : railEl(row, true));
+    if (mark) li.querySelector(".edge-side").prepend(tagEl("placed", words.tag));
     const related = relatedBlock(row);
     if (related) li.append(related);
     if (card && card.others && card.others.length) {
@@ -553,12 +605,14 @@
     const payload = state.edges.payload;
     if (!payload) {
       view.edgesStatus.textContent = state.edges.error ? "No Edges list yet." : "Loading the Edges list…";
+      view.edgesStatusSummary.textContent = view.edgesStatus.textContent;
       view.edgesBooks.textContent = "";
       view.edgesList.replaceChildren();
       view.edgesCount.hidden = true;
       return;
     }
     const settings = payload.settings.edges;
+    view.edgesStatusSummary.textContent = phoneView.edgesStatusSummary(payload, SORT_LABELS[settings.sortBy] || settings.sortBy, now);
     view.edgesStatus.textContent = phoneView.scannerText(payload.scanner, now);
     view.edgesBooks.textContent = [
       phoneView.booksText(payload.books),
@@ -570,15 +624,20 @@
     view.edgesTailFlex.hidden = !payload.tailFlex;
     view.edgesPriceCheck.textContent = payload.priceCheck || "";
     view.edgesPriceCheck.hidden = !payload.priceCheck;
-    const { items: listed, skipped, total } = edgesWithSkips(payload);
+    prunePlacedMarks(now);
+    const { items: withSkips, skipped, total: totalWithSkips } = edgesWithSkips(payload);
+    const listed = phoneView.withoutFullyBet(withSkips, payload.grouped);
+    const fullyBet = withSkips.length - listed.length;
+    const total = totalWithSkips - fullyBet;
     const items = listed.map((item) => (payload.grouped ? edgeItem(item.best, item, now) : edgeItem(item, null, now)));
     view.edgesList.replaceChildren(...items, ...skippedFoldEls(skipped, now));
     view.edgesCount.hidden = total === 0;
     view.edgesCount.textContent = String(total);
-    view.edgesEmpty.hidden = payload.total > 0 && payload.total <= payload.maxShown;
+    view.edgesEmpty.hidden = total > 0 && payload.total <= payload.maxShown;
     view.edgesEmpty.textContent = payload.total === 0
       ? (payload.scanner.phase === "live" ? `No line at or above ${settings.minEdgePct}% edge right now.` : "Waiting for the runner's first snapshot…")
-      : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
+      : total === 0 && fullyBet > 0 && payload.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
+        : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
   }
 
   // The Skipped line under the list: tap to open the skipped rows, each with Restore.
@@ -834,14 +893,25 @@
       return;
     }
     const sideLabel = phoneView.ticketView(found.row, Date.now()).sideLabel;
-    const toast = showToast(phoneView.placeToastPlacingText(venuePlace.parseStake(view.ticketVenueStake.value), sideLabel, venueName), "wait");
+    const stake = venuePlace.parseStake(view.ticketVenueStake.value);
+    const toast = showToast(phoneView.placeToastPlacingText(stake, sideLabel, venueName), "wait");
+    const mark = { stake, sentAt: Date.now(), repliedAt: null, betsReadAfter: null, cardKey: state.ticket.cardKey ?? null };
+    state.placedMarks.set(rowKey, mark);
     placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
     // The balance just changed: the next BFA Ticket reads it again.
     if (freePlay) state.freePlay.askedAt = 0;
     closeTicket();
+    // The order goes out first: greying the row is only a picture of it.
+    const sending = requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
+    try {
+      renderAll();
+    } catch (error) {
+      // A drawing fault must never cost the order its toast.
+      console.error("[unabated-ticket] render after Place failed", error);
+    }
     let next;
     try {
-      const reply = await requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
+      const reply = await sending;
       next = { message: reply.message, tone: venuePlace.replyTone(reply.status) };
     } catch (error) {
       // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
@@ -850,7 +920,17 @@
         : { message: `No answer from the bets service (${error.message}). Check ${venueName} before placing again.`, tone: "warn" };
     }
     setToast(toast, next.message, next.tone);
-    if (next.tone === "ok") await pollBets();
+    // A fill (or an answer that may hide one) stays grey until the runner's list counts it; nothing placed ungreys now.
+    // A second Place on the same row replaces the mark: only this Place's own mark is this Place's to change.
+    const ownMark = state.placedMarks.get(rowKey) === mark;
+    if (next.tone === "ok" || next.tone === "warn") {
+      mark.repliedAt = Date.now();
+      mark.betsReadAfter = await pollBets();
+      await Promise.all([pollEdges(true), pollTeasers(true)]);
+    } else {
+      if (ownMark) state.placedMarks.delete(rowKey);
+      renderAll();
+    }
   }
 
   // ---- Place toasts ---------------------------------------------------------
@@ -1727,6 +1807,15 @@
     if (button) showView(button.dataset.view);
   });
 
+  view.banners.addEventListener("click", (event) => {
+    if (!event.target.closest(".banner-chip")) return;
+    state.bannersOpen = !state.bannersOpen;
+    renderTop(Date.now());
+  });
+  view.edgesStatusToggle.addEventListener("click", () => {
+    state.edgesStatusOpen = !state.edgesStatusOpen;
+    renderEdgesStatusFold();
+  });
   view.edgesList.addEventListener("click", (event) => {
     const skipChip = event.target.closest("button.skip-chip");
     if (skipChip) {

@@ -12,6 +12,8 @@ Status per bot, in order: "off" (the service has no armed desk for it: no key,
 or the key was not proven locked to the bot's subaccount), "stopped" (a stop
 file is present), else "running". The tracker adds the runner's view: a pass
 that is late or skipped for that venue reads as a warning on a running bot.
+The Novig bot also carries `cashShort` (novig_taker_desk.cash_short_detail):
+why it is waiting on cash, or null; the tracker shows it as "Out of cash".
 """
 import json
 from datetime import datetime

@@ -59,6 +59,7 @@
     ["cfb", "Louisiana", "UL Lafayette"],               // Novig (the Ragin' Cajuns)
     ["mlb", "Los Angeles D", "Los Angeles Dodgers"],    // Kalshi KXMLBRFI event title truncation
     ["mlb", "ARI DBACKS", "Arizona Diamondbacks"],      // Wagerzon (the only MLB spelling of its 30 that no rule keys, 2026-09-23)
+    ["nba", "Los Angeles Clippers", "LA Clippers"],    // ProphetX (Unabated spells only this LA team "LA"; a Place refused 2026-11-10)
   ];
   const CODE_TOKEN_RE = /^[A-Z][A-Z0-9&]{1,4}$/;
   // What a venue may append to a team's name without naming a different team.
