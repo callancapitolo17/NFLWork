@@ -2825,12 +2825,13 @@ node unabated_ticket/server/runner.js                     # must be running too 
   (`betsService.generatedAt`) is newer than that `/bets.json` read (both
   the bets service's clock, whole seconds), at most a minute after the reply
   (`phoneView.placedMarkShows`). A refusal ungreys it. A refusal, or an
-  order sent that filled nothing (`unfilled`), asks for
+  order sent that filled nothing or the venue rejected (`unfilled`,
+  `rejected`), asks for
   `/edges.json?fresh=1&reread=<line key>` (2026-11-10): the runner reads that
   one line at its venue beside the bets read (`rereadLiveLine`, waiting at most
   2.5 s; the catalog, event lists and stream as held, no extra Novig or
   Polymarket US catalog read; one per line at a time, none within 2 s of its
-  last read), so a moved price shows its new price, edge and stake at once, or
+  last reread), so a moved price shows its new price, edge and stake at once, or
   the line drops when the edge is gone, instead of waiting up to a minute for
   the next pass and poll. A read that fails or is still going drops the
   line's older read, so the card shows `unchecked`, not the refused price; a

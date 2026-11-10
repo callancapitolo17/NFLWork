@@ -935,8 +935,8 @@
     } else {
       if (ownMark) state.placedMarks.delete(rowKey);
       renderAll();
-      // Refused before the send, or sent and nothing filled: usually a moved price, so read the line again now.
-      if (next.tone === "refused" || next.status === "unfilled") await pollEdges(true, rowKey);
+      // Refused before the send, or sent and nothing filled or the venue rejected it: often a moved price, so read the line again now.
+      if (next.tone === "refused" || next.status === "unfilled" || next.status === "rejected") await pollEdges(true, rowKey);
     }
   }
 

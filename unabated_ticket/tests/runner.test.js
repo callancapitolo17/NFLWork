@@ -2817,7 +2817,7 @@ test("live reread: a moved Novig book shows on the next list, off the held catal
   runner.stop();
 });
 
-test("live reread: a Kalshi line is read at its market, and a second ask within 2 s of its read reads nothing", async () => {
+test("live reread: a Kalshi line is read at its market, and a second ask within 2 s of that reread reads nothing", async () => {
   const { runner, clock, kalshiBook } = rereadRunner();
   await runner.start();
   const key = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key)).key;
@@ -2829,8 +2829,21 @@ test("live reread: a Kalshi line is read at its market, and a second ask within 
   assert.equal(row.liveCheck, "live");
   const calls = kalshiBook.calls;
   clock.now += 1000;
-  assert.deepEqual(await runner.rereadLiveLine(key), { skipped: "read 1000 ms ago" });
+  assert.deepEqual(await runner.rereadLiveLine(key), { skipped: "reread 1000 ms ago" });
   assert.equal(kalshiBook.calls, calls);
+  clock.now += 1000;
+  assert.equal((await runner.rereadLiveLine(key)).venue, "kalshi");
+  runner.stop();
+});
+
+test("live reread: a pass read just stamped does not block a reread (a batch stamps at its end, maybe after the move)", async () => {
+  const { runner, kalshiBook } = rereadRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const key = edgeRowsOf(runner.edgesPayload()).find((row) => WSU36_KALSHI_KEY_RE.test(row.key)).key;
+  kalshiBook.noDollars = "0.4250";
+  assert.equal((await runner.rereadLiveLine(key)).venue, "kalshi");
+  assert.equal(edgeRowsOf(runner.edgesPayload()).find((row) => row.key === key).sourcePrice, 0.592106);
   runner.stop();
 });
 

@@ -123,7 +123,7 @@
 //       the phone's ask after a refused Place: that line's venue reads as a pass
 //       makes them (Kalshi market + orderbook, a stream ask at Novig, Polymarket
 //       US or ProphetX), outside the pass budgets but no catalog, event list or
-//       keyed REST book read, one per line at a time, none within 2 s of its last read.
+//       keyed REST book read, one per line at a time, none within 2 s of its last reread.
 // Serves (HTTP on UNABATED_RUNNER_HOST:UNABATED_RUNNER_PORT, no auth):
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
@@ -272,7 +272,7 @@ const LIVE_REREAD_MS = 20 * 1000;
 // A Place refusal's reread of one line (rereadLiveLine): how long it holds up
 // the list it was asked with (it runs beside that list's bets read, and both
 // plus the build must answer inside the bets service's 5 s runner proxy
-// timeout); no reread within LIVE_REREAD_MIN_GAP_MS of the line's last read;
+// timeout); no reread within LIVE_REREAD_MIN_GAP_MS of the line's last reread;
 // a Novig catalog up to this old is used as held (none is read for it).
 const LIVE_REREAD_WAIT_MS = 2500;
 const LIVE_REREAD_MIN_GAP_MS = 2000;
@@ -654,6 +654,8 @@ function createRunner(deps) {
   let liveBusy = false;
   // Row keys a Place refusal's reread is reading now (rereadLiveLine).
   const rereadsInFlight = new Set();
+  // Row key -> when its last reread started (the LIVE_REREAD_MIN_GAP_MS gap).
+  const lastRereadAt = new Map();
   // Whether the bets service reads ProphetX's live prices (false while it answers 503: no live key pair).
   let prophetxLiveOn = false;
   let liveLastPass = { startedAt: null, finishedAt: null, rows: 0, byVenue: {}, error: null };
@@ -1707,8 +1709,7 @@ function createRunner(deps) {
   // LIVE_REREAD_WAIT_MS; a slower read keeps going and lands for a later poll.
   // A read that fails or is still going drops the line's older read, so the
   // card shows unchecked rather than the price just refused. One reread per
-  // line at a time and none within LIVE_REREAD_MIN_GAP_MS of the line's last
-  // read. Logs what it did; resolves {venue, counts} or {skipped: why}, never throws.
+  // line at a time and none within LIVE_REREAD_MIN_GAP_MS of its last reread. Logs what it did; resolves {venue, counts} or {skipped: why}, never throws.
   async function rereadLiveLine(rowKey) {
     const answer = await rereadLiveLineWithin(rowKey);
     const why = answer.skipped ? `skipped: ${answer.skipped}` : `${answer.venue} ${JSON.stringify(answer.counts)}`;
@@ -1718,8 +1719,12 @@ function createRunner(deps) {
 
   async function rereadLiveLineWithin(rowKey) {
     if (rereadsInFlight.has(rowKey)) return { skipped: "a reread of this line is still going" };
-    const held_ = liveReads.get(rowKey);
-    if (held_ && now() - held_.readAtMs < LIVE_REREAD_MIN_GAP_MS) return { skipped: `read ${now() - held_.readAtMs} ms ago` };
+    // Gapped on the last reread's own start, not the line's held read: a pass
+    // stamps a read at its batch's end, which may be after the move refused.
+    const sinceLast = now() - (lastRereadAt.get(rowKey) ?? -Infinity);
+    if (sinceLast < LIVE_REREAD_MIN_GAP_MS) return { skipped: `reread ${sinceLast} ms ago` };
+    for (const [key, at] of lastRereadAt) if (now() - at >= LIVE_REREAD_MIN_GAP_MS) lastRereadAt.delete(key);
+    lastRereadAt.set(rowKey, now());
     rereadsInFlight.add(rowKey);
     const read = rereadLiveLineOrThrow(rowKey).catch((error) => ({ failed: true, skipped: error.message }))
       .finally(() => rereadsInFlight.delete(rowKey));
