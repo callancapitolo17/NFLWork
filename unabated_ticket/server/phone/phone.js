@@ -232,9 +232,14 @@
   }
 
   // `fresh` asks the runner to re-read the bets service first (after a write here).
-  async function pollEdges(fresh) {
+  // rereadKey: one Edges line the runner reads at its venue before building
+  // the list (a refused Place: the card shows what the venue has now).
+  async function pollEdges(fresh, rereadKey = null) {
+    let path = "/edges.json";
+    if (fresh === true) path += "?fresh=1";
+    if (fresh === true && rereadKey) path += `&reread=${encodeURIComponent(rereadKey)}`;
     try {
-      pollSucceeded(state.edges, await requestJson("GET", fresh === true ? "/edges.json?fresh=1" : "/edges.json"));
+      pollSucceeded(state.edges, await requestJson("GET", path));
     } catch (error) {
       pollFailed(state.edges, error);
     }
@@ -998,7 +1003,7 @@
     let next;
     try {
       const reply = await sending;
-      next = { message: reply.message, tone: venuePlace.replyTone(reply.status) };
+      next = { message: reply.message, tone: venuePlace.replyTone(reply.status), status: reply.status };
     } catch (error) {
       // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
       next = error.status >= 400 && error.status < 500
@@ -1016,6 +1021,8 @@
     } else {
       if (ownMark) state.placedMarks.delete(rowKey);
       renderAll();
+      // Refused before the send, or sent and nothing filled or the venue rejected it: often a moved price, so read the line again now.
+      if (next.tone === "refused" || next.status === "unfilled" || next.status === "rejected") await pollEdges(true, rowKey);
     }
   }
 

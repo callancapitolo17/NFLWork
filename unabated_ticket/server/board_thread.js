@@ -150,12 +150,13 @@ function createBoardClient(options) {
     });
   }
 
-  // A build of one page (fresh: the bets read first), kept as the page's copy.
-  // Concurrent asks for the same page share one build.
-  function build(name, fresh) {
+  // A build of one page (fresh: the bets read first, and the reread Edges line
+  // at its venue), kept as the page's copy. Concurrent asks for the same page
+  // share one build.
+  function build(name, fresh, reread = null) {
     if (!fresh && builds.has(name)) return builds.get(name);
     const builtAt = now();
-    const promise = call("buildPayload", [name, fresh]).then((text) => {
+    const promise = call("buildPayload", [name, fresh, reread]).then((text) => {
       copies.set(name, { text, builtAt });
       return new RawJson(text);
     });
@@ -166,13 +167,13 @@ function createBoardClient(options) {
 
   // The page's copy when young enough (and a rebuild started for the next
   // ask), else the build it waits for.
-  function payload(name, { fresh = false } = {}) {
+  function payload(name, { fresh = false, reread = null } = {}) {
     const copy = copies.get(name);
     if (!fresh && copy && now() - copy.builtAt <= PAYLOAD_SERVE_MAX_AGE_MS) {
       build(name, false).catch((error) => logWarning(`board thread: ${name} rebuild failed: ${error.message}`));
       return Promise.resolve(new RawJson(copy.text));
     }
-    return build(name, fresh);
+    return build(name, fresh, reread);
   }
 
   function health() {
@@ -195,8 +196,9 @@ function createBoardClient(options) {
 
   return {
     start, stop, health,
-    // The HTTP server reads the bets first on ?fresh=1; the fresh build below does that on the board thread.
+    // The HTTP server reads the bets (and a ?reread= line) first on ?fresh=1; the fresh build does that on the board thread.
     pollBets: () => Promise.resolve(),
+    rereadLiveLine: () => Promise.resolve(),
     edgesPayload: (opts) => payload("edges", opts),
     teasersPayload: (opts) => payload("teasers", opts),
     // The Live tab's filtered cards are built on demand; the unfiltered page is served off its copy.
@@ -222,10 +224,11 @@ function createBoardClient(options) {
 //   runner  createRunner's result (built by runBoardThread)
 function serveBoardCalls(port, runner, logWarning) {
   const methods = {
-    async buildPayload(name, fresh) {
+    async buildPayload(name, fresh, reread = null) {
       const method = PAYLOAD_METHODS[name];
       if (!method) throw httpError(404, `no page ${JSON.stringify(name)}`);
-      if (fresh) await runner.pollBets();
+      // Side by side, so the reread's wait does not stack on the bets read; it never throws.
+      if (fresh) await Promise.all([runner.pollBets(), reread && name === "edges" ? runner.rereadLiveLine(reread) : null]);
       return runner[method]();
     },
     attachPayload: (search) => runner.attachPayload(new URLSearchParams(search)),

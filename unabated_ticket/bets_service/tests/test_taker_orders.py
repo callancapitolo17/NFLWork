@@ -74,6 +74,8 @@ class ScriptedKalshi:
             if self.transfer_reply_status != 200:
                 return self.transfer_reply_status, {"error": {"code": "insufficient_scope", "message": "write::transfer"}}
             cents = body["amount"] // 100
+            if self.pot_cash[body["source_exchange_shard"]] * 100 < cents:
+                return 400, {"error": {"code": "insufficient_balance", "message": "insufficient balance"}}
             self.pot_cash[body["source_exchange_shard"]] -= cents / 100
             self.pot_cash[body["destination_exchange_shard"]] += cents / 100
             return 200, {"transfer_id": "t-1"}
@@ -776,6 +778,8 @@ def test_a_short_basketball_pot_gets_exactly_the_shortfall_then_one_resend(store
                                  "source_exchange_shard": 0, "destination_exchange_shard": 3, "amount": 46_400,
                                  "source_subaccount": BOT_SUBACCOUNT, "destination_subaccount": BOT_SUBACCOUNT}]
     assert kalshi.pot_cash == {0: pytest.approx(995.36), 3: pytest.approx(5.89)}
+    # Only the short pot is read: Kalshi rate-limits a second balance read right after the first.
+    assert kalshi.balance_reads == [f"/portfolio/balance?exchange_index=3&subaccount={BOT_SUBACCOUNT}"]
     posts = [call[2]["client_order_id"] for call in kalshi.calls if call[0] == "POST"]
     first_id = REQUEST_BODY["clientOrderId"]
     assert posts == [first_id, first_id + "-r"], "the resend carries a fresh id"
@@ -798,7 +802,6 @@ def test_a_second_insufficient_balance_is_not_resent_again(store, tmp_path):
 
 
 @pytest.mark.parametrize("pot_cash, exchange_index, words", [
-    ({0: 2.0, 3: 1.0}, 0, "short of the $5.89 order"),            # both pots together cannot cover it: nothing moves
     ({0: 1000.0}, 3, "pot balance is unreadable"),                # the subaccount is not set up on pot 3
     ({0: 1000.0, 3: 0.0}, 2, "is not set up on"),                 # a pot the bot does not use
     ({0: 1000.0, 3: 0.0}, None, "did not say which cash pot"),    # Kalshi's market carried no exchange_index
@@ -810,6 +813,17 @@ def test_any_doubt_about_the_pots_refuses_the_resend(store, tmp_path, pot_cash, 
     assert result["status"] == "pot_short" and words in result["detail"], result
     assert kalshi.transfers == [] and kalshi.methods().count("POST") == 1
     assert store.has_order(REQUEST_BODY["clientOrderId"]) and store.open_exposure() == 0
+
+
+def test_a_move_kalshi_refuses_because_the_other_pot_is_short_refuses_the_resend(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 2.0, 3: 1.0}, insufficient_posts=1)
+    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
+    assert result == {"status": "pot_short",
+                      "detail": "Kalshi refused it for insufficient balance; the basketball/baseball/tennis pot has "
+                                "$1.00 and moving $4.89 into it from the main pot failed "
+                                "(HTTP 400: insufficient balance)."}
+    assert len(kalshi.transfers) == 1 and kalshi.pot_cash == {0: 2.0, 3: 1.0}
+    assert kalshi.methods().count("POST") == 1 and store.open_exposure() == 0
 
 
 @pytest.mark.parametrize("transfer_reply_status, transfer_status, words", [

@@ -1,16 +1,21 @@
-"""Underdog (2026-11-07): the prediction slips' records (sources/underdog.py), the
-source's settled-page walk, and the auth's refresh and rotation
-(sources/underdog_auth.py). The active slip is Cal's live $1 49ers moneyline
-(trimmed); the settled grades are built on the same grammar, since no prediction
-slip had settled when this was written. No network."""
+"""Underdog (2026-11-07; pushed by the extension since 2026-11-09): the prediction
+slips' records (sources/underdog.py) and one POST /underdog.json push. The slip is Cal's
+$1 49ers moneyline (trimmed), open on 2026-11-07 and settled won on 2026-11-09 with
+payout "1.23" = its contract_quantity. No network."""
 import json
+import threading
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
+from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
-from unabated_ticket.bets_service.sources import underdog_auth
-from unabated_ticket.bets_service.sources.underdog import UnderdogSource, closed_by_absence, normalize_underdog
-from unabated_ticket.bets_service.sources.underdog_auth import UnderdogAuth, UnderdogAuthError
+from unabated_ticket.bets_service import service
+from unabated_ticket.bets_service.store import BetsStore
+from unabated_ticket.bets_service.sources.underdog import (
+    MAX_SETTLED_PAGES, closed_by_absence, normalize_underdog, records_of_push, validate_push)
 
 FETCHED_AT = "2026-11-07T06:20:00Z"
 SF_ID, LV_ID, CIN_ID, ATL_ID = "t-sf", "t-lv", "t-cin", "t-atl"
@@ -174,147 +179,106 @@ def test_a_stored_open_slip_neither_list_returns_closes_with_no_result_once_the_
     assert {record["id"] for record in closed_by_absence(stored, set(), -1, FETCHED_AT)} == {"underdog:a", "underdog:b"}
 
 
-# ---- the network half, on a scripted session ----------------------------------------
+# ---- one push (POST /underdog.json) ---------------------------------------------------
 
-class Reply:
-    def __init__(self, status, payload):
-        self.status_code, self._payload = status, payload
-        self.text = json.dumps(payload)
-
-    def json(self):
-        return self._payload
+def push(active_slips=(), settled_pages=None, complete=False):
+    return {"fetchedAt": FETCHED_AT, "active": page(list(active_slips)),
+            "settled": settled_pages if settled_pages is not None else [page([])], "complete": complete}
 
 
-class ScriptedSession:
-    """Answers each API GET from `replies` by (path, page)."""
-
-    def __init__(self, replies):
-        self.replies, self.calls = replies, []
-
-    def get(self, url, params=None, headers=None, timeout=None):
-        key = (url.split(".com", 1)[1], (params or {}).get("page"))
-        self.calls.append((key, headers.get("Authorization")))
-        return self.replies[key].pop(0) if isinstance(self.replies[key], list) else self.replies[key]
-
-
-class FixedAuth:
-    def __init__(self):
-        self.forgotten = 0
-
-    def token(self):
-        return underdog_auth.AccessToken(f"tok{self.forgotten}", 1e12, "auth0|cal")
-
-    def forget(self):
-        self.forgotten += 1
+def test_validate_push_takes_a_whole_read_or_an_error_and_names_what_is_wrong():
+    body = push([slip("a", ["o-sf"], [179088])])
+    assert validate_push(body) == body
+    assert validate_push({"error": "  no tab  "}) == {"error": "no tab"}
+    assert validate_push({"error": ""}) == "error must be a non-empty string"
+    assert validate_push([]) == "body must be an object, got list"
+    assert validate_push({**body, "fetchedAt": "soon"}).startswith("fetchedAt must be an ISO time")
+    assert validate_push({**body, "active": {"data": {}}}) == "active.data.entry_slips must be a list of objects"
+    assert validate_push({**body, "active": None}) == "active must be an answer object with data"
+    assert validate_push({**body, "settled": []}) == f"settled must be a list of 1 to {MAX_SETTLED_PAGES} pages"
+    assert validate_push({**body, "settled": [page([])] * (MAX_SETTLED_PAGES + 1)}).startswith("settled must be")
+    assert validate_push({**body, "settled": [{"data": {"entry_slips": [], "games": {}}}]}) == \
+        "settled[0].data.games must be a list, got dict"
+    assert validate_push({k: v for k, v in body.items() if k != "complete"}) == "complete must be true or false, got None"
+    many = [slip(f"s{n}", ["o-sf"], [179088]) for n in range(501)]
+    assert validate_push(push(many)) == "at most 500 slips per push, got 501"
 
 
-NOW = datetime(2026, 11, 7, 6, 20, tzinfo=timezone.utc).timestamp()
-OLD = "2026-08-01T00:00:00Z"
+def test_the_page_cap_is_the_extensions_own():
+    extension = (Path(__file__).parents[2] / "extension" / "underdog.js").read_text()
+    assert f"const MAX_SETTLED_PAGES = {MAX_SETTLED_PAGES};" in extension
 
 
-def source(replies, stored=None):
-    session = ScriptedSession(replies)
-    return UnderdogSource(FixedAuth(), lambda: dict(stored or {}), session=session, clock=lambda: NOW), session
+def test_cals_49ers_slip_settles_won_off_the_push():
+    won = slip("7ed9", ["o-sf"], [179088], status="settled", payout="1.23", payout_at="2026-11-09T00:25:08Z")
+    records, closed = records_of_push(push(settled_pages=[page([won], next_page=2)]), {})
+    [record] = records
+    assert (record["id"], record["status"], record["closedAt"], record["toWin"]) == \
+        ("underdog:7ed9", "won", "2026-11-09T00:25:08Z", 0.23)
+    assert closed == []
 
 
-ACTIVE = ("/v10/user/active_entry_slips", None)
+def test_a_push_closes_held_slips_the_pages_passed_and_a_complete_one_closes_every_unseen_one():
+    stored = {"underdog:new": {"id": "underdog:new", "status": "open", "placedAt": "2026-11-07T00:00:00Z", "raw": {}},
+              "underdog:old": {"id": "underdog:old", "status": "open", "placedAt": "2026-10-01T00:00:00Z", "raw": {}},
+              "underdog:seen": {"id": "underdog:seen", "status": "open", "placedAt": "2026-11-07T00:00:00Z", "raw": {}}}
+    oldest = slip("x", ["o-sf"], [179088], status="settled", payout="0.0", created_at="2026-11-01T00:00:00Z")
+    body = push([slip("seen", ["o-sf"], [179088])], [page([oldest], next_page=2)])
+    _, closed = records_of_push(body, stored)
+    assert [record["id"] for record in closed] == ["underdog:new"]
+    _, closed = records_of_push({**body, "complete": True}, stored)
+    assert {record["id"] for record in closed} == {"underdog:new", "underdog:old"}
+    _, closed = records_of_push(push([slip("seen", ["o-sf"], [179088])]), stored)
+    assert closed == [], "pages with no slips have passed nothing"
 
 
-def settled(number):
-    return ("/v10/user/settled_entry_slips", number)
+# ---- POST /underdog.json over a real HTTP server --------------------------------------
+
+@pytest.fixture
+def http_server(tmp_path):
+    store = BetsStore(tmp_path / "bets.duckdb", 3650)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(store, 0.0, ["underdog"]))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+    store.close()
 
 
-def test_the_first_poll_reads_back_the_history_window_and_later_polls_read_one_settled_page():
-    recent, old = "2026-11-01T00:00:00Z", OLD
-    underdog, session = source({
-        ACTIVE: Reply(200, page([slip("s1", ["o-sf"], [179088])])),
-        settled(1): [Reply(200, page([slip("r", ["o-sf"], [179088], status="settled", created_at=recent)], next_page=2)),
-                     Reply(200, page([slip("r", ["o-sf"], [179088], status="settled", created_at=recent)], next_page=2))],
-        settled(2): Reply(200, page([slip("o", ["o-sf"], [179088], status="settled", created_at=old)], next_page=3))})
-    assert {record["id"] for record in underdog.fetch()} == {"underdog:s1", "underdog:r", "underdog:o"}
-    assert [call[0] for call in session.calls] == [ACTIVE, settled(1), settled(2)]
-    assert session.calls[0][1] == "Bearer tok0"
-    session.calls.clear()
-    underdog.fetch()
-    assert [call[0] for call in session.calls] == [ACTIVE, settled(1)]
+def request_json(method, url, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(url, data=data, method=method,
+                                     headers={"Content-Type": "application/json"} if data else {})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read())
 
 
-def test_a_slip_still_held_open_is_chased_down_the_settled_pages():
-    stored = {"underdog:late": {"id": "underdog:late", "status": "open", "placedAt": OLD, "raw": {}}}
-    underdog, session = source({
-        ACTIVE: Reply(200, page([])),
-        settled(1): Reply(200, page([slip("x", ["o-sf"], [179088], status="settled", created_at="2026-11-05T00:00:00Z")],
-                                    next_page=2)),
-        settled(2): Reply(200, page([slip("late", ["o-sf"], [179088], status="settled", payout="1.23", created_at=OLD)],
-                                    next_page=3)),
-    }, stored)
-    underdog._read_history = True
-    records = by_id(underdog.fetch())
-    assert records["underdog:late"]["status"] == "won"
-    assert [call[0] for call in session.calls] == [ACTIVE, settled(1), settled(2)]
-
-
-def test_a_stored_open_slip_the_walk_passes_without_seeing_is_closed():
-    stored = {"underdog:gone": {"id": "underdog:gone", "status": "open", "placedAt": "2026-11-06T00:00:00Z", "raw": {}}}
-    underdog, session = source({
-        ACTIVE: Reply(200, page([])),
-        settled(1): Reply(200, page([slip("x", ["o-sf"], [179088], status="settled", created_at=OLD)], next_page=2))},
-        stored)
-    underdog._read_history = True
-    records = by_id(underdog.fetch())
-    assert records["underdog:gone"]["status"] == "closed"
-    assert [call[0] for call in session.calls] == [ACTIVE, settled(1)]
-
-
-def test_a_refused_token_is_refreshed_once_and_a_failed_read_raises():
-    underdog, session = source({ACTIVE: [Reply(401, {}), Reply(200, page([]))], settled(1): Reply(503, {"error": "down"})})
-    with pytest.raises(RuntimeError, match="HTTP 503"):
-        underdog.fetch()
-    assert [call[1] for call in session.calls[:2]] == ["Bearer tok0", "Bearer tok1"]
-
-
-# ---- auth -----------------------------------------------------------------------------
-
-def jwt(claims):
-    import base64
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
-    return f"h.{body}.s"
-
-
-def test_refresh_saves_a_rotated_token_and_caches_until_near_expiry(tmp_path):
-    path = tmp_path / "underdog_token.json"
-    underdog_auth.save_token_file(path, "r1", "auth0|cal")
-    sent = []
-
-    def request(body):
-        sent.append(body)
-        return {"access_token": jwt({"sub": "auth0|cal"}), "refresh_token": f"r{len(sent) + 1}", "expires_in": 600}
-
-    clock = [1000.0]
-    auth = UnderdogAuth(path, request=request, clock=lambda: clock[0])
-    auth.token()
-    auth.token()
-    assert len(sent) == 1 and sent[0]["grant_type"] == "refresh_token" and sent[0]["refresh_token"] == "r1"
-    assert json.loads(path.read_text())["refresh_token"] == "r2"
-    clock[0] += 600 - underdog_auth.REFRESH_MARGIN_SEC + 1
-    auth.token()
-    assert sent[1]["refresh_token"] == "r2"
-
-
-def test_connect_uses_the_password_grant_and_stores_only_the_refresh_token(tmp_path):
-    path = tmp_path / "underdog_token.json"
-    sent = []
-
-    def request(body):
-        sent.append(body)
-        return {"access_token": jwt({"sub": "auth0|cal"}), "refresh_token": "r1"}
-
-    assert underdog_auth.connect(path, "cal@example.com", "hunter2", request=request) == "auth0|cal"
-    assert sent[0]["grant_type"] == "password" and sent[0]["audience"] == "https://api.underdogfantasy.com"
-    stored = path.read_text()
-    assert "hunter2" not in stored and json.loads(stored)["refresh_token"] == "r1"
-
-
-def test_no_token_file_is_a_clear_error(tmp_path):
-    with pytest.raises(UnderdogAuthError, match="underdog_auth connect"):
-        UnderdogAuth(tmp_path / "missing.json").token()
+def test_http_push_stores_the_slip_then_settles_it_and_records_an_error_run(http_server):
+    opened = slip("7ed9", ["o-sf"], [179088], created_at="2026-11-07T06:09:41Z")
+    assert request_json("POST", f"{http_server}/underdog.json", push([opened])) == \
+        (200, {"ok": True, "count": 1, "closed": 0})
+    won = slip("7ed9", ["o-sf"], [179088], status="settled", payout="1.23", payout_at="2026-11-09T00:25:08Z")
+    assert request_json("POST", f"{http_server}/underdog.json", push([], [page([won])], complete=True)) == \
+        (200, {"ok": True, "count": 1, "closed": 0})
+    payload = request_json("GET", f"{http_server}/bets.json?days=3650")[1]
+    [bet] = [bet for bet in payload["bets"] if bet["venue"] == "underdog"]
+    assert (bet["id"], bet["status"], bet["awayTeam"], bet["homeTeam"]) == \
+        ("underdog:7ed9", "won", "Las Vegas Raiders", "San Francisco 49ers")
+    # A second slip goes open, then a complete push lists it nowhere: closed, no result.
+    assert request_json("POST", f"{http_server}/underdog.json", push([slip("b2", ["o-sf"], [179088])])) == \
+        (200, {"ok": True, "count": 1, "closed": 0})
+    assert request_json("POST", f"{http_server}/underdog.json", push([], [page([won])], complete=True)) == \
+        (200, {"ok": True, "count": 1, "closed": 1})
+    bets = {bet["id"]: bet for bet in request_json("GET", f"{http_server}/bets.json?days=3650")[1]["bets"]}
+    assert (bets["underdog:b2"]["status"], bets["underdog:b2"]["raw"]["closedByAbsence"]) == ("closed", True)
+    assert bets["underdog:7ed9"]["status"] == "won"
+    assert request_json("POST", f"{http_server}/underdog.json", {"error": "no app.underdogsports.com tab"}) == \
+        (200, {"ok": True, "recorded": "error"})
+    source = request_json("GET", f"{http_server}/bets.json?days=3650")[1]["sources"]["underdog"]
+    assert (source["ok"], source["error"]) == (False, "no app.underdogsports.com tab")
+    status, reply = request_json("POST", f"{http_server}/underdog.json", {"active": {}})
+    assert (status, reply["error"]) == (400, "fetchedAt must be an ISO time, got None")

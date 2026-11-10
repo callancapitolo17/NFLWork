@@ -121,8 +121,9 @@ re-injection could not reach still needs one).
   and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
   again. Not in the plan's contract; needed by the watcher.
 - `content.js` (isolated world) writes the ticket to `chrome.storage.local`
-  directly. `background.js` is off the hot path — it only sets the
-  panel-open-on-click behavior and handles edge-notification clicks — so a
+  directly. `background.js` is off the hot path — it sets the
+  panel-open-on-click behavior, handles edge-notification clicks and runs
+  the Underdog read (Underdog source section) — so a
   sleeping or crashed service worker can't stop a click from reaching the
   panel.
 - Every 5 s `page.js` re-reads the same book line through the grid API. If
@@ -1253,10 +1254,11 @@ Two kinds of source feed the flags:
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
 | ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 60 days (ProphetX's window); older ones once per boot |
+| Underdog | the extension's service worker (`extension/underdog.js`, `underdogpage.js`, read inside your logged-in app.underdogsports.com tab on the app's own headers — Underdog's login server puts a Cloudflare bot wall in front of any script) → `POST /underdog.json`, parsed by `bets_service/sources/underdog.py`; 2026-11-09 | every 2 min while Chrome is open with an Underdog tab (the panel need not be open); every open prediction slip plus settled slips back 31 days |
 
 Start the service (next section), keep the panel open. Every 30 s while the
 panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
-the service worker), resolves each record's teams through `teams.js`, dedupes
+the service worker, which only POSTs the Underdog read), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
 (`betsService`, which also carries the service's team crosswalk and the
@@ -2014,7 +2016,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   stored as that source's run. `POST /draftkings.json` with `{fetchedAt, open:
   [bet], settled: [bet], events: {eventId: event}}` (at most 2000 bets) →
   `{ok, count, closed, skipped}`, or `{error}` → `{ok, recorded: "error"}` —
-  the panel's read of DraftKings (the DraftKings source bullet). `POST /place_teaser.json`
+  the panel's read of DraftKings (the DraftKings source bullet). `POST /underdog.json`
+  with `{fetchedAt, active: page, settled: [page] (1-20), complete}` (at most
+  500 slips) → `{ok, count, closed}`, or `{error}` → `{ok, recorded: "error"}`
+  — the service worker's read of Underdog (the Underdog source section). `POST /place_teaser.json`
   with `{stake, legs: [4 x {league "nfl"|"cfb", betType "spread"|"total",
   side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
   before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
@@ -2528,8 +2533,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `service.main()`. `fetch()` returns every record the venue knows and raises
   on failure — never a partial list. A venue no script can reach (Cloudflare
   challenging anything but the browser's own session — Bet105; Akamai and a
-  login code — DraftKings) is read by the panel instead and PUSHED to a route
-  of its own (`POST /bet105.json`, `POST /draftkings.json`), the
+  login code — DraftKings; a bot wall on the login server — Underdog) is read
+  in Chrome instead and PUSHED to a route of its own (`POST /bet105.json`,
+  `POST /draftkings.json`, `POST /underdog.json`), the
   parser still a module in `sources/` and the venue listed in
   `service.PUSHED_SOURCES`. Records follow the contract in the plan
   (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
@@ -2822,7 +2828,19 @@ node unabated_ticket/server/runner.js                     # must be running too 
   list; the row stays grey until the list's runner bets read
   (`betsService.generatedAt`) is newer than that `/bets.json` read (both
   the bets service's clock, whole seconds), at most a minute after the reply
-  (`phoneView.placedMarkShows`). A refusal ungreys it. A line sized to $0
+  (`phoneView.placedMarkShows`). A refusal ungreys it. A refusal, or an
+  order sent that filled nothing or the venue rejected (`unfilled`,
+  `rejected`), asks for
+  `/edges.json?fresh=1&reread=<line key>` (2026-11-10): the runner reads that
+  one line at its venue beside the bets read (`rereadLiveLine`, waiting at most
+  2.5 s; the catalog, event lists and stream as held, no extra Novig or
+  Polymarket US catalog read; one per line at a time, none within 2 s of its
+  last reread), so a moved price shows its new price, edge and stake at once, or
+  the line drops when the edge is gone, instead of waiting up to a minute for
+  the next pass and poll. A read that fails or is still going drops the
+  line's older read, so the card shows `unchecked`, not the refused price; a
+  pass batch that ends later never puts its older book back (a read already
+  held that is newer than the moment a read was asked for stays). A line sized to $0
   (`add $0`, the rail's `atSize`, also a line an open teaser sizes to zero;
   a card by its best line) is not listed at all (`phoneView.withoutFullyBet`,
   phone only; the panel still lists it); when that empties the list it says
@@ -2888,7 +2906,8 @@ the open panel used to do.
   `GET /attach.json?betId=&query=` (pick a game) /
   `?betId=&eventId=&swapped=0|1` (the plan and the `/pins.json` body).
   `?fresh=1` on `/edges.json` or `/teasers.json` re-reads `/bets.json` first,
-  so a mark or pin the page just wrote shows at once. The bets service
+  so a mark or pin the page just wrote shows at once. `&reread=<line key>` on a fresh `/edges.json`
+  also reads that one line at its venue (above). The bets service
   proxies both routes with the query string and passes the runner's own
   400/404 through.
 - **The phone** gains the Teasers tab (Can't tease / Restore on college
@@ -2896,8 +2915,8 @@ the open panel used to do.
   learn), Undo, Dismiss / Restore, the learned team names with a two-tap
   Clear, a Line moved note on the ticket, and move tags and alt numbers on
   the card's other lines.
-- **Still Mac-only**: in-game Live edges, Bet105 and DraftKings need the
-  logged-in Chrome; desktop alerts; clicking a price on Unabated's screen.
+- **Still Mac-only**: in-game Live edges, Bet105, DraftKings and Underdog
+  need the logged-in Chrome; desktop alerts; clicking a price on Unabated's screen.
 
 ### Bet Tracker (`server/tracker/`)
 
@@ -3318,16 +3337,18 @@ subaccount is set up on both pots (`taker_orders.BOT_SHARDS`). Since
 send stays a `rejected` row) does the desk read the market's pot (the runner's
 `exchangeIndex`) in the bot's subaccount, move exactly the shortfall from the
 subaccount's other pot with the bot's own key (`kalshi_shards.top_up_bot_pot`,
-ONE transfer, never re-sent: a subaccount transfer takes no idempotency id),
+ONE transfer, never re-sent: a subaccount transfer takes no idempotency id; the
+other pot is not read first, since 2026-11-09, because Kalshi answered that
+second balance read with HTTP 429 and no money moved from 2026-11-06 on),
 wait up to 5 s for Kalshi to finish it, and send the order ONCE more as
 `<id>-r` (`taker_orders.retry_order_id`), re-checking the decision's age and
 the start first; a second refusal is not resent.
 A locked key's transfer can only name its own subaccount on both ends, so no
 money ever comes in from the primary account. Any doubt refuses the resend as
-`pot_short` (no pot named, a pot the bot is not on, an unreadable balance, both
-pots together short, a pot that reads as covering it after Kalshi said it does
-not, a failed or unfinished move). The $6,000 ceiling covers
-both pots together. The key needs `write::transfer`, so the setup's key has
+`pot_short` (no pot named, a pot the bot is not on, an unreadable balance, a
+pot that reads as covering it after Kalshi said it does not, a failed or
+unfinished move, including one Kalshi refuses because the other pot is short
+too). The $6,000 ceiling covers both pots together. The key needs `write::transfer`, so the setup's key has
 scopes `read` + `write::trade` + `write::transfer`. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
 (on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a
 read-only one stops before anything changes at Kalshi) puts the stop file in place first,
@@ -4115,26 +4136,46 @@ price and types the stake shown above it. The link goes when the line leaves
 the Edges list. Phone page only; the bet comes back into `/bets.json` through
 the Underdog source below.
 
-### Underdog source (`bets_service/sources/underdog.py`, `underdog_auth.py`, 2026-11-07)
+### Underdog source (`extension/underdog.js`, `underdogpage.js`, `bets_service/sources/underdog.py`; 2026-11-07, read from Chrome since 2026-11-09)
 
-Underdog has no API for its prediction markets, so the bets service reads
+Underdog has no API for its prediction markets, so Cal's slips are read off
 the private endpoints Underdog's own web app reads for its Live and Results
-pages, on a login of its own. Cal chose this knowing Underdog's terms ban
-scripted access: reads only, his own account, one poll a minute.
+pages. Cal chose this knowing Underdog's terms ban scripted access: reads
+only, his own account. Pushed like Bet105 and DraftKings: the VM cannot hold a
+login, because Underdog's login server (`login.underdogsports.com`) answers a
+script with a Cloudflare bot wall, token refreshes included (2026-11-09).
 
-- **Login:** `python -m unabated_ticket.bets_service.sources.underdog_auth connect`
-  once (on the VM: `deploy/README.md` step 15). Email and password at a prompt
-  go to Auth0's password grant on the web app's public client
-  (`login.underdogsports.com`, the grant the app itself uses); only the
-  refresh token is saved (`UNDERDOG_TOKEN_PATH`, 0600, gitignored), rewritten
-  when Auth0 rotates it. Its own chain, so the phone app and Chrome stay
-  logged in. Access tokens live 10 minutes; reads need no location headers.
-- **Reads:** every 60 s, `GET api.underdogfantasy.com/v10/user/active_entry_slips`
-  and the newest `settled_entry_slips?page=N` page (15 a page, newest made
-  first); further pages only to find a slip the store holds open (the list is
-  ordered by when a slip was made, not settled), at most 20 a poll; 30 days back
-  on the first poll after a boot. A held slip the walk passes without seeing
-  is `closed` with no result, never guessed.
+- **What Cal keeps open:** Chrome on the Mac with the extension and one
+  `app.underdogsports.com` tab, logged in. The side panel need not be open:
+  the service worker (`background.js`) reads on an alarm every 2 minutes.
+  With no tab the Bets tab's Underdog row reads red with the fix.
+- **Login:** never touched. `underdogpage.js` (MAIN world, document_start on
+  the Underdog tab) keeps the read headers of the newest request the app sent
+  to `api.underdogfantasy.com`: `Authorization` (the app's 10-minute JWT),
+  `Client-Type`, `Client-Version` (an old one answers 426) and
+  `Client-Device-Id`; the app's location headers are not sent. The app
+  refreshes its own token only when it makes a request, so when the kept token
+  has under a minute left the worker reloads the tab (the app logs itself back
+  in on load), at most every 5 minutes and never while Cal is looking at it,
+  then reads again. The app's rotating refresh token is never used, so
+  nothing logs out.
+- **Reads:** in the tab, `GET /v10/user/active_entry_slips` and
+  `settled_entry_slips?page=N` (15 a page, newest made first) from page 1
+  until the list ends, a page reaches slips made over 31 days ago, or 20
+  pages. Each page is cut to its prediction slips and the options, lines,
+  markets, games and teams they name (a whole page is ~600 KB; Cal's push is
+  ~10 KB). One `POST /underdog.json` `{fetchedAt, active, settled, complete}`;
+  a failed read posts `{error}` (a failed run, the records stand). A held slip
+  the pages passed without seeing (every one, when the list ended) is
+  `closed` with no result, never guessed; one placed over 31 days ago stays
+  as it was. The pages "passed" are counted off the prediction slips they
+  carry, so a page of pick'em only closes nothing (conservative).
+- **When it cannot read:** a tab Chrome put to sleep, or one open before the
+  extension loaded, is revived like a lapsed login (reloaded unless Cal is
+  looking at it; an extension reload re-injects the reader first). With two
+  Underdog tabs the first that reads wins. A reload that brings no login back
+  reads "log in at app.underdogsports.com" — or, if Cal is logged in, the app
+  stopped calling its API by XMLHttpRequest, which is all the reader watches.
 - **Records:** prediction slips only (product `prediction_markets`; pick'em
   is skipped). One record per slip, `underdog:<slip id>`: stake = the entry
   fee, toWin = the contracts it holds ($1 each) less the fee, price the
@@ -4143,12 +4184,12 @@ scripted access: reads only, his own account, one poll a minute.
   game, NFL/CFB/NBA/CBB/WNBA/MLB/NHL. A combo, a prop, a period market or
   another league is unmatchable; a game line that does not read is flagged
   as a code fix.
-- **Grades:** off what the slip paid, since no settled prediction slip had
-  been seen when this was built: nothing lost, its contracts won, its fee back
-  void, anything else a cash-out (`closed`, `pnl` = payout less stake, which the
-  Tracker counts); no payout field is `unknown`. Anything on the active list is
-  open. A settled answer that leaves the game out keeps the stored game fields.
-  Check the first few settled slips against the app.
+- **Grades:** off what the slip paid: nothing lost, its contracts won (Cal's
+  $1 49ers slip settled with payout 1.23 = its contracts, 2026-11-09), its fee
+  back void, anything else a cash-out (`closed`, `pnl` = payout less stake,
+  which the Tracker counts); no payout field is `unknown`. Anything on the
+  active list is open. A settled answer that leaves the game out keeps the
+  stored game fields.
 - **Bets tab / Tracker:** a venue row `underdog` and the name "Underdog".
 
 ### Open at BetOnline on the phone Ticket (`server/phone/phoneview.js`, 2026-11-06)
