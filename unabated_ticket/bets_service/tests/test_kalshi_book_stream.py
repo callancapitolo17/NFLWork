@@ -784,3 +784,15 @@ def test_a_place_ask_at_a_full_cap_waits_for_its_seat(made, monkeypatch):
         stream._wanted["B-LIVE"] = clock.now
         stream._background.add("B-LIVE")
         assert "takes no more" in stream._view_of("B-LIVE")["error"], "a live pass market is not waited for"
+
+
+def test_a_fresh_subscription_further_off_than_the_wait_is_not_waited_for(made):
+    stream, _connection, clock, _signer = made
+    stream.books_for([WSU], 0.0)
+    (frame,) = tick(stream, clock)
+    handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 8, "msg": "Unknown channel name"}})
+    stream.books_for([DUQ], 0.0)
+    tick(stream, clock)
+    with stream._cond:
+        assert "reconnects for a new subscription" in stream._view_of(DUQ, 0.5)["error"]
+        assert stream._view_of(DUQ, 1.5).get("pending") is True

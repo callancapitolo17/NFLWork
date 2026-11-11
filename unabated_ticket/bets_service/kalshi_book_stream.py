@@ -393,6 +393,11 @@ class KalshiBookStream:
                 and not self._displaces_a_background_market(ticker):
             return {"error": "the stream's subscription takes no more markets "
                              f"(at most {self._markets_per_subscription()}, or Kalshi's limit)"}
+        fresh_after = self._fresh_subscription_after
+        if group is None and fresh_after is not None and fresh_after - self._clock() > wait_left_sec:
+            # A reconnect for a new subscription further off than the caller waits is no reason to wait.
+            return {"error": f"the stream reconnects for a new subscription in "
+                             f"{round(fresh_after - self._clock())} s ({ticker})"}
         return {"pending": True, "error": f"waiting for Kalshi's stream snapshot of {ticker}"}
 
     def _displaces_a_background_market(self, ticker: str) -> bool:
