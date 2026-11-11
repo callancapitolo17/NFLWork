@@ -2822,6 +2822,9 @@ node unabated_ticket/server/runner.js                     # must be running too 
   follows the order in a toast above the tab bar (`Placing $X on <bet> at
   <venue>…`, then the service's reply), so several Places can run while you
   browse; a fill fades after 8 s, a refusal or an unsure reply stays until ✕.
+  While a Ticket is open the toasts fold into one chip beside Close
+  (`✓ 1 filled · 1 placing`, red on a refusal, amber on no answer) so they
+  never cover the Ticket; a tap drops them down under it (2026-11-10).
   A toast lives in the open page only: leave Safari mid-Place and the bet still
   goes through, but its result shows on Bets, not as a toast.
   **Already-bet lines (2026-11-09)**: the row a Place was sent from (a
@@ -3344,15 +3347,15 @@ subaccount's other pot with the bot's own key (`kalshi_shards.top_up_bot_pot`,
 ONE transfer, never re-sent: a subaccount transfer takes no idempotency id; the
 other pot is not read first, since 2026-11-09, because Kalshi answered that
 second balance read with HTTP 429 and no money moved from 2026-11-06 on),
-wait up to 5 s for Kalshi to finish it, and send the order ONCE more as
+pause 1 s (the locked key gets HTTP 403 from Kalshi's transfer status
+endpoint, so it cannot ask whether the move finished), and send the order ONCE more as
 `<id>-r` (`taker_orders.retry_order_id`), re-checking the decision's age and
 the start first; a second refusal is not resent.
 A locked key's transfer can only name its own subaccount on both ends, so no
 money ever comes in from the primary account. Any doubt refuses the resend as
 `pot_short` (no pot named, a pot the bot is not on, an unreadable balance, a
-pot that reads as covering it after Kalshi said it does not, a failed or
-unfinished move, including one Kalshi refuses because the other pot is short
-too). The $6,000 ceiling covers both pots together. The key needs `write::transfer`, so the setup's key has
+pot that reads as covering it after Kalshi said it does not, a move Kalshi
+does not accept, including one it refuses because the other pot is short too). The $6,000 ceiling covers both pots together. The key needs `write::transfer`, so the setup's key has
 scopes `read` + `write::trade` + `write::transfer`. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
 (on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a
 read-only one stops before anything changes at Kalshi) puts the stop file in place first,
@@ -4043,7 +4046,10 @@ does not read fails closed with the reason.
   once (`prophetx_markets.py` reads a strike as a board line: the market's
   `type`, the period off its name, the side by the offer's competitor and its
   home/away `side`, the number off the offer's signed `display_strike`; a
-  spread whose two sides are not one number each way does not read). Only the
+  spread whose two sides are not one number each way does not read; player
+  props and team totals, typed `total` like the game total and named without
+  "player", are dropped by their `player_id` or a `sub_type` containing
+  `player` or `team_total`, 2026-11-10). Only the
   **matched** dollars are a bet (`prophetx:<order_id>`), priced off its fills
   (a fill can beat the limit); a resting remainder is a separate unmatchable
   `prophetx:<order_id>:order`. `void` / `invalid` void it; settled orders grade
@@ -4061,7 +4067,9 @@ does not read fails closed with the reason.
   Unabated team id — the runner's `GET /team_keys.json?venue=prophetx&league=..&away=..&home=..`
   resolves ProphetX's two names through teams.js and the crosswalk, as every
   bet record is, so "Sam Houston State" is the board's "Sam Houston St"
-  (2026-11-03); swapped, or a name nothing resolves, refuses — finds the one strike that reads as the line, and takes
+  (2026-11-03); swapped, or a name nothing resolves, refuses — finds the strike: Unabated's own strike id for
+  the line when it carries one (alt rungs), which must also read as the line,
+  else the one strike that reads as the line (main lines; 2026-11-10), and takes
   its best offer (the highest American price on that side's ladder). It
   refuses, sending nothing, on a started or unlisted game, a half moneyline
   (tie rule unchecked), an implied price more than **0.1c worse** than the

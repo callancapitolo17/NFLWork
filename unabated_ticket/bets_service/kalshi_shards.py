@@ -23,7 +23,8 @@ own subaccount, but only after Kalshi refused an order `insufficient_balance`
 the short pot is topped up by exactly the
 shortfall from the bot's other pot (top_up_bot_pot), with the bot's own key,
 which Kalshi lets move money only between that subaccount's own pots. No
-money ever comes in from the primary account.
+money ever comes in from the primary account. That key cannot read a
+transfer's status, so the bot pauses instead of waiting for "complete".
 """
 from __future__ import annotations
 
@@ -52,6 +53,9 @@ TRANSFER_STATUS_PATH = "/portfolio/intra_exchange_instance_transfers"
 # waits this long for "complete" before giving up without ordering.
 TRANSFER_WAIT_SEC = 5.0
 TRANSFER_POLL_SEC = 0.25
+# A subaccount-locked key gets HTTP 403 from the transfer status endpoint, so
+# the bot pauses this long after Kalshi accepts its move, then resends.
+BOT_TRANSFER_SETTLE_SEC = 1.0
 # The main account's balance read meets Kalshi's rate limit now and then: one
 # retry, then the order goes without the check (Kalshi still refuses a short pot).
 RATE_LIMITED = 429
@@ -104,12 +108,11 @@ def top_up_shard(client: KalshiOrderClient, shard: int | None, cost: float,
 
 def top_up_bot_pot(client: KalshiOrderClient, subaccount: int, shard: int | None, cost: float,
                    bot_shards: tuple[int, ...],
-                   sleep: Callable[[float], None] = time.sleep,
-                   monotonic: Callable[[], float] = time.monotonic) -> TopUp:
+                   sleep: Callable[[float], None] = time.sleep) -> TopUp:
     """Make sure the bot subaccount's pot `shard` holds `cost` dollars, moving
     the shortfall from its other pot in `bot_shards` when it does not. Unlike
     Place, every doubt refuses: a pot outside `bot_shards`, an unknown pot, an
-    unreadable balance, or a move that fails or does not complete in time.
+    unreadable balance, or a move Kalshi does not accept.
     The other pot is never read: Kalshi answers a second balance read right
     after the first with HTTP 429, so its refusal of the move is the check."""
     if shard is None:
@@ -127,7 +130,7 @@ def top_up_bot_pot(client: KalshiOrderClient, subaccount: int, shard: int | None
     if len(sources) != 1:
         return TopUp(refusal=f"the bot's {shard_name(shard)} pot is ${shortfall_cents / 100:.2f} short and it has "
                              f"{len(sources)} other pots to draw on, expected 1")
-    return _transfer(client, sources[0], shard, shortfall_cents, pot_cash, sleep, monotonic, subaccount)
+    return _transfer(client, sources[0], shard, shortfall_cents, pot_cash, sleep, time.monotonic, subaccount)
 
 
 def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], None],
@@ -158,9 +161,9 @@ def _shard_cash(client: KalshiOrderClient, shard: int, sleep: Callable[[float], 
 def _transfer(client: KalshiOrderClient, source: int, shard: int, shortfall_cents: int, pot_cash: float,
               sleep: Callable[[float], None], monotonic: Callable[[], float], subaccount: int | None = None) -> TopUp:
     """ONE transfer of `shortfall_cents` from pot `source` to pot `shard`, then
-    a wait for Kalshi to finish it. Never re-sent: a subaccount's transfer
-    takes no client_transfer_id (Kalshi rejects it there), so a resend could
-    move the money twice."""
+    a wait for Kalshi to finish it (for a subaccount, a fixed pause instead).
+    Never re-sent: a subaccount's transfer takes no client_transfer_id (Kalshi
+    rejects it there), so a resend could move the money twice."""
     name = shard_name(shard)
     amount = shortfall_cents / 100
     body = {"source": "event_contract", "destination": "event_contract",
@@ -193,6 +196,9 @@ def _transfer(client: KalshiOrderClient, source: int, shard: int, shortfall_cent
                              f"{shard_name(source)} pot failed "
                              f"(HTTP {status}{': ' + _error_text(reply) if _error_text(reply) else ''}).")
     log.info("kalshi pots: %smoving $%.2f from pot %d to pot %d (transfer %s)", whose, amount, source, shard, transfer_id)
+    if subaccount is not None:
+        sleep(BOT_TRANSFER_SETTLE_SEC)
+        return TopUp(note=f"sent ${amount:.2f} into the {name} pot first")
     deadline = monotonic() + TRANSFER_WAIT_SEC
     while True:
         if _transfer_complete(client, transfer_id):

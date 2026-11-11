@@ -561,7 +561,7 @@ class TakerDesk:
         log.info("taker order %s %s: %s", request["client_order_id"], request["ticker"], top_up.note)
         if self._stop_path.exists():
             return {"status": "stopped", "detail": f"stop file {self._stop_path} is present; the pot was topped up, nothing resent"}
-        refused = self._refuse_unfit(request)  # the move can take seconds: the decision may have aged out
+        refused = self._refuse_unfit(request)  # the top-up takes time: the decision may have aged out
         if refused:
             return refused
         resend = {**request, "client_order_id": retry_order_id(request["client_order_id"])}
