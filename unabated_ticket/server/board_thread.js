@@ -12,7 +12,8 @@
 //       copy the board thread built, at once, when that copy is under
 //       PAYLOAD_SERVE_MAX_AGE_MS old, and asks for a new copy for the next
 //       request (so a page polling every 15 s reads a list at most one poll
-//       old); an older or missing copy, or ?fresh=1, waits for a build.
+//       old); an older or missing copy, or ?fresh=1, waits for a build
+//       (fresh asks that land while one fresh build runs share the next one).
 //   /health  from the health the board thread posts every HEALTH_POST_MS, plus
 //       the board thread's own state (running, restarting, restarts); ok is
 //       false while it restarts or has posted nothing for HEALTH_STALE_MS.
@@ -83,6 +84,8 @@ function createBoardClient(options) {
   const copies = new Map();
   // payload name -> the build in flight (a Promise of its RawJson)
   const builds = new Map();
+  // payload name -> {running: the fresh build in flight, queued: {rereads, promise} | null}
+  const freshBuilds = new Map();
   let workerHealth = null;
   let healthPostedAt = null;
 
@@ -125,6 +128,7 @@ function createBoardClient(options) {
     pending.clear();
     copies.clear();
     builds.clear();
+    freshBuilds.clear();
     workerHealth = null;
     healthPostedAt = null;
     if (stopped) return;
@@ -150,30 +154,66 @@ function createBoardClient(options) {
     });
   }
 
-  // A build of one page (fresh: the bets read first, and the reread Edges line
-  // at its venue), kept as the page's copy. Concurrent asks for the same page
-  // share one build.
-  function build(name, fresh, reread = null) {
-    if (!fresh && builds.has(name)) return builds.get(name);
+  // One build of a page on the board thread (fresh: the bets read first, and
+  // each reread Edges line at its venue), kept as the page's copy.
+  function runBuild(name, fresh, rereads) {
     const builtAt = now();
-    const promise = call("buildPayload", [name, fresh, reread]).then((text) => {
+    return call("buildPayload", [name, fresh, rereads]).then((text) => {
       copies.set(name, { text, builtAt });
       return new RawJson(text);
     });
-    const shared = promise.finally(() => { if (builds.get(name) === shared) builds.delete(name); });
-    if (!fresh) builds.set(name, shared);
+  }
+
+  // A build that is not fresh; concurrent asks for the same page share one.
+  function build(name) {
+    if (builds.has(name)) return builds.get(name);
+    const shared = runBuild(name, false, []).finally(() => { if (builds.get(name) === shared) builds.delete(name); });
+    builds.set(name, shared);
     return shared;
+  }
+
+  // A fresh build: at most one runs per page and one waits behind it. An ask
+  // while one runs joins the waiting build, which starts when the running one
+  // ends, so its bets read still comes after the ask; it rereads every line
+  // its asks named.
+  function freshBuild(name, reread) {
+    let state = freshBuilds.get(name);
+    if (!state) {
+      state = { running: null, queued: null };
+      freshBuilds.set(name, state);
+    }
+    if (!state.running) {
+      state.running = startFreshBuild(name, state, reread ? [reread] : []);
+      return state.running;
+    }
+    if (!state.queued) {
+      const queued = { rereads: new Set(), promise: null };
+      queued.promise = state.running.catch(() => {}).then(() => {
+        state.queued = null;
+        state.running = startFreshBuild(name, state, [...queued.rereads]);
+        return state.running;
+      });
+      state.queued = queued;
+    }
+    if (reread) state.queued.rereads.add(reread);
+    return state.queued.promise;
+  }
+
+  function startFreshBuild(name, state, rereads) {
+    const running = runBuild(name, true, rereads).finally(() => { if (state.running === running) state.running = null; });
+    return running;
   }
 
   // The page's copy when young enough (and a rebuild started for the next
   // ask), else the build it waits for.
   function payload(name, { fresh = false, reread = null } = {}) {
+    if (fresh) return freshBuild(name, reread);
     const copy = copies.get(name);
-    if (!fresh && copy && now() - copy.builtAt <= PAYLOAD_SERVE_MAX_AGE_MS) {
-      build(name, false).catch((error) => logWarning(`board thread: ${name} rebuild failed: ${error.message}`));
+    if (copy && now() - copy.builtAt <= PAYLOAD_SERVE_MAX_AGE_MS) {
+      build(name).catch((error) => logWarning(`board thread: ${name} rebuild failed: ${error.message}`));
       return Promise.resolve(new RawJson(copy.text));
     }
-    return build(name, fresh, reread);
+    return build(name);
   }
 
   function health() {
@@ -224,11 +264,12 @@ function createBoardClient(options) {
 //   runner  createRunner's result (built by runBoardThread)
 function serveBoardCalls(port, runner, logWarning) {
   const methods = {
-    async buildPayload(name, fresh, reread = null) {
+    async buildPayload(name, fresh, rereads) {
       const method = PAYLOAD_METHODS[name];
       if (!method) throw httpError(404, `no page ${JSON.stringify(name)}`);
-      // Side by side, so the reread's wait does not stack on the bets read; it never throws.
-      if (fresh) await Promise.all([runner.pollBets(), reread && name === "edges" ? runner.rereadLiveLine(reread) : null]);
+      // Side by side, so the rereads' wait does not stack on the bets read; a reread never throws.
+      const lines = name === "edges" ? rereads : [];
+      if (fresh) await Promise.all([runner.pollBets(), ...lines.map((key) => runner.rereadLiveLine(key))]);
       return runner[method]();
     },
     attachPayload: (search) => runner.attachPayload(new URLSearchParams(search)),

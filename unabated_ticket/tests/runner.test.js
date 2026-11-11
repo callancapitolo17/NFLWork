@@ -2115,6 +2115,29 @@ test("board thread: asks at once share one build; errors keep their status, a bu
   client.stop();
 });
 
+test("board thread: fresh asks during a fresh build share one build after it, which rereads every line they named", async () => {
+  const runner = countingRunner();
+  const rereads = [];
+  runner.rereadLiveLine = async (key) => { rereads.push([key, runner.builds.edgesPayload]); return { skipped: "test" }; };
+  let releaseBets;
+  const betsHeld = new Promise((resolve) => { releaseBets = resolve; });
+  const pollBets = runner.pollBets;
+  runner.pollBets = async () => { await pollBets(); if (runner.betsPolls === 1) await betsHeld; };
+  const { client } = boardClient([runner], { now: NOW });
+  const read = (reread) => client.edgesPayload({ fresh: true, reread }).then((reply) => JSON.parse(reply.text).build);
+  const first = read("a:1");
+  await new Promise((resolve) => setImmediate(resolve));
+  const later = [read("a:2"), read(null), read("a:2"), read("a:3"), read(null)];
+  releaseBets();
+  assert.deepEqual([await first, ...(await Promise.all(later))], [1, 2, 2, 2, 2, 2]);
+  assert.deepEqual({ builds: runner.builds.edgesPayload, betsPolls: runner.betsPolls, rereads },
+    { builds: 2, betsPolls: 2, rereads: [["a:1", 0], ["a:2", 1], ["a:3", 1]] });
+  // Teasers' fresh builds are their own, and a fresh ask with nothing running starts at once.
+  assert.equal(JSON.parse((await client.teasersPayload({ fresh: true })).text).build, 1);
+  assert.equal(await read(null), 3);
+  client.stop();
+});
+
 test("board thread: a thread that dies fails what waits with 503, drops its copies, and a new thread starts after a pause that doubles while threads keep dying", async () => {
   const first = countingRunner();
   let release;
