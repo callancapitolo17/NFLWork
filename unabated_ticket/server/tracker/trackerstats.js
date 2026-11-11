@@ -875,9 +875,9 @@
 
   // ---- Bot tab (tracker.js renderBot; /bot.json from bets_service/bot_report.py) ----
 
-  // The Kalshi bot went live 2026-10-14; a custom Activity range starts no earlier.
+  // The Kalshi bot went live 2026-10-14; a custom Bot tab range starts no earlier.
   const BOT_FIRST_DAY = "2026-10-14";
-  const BOT_ACTIVITY_RANGES = ["Today", "7D", "30D", "All", "Custom"];
+  const BOT_ACTIVITY_RANGES = ["Today", "Yesterday", "7D", "30D", "All", "Custom"];
 
   /** Epoch ms of 00:00 Pacific on `dayKey` (PDT is UTC-7, PST UTC-8; US midnight is never skipped by DST). */
   function pacificDayStartMs(dayKey) {
@@ -889,9 +889,10 @@
   }
 
   /**
-   * The Bot tab's Activity window: {first, last} Pacific days (null for All)
+   * The Bot tab's range window: {first, last} Pacific days (null for All)
    * and the /bot.json query for it, [start of first, start of the day after last).
-   * Unlike the header range it includes today: these are orders, not results.
+   * Unlike the header range it includes today: orders are not results
+   * (Results cap it at yesterday, botResultDays).
    * Custom days are clamped to [BOT_FIRST_DAY, today] and swapped when backwards.
    */
   function botActivityWindow(range, today, custom) {
@@ -899,7 +900,7 @@
     let first;
     let last = today;
     if (range === "Today") first = today;
-    else if (RANGE_DAYS[range]) first = addDays(today, 1 - RANGE_DAYS[range]);
+    else if (range === "Yesterday" || RANGE_DAYS[range]) ({ first, last } = rangeBounds(range, today));
     else if (range === "Custom") {
       const clamp = (day) => (day < BOT_FIRST_DAY ? BOT_FIRST_DAY : day > today ? today : day);
       first = clamp(custom && isDayKey(custom.first) ? custom.first : today);
@@ -911,6 +912,18 @@
     const start = new Date(pacificDayStartMs(first)).toISOString();
     const end = new Date(pacificDayStartMs(addDays(last, 1))).toISOString();
     return { first, last, query: "?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end) };
+  }
+
+  /**
+   * The settled-results days for a Bot tab range (Cal, 2026-11-09: Results
+   * follow the tab's one range picker, not the header's). Same window as
+   * Activity, but ending no later than lastShownDay, since a day's results
+   * stay hidden until the next Pacific day. {first, last, empty}: first null
+   * for All; empty when the window holds no shown day (Today).
+   */
+  function botResultDays(activityWindow, lastShownDay) {
+    const last = activityWindow.last === null || activityWindow.last > lastShownDay ? lastShownDay : activityWindow.last;
+    return { first: activityWindow.first, last, empty: activityWindow.first !== null && activityWindow.first > last };
   }
 
   // taker.js REASONS, in Cal's words.
@@ -970,7 +983,7 @@
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
     venueName, originOf, leagueOf, splitOpenByStart, splitOpenForLive, sortRows,
-    BOT_ACTIVITY_RANGES, pacificDayStartMs, botActivityWindow, botReasonRows, botTicketsByVenue,
+    BOT_ACTIVITY_RANGES, pacificDayStartMs, botActivityWindow, botResultDays, botReasonRows, botTicketsByVenue,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;

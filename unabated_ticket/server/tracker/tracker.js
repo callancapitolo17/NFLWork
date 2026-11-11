@@ -75,7 +75,8 @@
   // Overview lists only the newest settled bets; the full, filterable list is Analysis's bet log.
   const OVERVIEW_SETTLED_ROWS = 10;
   // Tabs that read the header date range; the others hide it.
-  const RANGED_VIEWS = ["overview", "analysis", "bot"];
+  // The Bot tab has its own range picker, which drives every panel on it.
+  const RANGED_VIEWS = ["overview", "analysis"];
   // The Live tab's own filters (Cal, 2026-11-09: watch only the bets he placed
   // by hand). Who placed it: Mine is any bet the two bots did not place (Place
   // clicks count as his); the value is the trackerstats origin each shows.
@@ -102,7 +103,7 @@
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
     settledLimit: OVERVIEW_SETTLED_ROWS,
-    // Bot tab: its own Activity range (Today / 7D / 30D / All / Custom, Cal 2026-11-04) and the reasons panel's bot.
+    // Bot tab: its own range for every panel (stats.BOT_ACTIVITY_RANGES, Cal 2026-11-04 / 11-09) and the reasons panel's bot.
     botRange: "Today", botCustomFirst: null, botCustomLast: null, botReasonVenue: "kalshi",
     // A calendar-day click (Cal, 2026-10-07): { day, anchor, range, customFirst,
     // customLast } so a second click restores the range it replaced and the
@@ -142,6 +143,9 @@
       if (RANGES.includes(saved.range)) prefs.range = saved.range;
       if (stats.isDayKey(saved.customFirst)) prefs.customFirst = saved.customFirst;
       if (stats.isDayKey(saved.customLast)) prefs.customLast = saved.customLast;
+      if (stats.BOT_ACTIVITY_RANGES.includes(saved.botRange)) prefs.botRange = saved.botRange;
+      if (stats.isDayKey(saved.botCustomFirst)) prefs.botCustomFirst = saved.botCustomFirst;
+      if (stats.isDayKey(saved.botCustomLast)) prefs.botCustomLast = saved.botCustomLast;
       if (typeof saved.units === "boolean") prefs.units = saved.units;
       if (typeof saved.includeBotCombos === "boolean") prefs.includeBotCombos = saved.includeBotCombos;
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
@@ -158,7 +162,7 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick,
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, botRange: state.botRange, botCustomFirst: state.botCustomFirst, botCustomLast: state.botCustomLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick,
         liveOrigin: state.liveOrigin, liveOff: state.liveOff }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
@@ -689,7 +693,7 @@
 
   /**
    * The Bot tab (Cal, 2026-11-04): a status card per automated taker, its
-   * activity in the tab's own range, settled results in the header range,
+   * activity and settled results in the tab's own range,
    * why it passed on lines, and its newest orders. A card's money at risk is
    * the desk's own open cost against its ceiling; cash is the bot's
    * subaccount balance from /balances.json.
@@ -782,6 +786,7 @@
       state.botCustomFirst = win.first || today; state.botCustomLast = win.last || today;
     }
     state.botRange = range;
+    savePrefs();
     render();
     refreshBot().then(render);
   }
@@ -805,14 +810,24 @@
     fill("bot-activity", table(columns, bot.bots));
   }
 
-  // Settled results follow the header range, the same math as Overview.
+  // Settled results follow the tab's range, the same math as Overview; today's stay hidden until midnight.
   function renderBotResults() {
     if (!payload) { fill("bot-results", emptyNote("Loading…")); return; }
-    const { first, last } = rangeDays();
-    setText("bot-results-caption", rangeCaption(first, last) + " (the header range) · Expected uses the Unabated fair at fill");
-    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, first, last));
+    const win = botWindow();
+    const days = stats.botResultDays(win, lastShownDay());
+    const note = " · Expected uses the Unabated fair at fill";
+    if (days.empty) {
+      setText("bot-results-caption", rangeCaption(win.first, win.last) + note);
+      fill("bot-results", emptyNote("Today's results show after midnight Pacific."));
+      return;
+    }
+    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, days.first, days.last));
+    // All names its first day off the bets the table counts (inDayRange drops a settle with no result).
+    const both = byVenue.kalshi.concat(byVenue.novig);
+    const first = days.first === null ? stats.firstSettledDay(both) : days.first;
+    setText("bot-results-caption", (first === null ? "All time" : rangeCaption(first, days.last)) + note);
     const rows = BOT_VENUES.map((v) => ({ label: v.label, total: stats.summarize(byVenue[v.key]) }));
-    rows.push({ label: "Both", total: stats.summarize(byVenue.kalshi.concat(byVenue.novig)), isTotal: true });
+    rows.push({ label: "Both", total: stats.summarize(both), isTotal: true });
     const columns = [
       { label: "Bot", cell: (r) => r.label },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.total.bets) },
@@ -1892,14 +1907,18 @@
 
   // The Bot tab's read; a failure keeps the last one and says why.
   async function refreshBot() {
+    const query = botWindow().query;
     try {
-      const response = await fetch(BOT_URL + botWindow().query, { cache: "no-store" });
+      const response = await fetch(BOT_URL + query, { cache: "no-store" });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
       if (!body || !Array.isArray(body.bots) || !Array.isArray(body.recentOrders)) throw new Error("bot.json has no bots list");
+      // A reply for a range picked away from while it was in flight would draw under the new range's caption.
+      if (query !== botWindow().query) return;
       bot = body;
       botError = null;
     } catch (error) {
+      if (query !== botWindow().query) return;
       botError = error.message;
     }
   }
@@ -1968,6 +1987,7 @@
       document.getElementById(id).addEventListener("change", (event) => {
         if (!stats.isDayKey(event.target.value)) return;
         state[key] = event.target.value;
+        savePrefs();
         render();
         refreshBot().then(render);
       });
