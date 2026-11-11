@@ -545,6 +545,17 @@ test("botReasonRows: names reasons, splits a bet by the desk's answer, merges la
   ]);
 });
 
+test("botReasonRows: out of cash is its own warning, apart from the money cap", () => {
+  const rows = stats.botReasonRows([
+    { reason: "bet", orderStatus: "ceiling", lines: 4 },
+    { reason: "bet", orderStatus: "no_cash", lines: 7 },
+  ]);
+  assert.deepEqual(rows, [
+    { label: "Out of cash", lines: 7, tone: "warn" },
+    { label: "At the money cap", lines: 4, tone: "warn" },
+  ]);
+});
+
 test("botTicketsByVenue: bot bets only, never the MLB bots' Kalshi combos", () => {
   const tickets = stats.buildTickets([
     straight({ id: "kalshi:A:yes:s1", venue: "kalshi", raw: { subaccount: 1 } }),

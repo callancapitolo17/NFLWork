@@ -73,6 +73,7 @@ class ScriptedNovig:
         return 200, {}
 
     def fills(self, order_id=None):
+        self.fill_reads = [*getattr(self, "fill_reads", []), order_id]
         if self.fill_items is not None:
             return self.fill_items
         return [{"fillId": "f1", "orderId": order_id, "qty": self.last_qty, "cost": f"{self.last_qty * 0.675 / 100:.5f}"}]
@@ -253,16 +254,16 @@ def test_an_add_waits_until_the_last_place_on_the_game_was_read_at_either_venue(
     (ScriptedNovig(send=(500, {})), "unknown", "Check Novig"),
     (ScriptedNovig(send=(201, {})), "unknown", "Check Novig"),
     (ScriptedNovig(raises=True), "unknown", "Novig did not answer"),
-    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[]), "unknown", "has not said what filled"),
+    (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[]), "unknown", "has not confirmed what filled"),
     (ScriptedNovig(order_reads=[OSError("reset")] * PLACE_FINAL_READ_ATTEMPTS, fills=[]), "unknown",
-     "has not said what filled"),
+     "has not confirmed what filled"),
     # Never read final, but every contract filled: it cannot fill more, so it is filled.
     (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS), "filled", "Bet $"),
     # Never read final, some contracts filled: what filled so far, still unknown.
     (ScriptedNovig(order_reads=[(200, {"status": "PENDING"})] * PLACE_FINAL_READ_ATTEMPTS,
                    fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]), "unknown", "Bet $27.00 at 67.5¢ on Novig so far"),
     (ScriptedNovig(order_reads=[(404, {})] * PLACE_FINAL_READ_ATTEMPTS, fills=[{"fillId": "f1", "qty": 100}]), "unknown",
-     "has not said what filled"),
+     "has not confirmed what filled"),
     (ScriptedNovig(order_reads=[(200, {"status": "REJECTED"})], fills=[]), "unfilled", "price was gone"),
     (ScriptedNovig(order_reads=[(200, {"status": "CANCELED"})], fills=[{"fillId": "f1", "qty": 4000, "cost": "27.00000"}]),
      "partial", "Bet $27.00 on Washington St -35.5 full game at -208 to win $13.00 (67.5¢ on Novig, $50.00 asked); "
@@ -496,3 +497,211 @@ def test_live_place_refuses_an_all_in_over_the_ticket_a_stale_fair_and_a_line_of
 def test_a_pregame_click_on_a_started_game_still_refuses(store):
     result = desk_with(store, ScriptedNovig(), quote={**QUOTE, "eventStart": "2026-10-16T19:30:00.000Z"}).place(request())
     assert result == {"status": "refused", "message": "Not placed: the game has started."}
+
+
+# ---- the Place key's private orders channel ---------------------------------------
+
+class FakeOrderStream:
+    """novig_place.OrderStream scripted: `states` is what wait_for_order hands
+    back per call (None = nothing new within its wait); `live` may change between calls."""
+
+    def __init__(self, states=(), live=True, clock=None):
+        self.states = list(states)
+        self.live = live
+        self.waits = []
+        self._clock = clock
+
+    def orders_live(self):
+        return self.live if not callable(self.live) else self.live()
+
+    def wait_for_order(self, order_id, after_version, timeout_sec):
+        self.waits.append((order_id, after_version))
+        if self._clock is not None:
+            self._clock[0] += timeout_sec
+        state = self.states.pop(0) if self.states else None
+        if callable(state):
+            state = state()
+        return state, after_version + (1 if state is not None else 0)
+
+
+def pushed(final, filled, price=0.675, remaining=0):
+    cost = round(filled * price / 100, 5)
+    fills = [{"fillId": "pf1", "qty": filled, "price": price}] if filled else []
+    return {"final": final, "filled": filled, "cost": cost, "remaining": remaining, "fills": fills}
+
+
+def streamed_desk(store, novig, stream, quote=None, clock=None):
+    if clock is None:
+        clock = [0.0]
+    if stream._clock is None:
+        stream._clock = clock  # every wait moves the clock by its timeout, as the real wait_for_order blocks
+    return ManualNovigDesk(novig, store, lambda _line: dict(QUOTE if quote is None else quote), now=lambda: NOW,
+                           sleep=lambda _sec: None, clock=lambda: clock[0], order_stream=stream)
+
+
+class RestNeverAsked(ScriptedNovig):
+    def get_order(self, order_id):
+        raise AssertionError("the order status must come off the stream, not REST")
+
+
+def test_a_pushed_final_order_skips_the_status_polls_and_reads_fills_once(store):
+    novig = RestNeverAsked(fills=[{"fillId": "f1", "qty": 7407, "cost": "49.99725", "fee": "0.25000"}])
+    stream = FakeOrderStream([pushed("FILLED", 7407)])
+    answer = streamed_desk(store, novig, stream).place(request())
+    assert answer["status"] == "filled" and answer["filled"] == 7407
+    assert stream.waits == [(ORDER_ID, 0)], "one wait: the first frame was final"
+    assert novig.fill_reads == [ORDER_ID], "one REST fills read, for the fee"
+    assert order_row(store, f"nman-{CLICK_ID}") == ("filled", 7407, 50.24725, None), "REST's fee is in the cost"
+
+
+def test_a_pushed_reject_reads_unfilled_and_a_pushed_open_is_cancelled(store):
+    rejected = streamed_desk(store, RestNeverAsked(fills=[]), FakeOrderStream([pushed("REJECTED", 0, remaining=7407)])).place(request())
+    assert rejected["status"] == "unfilled" and "price was gone" in rejected["message"]
+    novig = RestNeverAsked()
+    resting = streamed_desk(store, novig, FakeOrderStream([pushed("OPEN", 0, remaining=7407)])).place(
+        request(clickId="00000000-0000-4000-8000-000000000050", eventId=EVENT_ID + 1))
+    assert resting["status"] == "unknown" and "resting" in resting["message"] and novig.cancels == [ORDER_ID]
+
+
+def test_without_a_live_channel_the_order_is_read_off_rest_as_before(store):
+    novig = ScriptedNovig()
+    answer = streamed_desk(store, novig, FakeOrderStream(live=False)).place(request())
+    assert answer["status"] == "filled" and novig.calls, "REST path: get_order default FILLED"
+    # The channel dropping mid-wait hands over to REST too.
+    clock = [0.0]
+    novig = ScriptedNovig()
+    stream = FakeOrderStream([None], live=True, clock=clock)
+    stream.states.append(None)
+    desk = streamed_desk(store, novig, stream, clock=clock)
+    stream.live = lambda: len(stream.waits) == 0
+    assert desk.place(request(clickId="00000000-0000-4000-8000-000000000051", eventId=EVENT_ID + 1))["status"] == "filled"
+    assert len(novig.calls) == 1 and stream.waits, "one stream wait, then REST read the order"
+
+
+def test_a_fills_read_that_fails_or_lags_after_a_pushed_final_records_the_pushed_fills(store):
+    class FillsDown(RestNeverAsked):
+        def fills(self, order_id=None):
+            raise OSError("HTTP 429")
+
+    live_quote = {**QUOTE, "eventStart": "2026-10-16T19:30:00.000Z", "live": True, "price": 0.6, "feeRate": 0.06}
+    quantity = qty_for_stake(50, 0.6 + 0.06 * 0.6 * 0.4)
+    answer = streamed_desk(store, FillsDown(), FakeOrderStream([pushed("FILLED", quantity, price=0.6)]), quote=live_quote).place(
+        request(live=True, liveFairReadAt="2026-10-16T20:59:50Z", ticketAllIn=0.62))
+    fee = round(quantity * 0.06 * 0.6 * 0.4 / 100, 5)
+    assert answer["status"] == "filled" and answer["cost"] == round(round(quantity * 0.6 / 100, 5) + fee, 5), "fee from the in-game rate"
+    # REST listing fewer fills than the stream: the stream's count stands.
+    lagging = RestNeverAsked(fills=[{"fillId": "f1", "qty": 1000, "cost": "6.75000"}])
+    answer = streamed_desk(store, lagging, FakeOrderStream([pushed("FILLED", 7407)])).place(
+        request(clickId="00000000-0000-4000-8000-000000000052", eventId=EVENT_ID + 1))
+    assert (answer["status"], answer["filled"], answer["cost"]) == ("filled", 7407, 49.99725)
+
+
+def test_a_live_channel_with_no_final_frame_by_the_window_reads_unconfirmed(store):
+    clock = [0.0]
+    stream = FakeOrderStream([None] * 20, clock=clock)
+    novig = ScriptedNovig(order_reads=[(200, {"status": "PENDING"})], fills=[])
+    answer = streamed_desk(store, novig, stream, clock=clock).place(request())
+    assert answer["status"] == "unknown" and "has not confirmed what filled" in answer["message"]
+    assert order_row(store, f"nman-{CLICK_ID}")[0] == "unknown"
+    assert 11 <= len(stream.waits) <= 13, "waited the 12 s window in 1 s steps"
+    assert novig.order_reads == [], "one order read at the window's end (a resting order the channel missed)"
+    # Fills pushed but never a final frame, and REST lagging them: the pushed count stands, the row stays unknown.
+    clock = [0.0]
+    stream = FakeOrderStream([pushed(None, 3000, remaining=4407)] + [None] * 20, clock=clock)
+    novig = ScriptedNovig(order_reads=[(200, {"status": "PENDING"})], fills=[])
+    answer = streamed_desk(store, novig, stream, clock=clock).place(request(clickId="00000000-0000-4000-8000-000000000055",
+                                                                            eventId=EVENT_ID + 1))
+    assert answer["status"] == "unknown" and answer["filled"] == 3000 and "so far" in answer["message"]
+    assert order_row(store, "nman-00000000-0000-4000-8000-000000000055")[:3] == ("unknown", 3000, 20.25)
+    # An order the stream never showed final that REST reads OPEN is cancelled.
+    novig = ScriptedNovig(order_reads=[(200, {"status": "OPEN"})], fills=[])
+    answer = streamed_desk(store, novig, FakeOrderStream([None] * 20)).place(request(clickId="00000000-0000-4000-8000-000000000056",
+                                                                                     eventId=EVENT_ID + 2))
+    assert answer["status"] == "unknown" and novig.cancels == [ORDER_ID]
+
+
+def test_a_pushed_partial_fill_reads_partial_at_the_pushed_cost(store):
+    novig = RestNeverAsked(fills=[])  # REST lags: nothing listed yet
+    answer = streamed_desk(store, novig, FakeOrderStream([pushed("CANCELED", 4000, remaining=3407)])).place(request())
+    assert (answer["status"], answer["filled"], answer["cost"]) == ("partial", 4000, 27.0)
+    assert order_row(store, f"nman-{CLICK_ID}") == ("partial", 4000, 27.0, None)
+
+
+def test_a_throttled_read_is_a_blip_only_while_the_last_good_one_is_fresh_and_after_every_send(store):
+    throttled = "NovigRateLimited: GET /v3/portfolio/fills: HTTP 429"
+    store.log_source_run("novig_place", NOW, NOW, False, throttled, 0)
+    assert desk_with(store, ScriptedNovig()).place(request())["status"] == "filled", "429 blip 30 s after a good read: placed"
+    # Now a send came after the last good read: the blip could hide its fill.
+    blocked = desk_with(store, ScriptedNovig()).place(request(clickId="00000000-0000-4000-8000-000000000060",
+                                                              eventId=EVENT_ID + 5))
+    assert blocked["status"] == "refused" and "novig_place read is failing" in blocked["message"]
+    store.log_source_run("novig_place", NOW + timedelta(seconds=5), NOW + timedelta(seconds=5), True, None, 3)
+    store.log_source_run("novig_place", NOW + timedelta(seconds=8), NOW + timedelta(seconds=8), False, throttled, 0)
+    later = NOW + timedelta(seconds=10)
+    fresh = desk_with(store, ScriptedNovig(), now=later).place(request(clickId="00000000-0000-4000-8000-000000000061",
+                                                                      eventId=EVENT_ID + 5, novigReadAt=(NOW + timedelta(seconds=6)).isoformat()))
+    assert fresh["status"] == "filled", "a good read after the send, then a blip: placed"
+    # Over 60 s since the last good read, or any other failure, still refuses.
+    store.log_source_run("novig_place", later, later, True, None, 3)
+    store.log_source_run("novig_place", later + timedelta(seconds=61), later + timedelta(seconds=61), False, throttled, 0)
+    old = desk_with(store, ScriptedNovig(), now=later + timedelta(seconds=62)).place(
+        request(clickId="00000000-0000-4000-8000-000000000062", eventId=EVENT_ID + 6, novigReadAt=later.isoformat()))
+    assert old["status"] == "refused"
+    store.log_source_run("novig_place", later + timedelta(seconds=62), later + timedelta(seconds=62), True, None, 3)
+    store.log_source_run("novig_place", later + timedelta(seconds=63), later + timedelta(seconds=63), False, "HTTP 500", 0)
+    other = desk_with(store, ScriptedNovig(), now=later + timedelta(seconds=64)).place(
+        request(clickId="00000000-0000-4000-8000-000000000063", eventId=EVENT_ID + 6,
+                novigReadAt=(later + timedelta(seconds=62)).isoformat()))
+    assert other["status"] == "refused"
+    # The bot's read throttled is never a blip: nothing here knows when the bot last sent.
+    store.log_source_run("novig_place", later + timedelta(seconds=64), later + timedelta(seconds=64), True, None, 3)
+    store.log_source_run("novig_bot", later + timedelta(seconds=64), later + timedelta(seconds=64), True, None, 3)
+    store.log_source_run("novig_bot", later + timedelta(seconds=65), later + timedelta(seconds=65), False, throttled, 0)
+    bot_desk = ManualNovigDesk(ScriptedNovig(), store, lambda _line: dict(QUOTE), read_sources=("novig", "novig_place", "novig_bot"),
+                               now=lambda: later + timedelta(seconds=66), sleep=lambda _sec: None)
+    bot_blip = bot_desk.place(request(clickId="00000000-0000-4000-8000-000000000064", eventId=EVENT_ID + 7,
+                                      novigReadAt=(later + timedelta(seconds=64)).isoformat()))
+    assert bot_blip["status"] == "refused" and "novig_bot read is failing" in bot_blip["message"]
+
+
+def test_a_row_left_sending_by_a_crash_is_re_read_after_two_minutes(store):
+    class CrashBeforeSend(ScriptedNovig):
+        def place_ioc_order(self, *args):
+            raise RuntimeError("process died")
+
+    class CrashAfterSend(ScriptedNovig):
+        def get_order(self, order_id):
+            raise RuntimeError("process died")
+
+    assert store.last_novig_place_at() is None
+    with pytest.raises(RuntimeError):
+        desk_with(store, CrashBeforeSend()).place(request())
+    with pytest.raises(RuntimeError):
+        desk_with(store, CrashAfterSend(), now=NOW + timedelta(seconds=1)).place(
+            request(clickId="00000000-0000-4000-8000-000000000070", eventId=EVENT_ID + 1))
+    no_id, with_id = f"nman-{CLICK_ID}", "nman-00000000-0000-4000-8000-000000000070"
+    assert order_row(store, no_id)[0] == "sending" and order_row(store, with_id)[0] == "sending"
+    assert store.last_novig_place_at() == NOW + timedelta(seconds=1)
+    assert store.lost_novig_place_orders(NOW + timedelta(minutes=1)) == [], "a Place still in flight is not lost"
+    assert store.unconfirmed_novig_place_orders(NOW + timedelta(minutes=1)) == []
+    assert store.lost_novig_place_orders(NOW + timedelta(minutes=3)) == [{"client_order_id": no_id, "outcome_id": OUTCOME}]
+    assert [row["client_order_id"] for row in store.unconfirmed_novig_place_orders(NOW + timedelta(minutes=3))] == [with_id]
+
+
+def test_the_service_hands_each_novig_socket_to_its_sub_account_source_and_place(store, tmp_path, monkeypatch):
+    from unabated_ticket.bets_service import config
+    from unabated_ticket.bets_service.novig_subaccount_setup import write_new_private_key
+    write_new_private_key(tmp_path / "novig_place.pem")
+    monkeypatch.setattr(config, "NOVIG_PLACE_KEY_ID", "8f14e45f-ceea-467a-9b1c-3f2a51c8d7e1")
+    monkeypatch.setattr(config, "NOVIG_PLACE_PRIVATE_KEY_PATH", str(tmp_path / "novig_place.pem"))
+    monkeypatch.setattr(config, "NOVIG_TAKER_KEY_ID", "")
+    place_stream = service.open_novig_place_stream()
+    assert place_stream is not None and place_stream.status()["orders"]["live"] is False, "a socket on the Place key, orders channel wanted"
+    assert service.open_novig_book_stream() is None, "no bot key: no bot socket"
+    [source] = service.novig_subaccount_sources(None, store, None, place_stream)
+    assert source.name == "novig_place" and source._order_stream is place_stream
+    armed, _ = service.open_novig_place_desk(store, ["novig", "novig_place"], check=lambda _c: (None, 1.0),
+                                             order_stream=place_stream)
+    assert armed._order_stream is place_stream
+    health = service.health_payload(store, 0.0, ["novig"], novig_place_stream=place_stream)
+    assert health["novigPlaceStream"]["orders"]["subscribed"] is False and "novigStream" not in health

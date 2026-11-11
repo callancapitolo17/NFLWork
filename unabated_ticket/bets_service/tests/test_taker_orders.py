@@ -38,7 +38,7 @@ class ScriptedKalshi:
 
     def __init__(self, filled: float = 10, market_status: str = "active", post_status: int = 201,
                  delete_status: int = 200, resting=(), listed=(), exchange_index=None, fills_pages=None,
-                 remaining_count="0.00", pot_cash=None, transfer_status="complete", transfer_reply_status=200,
+                 remaining_count="0.00", pot_cash=None, transfer_reply_status=200,
                  insufficient_posts=0):
         self.calls = []
         # The first N order POSTs are refused as Kalshi refuses a short cash pot.
@@ -59,7 +59,7 @@ class ScriptedKalshi:
         self.pot_cash = {0: 1000.0, 3: 0.0} if pot_cash is None else dict(pot_cash)
         self.balance_reads = []
         self.transfers = []
-        self.transfer_status = transfer_status
+        self.transfer_status_reads = []
         self.transfer_reply_status = transfer_reply_status
 
     def request(self, method, path, body=None):
@@ -74,11 +74,15 @@ class ScriptedKalshi:
             if self.transfer_reply_status != 200:
                 return self.transfer_reply_status, {"error": {"code": "insufficient_scope", "message": "write::transfer"}}
             cents = body["amount"] // 100
+            if self.pot_cash[body["source_exchange_shard"]] * 100 < cents:
+                return 400, {"error": {"code": "insufficient_balance", "message": "insufficient balance"}}
             self.pot_cash[body["source_exchange_shard"]] -= cents / 100
             self.pot_cash[body["destination_exchange_shard"]] += cents / 100
             return 200, {"transfer_id": "t-1"}
         if path.startswith("/portfolio/intra_exchange_instance_transfers/"):
-            return 200, {"transfer": {"status": self.transfer_status}}
+            # What Kalshi answers the bot's subaccount-locked key here.
+            self.transfer_status_reads.append(path)
+            return 403, {"error": {"code": "this_API_key_is_restricted_to_a_single_sub-account_and_cannot_access_this_endpoint"}}
         self.calls.append((method, path, body))
         if method == "POST":
             if self.insufficient_posts > 0:
@@ -769,13 +773,19 @@ def test_no_pot_is_read_or_moved_before_the_send(store, tmp_path):
 
 def test_a_short_basketball_pot_gets_exactly_the_shortfall_then_one_resend(store, tmp_path):
     kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 1.25}, insufficient_posts=1)
-    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
+    sleeps = []
+    desk = TakerDesk(kalshi, store, tmp_path / "taker.stop", BOT_SUBACCOUNT, now=lambda: NOW, sleep=sleeps.append)
+    result = desk.place(request(exchangeIndex=3))
     assert result["status"] == "filled"
+    # The locked key cannot read the transfer's status: a 1 s pause, then the resend.
+    assert kalshi.transfer_status_reads == [] and sleeps == [1.0]
     # 10 contracts at 0.587157 all-in cost at most $5.88 (+1c fee rounding) = $5.89; the pot holds $1.25.
     assert kalshi.transfers == [{"source": "event_contract", "destination": "event_contract",
                                  "source_exchange_shard": 0, "destination_exchange_shard": 3, "amount": 46_400,
                                  "source_subaccount": BOT_SUBACCOUNT, "destination_subaccount": BOT_SUBACCOUNT}]
     assert kalshi.pot_cash == {0: pytest.approx(995.36), 3: pytest.approx(5.89)}
+    # Only the short pot is read: Kalshi rate-limits a second balance read right after the first.
+    assert kalshi.balance_reads == [f"/portfolio/balance?exchange_index=3&subaccount={BOT_SUBACCOUNT}"]
     posts = [call[2]["client_order_id"] for call in kalshi.calls if call[0] == "POST"]
     first_id = REQUEST_BODY["clientOrderId"]
     assert posts == [first_id, first_id + "-r"], "the resend carries a fresh id"
@@ -798,7 +808,6 @@ def test_a_second_insufficient_balance_is_not_resent_again(store, tmp_path):
 
 
 @pytest.mark.parametrize("pot_cash, exchange_index, words", [
-    ({0: 2.0, 3: 1.0}, 0, "short of the $5.89 order"),            # both pots together cannot cover it: nothing moves
     ({0: 1000.0}, 3, "pot balance is unreadable"),                # the subaccount is not set up on pot 3
     ({0: 1000.0, 3: 0.0}, 2, "is not set up on"),                 # a pot the bot does not use
     ({0: 1000.0, 3: 0.0}, None, "did not say which cash pot"),    # Kalshi's market carried no exchange_index
@@ -812,16 +821,21 @@ def test_any_doubt_about_the_pots_refuses_the_resend(store, tmp_path, pot_cash, 
     assert store.has_order(REQUEST_BODY["clientOrderId"]) and store.open_exposure() == 0
 
 
-@pytest.mark.parametrize("transfer_reply_status, transfer_status, words", [
-    (403, "complete", "may not move money between its pots"),
-    (200, "pending", "has not finished moving it"),
-])
-def test_a_move_that_fails_or_does_not_finish_refuses_the_resend(store, tmp_path, transfer_reply_status,
-                                                                  transfer_status, words):
-    kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 0.0}, transfer_reply_status=transfer_reply_status,
-                            transfer_status=transfer_status, insufficient_posts=1)
+def test_a_move_kalshi_refuses_because_the_other_pot_is_short_refuses_the_resend(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 2.0, 3: 1.0}, insufficient_posts=1)
     result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
-    assert result["status"] == "pot_short" and words in result["detail"], result
+    assert result == {"status": "pot_short",
+                      "detail": "Kalshi refused it for insufficient balance; the basketball/baseball/tennis pot has "
+                                "$1.00 and moving $4.89 into it from the main pot failed "
+                                "(HTTP 400: insufficient balance)."}
+    assert len(kalshi.transfers) == 1 and kalshi.pot_cash == {0: 2.0, 3: 1.0}
+    assert kalshi.methods().count("POST") == 1 and store.open_exposure() == 0
+
+
+def test_a_move_kalshi_refuses_for_the_keys_scope_refuses_the_resend(store, tmp_path):
+    kalshi = ScriptedKalshi(pot_cash={0: 1000.0, 3: 0.0}, transfer_reply_status=403, insufficient_posts=1)
+    result = desk_for(store, kalshi, tmp_path).place(request(exchangeIndex=3))
+    assert result["status"] == "pot_short" and "may not move money between its pots" in result["detail"], result
     assert len(kalshi.transfers) == 1, "a move is never re-sent"
     assert kalshi.methods().count("POST") == 1
 

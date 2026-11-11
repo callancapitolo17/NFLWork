@@ -728,6 +728,8 @@
     if (Date.now() - passMs > BOT_PASS_LATE_MS) return { tone: "warn", label: "Late", why: "last pass " + ago(runner.finishedAt) };
     if (entry.skipped) return { tone: "warn", label: "Paused", why: entry.skipped };
     if (typeof entry.runnerDesk === "string" && entry.runnerDesk.startsWith("geo_blocked")) return { tone: "warn", label: "Paused", why: entry.runnerDesk };
+    // Below the cap but the subaccount cannot pay (bot_report cashShort): top up or wait for wins to settle.
+    if (entry.cashShort) return { tone: "warn", label: "Out of cash", why: entry.cashShort };
     return { tone: "running", label: "Running", why: "last pass " + ago(runner.finishedAt) + (entry.lastOrderAt ? " · last order " + startLabel(entry.lastOrderAt) : " · no orders yet") };
   }
 

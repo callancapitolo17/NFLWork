@@ -936,13 +936,13 @@
   // A bet decision's desk answer that means an order went to the venue.
   const BOT_ORDER_SENT = new Set(["sending", "sent", "unknown", "resting", "filled", "partial", "unfilled", "rejected"]);
   const BOT_DESK_REFUSALS = {
-    ceiling: "At the money cap", stopped: "Stop file on", off: "Desk off", pot_short: "Kalshi pot short",
+    ceiling: "At the money cap", no_cash: "Out of cash", stopped: "Stop file on", off: "Desk off", pot_short: "Kalshi pot short",
     geo_blocked: "Novig location lapsed", unseen_fill: "Waiting on an earlier fill", started: "Game started",
     stale_decision: "Decision too old", stale_holdings: "Held bets too old", env_mismatch: "Wrong Kalshi", duplicate: "Duplicate",
     error: "No answer from the desk", size_declined: "Held bets refused the size",
   };
   // Refusals Cal may want to act on: the cap, a stop, a desk that cannot trade.
-  const BOT_WARN_STATUSES = new Set(["ceiling", "stopped", "off", "pot_short", "geo_blocked", "error"]);
+  const BOT_WARN_STATUSES = new Set(["ceiling", "no_cash", "stopped", "off", "pot_short", "geo_blocked", "error"]);
 
   /**
    * /bot.json `activity.reasons` ({reason, orderStatus, lines}) as display rows

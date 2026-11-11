@@ -13,6 +13,9 @@
 //   GET /bets.json      every 30 s — open bets, each venue's last poll, the
 //                       crosswalk and the shared Dismiss marks
 //   GET /attach.json    while an Attach is open — the runner's games and plan
+//   GET /ticket_line.json?key=  every 2 s while a Ticket is open and the page in
+//                       view — its line read off the venue's book now (phoneview.js
+//                       "the open Ticket's live refresh" says when it closes)
 //   GET /settings.json  on load, on opening Settings and after a save
 // The polls run only while the page is visible, and refresh at once when it
 // becomes visible again. After a write the lists are read with ?fresh=1, so
@@ -72,6 +75,7 @@
   const el = (id) => document.getElementById(id);
   const view = {
     fresh: el("fresh"), banners: el("banners"),
+    edgesStatusToggle: el("edges-status-toggle"), edgesStatusSummary: el("edges-status-summary"), edgesStatusMore: el("edges-status-more"),
     edgesStatus: el("edges-status"), edgesBooks: el("edges-books"), edgesTailFlex: el("edges-tailflex"), edgesPriceCheck: el("edges-pricecheck"),
     edgesList: el("edges-list"), edgesEmpty: el("edges-empty"), edgesCount: el("edges-count"),
     betsCount: el("bets-count"), betsAlert: el("bets-alert"), betsTab: el("tab-bets"),
@@ -95,11 +99,11 @@
     ticketExposure: el("ticket-exposure"), ticketPayoutRow: el("ticket-payout-row"), ticketToWin: el("ticket-to-win"), ticketPayout: el("ticket-payout"),
     ticketRelatedBlock: el("ticket-related-block"), ticketRelated: el("ticket-related"), ticketRelatedCount: el("ticket-related-count"),
     ticketOthersBlock: el("ticket-others-block"), ticketOthers: el("ticket-others"), ticketOthersCount: el("ticket-others-count"),
-    ticketMoved: el("ticket-moved"),
+    ticketMoved: el("ticket-moved"), ticketLive: el("ticket-live"),
     ticketVenuePlace: el("ticket-venue-place"), ticketVenueRow: el("ticket-venue-row"), ticketVenueStake: el("ticket-venue-stake"),
     ticketVenueButtons: el("ticket-venue-buttons"), ticketVenueMsg: el("ticket-venue-msg"), ticketFoot: el("ticket-foot"),
     ticketFp: el("ticket-fp"), ticketFpInput: el("ticket-fp-input"), ticketFpLabel: el("ticket-fp-label"), ticketFpNote: el("ticket-fp-note"),
-    toasts: el("toasts"),
+    toasts: el("toasts"), toastChip: el("toast-chip"), sheetPanel: document.querySelector(".sheet-panel"),
     teasersTab: el("tab-teasers"), teasersCount: el("teasers-count"), viewTeasers: el("view-teasers"),
     teasersError: el("teasers-error"), teasersWarning: el("teasers-warning"), teasersStatus: el("teasers-status"), teasersEmpty: el("teasers-empty"),
     teasersSummary: el("teasers-summary"), teasersSummaryLabel: el("teasers-summary-label"), teasersSummaryStake: el("teasers-summary-stake"),
@@ -116,6 +120,9 @@
 
   const state = {
     activeView: "edges",
+    // The header's folded banners and the Edges status line: closed until tapped.
+    bannersOpen: false,
+    edgesStatusOpen: false,
     // What each poll left: {payload, okAt, error, errorAt, failingSince}.
     edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     teasers: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
@@ -134,6 +141,10 @@
     // skips every 30 s, so without this a tap would take that long to show.
     skipOverrides: new Map(),
     skipError: null,
+    // Places sent from this page, greyed on the Edges list until the list
+    // counts them (phoneView.placedMarkShows): row key -> {stake, sentAt,
+    // repliedAt, betsReadAfter, cardKey}.
+    placedMarks: new Map(),
     // Row keys whose every-book list is open; the Skipped fold's state.
     openPriceChecks: new Set(),
     skippedFoldOpen: false,
@@ -221,9 +232,14 @@
   }
 
   // `fresh` asks the runner to re-read the bets service first (after a write here).
-  async function pollEdges(fresh) {
+  // rereadKey: one Edges line the runner reads at its venue before building
+  // the list (a refused Place: the card shows what the venue has now).
+  async function pollEdges(fresh, rereadKey = null) {
+    let path = "/edges.json";
+    if (fresh === true) path += "?fresh=1";
+    if (fresh === true && rereadKey) path += `&reread=${encodeURIComponent(rereadKey)}`;
     try {
-      pollSucceeded(state.edges, await requestJson("GET", fresh === true ? "/edges.json?fresh=1" : "/edges.json"));
+      pollSucceeded(state.edges, await requestJson("GET", path));
     } catch (error) {
       pollFailed(state.edges, error);
     }
@@ -256,17 +272,21 @@
   }
 
   // The records as the panel holds them (edgeRows.applyBetsPayload: merged, pins applied).
+  // Returns this read's generatedAt (the bets service's clock), or null when it failed.
   async function pollBets() {
+    let generatedAt = null;
     try {
       const body = await requestJson("GET", "/bets.json");
       const applied = edgeRows.applyBetsPayload(state.held, body, Date.now());
       state.held = { records: applied.records, crosswalk: applied.crosswalk, pins: applied.pins, fillFairs: applied.fillFairs };
       if (state.betsSaving.size === 0) state.dismissedIds = applied.dismissals ? applied.dismissals.map((row) => row.betId) : null;
       pollSucceeded(state.bets, { generatedAt: applied.generatedAt, sources: applied.sources });
+      generatedAt = applied.generatedAt ?? null;
     } catch (error) {
       pollFailed(state.bets, error);
     }
     renderAll();
+    return generatedAt;
   }
 
   // Each book's balance for the Edges tab's Balances line, on the bets poll's cadence;
@@ -311,6 +331,7 @@
     timers = [];
     if (document.visibilityState !== "visible") return;
     refreshNow();
+    pollTicketLine();
     timers = [
       setInterval(pollEdges, phoneView.EDGES_POLL_MS), setInterval(pollTeasers, phoneView.EDGES_POLL_MS),
       setInterval(pollBets, phoneView.BETS_POLL_MS), setInterval(pollBalances, phoneView.BETS_POLL_MS),
@@ -321,8 +342,28 @@
 
   function renderTop(now) {
     view.fresh.textContent = phoneView.freshnessText(state.edges, state.bets, now);
-    view.banners.replaceChildren(...phoneView.banners(state.edges, state.bets, now)
-      .map((banner) => makeEl("div", `warning${banner.level === "bad" ? " bad" : ""}`, banner.text)));
+    const list = phoneView.banners(state.edges, state.bets, now);
+    const summary = phoneView.bannerSummary(list);
+    if (!summary) {
+      state.bannersOpen = false; // the next problem shows folded
+      view.banners.replaceChildren();
+      return;
+    }
+    const chip = makeEl("button", `banner-chip${summary.level === "bad" ? " bad" : ""}`);
+    chip.type = "button";
+    chip.setAttribute("aria-expanded", String(state.bannersOpen));
+    chip.append(makeEl("span", "banner-count", `⚠ ${summary.count}`),
+      makeEl("span", "banner-text", state.bannersOpen ? "" : summary.text),
+      makeEl("span", "banner-caret", state.bannersOpen ? "▴" : "▸"));
+    const full = state.bannersOpen
+      ? list.map((banner) => makeEl("div", `warning${banner.level === "bad" ? " bad" : ""}`, banner.text))
+      : [];
+    view.banners.replaceChildren(chip, ...full);
+  }
+
+  function renderEdgesStatusFold() {
+    view.edgesStatusMore.hidden = !state.edgesStatusOpen;
+    view.edgesStatusToggle.setAttribute("aria-expanded", String(state.edgesStatusOpen));
   }
 
   // ---- Edges -------------------------------------------------------------------------
@@ -536,11 +577,31 @@
     renderAll();
   }
 
+  // Drops the Place marks the shown list already counts; once per render.
+  function prunePlacedMarks(now) {
+    const listBetsReadAt = state.edges.payload ? state.edges.payload.betsService.generatedAt ?? null : null;
+    for (const [rowKey, mark] of state.placedMarks) {
+      if (!phoneView.placedMarkShows(mark, listBetsReadAt, now)) state.placedMarks.delete(rowKey);
+    }
+  }
+
+  // The Place mark on a row or its card, or null.
+  function placedMarkOf(row, card) {
+    if (state.placedMarks.has(row.key)) return state.placedMarks.get(row.key);
+    if (!card) return null;
+    for (const mark of state.placedMarks.values()) if (mark.cardKey === card.key) return mark;
+    return null;
+  }
+
   function edgeItem(row, card, now, skipped = false) {
-    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}${skipped ? " skipped" : ""}`);
+    const mark = placedMarkOf(row, card);
+    const words = mark ? phoneView.placedMarkView(mark) : null;
+    const li = makeEl("li", `edge-row tier-${row.edgeTier}${row.isBlurred ? " blurred" : ""}${skipped ? " skipped" : ""}${mark ? " placed" : ""}`);
     li.dataset.key = row.key;
     if (card) li.dataset.card = card.key;
-    li.append(mainEl(row, now, skipped), railEl(row, true));
+    // A just-placed row's rail reads "placed" where the stake was; no move tag or shrunk-edge hover on numbers about to change.
+    li.append(mainEl(row, now, skipped), mark ? railEl({ ...row, rail: words.rail, shrunkEdgePct: null }, false) : railEl(row, true));
+    if (mark) li.querySelector(".edge-side").prepend(tagEl("placed", words.tag));
     const related = relatedBlock(row);
     if (related) li.append(related);
     if (card && card.others && card.others.length) {
@@ -553,12 +614,14 @@
     const payload = state.edges.payload;
     if (!payload) {
       view.edgesStatus.textContent = state.edges.error ? "No Edges list yet." : "Loading the Edges list…";
+      view.edgesStatusSummary.textContent = view.edgesStatus.textContent;
       view.edgesBooks.textContent = "";
       view.edgesList.replaceChildren();
       view.edgesCount.hidden = true;
       return;
     }
     const settings = payload.settings.edges;
+    view.edgesStatusSummary.textContent = phoneView.edgesStatusSummary(payload, SORT_LABELS[settings.sortBy] || settings.sortBy, now);
     view.edgesStatus.textContent = phoneView.scannerText(payload.scanner, now);
     view.edgesBooks.textContent = [
       phoneView.booksText(payload.books),
@@ -570,15 +633,20 @@
     view.edgesTailFlex.hidden = !payload.tailFlex;
     view.edgesPriceCheck.textContent = payload.priceCheck || "";
     view.edgesPriceCheck.hidden = !payload.priceCheck;
-    const { items: listed, skipped, total } = edgesWithSkips(payload);
+    prunePlacedMarks(now);
+    const { items: withSkips, skipped, total: totalWithSkips } = edgesWithSkips(payload);
+    const listed = phoneView.withoutFullyBet(withSkips, payload.grouped);
+    const fullyBet = withSkips.length - listed.length;
+    const total = totalWithSkips - fullyBet;
     const items = listed.map((item) => (payload.grouped ? edgeItem(item.best, item, now) : edgeItem(item, null, now)));
     view.edgesList.replaceChildren(...items, ...skippedFoldEls(skipped, now));
     view.edgesCount.hidden = total === 0;
     view.edgesCount.textContent = String(total);
-    view.edgesEmpty.hidden = payload.total > 0 && payload.total <= payload.maxShown;
+    view.edgesEmpty.hidden = total > 0 && payload.total <= payload.maxShown;
     view.edgesEmpty.textContent = payload.total === 0
       ? (payload.scanner.phase === "live" ? `No line at or above ${settings.minEdgePct}% edge right now.` : "Waiting for the runner's first snapshot…")
-      : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
+      : total === 0 && fullyBet > 0 && payload.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
+        : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
   }
 
   // The Skipped line under the list: tap to open the skipped rows, each with Restore.
@@ -610,24 +678,84 @@
     return null;
   }
 
+  // The Ticket's line as it shows now: the live answer while fresh (its row,
+  // or none when the line has nothing to bet), else the list's row.
+  //   {row, card} | null (not on the list and no fresh live row)
+  function currentTicketRow(ticket, now) {
+    const listed = findTicketRow(ticket);
+    const live = ticket.live;
+    if (!phoneView.ticketLiveFresh(live, now)) return listed;
+    if (!live.row) return null;
+    return { row: live.row, card: listed ? listed.card : null };
+  }
+
   function openTicket(rowKey, cardKey) {
-    state.ticket = { rowKey, cardKey, last: null, opened: null, booksOpen: false };
+    if (state.ticket && state.ticket.pollTimer) clearTimeout(state.ticket.pollTimer);
+    state.ticket = { rowKey, cardKey, last: null, opened: null, booksOpen: false, live: null, pollTimer: null, polling: false };
     view.sheet.hidden = false;
     document.body.classList.add("sheet-open");
+    foldToastsIntoTicket(true);
     renderTicket(Date.now());
+    pollTicketLine();
   }
 
   function closeTicket() {
+    if (state.ticket && state.ticket.pollTimer) clearTimeout(state.ticket.pollTimer);
     state.ticket = null;
+    // An armed Place belongs to this Ticket: reopening it starts from Place again.
+    placeState = { ...EMPTY_PLACE_STATE };
     view.sheet.hidden = true;
     document.body.classList.remove("sheet-open");
+    foldToastsIntoTicket(false);
+  }
+
+  // One ask for the open Ticket's line, then the next TICKET_POLL_MS after the
+  // answer (never two in flight). Paused while the page is hidden; onVisibility
+  // starts it again. An answer for a Ticket since closed or changed is dropped.
+  async function pollTicketLine() {
+    const ticket = state.ticket;
+    if (!ticket || ticket.polling) return;
+    if (ticket.pollTimer) clearTimeout(ticket.pollTimer);
+    ticket.pollTimer = null;
+    if (document.visibilityState !== "visible") return;
+    ticket.polling = true;
+    let answer = null;
+    let failure = null;
+    try {
+      answer = await requestJson("GET", `/ticket_line.json?key=${encodeURIComponent(ticket.rowKey)}`);
+    } catch (error) {
+      failure = error.message;
+    }
+    ticket.polling = false;
+    if (state.ticket !== ticket) return;
+    try {
+      ticket.live = phoneView.ticketLiveStep(ticket.live, answer, Date.now(), failure);
+      if (phoneView.ticketShouldClose(ticket.live)) {
+        const text = phoneView.ticketClosedText(ticket.live);
+        closeTicket();
+        showToast(text, "refused");
+        renderEdges(Date.now());
+        return;
+      }
+      renderTicket(Date.now());
+    } catch (error) {
+      console.error("[unabated-ticket] ticket refresh failed", error);
+    } finally {
+      // A drawing fault must not stop the refresh; a closed or replaced Ticket ends its own.
+      if (state.ticket === ticket && !ticket.pollTimer) ticket.pollTimer = setTimeout(pollTicketLine, phoneView.TICKET_POLL_MS);
+    }
   }
 
   function renderTicket(now) {
     if (!state.ticket) return;
-    const found = findTicketRow(state.ticket);
+    const found = currentTicketRow(state.ticket, now);
     if (found) state.ticket.last = found;
-    view.ticketGone.hidden = Boolean(found);
+    const liveNote = phoneView.ticketLiveNote(state.ticket.live, now);
+    view.ticketLive.hidden = !liveNote;
+    view.ticketLive.className = liveNote && liveNote.tone ? `warning${liveNote.tone === "bad" ? " bad" : ""}` : "ticket-live";
+    view.ticketLive.textContent = liveNote ? liveNote.text : "";
+    // A live answer of nothing to bet says why in its own note.
+    view.ticketGone.hidden = Boolean(found) || Boolean(liveNote && liveNote.tone === "bad");
     const shown = found || state.ticket.last;
     if (!shown) {
       closeTicket();
@@ -706,7 +834,16 @@
   // message, tone, edited (Cal typed in the box)}.
   // sizedOn: edges.json's betsService.sources when the box last took the stake (the reads it was sized on).
   // freePlay: the BFA Ticket's Use free play switch is on.
-  let placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
+  // armedLine: the row's {price, points} at the first tap; a move before the second disarms.
+  const EMPTY_PLACE_STATE = { rowKey: null, venueName: null, phase: null, armedAt: 0, armedLine: null, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
+  let placeState = { ...EMPTY_PLACE_STATE };
+
+  // The bet reads the shown stake was sized on: the live answer's when the Ticket shows it, else the list's.
+  function ticketSizedOn() {
+    const live = state.ticket ? state.ticket.live : null;
+    if (phoneView.ticketLiveFresh(live, Date.now()) && live.row) return live.sources;
+    return state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
+  }
 
   function venuePlaceLine(row) {
     return {
@@ -725,8 +862,17 @@
     if (view.ticketVenuePlace.hidden) return;
     if (placeState.rowKey !== row.key) {
       const venue = venuePlace.venueOf(row.book ? row.book.id : null);
-      placeState = { rowKey: row.key, venueName: venue ? venue.name : "the venue", phase: null, armedAt: 0, message: null,
-        tone: null, edited: false, sizedOn: null, freePlay: false };
+      placeState = { ...EMPTY_PLACE_STATE, rowKey: row.key, venueName: venue ? venue.name : "the venue" };
+    }
+    // The live refresh moved the price or number between the two taps: the
+    // stake on the button was sized for the old one, so start again from Place.
+    const armed = placeState.armedLine;
+    if (placeState.phase === "confirm" && armed && (armed.price !== row.price || (armed.points ?? null) !== (row.points ?? null))) {
+      Object.assign(placeState, { phase: null, armedLine: null, message: "The price moved before you confirmed: check the amount and press Place again.", tone: "refused" });
+    }
+    // Under Min edge on the newest read: no Place until it is back (the Ticket closes if it stays there).
+    if (state.ticket && phoneView.ticketUnderMinEdge(state.ticket.live, Date.now()) && placeState.phase === "confirm") {
+      Object.assign(placeState, { phase: null, armedLine: null });
     }
     const venue = venuePlace.venueOf(row.book ? row.book.id : null);
     const offersFreePlay = Boolean(venue && venue.freePlay);
@@ -739,7 +885,7 @@
     if (!placeState.edited && placeState.phase !== "confirm" && document.activeElement !== view.ticketVenueStake) {
       const boxStake = placeState.freePlay ? phoneView.freePlayStake(acted, freePlay, phoneView.netOddsOf(row)) : acted;
       view.ticketVenueStake.value = venuePlace.stakeText(boxStake, row.book ? row.book.id : null);
-      placeState.sizedOn = state.edges.payload && state.edges.payload.betsService ? state.edges.payload.betsService.sources : null;
+      placeState.sizedOn = ticketSizedOn();
     }
     renderFreePlay(row, offersFreePlay);
     renderPlaceControls();
@@ -778,7 +924,9 @@
       view.ticketVenueButtons.replaceChildren(button("btn sm", "Cancel", "cancel"),
         button("btn sm primary", `Bet ${phoneView.fmtDollars(stake)}${paidWith} at ${placeState.venueName}`, "confirm"));
     } else {
-      view.ticketVenueButtons.replaceChildren(button("btn sm", "Place", "arm"));
+      const place = button("btn sm", "Place", "arm");
+      place.disabled = Boolean(state.ticket && phoneView.ticketUnderMinEdge(state.ticket.live, Date.now()));
+      view.ticketVenueButtons.replaceChildren(place);
     }
   }
 
@@ -793,7 +941,9 @@
         return;
       }
       const armedAt = Date.now();
-      Object.assign(placeState, { phase: "confirm", armedAt, message: null, tone: null });
+      const shown = state.ticket ? currentTicketRow(state.ticket, armedAt) : null;
+      const armedLine = shown ? { price: shown.row.price, points: shown.row.points ?? null } : null;
+      Object.assign(placeState, { phase: "confirm", armedAt, armedLine, message: null, tone: null });
       setTimeout(() => {
         if (placeState.phase === "confirm" && placeState.armedAt === armedAt) {
           placeState.phase = null;
@@ -821,11 +971,13 @@
   async function placeOnVenue() {
     const { rowKey, freePlay } = placeState;
     const venueName = freePlay ? `${placeState.venueName} (free play)` : placeState.venueName;
-    const found = state.ticket ? findTicketRow(state.ticket) : null;
+    const found = state.ticket ? currentTicketRow(state.ticket, Date.now()) : null;
     // The reads the runner sized the box's stake on, frozen with the box (not this page's own
     // /bets.json poll, nor a later edges poll): a Place filled since must still count as unseen.
     const readAts = venuePlace.readAtsOf(placeState.sizedOn || {});
-    const request = found && found.row.key === rowKey ? venuePlace.placeRequestOf({
+    const underMinEdge = state.ticket ? phoneView.ticketUnderMinEdge(state.ticket.live, Date.now()) : false;
+    const request = underMinEdge ? { error: "the edge is under your Min edge on the latest read" }
+      : found && found.row.key === rowKey ? venuePlace.placeRequestOf({
       line: venuePlaceLine(found.row), stakeInput: view.ticketVenueStake.value, readAts, clickId: crypto.randomUUID(), freePlay,
     }) : { error: "the line has left the Edges list" };
     if (request.error) {
@@ -834,15 +986,26 @@
       return;
     }
     const sideLabel = phoneView.ticketView(found.row, Date.now()).sideLabel;
-    const toast = showToast(phoneView.placeToastPlacingText(venuePlace.parseStake(view.ticketVenueStake.value), sideLabel, venueName), "wait");
-    placeState = { rowKey: null, venueName: null, phase: null, armedAt: 0, message: null, tone: null, edited: false, sizedOn: null, freePlay: false };
+    const stake = venuePlace.parseStake(view.ticketVenueStake.value);
+    const toast = showToast(phoneView.placeToastPlacingText(stake, sideLabel, venueName), "wait");
+    const mark = { stake, sentAt: Date.now(), repliedAt: null, betsReadAfter: null, cardKey: state.ticket.cardKey ?? null };
+    state.placedMarks.set(rowKey, mark);
+    placeState = { ...EMPTY_PLACE_STATE };
     // The balance just changed: the next BFA Ticket reads it again.
     if (freePlay) state.freePlay.askedAt = 0;
     closeTicket();
+    // The order goes out first: greying the row is only a picture of it.
+    const sending = requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
+    try {
+      renderAll();
+    } catch (error) {
+      // A drawing fault must never cost the order its toast.
+      console.error("[unabated-ticket] render after Place failed", error);
+    }
     let next;
     try {
-      const reply = await requestJson("POST", request.path, request.body, PLACE_TIMEOUT_MS);
-      next = { message: reply.message, tone: venuePlace.replyTone(reply.status) };
+      const reply = await sending;
+      next = { message: reply.message, tone: venuePlace.replyTone(reply.status), status: reply.status };
     } catch (error) {
       // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
       next = error.status >= 400 && error.status < 500
@@ -850,11 +1013,23 @@
         : { message: `No answer from the bets service (${error.message}). Check ${venueName} before placing again.`, tone: "warn" };
     }
     setToast(toast, next.message, next.tone);
-    if (next.tone === "ok") await pollBets();
+    // A fill (or an answer that may hide one) stays grey until the runner's list counts it; nothing placed ungreys now.
+    // A second Place on the same row replaces the mark: only this Place's own mark is this Place's to change.
+    const ownMark = state.placedMarks.get(rowKey) === mark;
+    if (next.tone === "ok" || next.tone === "warn") {
+      mark.repliedAt = Date.now();
+      mark.betsReadAfter = await pollBets();
+      await Promise.all([pollEdges(true), pollTeasers(true)]);
+    } else {
+      if (ownMark) state.placedMarks.delete(rowKey);
+      renderAll();
+      // Refused before the send, or sent and nothing filled or the venue rejected it: often a moved price, so read the line again now.
+      if (next.tone === "refused" || next.status === "unfilled" || next.status === "rejected") await pollEdges(true, rowKey);
+    }
   }
 
   // ---- Place toasts ---------------------------------------------------------
-  // One per Place, stacked above the tab bar and over the Ticket sheet. Tone is
+  // One per Place, stacked above the tab bar; folded into a chip on an open Ticket. Tone is
   // "wait" while placing, then place.js replyTone's; only a fill fades on its own.
   function showToast(text, tone) {
     const toast = makeEl("div", "toast");
@@ -878,6 +1053,28 @@
     }
     const hideAfterMs = phoneView.placeToastHideAfterMs(tone);
     if (hideAfterMs != null) setTimeout(() => toast.remove(), hideAfterMs);
+  }
+
+  // While a Ticket is open its toasts live in the sheet as a drop-down under
+  // the chip, so nothing covers the Ticket; closed, they are the bottom stack again.
+  function foldToastsIntoTicket(folded) {
+    view.toasts.classList.remove("dropped");
+    if (folded) view.toastChip.parentElement.append(view.toasts);
+    else document.body.insertBefore(view.toasts, view.sheet);
+    renderToastChip();
+  }
+
+  function renderToastChip() {
+    const tones = Array.from(view.toasts.children, (toast) => Array.from(toast.classList).find((name) => name !== "toast"));
+    const chip = state.ticket ? phoneView.toastChipView(tones) : null;
+    view.toastChip.hidden = !chip;
+    // Only when it is set: the observer below sees every class write, even one that changes nothing.
+    if (!chip && view.toasts.classList.contains("dropped")) view.toasts.classList.remove("dropped");
+    if (chip) {
+      view.toastChip.className = `sheet-close toast-chip chip-${chip.tone}`;
+      view.toastChip.textContent = chip.text;
+    }
+    view.toastChip.setAttribute("aria-expanded", String(view.toasts.classList.contains("dropped")));
   }
 
   // Another line of the same card: rung, book and price, its edge and standalone stake. Tap to open it.
@@ -1727,6 +1924,15 @@
     if (button) showView(button.dataset.view);
   });
 
+  view.banners.addEventListener("click", (event) => {
+    if (!event.target.closest(".banner-chip")) return;
+    state.bannersOpen = !state.bannersOpen;
+    renderTop(Date.now());
+  });
+  view.edgesStatusToggle.addEventListener("click", () => {
+    state.edgesStatusOpen = !state.edgesStatusOpen;
+    renderEdgesStatusFold();
+  });
   view.edgesList.addEventListener("click", (event) => {
     const skipChip = event.target.closest("button.skip-chip");
     if (skipChip) {
@@ -1816,9 +2022,35 @@
     renderAll();
   });
   view.sheetClose.addEventListener("click", closeTicket);
+  view.toastChip.addEventListener("click", () => {
+    view.toasts.classList.toggle("dropped");
+    // The drop-down covers the Ticket and shrinks as fills fade: an armed confirm must not sit under a tap meant for a toast.
+    if (placeState.phase === "confirm") {
+      placeState.phase = null;
+      renderPlaceControls();
+    }
+    renderToastChip();
+  });
+  // A tap anywhere else on the Ticket folds the drop-down again.
+  view.sheetPanel.addEventListener("click", (event) => {
+    // composedPath, not contains: a toast's ✕ has already removed it by the time the tap reaches here.
+    const path = event.composedPath();
+    if (!view.toasts.classList.contains("dropped") || path.includes(view.toastChip) || path.includes(view.toasts)) return;
+    view.toasts.classList.remove("dropped");
+    renderToastChip();
+  });
+  // Every toast change (added, answered, faded, dismissed) redraws the chip.
+  new MutationObserver(renderToastChip).observe(view.toasts, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
   view.sheetBackdrop.addEventListener("click", closeTicket);
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && state.ticket) closeTicket();
+    if (event.key !== "Escape" || !state.ticket) return;
+    // The first Escape folds an open drop-down, the next closes the Ticket.
+    if (view.toasts.classList.contains("dropped")) {
+      view.toasts.classList.remove("dropped");
+      renderToastChip();
+    } else {
+      closeTicket();
+    }
   });
 
   view.settingsForm.addEventListener("input", () => {

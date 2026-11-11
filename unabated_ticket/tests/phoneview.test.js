@@ -173,6 +173,25 @@ test("banners: the page's failed reads, then what the runner reports, worst firs
   assert.equal(phoneView.freshnessText({ okAt: NOW - 4000 }, { okAt: null }, NOW), "edges 4s ago · bets —");
 });
 
+test("bannerSummary: one line, the worst level, how many, the first banner of that level; none when there are none", () => {
+  assert.equal(phoneView.bannerSummary([]), null);
+  assert.deepEqual(phoneView.bannerSummary([{ level: "warn", text: "Edges last read 3m ago" }]),
+    { level: "warn", count: "1 problem", text: "Edges last read 3m ago" });
+  assert.deepEqual(phoneView.bannerSummary([{ level: "warn", text: "settings" }, { level: "bad", text: "Scanner: league 2: HTTP 404" }, { level: "bad", text: "second" }]),
+    { level: "bad", count: "3 problems", text: "Scanner: league 2: HTTP 404" });
+});
+
+test("edgesStatusSummary: leagues, lines, books, floor, sort and age in one line; the loading text before any league lands", () => {
+  const payload = {
+    scanner: { phase: "live", leaguesLoaded: [1], lineCount: 62, altLineCount: 27, snapshotBuiltAt: NOW - 20000, staleLeagues: [] },
+    books: { ids: null, liveCount: 5 }, settings: { edges: { minEdgePct: 1 } },
+  };
+  assert.equal(phoneView.edgesStatusSummary(payload, "edge", NOW), "NFL · 62 lines · 5 books · ≥1% · by edge · 20s ago");
+  const chosen = { ...payload, books: { ids: [89], liveCount: 5, mode: "custom", names: ["Novig"] }, scanner: { ...payload.scanner, staleLeagues: [1] } };
+  assert.equal(phoneView.edgesStatusSummary(chosen, "start", NOW), "NFL · 62 lines · 1 book · ≥1% · by start · 20s ago · 1 stale");
+  assert.equal(phoneView.edgesStatusSummary({ ...payload, scanner: { phase: "starting" } }, "edge", NOW), "Runner starting the scanner…");
+});
+
 test("settings: defaults fill nulls, a save sends only what changed, books travel with their mode, reset sends null", () => {
   const nothing = { bankroll: null, multiplier: null, leagues: null, periods: null, betTypes: null, bookMode: null, bookIds: null, minEdgePct: null,
     minStake: null, maxLineAgeHours: null, minLiquidityToWin: null, includeAlts: null, sortBy: null, groupByMarket: null, minShrunkEdgePct: null };
@@ -304,6 +323,15 @@ test("place toasts: the placing line names stake, bet and venue; only a fill fad
   for (const tone of ["wait", "refused", "warn", "bad"]) assert.equal(phoneView.placeToastHideAfterMs(tone), null);
 });
 
+test("toast chip: folds every Place toast into one line, worst outcome first and in the chip's tone", () => {
+  assert.equal(phoneView.toastChipView([]), null);
+  assert.deepEqual(phoneView.toastChipView(["ok", "wait"]), { text: "\u2713 1 filled \u00b7 1 placing", tone: "ok" });
+  assert.deepEqual(phoneView.toastChipView(["wait"]), { text: "1 placing", tone: "wait" });
+  assert.deepEqual(phoneView.toastChipView(["ok", "refused", "bad", "wait"]),
+    { text: "\u26a0 2 refused \u00b7 \u2713 1 filled \u00b7 1 placing", tone: "bad" });
+  assert.deepEqual(phoneView.toastChipView(["warn", "ok"]), { text: "\u26a0 1 no answer \u00b7 \u2713 1 filled", tone: "warn" });
+});
+
 test("free play: the box takes the stake capped at the balance and the payout cap, and says what free play is worth", () => {
   const freePlay = { ok: true, freePlay: 530, maxPayout: 1000, oddsLimit: 800 };
   assert.equal(phoneView.freePlayStake(100, freePlay, 100 / 110), 100);
@@ -320,4 +348,102 @@ test("free play: the box takes the stake capped at the balance and the payout ca
   assert.deepEqual(phoneView.freePlayView({ ok: false, error: "HTTP 503" }, 0.5, 1, 10),
     { label: "Use free play", note: "BFA free play read failed: HTTP 503", failed: true });
   assert.equal(phoneView.freePlayView(null, 0.5, 1, 10), null);
+});
+
+test("fully bet lines leave the Edges list: a row, or a card by its best line", () => {
+  const row = (key, atSize) => ({ key, rail: { text: atSize ? "add $0.00" : "add $10.00", note: null, atSize } });
+  assert.deepEqual(phoneView.withoutFullyBet([row("a", false), row("b", true), row("c", false)], false).map((item) => item.key), ["a", "c"]);
+  // A card goes by its best line only: another line at full size keeps it, a best at full size drops it.
+  const cards = [{ key: "x", best: row("a", true), others: [row("b", false)] }, { key: "y", best: row("c", false), others: [row("d", true)] }];
+  assert.deepEqual(phoneView.withoutFullyBet(cards, true).map((card) => card.key), ["y"]);
+  const declinedLive = { key: "live", rail: { text: "\u2014", note: "declined", atSize: false } };
+  assert.deepEqual(phoneView.withoutFullyBet([declinedLive, { key: "old" }], false).map((item) => item.key), ["live", "old"], "a declined live row and a row without a rail stay");
+  assert.deepEqual(phoneView.withoutFullyBet([], true), []);
+});
+
+test("a placed mark shows from the tap until the list's bets read is newer than the read made after the reply", () => {
+  const sentAt = 1_000_000;
+  const out = { stake: 79.88, sentAt, repliedAt: null, betsReadAfter: null };
+  assert.equal(phoneView.placedMarkShows(out, "2026-11-09T19:00:00Z", sentAt + 85_000), true, "order still out, past the cap");
+  const replied = { ...out, repliedAt: sentAt + 1500 };
+  assert.equal(phoneView.placedMarkShows(replied, "2026-11-09T19:00:00Z", sentAt + 3000), true, "the read after the reply has not landed");
+  const read = { ...replied, betsReadAfter: "2026-11-09T19:00:05Z" };
+  assert.equal(phoneView.placedMarkShows(read, null, sentAt + 3000), true, "no list yet");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:04Z", sentAt + 3000), true, "a list on an older read (a runner read already in flight)");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:05Z", sentAt + 3000), true, "the same whole second may be a read begun before the fill");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:09Z", sentAt + 3000), false, "a list on a later read");
+  assert.equal(phoneView.placedMarkShows(read, "2026-11-09T19:00:04Z", replied.repliedAt + phoneView.PLACED_MARK_MAX_MS + 1), false, "ends a minute after the reply");
+  assert.deepEqual(phoneView.placedMarkView(out), { tag: "placed $79.88", rail: { text: "placing", note: "sending…", atSize: true } });
+  assert.deepEqual(phoneView.placedMarkView(replied), { tag: "placed $79.88", rail: { text: "placed", note: "updating…", atSize: true } });
+});
+
+// ---- the open Ticket's live refresh (GET /ticket_line.json) ----
+
+const TICKET_ROW = { key: "k", edgePct: 3.1, liveCheck: "live", liveReadAtMs: NOW - 1000 };
+const ticketAnswer = (fields = {}) => ({
+  key: "k", row: TICKET_ROW, underMinEdge: false, minEdgePct: 2.5, minShrunkEdgePct: 0, venueReadAtMs: NOW - 1000, readError: null,
+  readingId: `venue:${NOW - 1000}`, reason: null, detail: null, betsService: { sources: { kalshi: { okAt: "x" } } }, ...fields,
+});
+const underAt = (readAt) => ticketAnswer({ underMinEdge: true, venueReadAtMs: readAt, readingId: `venue:${readAt}`, row: { ...TICKET_ROW, edgePct: 2.1, liveReadAtMs: readAt } });
+
+test("ticket live: two new reads in a row under Min edge close the Ticket; one does not, and a good read resets the count", () => {
+  let live = phoneView.ticketLiveStep(null, underAt(NOW), NOW);
+  assert.deepEqual([live.misses, phoneView.ticketShouldClose(live), phoneView.ticketUnderMinEdge(live, NOW)], [1, false, true]);
+  assert.deepEqual(phoneView.ticketLiveNote(live, NOW),
+    { text: "Edge +2.10% is under your 2.5% Min edge. Place is off; closing if it stays there.", tone: "warn" });
+  live = phoneView.ticketLiveStep(live, ticketAnswer({ venueReadAtMs: NOW + 2000, readingId: `venue:${NOW + 2000}` }), NOW + 2000);
+  assert.equal(live.misses, 0, "one read back over resets it");
+  live = phoneView.ticketLiveStep(live, underAt(NOW + 4000), NOW + 4000);
+  live = phoneView.ticketLiveStep(live, underAt(NOW + 6000), NOW + 6000);
+  assert.equal(phoneView.ticketShouldClose(live), true);
+  assert.equal(phoneView.ticketClosedText(live), "Ticket closed: the edge fell under your 2.5% Min edge.");
+});
+
+test("ticket live: two answers off the same venue read (the next read failed) count once; a pause past 10 s starts the count again", () => {
+  let live = phoneView.ticketLiveStep(null, underAt(NOW), NOW);
+  live = phoneView.ticketLiveStep(live, { ...underAt(NOW), readError: "HTTP 429" }, NOW + 2000);
+  assert.deepEqual([live.misses, phoneView.ticketShouldClose(live)], [1, false]);
+  assert.deepEqual(phoneView.ticketLiveNote({ ...live, underMinEdge: false }, NOW + 2000),
+    { text: "Price read 2s ago; the latest read failed: HTTP 429.", tone: "warn" });
+  // The page was hidden 30 s: the old miss no longer counts.
+  live = phoneView.ticketLiveStep(live, underAt(NOW + 32000), NOW + 32000);
+  assert.deepEqual([live.misses, phoneView.ticketShouldClose(live)], [1, false]);
+  // A failed ask keeps the last answer and its count.
+  live = phoneView.ticketLiveStep(live, null, NOW + 34000, "HTTP 502");
+  assert.deepEqual([live.misses, live.error, live.answeredAt], [1, "HTTP 502", NOW + 32000]);
+});
+
+test("ticket live: nothing to bet counts toward closing and says why; a sportsbook line counts once per board snapshot; no reading never counts", () => {
+  const empty = (readAt) => ticketAnswer({ row: null, reason: "empty", detail: "nothing rests to buy at Novig", venueReadAtMs: readAt, readingId: `venue:${readAt}` });
+  let live = phoneView.ticketLiveStep(null, empty(NOW), NOW);
+  assert.deepEqual(phoneView.ticketLiveNote(live, NOW), { text: "Nothing rests to buy at Novig. Closing if it stays that way.", tone: "bad" });
+  const board = (builtAt) => ticketAnswer({ underMinEdge: true, row: { ...TICKET_ROW, liveCheck: null }, venueReadAtMs: null, readingId: `board:${builtAt}` });
+  let book = phoneView.ticketLiveStep(null, board(1), NOW);
+  book = phoneView.ticketLiveStep(book, board(1), NOW + 2000);
+  assert.deepEqual([book.misses, phoneView.ticketShouldClose(book)], [1, false], "the same snapshot twice is one reading");
+  book = phoneView.ticketLiveStep(book, board(2), NOW + 4000);
+  assert.equal(phoneView.ticketShouldClose(book), true);
+  let unread = phoneView.ticketLiveStep(null, ticketAnswer({ underMinEdge: true, readingId: null, readError: "stream down" }), NOW);
+  unread = phoneView.ticketLiveStep(unread, ticketAnswer({ underMinEdge: true, readingId: null, readError: "stream down" }), NOW + 2000);
+  assert.deepEqual([unread.misses, phoneView.ticketUnderMinEdge(unread, NOW + 2000)], [0, true], "no reading: Place off, nothing counted");
+  live = phoneView.ticketLiveStep(live, empty(NOW + 2000), NOW + 2000);
+  assert.equal(phoneView.ticketShouldClose(live), true);
+  assert.equal(phoneView.ticketClosedText(live), "Ticket closed: nothing rests to buy at Novig.");
+});
+
+test("ticket live: a fresh answer shows its read time; an old read or a stale answer warns", () => {
+  const live = phoneView.ticketLiveStep(null, ticketAnswer(), NOW);
+  assert.deepEqual(live.sources, { kalshi: { okAt: "x" } });
+  assert.deepEqual(phoneView.ticketLiveNote(live, NOW + 1000), { text: "Live · read 2s ago", tone: "" });
+  assert.equal(phoneView.ticketLiveNote(live, NOW + 9500).tone, "warn", "a read over 10 s old is called out");
+  assert.equal(phoneView.ticketLiveFresh(live, NOW + 10 * 1000), true);
+  assert.equal(phoneView.ticketLiveFresh(live, NOW + 10 * 1000 + 1), false);
+  assert.equal(phoneView.ticketUnderMinEdge({ ...live, underMinEdge: true }, NOW + 11 * 1000), false, "a stale answer gates nothing");
+  assert.match(phoneView.ticketLiveNote(live, NOW + 30 * 1000).text, /^Live refresh stalled \(last 30s ago\)/);
+  const sportsbook = phoneView.ticketLiveStep(null, ticketAnswer({ row: { ...TICKET_ROW, liveCheck: null }, venueReadAtMs: null }), NOW);
+  assert.deepEqual(phoneView.ticketLiveNote(sportsbook, NOW + 3000), { text: "Unabated's price · checked 3s ago", tone: "" });
+  const unread = phoneView.ticketLiveStep(null, ticketAnswer({ row: { ...TICKET_ROW, liveCheck: "unchecked" }, readError: "stream down" }), NOW);
+  assert.deepEqual(phoneView.ticketLiveNote(unread, NOW), { text: "Not read at the venue: stream down. Unabated's price.", tone: "warn" });
+  assert.deepEqual(phoneView.ticketLiveNote(phoneView.ticketLiveStep(null, null, NOW, "timeout"), NOW),
+    { text: "Live refresh failed: timeout. Showing the list's price.", tone: "warn" });
 });
