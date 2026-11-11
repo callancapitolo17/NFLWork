@@ -148,7 +148,8 @@ function unmatchedView(betRecords, boardLines, knownStarts, now, dismissedIds) {
 //           betsStatus {okAt, error, unreachableSince, generatedAt, sources},
 //           boardLines, ladderReaderOf, teasers (teaser.openTeasers),
 //           measurement (tailflex.measureTailFlex over feedState; null with no feed), now,
-//           lineView (liveprices.createLineView over the runner's live reads; null: Unabated's prices as-is)}
+//           lineView (liveprices.createLineView over the runner's live reads; null: Unabated's prices as-is),
+//           priceIndex, selectEdges (optional: the runner's per-league readers, edgerows.sizedEdgeRows)}
 function buildEdgesPayload(input) {
   const { feedState, edgeSettings, stakeSettings, now } = input;
   // No Unabated tab on a server, so "follow Unabated" is every live book.
@@ -158,6 +159,7 @@ function buildEdgesPayload(input) {
     edgeSettings, stakeSettings, effective, records: input.betRecords,
     boardLines: input.boardLines, ladderReaderOf: input.ladderReaderOf, teasers: input.teasers,
     measurement: input.measurement, now, lineView: input.lineView || null,
+    priceIndex: input.priceIndex || null, selectEdges: input.selectEdges || null,
   }), skips, now);
   const grouped = edgeSettings.groupByMarket;
   const items = grouped ? edgeRows.groupEdgeRows(rows, edgeSettings.sortBy) : rows;

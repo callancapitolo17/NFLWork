@@ -550,6 +550,10 @@ function createRunner(deps) {
   // leagueId -> {version, rows}: each league's board rows as of its last
   // snapshot (scanner.getLeagueVersion; boardLines rebuilds only the league that landed).
   const boardRowsByLeague = new Map();
+  // leagueId -> {version, groups}: each league's lines as pricecheck.groupPriceLines groups them (the Edges list's price index).
+  const priceGroupsByLeague = new Map();
+  // The Edges list's selectEdges, its line walk kept per league snapshot (feed.createEdgeSelector).
+  const edgeSelector = feedLib.createEdgeSelector();
   // leagueId -> the league version rememberKickoffOdds last read.
   const kickoffLeagueVersions = new Map();
   // leagueId -> {version, byEvent}: each league's lines grouped by game as of
@@ -845,6 +849,29 @@ function createRunner(deps) {
     }
     boardLinesCache = rows;
     return rows;
+  }
+
+  // The board's leagues for feed.createEdgeSelector: each league's lines and its snapshot version.
+  function leagueBoard() {
+    return { leagueIds: boardLeagueIds(), linesOf: (id) => scanner.getLeagueLines(id), versionOf: (id) => scanner.getLeagueVersion(id) };
+  }
+
+  // One league's price lines (pricecheck.groupPriceLines), regrouped only when its snapshot landed again.
+  function leaguePriceGroups(leagueId) {
+    const version = scanner.getLeagueVersion(leagueId);
+    const cached = priceGroupsByLeague.get(leagueId);
+    if (cached && cached.version === version) return cached.groups;
+    const groups = pricecheck.groupPriceLines(scanner.getLeagueLines(leagueId));
+    priceGroupsByLeague.set(leagueId, { version, groups });
+    return groups;
+  }
+
+  // The Edges list's price index (edgeRows.createPriceIndex's answers) off the per-league groups.
+  function edgesPriceIndex(at, lineView) {
+    const leagueIds = boardLeagueIds();
+    for (const leagueId of priceGroupsByLeague.keys()) if (!leagueIds.includes(leagueId)) priceGroupsByLeague.delete(leagueId);
+    return pricecheck.createGroupedPriceIndex(feedState, leagueIds.map(leaguePriceGroups),
+      edgeRows.priceIndexOptions(settings.edgeSettings, at, lineView));
   }
 
   function ladderReaderOf(eventId) {
@@ -3186,13 +3213,17 @@ function createRunner(deps) {
   }
 
   function edgesPayloadNow() {
+    const at = now();
+    const lineView = liveLineView();
     return edgesPayload.buildEdgesPayload({
       feedState, scannerStatus, history, betRecords: held.records, fillFairIndex, knownStarts,
       stakeSettings: settings.stakeSettings, edgeSettings: settings.edgeSettings,
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
       betsStatus: { ...betsStatus }, boardLines: boardLines(), ladderReaderOf,
-      teasers: openTeasersNow(), measurement: feedState ? tailFlexMeasurement() : null, now: now(),
-      dismissedIds, edgeSkips, lineView: liveLineView(),
+      teasers: openTeasersNow(), measurement: feedState ? tailFlexMeasurement() : null, now: at,
+      dismissedIds, edgeSkips, lineView,
+      priceIndex: feedState ? edgesPriceIndex(at, lineView) : null,
+      selectEdges: (state, options) => edgeSelector(state, options, leagueBoard()),
     });
   }
 
