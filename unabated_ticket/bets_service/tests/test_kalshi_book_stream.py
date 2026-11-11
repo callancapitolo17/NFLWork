@@ -1,8 +1,9 @@
 """Kalshi's live books over the orderbook_delta websocket (kalshi_book_stream.py),
 driven frame by frame with a fake connection and a fake clock, in the frame
-shapes Kalshi's docs give (read 2026-11-10; not yet seen live): on-demand
-subscribes with a Ticket's/Place's first, snapshots served as the REST
-/orderbook's body, deltas applied, seq gaps and orphan deltas resubscribed,
+shapes Kalshi's docs give (read 2026-11-10; the first deploy 2026-11-11 saw
+them work): one subscribe a connection with a Ticket's/Place's markets first,
+snapshots served as the REST /orderbook's body, deltas applied, seq gaps and
+orphan deltas reconnected,
 crossed books withheld, adds and deletes on a live subscription, refusals, the
 background cap, silence; plus the handshake signature and POST
 /kalshi_books.json over a real HTTP server."""
@@ -378,6 +379,7 @@ def test_a_market_limit_on_a_subscribe_halves_it_and_keeps_the_best_placed_marke
     handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 26, "msg": "per-subscription market limit exceeded"}})
     assert stream.status()["marketsPerSubscription"] == 2
     assert tick(stream, clock) == []
+    tick(stream, clock, kbs.RESYNC_MIN_GAP_SEC + 0.1)
     reconnect(stream, "a new subscription needs a fresh connection")
     (again,) = tick(stream, clock)
     assert again["cmd"] == "subscribe" and again["params"]["market_tickers"] == ["Z-PLACE", "A"]
@@ -435,6 +437,7 @@ def test_a_rate_limited_subscribe_is_sent_again_on_a_fresh_connection_after_the_
     handle(stream, {"id": frame["id"], "type": "error", "msg": {"code": 27, "msg": "exceeded its command rate limit"}})
     assert tick(stream, clock, 1) == [] and stream._reconnect_reason is None, "paused"
     tick(stream, clock, kbs.RATE_LIMIT_PAUSE_SEC)
+    tick(stream, clock, kbs.RESYNC_MIN_GAP_SEC + 0.1)
     reconnect(stream, "a new subscription needs a fresh connection")
     assert [f["cmd"] for f in tick(stream, clock)] == ["subscribe"]
 
@@ -458,6 +461,7 @@ def test_a_refused_subscribe_refuses_its_markets_then_asks_again_after_a_minute(
     assert view(stream)["error"] == "Kalshi refused the stream subscription to " + WSU + ": code 8: Unknown channel name"
     assert tick(stream, clock) == [] and stream._reconnect_reason is None
     tick(stream, clock, kbs.REFUSED_RETRY_SEC + 1)
+    tick(stream, clock, kbs.RESYNC_MIN_GAP_SEC + 0.1)
     reconnect(stream, "a new subscription needs a fresh connection")
     assert [frame["cmd"] for frame in tick(stream, clock)] == ["subscribe"]
 
@@ -498,6 +502,7 @@ def test_markets_wanted_again_after_the_subscription_emptied_come_on_a_fresh_con
     assert tick(stream, clock) == [{"id": 2, "cmd": "unsubscribe", "params": {"sids": [11]}}]
     stream.books_for([DUQ], 0.0)
     assert tick(stream, clock) == [], "no second subscribe on this connection"
+    tick(stream, clock, kbs.RESYNC_MIN_GAP_SEC + 0.1)
     reconnect(stream, "a new subscription needs a fresh connection")
     assert tick(stream, clock)[0]["params"]["market_tickers"] == [DUQ]
 
@@ -733,3 +738,49 @@ def test_a_place_market_displaces_a_live_pass_market_at_the_cap(made, monkeypatc
 def test_the_shipped_sizes_hold_the_live_pass_and_send_fifty_a_command():
     assert kbs.MARKETS_PER_SUBSCRIPTION > kbs.MAX_BACKGROUND_MARKETS
     assert kbs.MARKETS_PER_COMMAND == 50
+
+
+def test_a_subscribe_kalshi_keeps_refusing_reconnects_after_a_doubling_gap(made):
+    stream, _connection, clock, _signer = made
+    refused = {"type": "error", "msg": {"code": 8, "msg": "Unknown channel name"}}
+    gaps = []
+    for round_number in range(3):
+        stream.books_for([f"M{round_number}"], 0.0)
+        (frame,) = tick(stream, clock)
+        handle(stream, {**refused, "id": frame["id"]})
+        stream.books_for([f"N{round_number}"], 0.0)
+        waited = 0.0
+        while stream._reconnect_reason is None:
+            tick(stream, clock, 0.25)
+            waited += 0.25
+        gaps.append(waited)
+        reconnect(stream, "a new subscription needs a fresh connection")
+    assert gaps[1] > gaps[0] * 1.5 and gaps[2] > gaps[1] * 1.5, gaps
+
+
+def test_a_refused_delete_reconnects_and_a_rate_limited_one_pauses(made, monkeypatch):
+    stream, _connection, clock, _signer = made
+    monkeypatch.setattr(kbs, "RENEW_SEC", 3 * kbs.WATCH_IDLE_SEC)
+    subscribe(stream, clock)
+    add(stream, clock)
+    clock.now += kbs.WATCH_IDLE_SEC - 1
+    stream.books_for([WSU], 0.0)
+    (delete,) = tick(stream, clock, 2)
+    assert delete["params"]["action"] == "delete_markets"
+    handle(stream, {"id": delete["id"], "type": "error", "msg": {"code": 27, "msg": "exceeded its command rate limit"}})
+    assert "a refused delete" in stream._reconnect_reason
+    assert stream._commands_paused_until > clock.now
+
+
+def test_a_place_ask_at_a_full_cap_waits_for_its_seat(made, monkeypatch):
+    stream, _connection, clock, _signer = made
+    monkeypatch.setattr(kbs, "MARKETS_PER_SUBSCRIPTION", 1)
+    stream.books_for(["A-LIVE"], 0.0, background=True)
+    tick(stream, clock)
+    with stream._cond:
+        stream._wanted["Z-PLACE"] = clock.now
+        stream._priority.add("Z-PLACE")
+        assert stream._view_of("Z-PLACE").get("pending") is True
+        stream._wanted["B-LIVE"] = clock.now
+        stream._background.add("B-LIVE")
+        assert "takes no more" in stream._view_of("B-LIVE")["error"], "a live pass market is not waited for"

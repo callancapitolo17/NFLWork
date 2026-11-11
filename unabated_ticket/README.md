@@ -3979,7 +3979,10 @@ Kalshi answers only the first `orderbook_delta` subscribe on a connection
 and ignores another (the first deploy, 2026-11-11, which had packed 50 a
 subscription and so streamed 50 markets and reconnected every minute), so a
 connection sends one subscribe and anything that would need a second
-reconnects instead. Kalshi publishes no per-subscription limit: error 26
+reconnects instead (a new subscription after a refused subscribe or an
+emptied one waits a gap that doubles from 1 s to 60 s while it keeps
+happening; a refused delete reconnects too, since Kalshi still holds the
+market). Kalshi publishes no per-subscription limit: error 26
 lowers the cap, kept until the service restarts (half a refused subscribe,
 down to 5, below which its markets are refused for a minute; the size before
 a refused add), the best-placed markets keeping their seats (a reread's or
