@@ -172,16 +172,17 @@ function createBoardClient(options) {
   }
 
   // A fresh build: one runs per page and one waits behind it. An ask while one
-  // runs joins the waiting build, which starts when the running one ends, so
-  // its bets read is sent after the ask. A joining ask's reread starts at once
-  // and the waiting build starts only once every such reread has landed.
+  // runs, or while the waiting build waits on its rereads, joins the waiting
+  // build, which starts when the running one ends, so its bets read is sent
+  // after the ask. A joining ask's reread starts at once and the waiting build
+  // starts only once every such reread has landed.
   function freshBuild(name, reread) {
     let state = freshBuilds.get(name);
     if (!state) {
       state = { running: null, queued: null };
       freshBuilds.set(name, state);
     }
-    if (!state.running) {
+    if (!state.running && !state.queued) {
       state.running = startFreshBuild(name, state, reread);
       return state.running;
     }

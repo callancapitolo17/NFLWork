@@ -2150,6 +2150,27 @@ test("board thread: fresh asks during a fresh build share one build after it; th
   client.stop();
 });
 
+test("board thread: a fresh ask while the waiting build still waits on a reread joins it, and only one fresh build runs", async () => {
+  const runner = countingRunner();
+  let releaseReread;
+  const rereadHeld = new Promise((resolve) => { releaseReread = resolve; });
+  runner.rereadLiveLine = async () => { await rereadHeld; return { skipped: "test" }; };
+  const { client } = boardClient([runner], { now: NOW });
+  const read = (reread) => client.edgesPayload({ fresh: true, reread }).then((reply) => JSON.parse(reply.text).build);
+  const first = read(null);
+  const joined = read("a:1");
+  assert.equal(await first, 1);
+  await settle();
+  // The running build is over; the waiting one still waits on a:1.
+  const late = read(null);
+  await settle();
+  assert.equal(runner.builds.edgesPayload, 1);
+  releaseReread();
+  assert.deepEqual([await joined, await late], [2, 2]);
+  assert.deepEqual({ builds: runner.builds.edgesPayload, betsPolls: runner.betsPolls }, { builds: 2, betsPolls: 2 });
+  client.stop();
+});
+
 test("board thread: a fresh build that fails fails its own ask; the asks waiting behind it still get a build", async () => {
   const runner = countingRunner();
   let fail = true;
