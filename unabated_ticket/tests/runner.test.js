@@ -2115,26 +2115,77 @@ test("board thread: asks at once share one build; errors keep their status, a bu
   client.stop();
 });
 
-test("board thread: fresh asks during a fresh build share one build after it, which rereads every line they named", async () => {
+// A counting runner whose first bets read waits for release(); its rereads log [key, edges builds so far].
+function heldFreshRunner() {
   const runner = countingRunner();
-  const rereads = [];
-  runner.rereadLiveLine = async (key) => { rereads.push([key, runner.builds.edgesPayload]); return { skipped: "test" }; };
-  let releaseBets;
-  const betsHeld = new Promise((resolve) => { releaseBets = resolve; });
+  runner.rereads = [];
+  runner.rereadLiveLine = async (key) => { runner.rereads.push([key, runner.builds.edgesPayload]); return { skipped: "test" }; };
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
   const pollBets = runner.pollBets;
-  runner.pollBets = async () => { await pollBets(); if (runner.betsPolls === 1) await betsHeld; };
+  runner.pollBets = async () => { await pollBets(); if (runner.betsPolls === 1) await held; };
+  return { runner, release };
+}
+
+const settle = async () => {
+  for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+
+test("board thread: fresh asks during a fresh build share one build after it; their rereads start at once, once per line", async () => {
+  const { runner, release } = heldFreshRunner();
   const { client } = boardClient([runner], { now: NOW });
   const read = (reread) => client.edgesPayload({ fresh: true, reread }).then((reply) => JSON.parse(reply.text).build);
   const first = read("a:1");
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   const later = [read("a:2"), read(null), read("a:2"), read("a:3"), read(null)];
-  releaseBets();
+  await settle();
+  // Read while the first build still waits on its bets, before the shared build.
+  assert.deepEqual(runner.rereads, [["a:1", 0], ["a:2", 0], ["a:3", 0]]);
+  release();
   assert.deepEqual([await first, ...(await Promise.all(later))], [1, 2, 2, 2, 2, 2]);
-  assert.deepEqual({ builds: runner.builds.edgesPayload, betsPolls: runner.betsPolls, rereads },
-    { builds: 2, betsPolls: 2, rereads: [["a:1", 0], ["a:2", 1], ["a:3", 1]] });
+  assert.deepEqual({ builds: runner.builds.edgesPayload, betsPolls: runner.betsPolls, rereads: runner.rereads.length }, { builds: 2, betsPolls: 2, rereads: 3 });
   // Teasers' fresh builds are their own, and a fresh ask with nothing running starts at once.
   assert.equal(JSON.parse((await client.teasersPayload({ fresh: true })).text).build, 1);
   assert.equal(await read(null), 3);
+  client.stop();
+});
+
+test("board thread: a fresh build that fails fails its own ask; the asks waiting behind it still get a build", async () => {
+  const runner = countingRunner();
+  let fail = true;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  runner.pollBets = async () => {
+    runner.betsPolls += 1;
+    if (fail) { fail = false; await held; throw new Error("bets down"); }
+  };
+  const { client } = boardClient([runner], { now: NOW });
+  const read = () => client.edgesPayload({ fresh: true }).then((reply) => JSON.parse(reply.text).build);
+  const first = read();
+  await settle();
+  const later = [read(), read()];
+  release();
+  await assert.rejects(first, (error) => error.status === 500 && error.message === "bets down");
+  assert.deepEqual(await Promise.all(later), [1, 1]);
+  assert.deepEqual({ builds: runner.builds.edgesPayload, betsPolls: runner.betsPolls }, { builds: 1, betsPolls: 2 });
+  client.stop();
+});
+
+test("board thread: a thread that dies with a fresh build waiting fails both with 503, and the new thread builds fresh again", async () => {
+  const { runner: first } = heldFreshRunner();
+  const second = countingRunner();
+  const restarts = [];
+  const { client, spawned } = boardClient([first, second], { now: NOW }, { setTimeout: (fn, ms) => restarts.push({ fn, ms }) });
+  const read = () => client.edgesPayload({ fresh: true }).then((reply) => JSON.parse(reply.text).build);
+  const running = read();
+  await settle();
+  const waiting = read();
+  spawned[0].exit(1);
+  await assert.rejects(running, (error) => error.status === 503 && /stopped/.test(error.message));
+  await assert.rejects(waiting, (error) => error.status === 503 && /restarting/.test(error.message));
+  restarts[0].fn();
+  assert.deepEqual([await read(), await read()], [1, 2]);
+  assert.deepEqual({ builds: second.builds.edgesPayload, betsPolls: second.betsPolls }, { builds: 2, betsPolls: 2 });
   client.stop();
 });
 

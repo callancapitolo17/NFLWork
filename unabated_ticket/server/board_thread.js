@@ -84,7 +84,7 @@ function createBoardClient(options) {
   const copies = new Map();
   // payload name -> the build in flight (a Promise of its RawJson)
   const builds = new Map();
-  // payload name -> {running: the fresh build in flight, queued: {rereads, promise} | null}
+  // payload name -> {running: the fresh build in flight, queued: {rereadKeys, rereading, promise} | null}
   const freshBuilds = new Map();
   let workerHealth = null;
   let healthPostedAt = null;
@@ -154,11 +154,10 @@ function createBoardClient(options) {
     });
   }
 
-  // One build of a page on the board thread (fresh: the bets read first, and
-  // each reread Edges line at its venue), kept as the page's copy.
-  function runBuild(name, fresh, rereads) {
+  // One build of a page on the board thread, kept as the page's copy.
+  function runBuild(name, fresh, reread) {
     const builtAt = now();
-    return call("buildPayload", [name, fresh, rereads]).then((text) => {
+    return call("buildPayload", [name, fresh, reread]).then((text) => {
       copies.set(name, { text, builtAt });
       return new RawJson(text);
     });
@@ -167,15 +166,15 @@ function createBoardClient(options) {
   // A build that is not fresh; concurrent asks for the same page share one.
   function build(name) {
     if (builds.has(name)) return builds.get(name);
-    const shared = runBuild(name, false, []).finally(() => { if (builds.get(name) === shared) builds.delete(name); });
+    const shared = runBuild(name, false, null).finally(() => { if (builds.get(name) === shared) builds.delete(name); });
     builds.set(name, shared);
     return shared;
   }
 
-  // A fresh build: at most one runs per page and one waits behind it. An ask
-  // while one runs joins the waiting build, which starts when the running one
-  // ends, so its bets read still comes after the ask; it rereads every line
-  // its asks named.
+  // A fresh build: one runs per page and one waits behind it. An ask while one
+  // runs joins the waiting build, which starts when the running one ends, so
+  // its bets read is sent after the ask. A joining ask's reread starts at once
+  // and the waiting build starts only once every such reread has landed.
   function freshBuild(name, reread) {
     let state = freshBuilds.get(name);
     if (!state) {
@@ -183,24 +182,36 @@ function createBoardClient(options) {
       freshBuilds.set(name, state);
     }
     if (!state.running) {
-      state.running = startFreshBuild(name, state, reread ? [reread] : []);
+      state.running = startFreshBuild(name, state, reread);
       return state.running;
     }
     if (!state.queued) {
-      const queued = { rereads: new Set(), promise: null };
-      queued.promise = state.running.catch(() => {}).then(() => {
+      const queued = { rereadKeys: new Set(), rereading: [], promise: null };
+      queued.promise = state.running.catch(() => {}).then(() => allRereadsLanded(queued.rereading)).then(() => {
         state.queued = null;
-        state.running = startFreshBuild(name, state, [...queued.rereads]);
+        state.running = startFreshBuild(name, state, null);
         return state.running;
       });
       state.queued = queued;
     }
-    if (reread) state.queued.rereads.add(reread);
+    if (reread && !state.queued.rereadKeys.has(reread)) {
+      state.queued.rereadKeys.add(reread);
+      state.queued.rereading.push(call("rereadLiveLine", [reread]).catch(() => {}));
+    }
     return state.queued.promise;
   }
 
-  function startFreshBuild(name, state, rereads) {
-    const running = runBuild(name, true, rereads).finally(() => { if (state.running === running) state.running = null; });
+  // Waits for every reread in the list, including any pushed while it waits.
+  async function allRereadsLanded(rereading) {
+    let waitedFor = -1;
+    while (waitedFor !== rereading.length) {
+      waitedFor = rereading.length;
+      await Promise.all(rereading);
+    }
+  }
+
+  function startFreshBuild(name, state, reread) {
+    const running = runBuild(name, true, reread).finally(() => { if (state.running === running) state.running = null; });
     return running;
   }
 
@@ -264,14 +275,14 @@ function createBoardClient(options) {
 //   runner  createRunner's result (built by runBoardThread)
 function serveBoardCalls(port, runner, logWarning) {
   const methods = {
-    async buildPayload(name, fresh, rereads) {
+    async buildPayload(name, fresh, reread = null) {
       const method = PAYLOAD_METHODS[name];
       if (!method) throw httpError(404, `no page ${JSON.stringify(name)}`);
-      // Side by side, so the rereads' wait does not stack on the bets read; a reread never throws.
-      const lines = name === "edges" ? rereads : [];
-      if (fresh) await Promise.all([runner.pollBets(), ...lines.map((key) => runner.rereadLiveLine(key))]);
+      // Side by side, so the reread's wait does not stack on the bets read; it never throws.
+      if (fresh) await Promise.all([runner.pollBets(), reread && name === "edges" ? runner.rereadLiveLine(reread) : null]);
       return runner[method]();
     },
+    rereadLiveLine: (key) => runner.rereadLiveLine(key),
     attachPayload: (search) => runner.attachPayload(new URLSearchParams(search)),
     ticketLinePayload: (search) => runner.ticketLinePayload(new URLSearchParams(search)),
     scenariosFiltered: (search) => runner.scenariosPayload(new URLSearchParams(search)),
