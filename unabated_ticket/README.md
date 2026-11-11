@@ -3084,7 +3084,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   key not proven locked), **Stopped** (a stop file), else **Running**, amber
   when the runner's last pass is over 2 min old, skipped for that venue, or
   Novig's location lapsed — money at risk (the desk's open cost against its
-  ceiling, $6,000 / $850), cash in its subaccount (`/balances.json`), open
+  ceiling, $6,000 / $1,000), cash in its subaccount (`/balances.json`), open
   orders and Kelly bankroll. The tab has its own range (Today, Yesterday, 7D, 30D,
   All, Custom; the header range is hidden there) driving every panel.
   **Activity** includes today, since these are orders, not results: orders
@@ -3468,8 +3468,8 @@ The Kalshi rules above hold unless this table says otherwise.
 |---|---|
 | Lines | spreads and totals whose rung carries a Novig outcome id; a main number whose rung Unabated's ladder leaves out takes the one open market in Novig's catalog on its siblings' event and market type at its strike, the outcome by its name (refused when the rungs disagree, or zero or two markets or outcomes fit; the bot and Novig Place alike, 2026-10-17); moneylines never trade (Unabated lists no Novig moneyline rung; only Novig Place finds them in the catalog) |
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price, off the live book stream below (never a REST `/book`); no book in sync, a market gone live or not `OPEN` is `no_book`; fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
-| Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000, Kalshi's until 2026-10-28, its own parameter, separate from the $850 cap) |
-| Ceiling | open bot cost on Novig never above $850 (`OPEN_COST_CEILING`; $500 until 2026-11-04), its own budget beside Kalshi's |
+| Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000, Kalshi's until 2026-10-28, its own parameter, separate from the $1,000 cap) |
+| Ceiling | open bot cost on Novig never above $1,000 (`OPEN_COST_CEILING`; $850 from 2026-11-04, $500 before), its own budget beside Kalshi's |
 | Cash | after a 422 `INSUFFICIENT_BALANCE` the desk answers `no_cash` and sends nothing until a newer `novig_bot` balance read pays for a contract, then cuts qty to it (Out of cash, below) |
 | Market check | before every order the market and event are read (keyed, below): market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a pick'em refused; a total's first word Over / O or Under / U; unreadable fails closed) |
 | Order | one IOC limit (`POST /v3/orders`, NOVIG-V3 signed); a partial fill cancels the rest, a zero fill comes back rejected; an order still `OPEN` is cancelled. `clientId` is a UUID derived from the outcome and the pass (Novig does not dedupe it, so the desk never re-sends) |
@@ -3619,7 +3619,7 @@ market frees its orders' cost once it has left the bot's open positions
 position when its market settles); one still held 12 h after the start is
 logged once.
 
-**Out of cash (2026-11-09).** The $850 ceiling counts open cost only, so after
+**Out of cash (2026-11-09).** The Novig ceiling counts open cost only, so after
 a losing run the wallet can be empty with room left under it. Once Novig
 refuses an order `INSUFFICIENT_BALANCE` (answered `no_cash`; its row is
 `rejected`, cost 0), the desk sends nothing (`no_cash`, no row) until the bets

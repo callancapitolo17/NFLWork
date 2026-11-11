@@ -86,7 +86,7 @@ const NOVIG_BOOK_ID = 89;
 // What Kalshi's Kelly divides by (Cal, 2026-11-06: $10,000; $7,500 from 2026-11-04, $5,000 from 2026-10-28, $2,000 before); the money at risk is the
 // order desk's ceiling, 60% of it (taker_orders.MAX_OPEN_COST). taker_orders.KELLY_BANKROLL must match.
 const KELLY_BANKROLL = 10000;
-// Novig's Kelly bankroll (Cal, 2026-10-16: $2,000, Kalshi's then), its own parameter, apart from the Novig desk's $850 cap.
+// Novig's Kelly bankroll (Cal, 2026-10-16: $2,000, Kalshi's then), its own parameter, apart from the Novig desk's $1,000 cap.
 const NOVIG_KELLY_BANKROLL = 2000;
 const BOT_KELLY = 0.25;
 const MIN_LIVE_EDGE = 0.03;
