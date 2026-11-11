@@ -76,13 +76,18 @@
   // not Unabated's own line, and changed within maxLineAgeMs when set (a dead
   // feed's week-old price must not read as "better").
   function countsAsPrice(line, state, now, maxLineAgeMs) {
-    if (line.bookId === feed.UNABATED_LINE_BOOK_ID || line.statusId !== STATUS_ON_BOARD || line.isBlurred) return false;
+    if (!canEverCountAsPrice(line)) return false;
     if (impliedProb(line.price) == null) return false;
     const book = state.books[line.bookId];
     if (!book || !book.isLive) return false;
     if (maxLineAgeMs == null) return true;
     const changedMs = feed.lineChangedMs(line);
     return changedMs != null && now - changedMs <= maxLineAgeMs;
+  }
+
+  // A book's own line on the board, not blurred: what no price, age or live read changes.
+  function canEverCountAsPrice(line) {
+    return line.bookId !== feed.UNABATED_LINE_BOOK_ID && line.statusId === STATUS_ON_BOARD && !line.isBlurred;
   }
 
   // A book's name without a trailing country tag: "TheScore US" and
@@ -125,7 +130,7 @@
     return `${eventId}:${periodTypeId}:${betTypeId}:${sideIndex}`;
   }
 
-  function priceIndexOptions(options) {
+  function priceIndexPlan(options) {
     return {
       now: options.now,
       maxLineAgeMs: typeof options.maxLineAgeMs === "number" && options.maxLineAgeMs > 0 ? options.maxLineAgeMs : null,
@@ -164,7 +169,7 @@
     const pointsBySide = new Map();
     const built = { byRung: index, pointsBySide };
     if (!state) return built;
-    const opts = priceIndexOptions(options);
+    const opts = priceIndexPlan(options);
     for (const boardLine of Object.values(state.lines)) {
       const line = countedPriceLine(boardLine, state, opts);
       if (!line) continue;
@@ -188,7 +193,7 @@
     const byRung = new Map();
     const bySide = new Map();
     for (const line of lines) {
-      if (line.bookId === feed.UNABATED_LINE_BOOK_ID || line.statusId !== STATUS_ON_BOARD || line.isBlurred) continue;
+      if (!canEverCountAsPrice(line)) continue;
       const key = rungKeyOf(line);
       if (!byRung.has(key)) byRung.set(key, []);
       byRung.get(key).push(line);
@@ -206,7 +211,7 @@
   //   groupsList  [groupPriceLines(one league's lines)], one per board league
   //   options     as buildPriceIndex
   function createGroupedPriceIndex(state, groupsList, options) {
-    const opts = priceIndexOptions(options);
+    const opts = priceIndexPlan(options);
     const linesOf = (mapName, key) => {
       for (const groups of groupsList) {
         const lines = groups[mapName].get(key);

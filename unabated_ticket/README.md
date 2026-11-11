@@ -2654,7 +2654,8 @@ a number only when a row reads it, off each league's lines grouped by
 number (`pricecheck.groupPriceLines`). A build re-checks only those lines
 and the lines with a live read against the clock and the books, so it gives
 `feed.selectEdges` / `buildPriceIndex`'s answers. Before, every
-`/edges.json` build walked all ~340k lines about four times (0.7-3.7 s on
+`/edges.json` build walked every line of the board (~340k on 2026-11-11)
+about four times (0.7-3.7 s on
 the Mac, 5-14 s on the VM during a Place burst, which timed out Place's
 Novig reads).
 

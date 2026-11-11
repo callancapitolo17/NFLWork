@@ -642,23 +642,25 @@ test("createEdgeSelector lists what selectEdges lists, in the same order, across
   ];
   for (const fields of variants) {
     const expected = feed.selectEdges(state, selectorOptions(fields));
-    assert.ok(expected.length > 0 || fields.minEdge === 0.03, `variant ${JSON.stringify(Object.keys(fields))} lists nothing`);
+    assert.ok(expected.length > 0, `variant ${JSON.stringify(Object.keys(fields))} lists nothing`);
     assert.deepEqual(select(state, selectorOptions(fields), board), expected);
   }
 });
 
-test("createEdgeSelector re-reads the clock every call: a started game and an aged line drop at once", () => {
+test("createEdgeSelector re-reads the clock every call: an aged line and a started game drop at once", () => {
   const { state, board } = twoLeagueBoard();
   const select = feed.createEdgeSelector();
-  const before = select(state, selectorOptions({}), board);
-  assert.ok(before.length > 0);
-  for (const now of [SELECTOR_START + 7 * 86400 * 1000, KICKOFF_MS + 1]) {
-    for (const maxLineAgeMs of [undefined, 14 * 86400 * 1000]) {
-      const options = selectorOptions({ now, maxLineAgeMs });
-      assert.deepEqual(select(state, options, board), feed.selectEdges(state, options));
-    }
+  const DAY = 86400 * 1000;
+  const counts = [];
+  // The slice's lines changed Aug 29-30: a 12-day age gate cuts some a day later and more two days later.
+  for (const now of [SELECTOR_START, SELECTOR_START + DAY, SELECTOR_START + 2 * DAY, KICKOFF_MS + 1]) {
+    const options = selectorOptions({ now, maxLineAgeMs: 12 * DAY });
+    const rows = select(state, options, board);
+    assert.deepEqual(rows, feed.selectEdges(state, options));
+    counts.push(rows.length);
   }
-  assert.equal(select(state, selectorOptions({ now: KICKOFF_MS + 30 * 86400 * 1000 }), board).length, 0);
+  assert.deepEqual(counts, [53, 49, 47, 3]);
+  assert.equal(select(state, selectorOptions({ now: KICKOFF_MS + 30 * DAY }), board).length, 0);
 });
 
 test("createEdgeSelector rebuilds a league only when its version changes", () => {
@@ -677,6 +679,20 @@ test("createEdgeSelector rebuilds a league only when its version changes", () =>
   const after = select(state, options, board);
   assert.ok(after.some((row) => row.key === unlisted.key));
   assert.deepEqual(after, feed.selectEdges(state, options));
+});
+
+test("createEdgeSelector drops a listed alt once its league lands with the main on the alt's number", () => {
+  const { state, versions, board } = twoLeagueBoard();
+  const select = feed.createEdgeSelector();
+  const listed = select(state, selectorOptions({}), board);
+  const alt = listed.find((row) => row.isAlt && state.lines[state.lines[row.key].mainKey]);
+  assert.ok(alt, "the fixture lists an alt whose main is on the board");
+  const altLine = state.lines[alt.key];
+  moveLine(state, altLine.mainKey, { points: altLine.points });
+  versions.set(altLine.leagueId, 2);
+  const after = select(state, selectorOptions({}), board);
+  assert.ok(!after.some((row) => row.key === alt.key));
+  assert.deepEqual(after, feed.selectEdges(state, selectorOptions({})));
 });
 
 test("createEdgeSelector judges every live-read line at its live price, and drops an empty one", () => {

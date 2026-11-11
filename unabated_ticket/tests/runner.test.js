@@ -745,6 +745,48 @@ test("boardLines: built league by league, the same rows a walk of the whole boar
   runner.stop();
 });
 
+test("edges.json: the per-league build lists, orders and price-checks what a walk of the whole board does, through a landing and a league change", async () => {
+  const feed = { failNfl: false, dropCfbPregame: false };
+  const settings = { current: { ...OPEN_SETTINGS, leagues: [1, 2] } };
+  const runner = runnerLib.createRunner({
+    fetchImpl: twoLeagueFetch(feed), betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet,
+    serviceFetch: serviceFetch({ "/bets.json": betsBody([BEARS_HELD]), "/settings.json": () => ({ settings: settings.current }) }),
+  });
+  await runner.start();
+  // The CFB slice is NFL's relabelled: every CFB row ties an NFL row on edge and start, so the order is the league order.
+  const assertWalked = (state, label) => {
+    const payload = runner.edgesPayload();
+    const { rows, cards } = panelCards(state, settings.current, [BEARS_HELD]);
+    assert.ok(cards.length > 0, label);
+    assert.deepEqual(payload.items.map((card) => [card.key, card.best.key, card.others.map((row) => row.key)]),
+      cards.map((card) => [card.key, card.best.key, card.rows.slice(1).map((row) => row.key)]), label);
+    const walked = new Map(rows.map((row) => [row.key, row.priceCheck]));
+    for (const row of payload.items.flatMap((card) => [card.best, ...card.others])) {
+      assert.deepEqual(row.priceCheck, walked.get(row.key), `${label}: ${row.key}`);
+    }
+    return payload;
+  };
+  const first = assertWalked(runner.scanner.getState(), "both leagues in");
+  assert.ok(first.items.some((card) => card.league === "cfb") && first.items.some((card) => card.league === "nfl"));
+
+  // Only CFB lands again, without its game: it moves to the end of the board and loses its cards.
+  Object.assign(feed, { failNfl: true, dropCfbPregame: true });
+  await runner.scanner.resync();
+  const relanded = assertWalked(runner.scanner.getState(), "CFB re-landed");
+  assert.ok(!relanded.items.some((card) => card.league === "cfb"));
+
+  // A league change restarts the scanner; until a league lands the list stays the old board's.
+  Object.assign(feed, { failNfl: false, dropCfbPregame: false });
+  const oldBoard = runner.scanner.getState();
+  settings.current = { ...settings.current, leagues: [1, 2, 3] };
+  await runner.pollSettings();
+  assert.notEqual(runner.scanner.getState(), oldBoard);
+  assert.deepEqual(assertWalked(oldBoard, "league change, nothing landed").items, relanded.items);
+  await runner.scanLoaded();
+  assertWalked(runner.scanner.getState(), "after the restart");
+  runner.stop();
+});
+
 test("kickoff odds: a game's lines are re-read when its league lands, kept when the league's download fails", async () => {
   const feed = { failNfl: false, dropCfbPregame: false };
   const clock = { ms: NOW };

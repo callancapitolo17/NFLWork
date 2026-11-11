@@ -851,9 +851,16 @@ function createRunner(deps) {
     return rows;
   }
 
+  // Whether feedState is the scanner's current board. A league change
+  // restarts the scanner on an empty board while feedState stays the old one
+  // until a league lands, so the scanner's per-league reads are not feedState's.
+  function boardIsScanners() {
+    return Boolean(feedState) && scanner.getState() === feedState;
+  }
+
   // The board's leagues for feed.createEdgeSelector: each league's lines and its snapshot version.
   function leagueBoard() {
-    return { leagueIds: boardLeagueIds(), linesOf: (id) => scanner.getLeagueLines(id), versionOf: (id) => scanner.getLeagueVersion(id) };
+    return { leagueIds: boardLeagueIds(), linesOf: scanner.getLeagueLines, versionOf: scanner.getLeagueVersion };
   }
 
   // One league's price lines (pricecheck.groupPriceLines), regrouped only when its snapshot landed again.
@@ -3222,8 +3229,10 @@ function createRunner(deps) {
       betsStatus: { ...betsStatus }, boardLines: boardLines(), ladderReaderOf,
       teasers: openTeasersNow(), measurement: feedState ? tailFlexMeasurement() : null, now: at,
       dismissedIds, edgeSkips, lineView,
-      priceIndex: feedState ? edgesPriceIndex(at, lineView) : null,
-      selectEdges: (state, options) => edgeSelector(state, options, leagueBoard()),
+      ...(boardIsScanners() ? {
+        priceIndex: edgesPriceIndex(at, lineView),
+        selectEdges: (state, options) => edgeSelector(state, options, leagueBoard()),
+      } : {}),
     });
   }
 
