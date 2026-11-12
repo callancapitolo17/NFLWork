@@ -307,7 +307,9 @@ Pricing is books only (Cal, 2026-11-12):
 3. Refused (the book prices nothing for the game): a cell below -0.005
    (smaller negatives are rounding, clamped to 0), a spread push over 20% or a
    total push over 15% (NFL 1H 2019-2025 maxes: margin 3 at 12.3%, total 20 at
-   8.6%), or partitions that disagree with the fit by over 0.03.
+   8.6%), or partitions that disagree with the fit by over 0.01 (real BetMGM
+   brackets fit within 0.001). One book alone can still move mass between cells
+   no other partition pins, which only a second book catches.
 4. Each corner's fair is the **effective** fair at Wagerzon's parlay decimal D:
    P(both win) + push return / D, where push return = P(spread wins, total
    pushes) x spread decimal + P(spread pushes, total wins) x total decimal +

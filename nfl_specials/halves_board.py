@@ -196,7 +196,7 @@ def price_half_at_book(book: SgpBook, book_game: BookGame, game: WzHalfGame) -> 
     fit = push_grid.fit_push_grid(partitions, game.away_spread, game.total)
     if fit.grid is None:
         return HalfBookFair(book.name, None, max(overrounds), reason=fit.reason)
-    both_win = {corner: push_grid.corner_outcomes(fit.grid, corner)[0] for corner in CORNERS}
+    both_win = {corner: fit.grid.prob(*corner.split("_")) for corner in CORNERS}
     returns = {corner: push_grid.push_return(fit.grid, corner, game) for corner in CORNERS}
     return HalfBookFair(book.name, both_win, max(overrounds), push_returns=returns)
 
@@ -216,7 +216,9 @@ def price_partition_at(book: SgpBook, book_game: BookGame, away_line: float, tot
     for (spread_outcome, total_outcome), fair in zip(partition.cells, partition.cell_fairs):
         side = "away" if spread_outcome in spread.winning else "home"
         side_total = "over" if total_outcome in total.winning else "under"
-        fairs[f"{side}_{side_total}"] = fair
+        # A ±0.5 spread read off a 3-way market wins on two outcomes (team or tie): add the cells.
+        corner = f"{side}_{side_total}"
+        fairs[corner] = fairs.get(corner, 0.0) + fair
     return HalfBookFair(book.name, fairs, partition.overround)
 
 

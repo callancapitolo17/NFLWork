@@ -38,8 +38,9 @@ NEGATIVE_CELL_TOLERANCE = 0.005
 # the likeliest total (20) 8.6%. Past these, the read is a data error.
 MAX_SPREAD_PUSH_PROB = 0.20
 MAX_TOTAL_PUSH_PROB = 0.15
-# Largest gap between a book's devigged cell and the fitted grid's band.
-MAX_FIT_RESIDUAL = 0.03
+# Largest gap between a book's devigged cell and the fitted grid's band. Real
+# BetMGM brackets (0.05 price steps) fit within 0.001 (2026-11-12).
+MAX_FIT_RESIDUAL = 0.01
 
 
 def is_whole_number(line: float) -> bool:
@@ -96,6 +97,7 @@ class PushGrid:
 class GridFit:
     grid: PushGrid | None
     reason: str | None = None
+    residual: float | None = None           # largest gap between a book's cell and the fitted band
 
 
 def fit_push_grid(partitions: dict[tuple[float, float], dict[str, float]],
@@ -118,11 +120,11 @@ def fit_push_grid(partitions: dict[tuple[float, float], dict[str, float]],
     fitted, *_ = np.linalg.lstsq(np.array(rows), np.array(targets), rcond=None)
     residual = float(np.max(np.abs(np.array(rows) @ fitted - np.array(targets))))
     if residual > MAX_FIT_RESIDUAL:
-        return GridFit(None, f"nearby lines disagree by {residual:.3f}")
+        return GridFit(None, f"nearby lines disagree by {residual:.3f}", residual)
     cells = dict(zip(unknowns, (float(p) for p in fitted)))
     worst_cell, worst_prob = min(cells.items(), key=lambda item: item[1])
     if worst_prob < -NEGATIVE_CELL_TOLERANCE:
-        return GridFit(None, f"implied {'/'.join(worst_cell)} chance {worst_prob:.3f} is negative")
+        return GridFit(None, f"implied {'/'.join(worst_cell)} chance {worst_prob:.3f} is negative", residual)
     cells = {cell: max(prob, 0.0) for cell, prob in cells.items()}
     scale = sum(cells.values())
     cells = {cell: prob / scale for cell, prob in cells.items()}
@@ -130,10 +132,10 @@ def fit_push_grid(partitions: dict[tuple[float, float], dict[str, float]],
     spread_push = sum(grid.prob(PUSH, t) for t in totals)
     total_push = sum(grid.prob(s, PUSH) for s in spreads)
     if spread_push > MAX_SPREAD_PUSH_PROB:
-        return GridFit(None, f"implied spread push {spread_push:.3f} above {MAX_SPREAD_PUSH_PROB}")
+        return GridFit(None, f"implied spread push {spread_push:.3f} above {MAX_SPREAD_PUSH_PROB}", residual)
     if total_push > MAX_TOTAL_PUSH_PROB:
-        return GridFit(None, f"implied total push {total_push:.3f} above {MAX_TOTAL_PUSH_PROB}")
-    return GridFit(grid)
+        return GridFit(None, f"implied total push {total_push:.3f} above {MAX_TOTAL_PUSH_PROB}", residual)
+    return GridFit(grid, residual=residual)
 
 
 def corner_outcomes(grid: PushGrid, corner: str) -> tuple[float, float, float, float]:

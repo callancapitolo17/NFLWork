@@ -98,11 +98,21 @@ def test_odd_and_even_lines_cannot_both_push():
 
 
 def test_a_negative_push_slice_skips_the_game():
-    # The book prices -6.5/o26.5 above -5.5/o26.5: a negative chance of a 6-point win with the over.
-    game = _game()
-    noise = {((-6.5, 26.5), "away_over"): 0.05, ((-6.5, 26.5), "home_over"): -0.05}
-    fit = push_grid.fit_push_grid(_partitions(TRUE_GRID, game, noise), -6.0, 26.0)
-    assert fit.grid is None and ("negative" in fit.reason or "disagree" in fit.reason)
+    # Prices that agree with each other but imply a 6-point win with the over is below zero.
+    grid = dict(TRUE_GRID)
+    grid[(A, P)], grid[(A, O)] = -0.02, grid[(A, O)] + grid[(A, P)] + 0.02
+    fit = push_grid.fit_push_grid(_partitions(grid, _game()), -6.0, 26.0)
+    assert fit.grid is None and fit.reason == "implied away/push chance -0.020 is negative"
+
+
+def test_partitions_that_disagree_skip_the_game():
+    # One whole-number leg: two partitions, six unknowns, eight equations. Shifting
+    # mass between two cells the other partition pins cannot be fitted.
+    grid = {(A, O): 0.22, (A, U): 0.18, (P, O): 0.04, (P, U): 0.03, (H, O): 0.24, (H, U): 0.29}
+    game = _game(total=26.5)
+    noise = {((-6.5, 26.5), "away_over"): 0.05, ((-6.5, 26.5), "away_under"): -0.05}
+    fit = push_grid.fit_push_grid(_partitions(grid, game, noise), -6.0, 26.5)
+    assert fit.grid is None and fit.reason.startswith("nearby lines disagree")
 
 
 def test_rounding_sized_noise_is_clamped_not_skipped():
@@ -118,13 +128,32 @@ def test_an_implausible_push_chance_skips_the_game():
     grid = {(A, O): 0.15, (A, U): 0.15, (P, O): 0.15, (P, U): 0.15, (H, O): 0.2, (H, U): 0.2}
     fit = push_grid.fit_push_grid(_partitions(grid, _game(total=26.5)), -6.0, 26.5)
     assert fit.grid is None and "spread push" in fit.reason
+    grid = {(A, O): 0.2, (A, P): 0.1, (A, U): 0.2, (H, O): 0.2, (H, P): 0.1, (H, U): 0.2}
+    fit = push_grid.fit_push_grid(_partitions(grid, _game(away_spread=-6.5)), -6.5, 26.0)
+    assert fit.grid is None and "total push" in fit.reason
+
+
+def test_positive_pickem_and_half_spread_bands():
+    assert push_grid.spread_band(A, 2.5, 3.0) == {A} and push_grid.spread_band(A, 3.5, 3.0) == {A, P}
+    assert push_grid.spread_band(H, -0.5, 0.0) == {P, H} and push_grid.spread_band(A, 0.5, 0.0) == {A, P}
+    for away_spread, total in ((3.0, 27.0), (0.0, 26.0), (-6.5, 26.0)):
+        grid = dict(TRUE_GRID) if push_grid.is_whole_number(away_spread) else {
+            (A, O): 0.23, (A, P): 0.02, (A, U): 0.21, (H, O): 0.22, (H, P): 0.03, (H, U): 0.29}
+        game = _game(away_spread=away_spread, total=total)
+        fit = push_grid.fit_push_grid(_partitions(grid, game), away_spread, total)
+        assert fit.grid.cells == pytest.approx(grid, abs=1e-9), away_spread
 
 
 def test_wagerzon_pays_the_other_leg_alone_on_a_push():
-    game = _game(away_spread_american=-120, over_american=100)
+    game = _game(away_spread_american=-120, home_spread_american=110, over_american=100, under_american=-130)
     grid = push_grid.PushGrid(TRUE_GRID)
-    expected = 0.02 * american_to_decimal(-120) + 0.03 * american_to_decimal(100) + 0.01
-    assert push_grid.push_return(grid, "away_over", game) == pytest.approx(expected)
+    expected = {
+        "away_over": 0.02 * american_to_decimal(-120) + 0.03 * american_to_decimal(100) + 0.01,
+        "away_under": 0.02 * american_to_decimal(-120) + 0.03 * american_to_decimal(-130) + 0.01,
+        "home_over": 0.02 * american_to_decimal(110) + 0.03 * american_to_decimal(100) + 0.01,
+        "home_under": 0.02 * american_to_decimal(110) + 0.03 * american_to_decimal(-130) + 0.01,
+    }
+    assert {c: push_grid.push_return(grid, c, game) for c in CORNERS} == pytest.approx(expected)
     assert push_grid.corner_outcomes(grid, "home_under") == (0.29, 0.02, 0.03, 0.01)
 
 
@@ -147,3 +176,62 @@ def test_a_missing_bracket_line_prices_nothing_and_no_wz_price_no_fair():
     assert fair.corner_fairs is None and fair.reason == "no SGP 1H total at 26.5"
     priced = HalfBookFair("DraftKings", {c: 0.2 for c in CORNERS}, 1.2, push_returns={c: 0.05 for c in CORNERS})
     assert priced.effective_fair("away_over", None) is None
+
+
+def test_a_three_way_half_point_spread_adds_the_tie_cells():
+    """A ±0.5 spread read off a 3-way 1H winner wins on the team OR the tie:
+    the corner is the sum of two cells, not the last one priced."""
+    three_way = {("away", "over"): 0.25, ("away", "under"): 0.20, ("tie", "over"): 0.05,
+                 ("tie", "under"): 0.08, ("home", "over"): 0.18, ("home", "under"): 0.24}
+
+    class ThreeWayBook:
+        name = "FanDuel"
+
+        def leg_market(self, book_game, role, leg):
+            if leg.kind == "spread":
+                away, tie, home = (Outcome(x, x) for x in ("away", "tie", "home"))
+                return LegMarket(winning=frozenset([away]), group=(away, tie, home))
+            over, under = Outcome("over", "over"), Outcome("under", "under")
+            return LegMarket.single(over, (over, under))
+
+        def price(self, book_game, refs):
+            return 1.0 / norm.cdf(norm.ppf(three_way[refs]) + 0.1)
+
+    fair = price_half_at_book(ThreeWayBook(), BOOK_GAME, _game(away_spread=-0.5, total=26.5))
+    assert fair.corner_fairs == pytest.approx({"away_over": 0.25, "away_under": 0.20,
+                                               "home_over": 0.23, "home_under": 0.32}, abs=1e-6)
+
+
+def test_push_return_is_stored_and_an_old_file_gains_the_column(tmp_path):
+    import duckdb
+    from nfl_specials.store import Store
+
+    db = tmp_path / "old.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("""CREATE TABLE half_parlay_quotes (quoted_at TIMESTAMPTZ, league VARCHAR, wz_game_id BIGINT,
+                   away_team VARCHAR, home_team VARCHAR, game_start_time TIMESTAMPTZ, away_spread DOUBLE,
+                   total DOUBLE, corner VARCHAR, book VARCHAR, fair_prob DOUBLE, overround DOUBLE,
+                   wz_decimal DOUBLE, reason VARCHAR)""")
+    con.close()
+    store = Store(db_path=db)
+    game = _game()
+    fair = price_half_at_book(GridBook(TRUE_GRID, game), BOOK_GAME, game)
+    from nfl_specials.halves_board import _quote_rows
+    store.append_half_quotes(_quote_rows(HalfLine(game, "priced"), datetime.now(timezone.utc), "DraftKings", fair=fair))
+    con = duckdb.connect(str(db))
+    stored = dict(con.execute("SELECT corner, push_return FROM half_parlay_quotes").fetchall())
+    con.close()
+    assert stored == pytest.approx(fair.push_returns)
+
+
+def test_real_betmgm_brackets_fit_within_rounding():
+    """LA @ ARI 1H, LA -4.5, total 20, BetMGM 2026-11-12 (0.05 price steps):
+    the two direct reads of each push cell agree, so the fit holds."""
+    from kalshi_common.fair_value import _probit_devig_n as probit_devig_n
+    decimals = {(-4.5, 19.5): (2.70, 4.40, 3.90, 3.20), (-4.5, 20.5): (3.25, 3.50, 4.60, 2.85)}
+    partitions = {pair: dict(zip(CORNERS, (float(p) for p in probit_devig_n([1 / d for d in prices]))))
+                  for pair, prices in decimals.items()}
+    fit = push_grid.fit_push_grid(partitions, -4.5, 20.0)
+    assert fit.reason is None and fit.residual < 0.002
+    assert fit.grid.prob(A, P) == pytest.approx(0.056, abs=0.002)
+    assert fit.grid.prob(H, P) == pytest.approx(0.036, abs=0.002)
