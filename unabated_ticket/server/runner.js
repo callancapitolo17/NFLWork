@@ -638,7 +638,9 @@ function createRunner(deps) {
   // The scanner's current full load (scanner.start), resolved when it lands.
   let scanLoad = Promise.resolve();
   let pollTimers = [];
-  let betsBusy = false;
+  // The /bets.json read in flight, and the one queued to start after it (pollBets).
+  let betsRead = null;
+  let betsReadAfter = null;
   let settingsBusy = false;
   let closingBusy = false;
   // betId -> what was last POSTed for it (closefair.unsentRows).
@@ -1010,11 +1012,31 @@ function createRunner(deps) {
     return teaser.openTeasers(held.records, boardLines(), { now: now(), ladderOf: currentTeaserBoard().ladderOf });
   }
 
+  // A /bets.json read that starts no earlier than this call, so a page that
+  // just wrote (a Place, a Dismiss) is built on bets that include it. While a
+  // read runs, every call shares one read queued to start when it ends.
+  function pollBets() {
+    if (!betsRead) {
+      betsRead = readBets().finally(() => { betsRead = null; });
+      return betsRead;
+    }
+    if (!betsReadAfter) {
+      betsReadAfter = betsRead.then(() => {
+        betsReadAfter = null;
+        return pollBets();
+      });
+    }
+    return betsReadAfter;
+  }
+
+  // The 10 s poll: skipped while a read runs.
+  function pollBetsOnTimer() {
+    if (!betsRead) pollBets();
+  }
+
   // One GET of /bets.json, applied exactly as the panel applies it. A failure
   // keeps the held bets and records since when the service has been unreachable.
-  async function pollBets() {
-    if (betsBusy) return;
-    betsBusy = true;
+  async function readBets() {
     const at = now();
     try {
       const applied = edgeRows.applyBetsPayload(held, await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/bets.json`), at);
@@ -1032,8 +1054,6 @@ function createRunner(deps) {
     } catch (error) {
       if (betsStatus.error !== error.message) logWarning(`bets poll failed: ${error.message}`);
       Object.assign(betsStatus, { error: error.message, unreachableSince: betsStatus.unreachableSince ?? at });
-    } finally {
-      betsBusy = false;
     }
     learn();
   }
@@ -3285,7 +3305,7 @@ function createRunner(deps) {
     await pollBets();
     await pollSettings();
     pollTimers = [
-      timers.setInterval(() => pollBets(), BETS_POLL_MS),
+      timers.setInterval(() => pollBetsOnTimer(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
       timers.setInterval(() => postLadders(), CLOSING_FAIRS_POST_MS),
