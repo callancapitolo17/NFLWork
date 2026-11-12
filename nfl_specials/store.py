@@ -8,11 +8,11 @@ Tables:
     placed_fectas  APPEND — one row per placement ATTEMPT, whatever Wagerzon said;
                    free_play TRUE when it risked the free play balance, not cash.
     settings       UPSERT — bankroll, Kelly fraction and use_free_play (1 = on).
-    half_parlay_quotes   APPEND — one row per (refresh, 1H game, book, corner):
+    half_parlay_quotes   APPEND: one row per (refresh, 1H game, book, corner):
                    a book's devigged corner fair, or Wagerzon's parlay price
                    (book 'Wagerzon', wz_decimal), or the reason there is none.
-    placed_half_parlays  APPEND — one row per 1H parlay placement ATTEMPT,
-                   whatever Wagerzon said.
+    placed_half_parlays  APPEND: one row per 1H parlay placement that reached
+                   Wagerzon, whatever it said.
 Each call opens and closes its own read-write connection: the app's threads
 share one process, and DuckDB refuses a read-only connection to a file this
 process already holds read-write.

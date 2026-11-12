@@ -33,7 +33,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from nfl_specials import config, push_grid, wz_halves
-from nfl_specials.board import Board, Sizing, _team_key
+from nfl_specials.board import (BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE, Board, HeldPlacement, Sizing,
+                                 _team_key)
 from nfl_specials.books import CFB, NFL, BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
@@ -46,16 +47,17 @@ from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
 
 log = logging.getLogger("nfl_specials.halves_board")
 
-BOOK_ORDER = ("FanDuel", "BetMGM", "DraftKings")
 LEAGUES = (NFL, CFB)
 # A whole-number line's push slices rest on how one book prices the lines
 # either side, which nothing in that book's own prices can check; a second
 # book can. Fewer books priced = no fair, so no stake.
 MIN_BOOKS_WHOLE_NUMBER = 2
-# NFL: same two teams; books list future weeks, so the kickoff must agree too.
-NFL_KICKOFF_TOLERANCE = timedelta(hours=12)
 # College matches by name prefix, so the kickoff must agree closely.
 CFB_KICKOFF_TOLERANCE = timedelta(minutes=30)
+# A book name whose next token after Wagerzon's name is one of these is another
+# school ('TEXAS' vs 'Texas Tech', 'MICHIGAN' vs 'Michigan State'), not a mascot.
+OTHER_SCHOOL_TOKENS = frozenset({"STATE", "TECH", "AND", "A", "CHRISTIAN", "INTERNATIONAL", "SOUTHERN",
+                                 "NORTHERN", "EASTERN", "WESTERN", "CENTRAL", "ATLANTIC", "MIAMI"})
 
 
 def has_whole_number_line(game: WzHalfGame) -> bool:
@@ -146,14 +148,6 @@ class HeldHalfParlay:
     wz_american: int
 
 
-@dataclass(frozen=True)
-class HeldFecta:
-    """A fecta the account already placed (board.HeldPlacement's fields)."""
-    wz_game_id: int
-    risk: float
-    wz_american: int
-
-
 def conservative_american(decimal: float) -> int:
     """Whole American odds that never pay more than `decimal` (sizing takes
     American odds; rounding toward the smaller payout keeps an edge honest)."""
@@ -170,30 +164,40 @@ def college_name_tokens(name: str) -> tuple[str, ...]:
 
 
 def college_names_match(wz_name: str, book_name: str) -> bool:
-    """Wagerzon's name is the book's name, or its start (books add the mascot)."""
+    """Wagerzon's name is the book's name, or its start followed by a mascot
+    (never by OTHER_SCHOOL_TOKENS)."""
     wz_tokens, book_tokens = college_name_tokens(wz_name), college_name_tokens(book_name)
-    return bool(wz_tokens) and book_tokens[:len(wz_tokens)] == wz_tokens
+    if not wz_tokens or book_tokens[:len(wz_tokens)] != wz_tokens:
+        return False
+    rest = book_tokens[len(wz_tokens):]
+    return not rest or rest[0] not in OTHER_SCHOOL_TOKENS
+
+
+def _kickoff_gap(book_game: BookGame, game: WzHalfGame) -> timedelta | None:
+    """|book kickoff - Wagerzon kickoff|, or None when the book lists no start."""
+    try:
+        return abs(parse_start(book_game.game_start_time) - game.game_start_time)
+    except ValueError:
+        return None
 
 
 def match_book_game(game: WzHalfGame, book_games: list[BookGame]) -> BookGame | None:
     """The book's listing of `game`, same home and away, or None.
 
-    NFL: the same two nflverse teams with kickoffs within NFL_KICKOFF_TOLERANCE.
-    College: kickoffs within CFB_KICKOFF_TOLERANCE and both names matching
-    (college_names_match); when no listing matches both, exactly one listing
-    matching one team in its slot. Two candidates is no match (fail closed).
+    NFL: the same two nflverse teams with kickoffs within the fectas'
+    SAME_GAME_KICKOFF_TOLERANCE. College: both names matching
+    (college_names_match) with kickoffs within CFB_KICKOFF_TOLERANCE.
+    Two candidates is no match (fail closed).
     """
     if game.league == NFL:
-        found = [g for g in book_games if g.home == game.home and g.away == game.away
-                 and abs(parse_start(g.game_start_time) - game.game_start_time) <= NFL_KICKOFF_TOLERANCE]
-        return found[0] if len(found) == 1 else None
-    near = [g for g in book_games
-            if abs(parse_start(g.game_start_time) - game.game_start_time) <= CFB_KICKOFF_TOLERANCE]
-    both = [g for g in near if college_names_match(game.home, g.home) and college_names_match(game.away, g.away)]
-    if both:
-        return both[0] if len(both) == 1 else None
-    one = [g for g in near if college_names_match(game.home, g.home) or college_names_match(game.away, g.away)]
-    return one[0] if len(one) == 1 else None
+        tolerance = SAME_GAME_KICKOFF_TOLERANCE
+        teams = [g for g in book_games if g.home == game.home and g.away == game.away]
+    else:
+        tolerance = CFB_KICKOFF_TOLERANCE
+        teams = [g for g in book_games
+                 if college_names_match(game.home, g.home) and college_names_match(game.away, g.away)]
+    found = [g for g in teams if (gap := _kickoff_gap(g, game)) is not None and gap <= tolerance]
+    return found[0] if len(found) == 1 else None
 
 
 # --- pricing -----------------------------------------------------------------
@@ -233,9 +237,8 @@ def price_partition_at(book: SgpBook, book_game: BookGame, away_line: float, tot
     for (spread_outcome, total_outcome), fair in zip(partition.cells, partition.cell_fairs):
         side = "away" if spread_outcome in spread.winning else "home"
         side_total = "over" if total_outcome in total.winning else "under"
-        # A ±0.5 spread read off a 3-way market wins on two outcomes (team or tie): add the cells.
-        corner = f"{side}_{side_total}"
-        fairs[corner] = fairs.get(corner, 0.0) + fair
+        key = f"{side}_{side_total}"
+        fairs[key] = fairs.get(key, 0.0) + fair
     return HalfBookFair(book.name, fairs, partition.overround)
 
 
@@ -278,7 +281,9 @@ def _quote_rows(line: HalfLine, quoted_at: datetime, book: str, fair: HalfBookFa
 
 def _price_lane(name: str, tasks: list[tuple[SgpBook, BookGame, HalfLine]], board: HalfBoard,
                 board_lock: threading.Lock, store: Store, publish: Callable[[HalfBoard], None]) -> None:
-    """One book's games in order; network calls outside the lock."""
+    """One book's games in order; network calls outside the lock. The lane's
+    quote rows are appended once, at the end."""
+    rows = []
     for book, book_game, line in tasks:
         now = datetime.now(timezone.utc)
         try:
@@ -288,9 +293,10 @@ def _price_lane(name: str, tasks: list[tuple[SgpBook, BookGame, HalfLine]], boar
             result = HalfBookFair(name, None, None, reason=f"error: {exc}"[:200])
         with board_lock:
             line.book_fairs[name] = result
-            store.append_half_quotes(_quote_rows(line, now, name, fair=result))
             board.progress_done += 1
             publish(board.snapshot())
+        rows += _quote_rows(line, now, name, fair=result)
+    store.append_half_quotes(rows)
 
 
 def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBoard:
@@ -353,11 +359,14 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBo
         if line.status != "pricing":
             continue
         if line in priced:
-            line.status = "priced"
             books_priced = [b for b, f in line.book_fairs.items() if f.corner_fairs]
             if has_whole_number_line(line.game) and len(books_priced) < MIN_BOOKS_WHOLE_NUMBER:
+                # Listed under "not priced" with the reason; fair_prob is None too.
+                line.status = "unpriced"
                 line.note = (f"whole-number line priced by {', '.join(books_priced)} only; "
                              f"needs {MIN_BOOKS_WHOLE_NUMBER} books")
+                continue
+            line.status = "priced"
             continue
         line.status = "unpriced"
         line.note = "; ".join(f"{b}: {f.reason}" for b, f in line.book_fairs.items() if f.reason) or "no book priced it"
@@ -368,7 +377,7 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBo
 
 # --- sizing ------------------------------------------------------------------
 def _group_key(game: WzHalfGame, corner: str) -> tuple:
-    """NFL: (home, away, spread team) — the fectas' board._team_key, so a
+    """NFL: (home, away, spread team), the key the fectas group by, so a
     parlay and that team's fectas in the game size as one group. College:
     the Wagerzon game and spread side (no college fectas)."""
     side = corner.split("_")[0]
@@ -379,14 +388,14 @@ def _group_key(game: WzHalfGame, corner: str) -> tuple:
 
 def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget: float | None,
                 fecta_board: Board | None = None, fecta_sizing: list[Sizing] = (),
-                held_fectas: tuple[HeldFecta, ...] = (), held: tuple[HeldHalfParlay, ...] = (),
-                now: datetime | None = None) -> dict[tuple[int, str], HalfSizing]:
+                held_fectas: tuple[HeldPlacement, ...] = (),
+                held: tuple[HeldHalfParlay, ...] = ()) -> dict[tuple[int, str], HalfSizing]:
     """Fair, EV and stakes per (wz_game_id, corner) after the fectas.
 
     `budget` is what the fectas left of the Wagerzon balance (None = no cap).
     Each NFL group (one team's side of one game) holds, as fixed bets, that
-    team's fectas in the game — the ones already placed and the stakes the
-    fecta board recommends — and the 1H parlays already placed. The group is
+    team's fectas in the game (the ones already placed and the stakes the
+    fecta board recommends) and the 1H parlays already placed. The group is
     one nested chain (pricing.ExposureGroup): the maximum correlation the
     fairs allow, the cautious case, so a parlay next to a fecta gets a
     smaller stake, never a bigger one. A team's two corners (over and under)
@@ -394,12 +403,12 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
     side. Corners on the two teams are separate groups. A held bet the
     boards cannot price blocks its group. No stake on a started game.
     """
-    now = now or datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
     held_by_key: dict[tuple, list[HeldBet]] = {}
     blocked: set[tuple] = set()
 
     if fecta_board is not None:
-        risk_by_special: dict[int, list[HeldFecta]] = {}
+        risk_by_special: dict[int, list[HeldPlacement]] = {}
         for bet in held_fectas:
             risk_by_special.setdefault(bet.wz_game_id, []).append(bet)
         for line, sizing in zip(fecta_board.lines, fecta_sizing):
@@ -444,7 +453,8 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
     keys = list(members)
     groups = []
     for key in keys:
-        candidates = tuple(Candidate(line_by_id[gid].fair_prob(c), line_by_id[gid].wz_american(c), math.inf)
+        candidates = tuple(Candidate(line_by_id[gid].fair_prob(c), line_by_id[gid].wz_american(c),
+                                     config.WZ_HALF_PARLAY_MAX_STAKE)
                            for gid, c in members[key])
         groups.append(ExposureGroup(candidates, tuple(held_by_key.get(key, []))))
     fitted = budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)

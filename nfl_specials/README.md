@@ -242,11 +242,86 @@ Wagerzon account's free play balance instead of cash:
   returned on a win; if the preview's Win differs, the placer refuses it as a moved
   price and nothing is submitted).
 
+## 1H parlays (Cal, 2026-11-12)
+
+The **1H Parlays** tab prices Wagerzon's same-game **1st-half spread + 1st-half
+total** parlays for the NFL and college football. Wagerzon prices them as if the
+two legs were independent, minus a flat ~0.57% (measured 2026-11-12 on every
+pairing), so the pairings that win together (favorite + over, underdog + under)
+can pay more than their true chance. Quarter lines are refused in any Wagerzon
+parlay (`WAGERTYPENOALLOWGAME`), and 2nd halves are posted only at halftime, so
+only 1st halves are read.
+
+1. **Wagerzon read** (`wz_halves.py`): the catalog leagues "NFL - 1ST HALVES" and
+   "NCAA FOOTBALL - 1ST HALVES", one request each (a combined `lg=` answers only
+   the first sport). Each 1H line is its own Wagerzon game (`idgmtyp` 15).
+2. **Whole-number lines** are priced off the half-point lines either side and
+   need two books; see "1H parlays on whole-number lines" below.
+3. **Fair**: the game's four corners (away or home spread x over or under) are
+   the four cells of ONE 2 x 2 partition at each book, at Wagerzon's exact
+   numbers, probit-devigged together (`halves_board.price_half_at_book`, the
+   fectas' `pricing.price_partition`). Fair = the lowest per corner among the
+   books that priced the partition.
+
+   | Book | 1H spread | 1H total |
+   |---|---|---|
+   | FanDuel | "1st Half Spread" or "1st Half Alternate Spread" | "1st Half Total" (main line only) |
+   | BetMGM | "1st half spread" (one market per line) | "1st half totals" (one market per line) |
+   | DraftKings | "Spread 1st Half" or "Spread Alternate - 1st Half" | "Total 1st Half" or "Total Alternate - 1st Half" |
+
+   College lists by school name: both of Wagerzon's names must be the book's
+   names or their start followed by a mascot (`MEMPHIS` = "Memphis Tigers"; `ST`
+   reads `STATE`; never "Michigan State" for `MICHIGAN` or "Texas Tech" for
+   `TEXAS`), in their home/away slots, with kickoffs within 30 minutes and one
+   such listing only; anything else is "this game is not listed". A game a book
+   names differently (`UL LAFAYETTE` vs "Louisiana") is not priced there. On
+   2026-11-12 BetMGM declined every college cell (its college 1H markets are
+   suspended until near kickoff) and DraftKings posts 1H alternates only a day or
+   two out, so many college corners price at one or two books.
+4. **Wagerzon price**: every corner of a priced game is previewed with
+   `ConfirmWagerHelper` RiskWin=2 (nothing placed) at $500, else $100
+   (`parlay_pricer.get_combined_parlay_price`). Sizing uses the whole American
+   odds at or under that decimal (`halves_board.conservative_american`).
+5. **Stake** (`halves_board.size_halves`): quarter Kelly on the page's bankroll,
+   **after the fectas**: the budget is the cash available less the fectas'
+   recommended stakes (cash only; with Use free play on, fectas draw on the free
+   play balance and parlays keep the cash). An NFL parlay sits in one group with
+   that spread team's fectas in the game (the fectas' `board._team_key`): the
+   fectas' placed bets and recommended stakes are fixed bets the parlay is sized
+   around, as one nested chain, the maximum correlation the fairs allow, so a
+   parlay beside a fecta gets less, never more. A team's over and under corners
+   cannot both win, which the chain also over-counts (cautious). Placed 1H
+   parlays (`placed_half_parlays`, counting the ones that may have gone through)
+   shrink the next stake on that side; a placed bet the board cannot price
+   blocks its side. $20 minimum, $250 per parlay a week
+   (`config.WZ_HALF_PARLAY_MAX_STAKE`, a mistyped-stake guard, not a measured
+   Wagerzon limit).
+6. **Place**: the server re-checks the corner is priced at the price the page
+   showed, the game has not started, the stake is whole dollars, $20 to $250
+   with the week's earlier tickets on that parlay, and within the cash
+   available, and nothing went to Wagerzon on that parlay in the last 2 minutes.
+   Then `wz_halves.place_half_parlay` re-reads Wagerzon's 1H lines (a changed
+   number or price is `line_moved`), runs `parlay_placer`'s ConfirmWagerHelper
+   preflight at the stake (a to-win more than $0.50 under the board's price is
+   `price_moved`) and sends ONE PostWagerMultipleHelper submit on the chosen
+   account. It does not use `parlay_placer.place_parlays`, which re-submits
+   after a logged-out reply to the submit. A submit that fails, answers logged
+   out or cannot be read is `unknown` / `network_error`: it may be on Wagerzon,
+   so it blocks a retry, counts as held and shows "?" under placed. Every
+   attempt that reaches Wagerzon is recorded (refusals by the server's own
+   checks are not). A failed 1H refresh clears the 1H board, so its old fairs
+   cannot be placed.
+
+Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
+2026-11-12), one after the other so each book's pacing holds.
+
 ## Files
 
 | File | Job |
 |---|---|
 | `wz.py` | scrape the week's fectas; place one |
+| `wz_halves.py` | read Wagerzon's NFL and college 1H lines, preview every pairing, place a 1H parlay |
+| `halves_board.py` | one 1H refresh (book matching, 2 x 2 partition fairs); sizing after the fectas |
 | `special_parser.py` | description -> legs (anything unrecognized is refused, never guessed) |
 | `books.py` | adapter interface: a leg = an exhaustive outcome group |
 | `fd_book.py`, `mgm_book.py`, `dk_book.py` | per-book market lookup + SGP price |
@@ -264,6 +339,8 @@ Wagerzon account's free play balance instead of cash:
 | `fecta_quotes` | APPEND every refresh | one (special, book) fair or the reason there is none |
 | `placed_fectas` | APPEND every Place click | the attempt and Wagerzon's answer; `free_play` TRUE for a free play bet |
 | `settings` | UPSERT | bankroll, Kelly fraction, use free play |
+| `half_parlay_quotes` | APPEND every refresh | one (1H game, book, corner) fair, or Wagerzon's parlay price (`book = 'Wagerzon'`, `wz_decimal`), or the reason there is none |
+| `placed_half_parlays` | APPEND every 1H Place that reaches Wagerzon | the attempt and Wagerzon's answer, `wz_decimal` the price quoted at the stake |
 
 ## Troubleshooting
 
@@ -317,8 +394,9 @@ Pricing is books only (Cal, 2026-11-12):
    cautious stake (the binary swings more than the real payout). Worst case
    across books as for half-point lines.
 5. A whole-number game needs two books priced (`MIN_BOOKS_WHOLE_NUMBER`,
-   `halves_board.py`); with one, the board notes it, stakes nothing, and Place
-   refuses it (as it refuses any corner with no fair).
+   `halves_board.py`); with one, it is listed under "not priced" with the book
+   named, stakes nothing, and Place refuses it (as it refuses any corner with
+   no fair).
 
 `half_parlay_quotes.fair_prob` is the both-win chance and `push_return` the
 push return, so the effective fair can be rebuilt from the table;
