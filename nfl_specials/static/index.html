@@ -904,7 +904,10 @@ async function place(line, risk, account, freePlay) {
   try {
     const r = await api("/api/place", { wz_game_id: id, wz_american: line.wz_american, risk, account, free_play: freePlay });
     if (r.status === "placed") {
-      placeMessages.set(id, { ok: true, text: `Placed ${money(risk)}${freePlay ? " free play" : ""} · ticket ${r.ticket_number}` });
+      // The server re-reads both balances after a free play: r.warning says
+      // when Wagerzon charged cash instead, or which pot it was is unknown.
+      placeMessages.set(id, { ok: !r.warning, text: `Placed ${money(risk)}${r.free_play ? " free play" : ""} · ticket ${r.ticket_number}` +
+        (r.warning ? ` · ${r.warning}` : "") });
       editingStake.delete(id);
     } else {
       placeMessages.set(id, { ok: false, text: `Not placed — ${r.status}: ${r.error || "no reason given"}` });

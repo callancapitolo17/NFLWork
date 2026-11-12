@@ -147,10 +147,21 @@ def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[fl
     raw_cash = result.get("CurrentBalance")
     cash = _parse_money_string(raw_cash) if raw_cash is not None else None
 
-    raw_free_play = result.get("FreePlayAmount")
-    free_play = _parse_money_string(raw_free_play) if raw_free_play is not None else None
+    free_play = _parse_optional_money(result.get("FreePlayAmount"))
 
     return available, cash, free_play
+
+
+def _parse_optional_money(s) -> Optional[float]:
+    """An optional money field: None when missing or unreadable, so it can
+    never turn a good `available` into a parse_error snapshot."""
+    if s is None:
+        return None
+    try:
+        return _parse_money_string(s)
+    except ValueError:
+        logger.warning("balance field not a number: %r", s)
+        return None
 
 
 def _parse_money_string(s) -> float:

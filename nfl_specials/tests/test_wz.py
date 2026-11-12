@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -60,12 +61,35 @@ def test_a_fecta_is_placed_with_its_rotation_as_the_play(monkeypatch):
                                  "htm": "RAIDERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)",
                                  "GameLines": [{"odds": "1730", "oddsh": "+1730"}]})
     sent = []
-    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: sent.append(bet) or {})
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet, use_free_play=False: sent.append(bet) or {})
     wz.place_fecta("Wagerzon", special, 250.0)
     assert sent[0]["play"] == 777043
     assert wz.single_placer.build_sel_for_single(sent[0]) == "777043_6008644_0_1730"
     detail = json.loads(wz.single_placer._build_confirm_payload(sent[0])["detailData"])[0]
     assert (detail["IdGame"], detail["Play"], detail["Amount"]) == (6008644, 777043, "250")
+
+
+@pytest.mark.parametrize("use_free_play", [False, True])
+def test_the_free_play_switch_reaches_the_placer_on_the_first_try_and_the_retry(monkeypatch, use_free_play):
+    replies = [{"status": "auth_error", "error_msg": wz.single_placer.PREFLIGHT_LOGGED_OUT_MSG}, {"status": "placed"}]
+    flags = []
+    monkeypatch.setattr(wz.single_placer, "place_single",
+                        lambda account, bet, use_free_play=False: flags.append(use_free_play) or replies.pop(0))
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: None)
+    wz.place_fecta("Wagerzon", _special(), 250.0, use_free_play=use_free_play)
+    assert flags == [use_free_play, use_free_play]
+
+
+def test_each_accounts_two_pots_come_from_their_own_fields(monkeypatch):
+    accounts = [SimpleNamespace(label="Wagerzon"), SimpleNamespace(label="WagerzonC")]
+    snapshots = [SimpleNamespace(label="Wagerzon", available=500.0, free_play=60.0),
+                 SimpleNamespace(label="WagerzonC", available=900.0, free_play=None)]
+    monkeypatch.setattr(wz, "list_accounts", lambda: accounts)
+    monkeypatch.setattr(wz.wagerzon_balance, "fetch_all", lambda given: snapshots)
+    monkeypatch.setattr(wz.wagerzon_balance, "fetch_available_balance", lambda account: snapshots[accounts.index(account)])
+    assert wz.read_balances() == {"Wagerzon": wz.WzBalances(500.0, 60.0), "WagerzonC": wz.WzBalances(900.0, None)}
+    assert wz.read_account_balances("WagerzonC") == wz.WzBalances(900.0, None)
+    assert wz.read_account_balances("nobody") == wz.WzBalances(None, None)
 
 
 def test_the_expected_win_is_whole_dollars_like_wagerzon_quotes():
@@ -119,7 +143,7 @@ def test_a_login_expired_at_preflight_logs_in_again_and_retries_once(monkeypatch
     replies = [{"status": "auth_error", "error_msg": wz.single_placer.PREFLIGHT_LOGGED_OUT_MSG},
                {"status": "placed", "ticket_number": 123}]
     calls, cleared = [], []
-    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: calls.append(account) or replies.pop(0))
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet, use_free_play=False: calls.append(account) or replies.pop(0))
     monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: cleared.append(label))
     assert wz.place_fecta("Wagerzon", _special(), 250.0)["status"] == "placed"
     assert calls == ["Wagerzon", "Wagerzon"]
@@ -129,7 +153,7 @@ def test_a_login_expired_at_preflight_logs_in_again_and_retries_once(monkeypatch
 def test_a_second_preflight_logout_is_not_retried_again(monkeypatch):
     reply = {"status": "auth_error", "error_msg": wz.single_placer.PREFLIGHT_LOGGED_OUT_MSG}
     calls = []
-    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: calls.append(account) or dict(reply))
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet, use_free_play=False: calls.append(account) or dict(reply))
     monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: None)
     assert wz.place_fecta("Wagerzon", _special(), 250.0)["status"] == "auth_error"
     assert len(calls) == 2
@@ -139,7 +163,7 @@ def test_a_logout_at_submission_is_never_retried(monkeypatch):
     # The submit may have gone through; a retry could place the bet twice.
     reply = {"status": "auth_error", "error_msg": "Wagerzon returned HTML at submission (session expired)"}
     calls, cleared = [], []
-    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet: calls.append(account) or reply)
+    monkeypatch.setattr(wz.single_placer, "place_single", lambda account, bet, use_free_play=False: calls.append(account) or reply)
     monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: cleared.append(label))
     assert wz.place_fecta("Wagerzon", _special(), 250.0) is reply
     assert len(calls) == 1 and cleared == []

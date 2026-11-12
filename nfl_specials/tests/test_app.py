@@ -26,12 +26,20 @@ def app(tmp_path, monkeypatch):
     placements = []
     free_play_flags = []
 
+    # What Wagerzon holds: a bet draws on the pot it was sent for, unless a
+    # test sets charges_cash to have Wagerzon book a free play as cash.
+    wagerzon = {"available": 500.0, "free_play": 300.0, "charges_cash": False}
+
     def fake_place(account, special, risk, use_free_play=False):
         placements.append(risk)
         free_play_flags.append(use_free_play)
+        pot = "free_play" if use_free_play and not wagerzon["charges_cash"] else "available"
+        wagerzon[pot] -= risk
         return {"status": "placed", "ticket_number": f"T{len(placements)}", "balance_after": None}
 
     monkeypatch.setattr(app_module.wz, "place_fecta", fake_place)
+    monkeypatch.setattr(app_module.wz, "read_account_balances",
+                        lambda account: app_module.wz.WzBalances(wagerzon["available"], wagerzon["free_play"]))
     specials_app = SpecialsApp(Store(tmp_path / "state.duckdb"))
     line = FectaLine(SPECIAL, parse_fecta(SPECIAL.description), "priced", game=GAME,
                      book_fairs={"FanDuel": BookFair("FanDuel", 0.081, None, 1.4, 18)})
@@ -40,6 +48,7 @@ def app(tmp_path, monkeypatch):
     specials_app._free_play = {"Wagerzon": 300.0}
     specials_app.placements = placements
     specials_app.free_play_flags = free_play_flags
+    specials_app.wagerzon = wagerzon
     return specials_app
 
 
@@ -135,10 +144,41 @@ def test_free_play_fits_stakes_to_the_free_play_balance(app):
 
 def test_a_free_play_bet_spends_the_free_play_balance_not_cash(app):
     app.save_settings({"bankroll": 1000.0, "kelly_fraction": 0.25, "use_free_play": True})
-    assert app.place({**_bet(100), "free_play": True})["status"] == "placed"
+    result = app.place({**_bet(100), "free_play": True})
+    assert (result["status"], result["free_play"], result["warning"]) == ("placed", True, None)
     assert app.free_play_flags == [True]
     assert (app.budget("Wagerzon", use_free_play=True), app.budget("Wagerzon")) == (200.0, 500.0)
     assert app.store.placements_since(datetime.now(timezone.utc) - timedelta(days=1))[0]["free_play"] is True
+
+
+def test_a_free_play_wagerzon_books_as_cash_is_recorded_as_cash_and_flagged(app):
+    app.save_settings({"bankroll": 1000.0, "kelly_fraction": 0.25, "use_free_play": True})
+    app.wagerzon["charges_cash"] = True
+    result = app.place({**_bet(100), "free_play": True})
+    assert (result["status"], result["free_play"]) == ("placed", False)
+    assert result["warning"] == "Wagerzon charged this to cash, not free play"
+    assert (app.budget("Wagerzon", use_free_play=True), app.budget("Wagerzon")) == (300.0, 400.0)
+    assert app.store.placements_since(datetime.now(timezone.utc) - timedelta(days=1))[0]["free_play"] is False
+
+
+def test_an_unread_balance_after_a_free_play_lowers_the_pot_and_says_so(app, monkeypatch):
+    app.save_settings({"bankroll": 1000.0, "kelly_fraction": 0.25, "use_free_play": True})
+    monkeypatch.setattr(app_module.wz, "read_account_balances", lambda account: app_module.wz.WzBalances(None, None))
+    result = app.place({**_bet(100), "free_play": True})
+    assert (result["free_play"], result["warning"]) == (True, "couldn't confirm which balance Wagerzon charged — check the account")
+    assert app.budget("Wagerzon", use_free_play=True) == 200.0
+
+
+def test_refreshed_balances_fill_each_accounts_two_pots(app, monkeypatch):
+    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {
+        "Wagerzon": app_module.wz.WzBalances(500.0, 60.0), "WagerzonC": app_module.wz.WzBalances(900.0, None)})
+    app._read_balances()
+    assert [app.budget(a, f) for a in ("Wagerzon", "WagerzonC") for f in (False, True)] == [500.0, 60.0, 900.0, None]
+
+
+def test_the_cash_view_still_shows_the_free_play_balance(app):
+    payload = app.board_payload("Wagerzon")
+    assert (payload["available_balance"], payload["cash_available"], payload["free_play_balance"]) == (500.0, 500.0, 300.0)
 
 
 def test_free_play_over_its_balance_or_against_the_setting_is_refused(app):

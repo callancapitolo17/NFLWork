@@ -152,3 +152,15 @@ def test_fetch_all_runs_in_parallel():
         snaps = wagerzon_balance.fetch_all([a, b])
         labels = sorted(s.label for s in snaps)
         assert labels == ["Wagerzon", "WagerzonJ"]
+
+
+@pytest.mark.parametrize("raw_free_play, expected", [("1,250.50 ", 1250.5), ("", None), ("N/A", None), (None, None)])
+def test_free_play_is_read_and_never_breaks_the_cash_balance(acct, raw_free_play, expected):
+    result = {k: v for k, v in MOCK_BALANCE_RESPONSE["result"].items() if k != "FreePlayAmount"}
+    if raw_free_play is not None:
+        result["FreePlayAmount"] = raw_free_play
+    with requests_mock.Mocker() as m:
+        _mock_login(m)
+        m.get(BALANCE_URL, json={"result": result})
+        snap = wagerzon_balance.fetch_available_balance(acct)
+    assert (snap.available, snap.free_play, snap.error) == (3245.32, expected, None)

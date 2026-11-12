@@ -28,8 +28,9 @@ helpers used by the MLB correlated parlay dashboard.
   `RealAvailBalance` (cash + credit) — the amount WZ will actually let
   you wager, not raw cash. `cash` (`CurrentBalance`) is exposed for
   tooltip / debug. `free_play` (`FreePlayAmount`) is the free play
-  balance; `single_placer` spends it when the bet carries
-  `use_free_play: True` (`useFreePlayAmount` on preview and submit).
+  balance; `single_placer.place_single(..., use_free_play=True)` spends
+  it (`useFreePlayAmount` on preview and submit; an argument, never a
+  bet-dict key, since the MLB dashboard passes its request body as `bet`).
 - **Account registry:** `wagerzon_accounts.py` discovers accounts by
   env-var suffix (`WAGERZON{X}_USERNAME` / `WAGERZON{X}_PASSWORD`).
   See `README.md` for the pattern.

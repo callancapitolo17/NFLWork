@@ -311,7 +311,7 @@ def _log_placement_response(
 # Preflight payload builder — mirrors parlay_placer.encode_detail_data
 # ---------------------------------------------------------------------------
 
-def _build_confirm_payload(bet: dict) -> dict:
+def _build_confirm_payload(bet: dict, use_free_play: bool = False) -> dict:
     """Build the ConfirmWagerHelper POST parameters for a single leg.
 
     Note on the Amount field: WZ at `RiskWin=0` interprets `Amount` as
@@ -349,9 +349,7 @@ def _build_confirm_payload(bet: dict) -> dict:
         "open": "0",
         "sameAmount": "false",
         "sameAmountNumber": amount_str,
-        # bet["use_free_play"] spends the account's free play balance instead
-        # of cash (nfl_specials' Use free play setting, 2026-11-12).
-        "useFreePlayAmount": "true" if bet.get("use_free_play") else "false",
+        "useFreePlayAmount": "true" if use_free_play else "false",
         "sel": build_sel_for_single(bet),
         "detailData": _json.dumps(detail_data),
     }
@@ -361,15 +359,17 @@ def _build_confirm_payload(bet: dict) -> dict:
 # Top-level place_single
 # ---------------------------------------------------------------------------
 
-def place_single(account: str, bet: dict, session=None) -> dict:
+def place_single(account: str, bet: dict, session=None, use_free_play: bool = False) -> dict:
     """Submit a single straight bet at Wagerzon via REST.
 
     Args:
         account:  Wagerzon account label (e.g. "primary"). Ignored if
                   `session` is provided (test injection path).
         bet:      Dict with keys: idgm, play, line, american_odds,
-                  actual_size, wz_odds_at_place, and optionally pitcher
-                  and use_free_play (True: risk the free play balance).
+                  actual_size, wz_odds_at_place, and optionally pitcher.
+        use_free_play: True risks the account's free play balance instead of
+                  cash. An argument, not a bet key, so a route that passes a
+                  request body as `bet` cannot turn it on.
         session:  For testing only — pass a MagicMock requests.Session.
                   Production code should leave this as None.
 
@@ -385,7 +385,7 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         wz_account: WagerzonAccount = get_account(account)
         sess = wagerzon_auth.get_session(wz_account)
 
-    confirm_payload = _build_confirm_payload(bet)
+    confirm_payload = _build_confirm_payload(bet, use_free_play)
 
     # -----------------------------------------------------------------------
     # Step 1: ConfirmWagerHelper (preflight + drift check)
@@ -491,7 +491,7 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     # types and includes `roundRobinCombinations: ""` — mirror it exactly.
     wager_request["open"]                   = 0
     wager_request["sameAmount"]             = False
-    wager_request["useFreePlayAmount"]      = bool(bet.get("use_free_play"))
+    wager_request["useFreePlayAmount"]      = use_free_play
     wager_request["roundRobinCombinations"] = ""
     # confirmPassword is required by WZ to authorize the placement (mirrors
     # parlay_placer._build_post_request). The test path (wz_account is None)

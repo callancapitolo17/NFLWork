@@ -32,7 +32,7 @@ from urllib.parse import parse_qs, urlparse
 from nfl_specials import config, wz
 from nfl_specials.board import Board, HeldPlacement, refresh_board, size_board
 from nfl_specials.books import parse_start
-from nfl_specials.pricing import american_to_decimal, decimal_to_american
+from nfl_specials.pricing import decimal_to_american, free_play_value
 from nfl_specials.store import Store
 
 log = logging.getLogger("nfl_specials.app")
@@ -42,6 +42,8 @@ PLACEMENT_HISTORY_DAYS = 7
 # A second placement on the same special within this window is refused: a
 # slow Wagerzon answer invites a second click, and each click is a real bet.
 DUPLICATE_PLACEMENT_WINDOW = timedelta(minutes=2)
+# Wagerzon shows balances in whole dollars.
+BALANCE_ROUNDING = 1.0
 
 
 def _american(prob: float | None) -> int | None:
@@ -157,7 +159,7 @@ class SpecialsApp:
     # --- write -------------------------------------------------------------
     def save_settings(self, body: dict) -> dict:
         bankroll, kelly_fraction = body.get("bankroll"), body.get("kelly_fraction")
-        use_free_play = body.get("use_free_play", self.store.settings()["use_free_play"])
+        use_free_play = body["use_free_play"] if "use_free_play" in body else self.store.settings()["use_free_play"]
         if not isinstance(use_free_play, bool):
             raise ValueError(f"use_free_play must be true or false, got {use_free_play!r}")
         if not isinstance(bankroll, (int, float)) or bankroll <= 0:
@@ -196,16 +198,18 @@ class SpecialsApp:
         # must not go out on the other.
         if free_play != settings["use_free_play"]:
             raise ValueError("Use free play changed since the page loaded — refresh the page")
-        budget = self.budget(account, free_play)
-        pot = "free play" if free_play else "available"
-        if budget is not None and risk > budget:
-            raise ValueError(f"risk ${risk:.2f} is more than the ${budget:.2f} Wagerzon shows {pot}")
-        if free_play and budget is None:
-            raise ValueError("free play balance unknown — Refresh reads it")
-        sizing = size_board(board, settings["bankroll"], settings["kelly_fraction"],
-                            budget)[board.lines.index(line)]
 
         with self._place_lock:
+            # The balance is checked inside the lock too: a bet on another
+            # special may have just spent it.
+            budget = self.budget(account, free_play)
+            pot = "free play" if free_play else "available"
+            if budget is not None and risk > budget:
+                raise ValueError(f"risk ${risk:.2f} is more than the ${budget:.2f} Wagerzon shows {pot}")
+            if free_play and budget is None:
+                raise ValueError("free play balance unknown — Refresh reads it")
+            sizing = size_board(board, settings["bankroll"], settings["kelly_fraction"],
+                                budget)[board.lines.index(line)]
             # Checked inside the lock so a double click waits for the first
             # placement to land, then sees it.
             since = datetime.now(timezone.utc) - DUPLICATE_PLACEMENT_WINDOW
@@ -223,8 +227,9 @@ class SpecialsApp:
                                  f"${config.WZ_MAX_STAKE:.0f} per special, so at most "
                                  f"${config.WZ_MAX_STAKE - already:.0f} more")
             result = wz.place_fecta(account, line.special, float(risk), use_free_play=free_play)
+            warning = None
             if result.get("status") == "placed" and free_play:
-                self._lower_free_play(account, float(risk))
+                free_play, warning = self._settle_free_play(account, float(risk))
             elif result.get("status") == "placed":
                 self._lower_balance(account, float(risk), result.get("balance_after"))
             self.store.record_placement({
@@ -237,7 +242,8 @@ class SpecialsApp:
                 "error": result.get("error_msg"), "free_play": free_play,
             })
         return {"status": result.get("status"), "ticket_number": result.get("ticket_number"),
-                "error": result.get("error_msg"), "balance_after": result.get("balance_after")}
+                "error": result.get("error_msg"), "balance_after": result.get("balance_after"),
+                "free_play": free_play, "warning": warning}
 
     def _lower_balance(self, account: str, risk: float, balance_after: float | None) -> None:
         """Keep the budget right between refreshes: Wagerzon's reported
@@ -249,22 +255,38 @@ class SpecialsApp:
             elif before is not None:
                 self._balances[account] = before - risk
 
-
-    def _lower_free_play(self, account: str, risk: float) -> None:
-        """A free play spends the free play balance, not cash: lower it by the
-        risk (Wagerzon's balance_after is the cash 'available')."""
+    def _settle_free_play(self, account: str, risk: float) -> tuple[bool, str | None]:
+        """Which pot a placed free play drew on, from both balances read again
+        now: (True, None) free play; (False, warning) Wagerzon charged cash;
+        (True, warning) unread or neither fell by the stake (recorded as the
+        free play it was sent as). Both cached
+        balances take the fresh reads (the free play one lowered by the stake
+        when unread). Wagerzon taking free play on a special is unverified
+        live, and a bet booked on the wrong pot must not pass unnoticed."""
         with self._lock:
-            before = self._free_play.get(account)
-            if before is not None:
-                self._free_play[account] = before - risk
+            free_play_before, cash_before = self._free_play.get(account), self._balances.get(account)
+        try:
+            after = wz.read_account_balances(account)
+        except Exception as exc:  # the bet is placed either way; say the pot is unconfirmed
+            log.warning("balance read after a free play on %s failed: %s", account, exc)
+            after = wz.WzBalances(None, None)
+        with self._lock:
+            if after.available is not None:
+                self._balances[account] = after.available
+            if after.free_play is not None:
+                self._free_play[account] = after.free_play
+            elif free_play_before is not None:
+                self._free_play[account] = free_play_before - risk
+        if _fell_by(free_play_before, after.free_play, risk):
+            return True, None
+        if _fell_by(cash_before, after.available, risk):
+            return False, "Wagerzon charged this to cash, not free play"
+        return True, "couldn't confirm which balance Wagerzon charged — check the account"
 
 
-def _free_play_value(fair_prob: float | None, wz_american: int) -> float | None:
-    """What $1 of free play is worth here: a win pays only the to-win and a
-    loss costs no cash, so fair x net odds."""
-    if fair_prob is None:
-        return None
-    return fair_prob * (american_to_decimal(wz_american) - 1.0)
+def _fell_by(before: float | None, after: float | None, risk: float) -> bool:
+    """A balance fell by at least the stake (Wagerzon rounds to whole dollars)."""
+    return before is not None and after is not None and before - after >= risk - BALANCE_ROUNDING
 
 
 def _line_json(line, sizing) -> dict:
@@ -295,7 +317,8 @@ def _line_json(line, sizing) -> dict:
         "fair_prob": sizing.fair_prob,
         "fair_american": _american(sizing.fair_prob),
         "ev": sizing.ev,
-        "free_play_value": _free_play_value(sizing.fair_prob, line.special.wz_american),
+        "free_play_value": (free_play_value(sizing.fair_prob, line.special.wz_american)
+                            if sizing.fair_prob is not None else None),
         "kelly_stake": round(sizing.kelly_stake, 2),
         "recommended_stake": sizing.recommended_stake,
         "unlimited_stake": sizing.unlimited_stake,

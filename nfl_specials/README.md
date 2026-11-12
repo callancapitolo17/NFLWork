@@ -230,9 +230,13 @@ Wagerzon account's free play balance instead of cash:
   loss the free play never costs).
 - **Place:** the request carries `free_play`, refused unless it matches the saved
   setting or when the stake is over the free play balance (or the balance is
-  unknown); `single_placer` then sends `useFreePlayAmount` true on the preview and
-  the submit. The row in `placed_fectas` has `free_play` TRUE, and Placed this week
-  tags it.
+  unknown), checked inside the one-at-a-time placement lock; `single_placer` then
+  sends `useFreePlayAmount` true on the preview and the submit.
+- **Which pot it drew on:** after a placed free play the server reads both balances
+  again. Free play fell by the stake: recorded `free_play` TRUE. Cash fell instead:
+  recorded FALSE and the page warns "Wagerzon charged this to cash". Neither, or
+  the read failed: recorded TRUE (as sent) with a "couldn't confirm" warning.
+  Placed this week tags free play rows. `placed_fectas.ev` stays the cash EV.
 - **Unverified until the first live click:** that Wagerzon takes free play on a
   special, and that its preview quotes the same to-win (a free play's stake is not
   returned on a win; if the preview's Win differs, the placer refuses it as a moved

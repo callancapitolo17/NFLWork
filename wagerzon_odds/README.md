@@ -115,9 +115,12 @@ Adding a new account = two env vars + restart of any consumer process
   `fetch_all(accounts)` returning `BalanceSnapshot`. Calls
   `GET https://backend.wagerzon.com/wager/PlayerInfoHelper.aspx` and
   extracts `result.RealAvailBalance` (cash + credit line — the actual
-  wagerable amount) as `available`, and `result.CurrentBalance` as `cash`.
+  wagerable amount) as `available`, `result.CurrentBalance` as `cash`, and
+  `result.FreePlayAmount` as `free_play` (None when missing or unreadable,
+  so it never costs the cash reading). `single_placer.place_single(...,
+  use_free_play=True)` spends the free play balance.
   The response body also includes the user's password in plaintext;
-  the parser extracts only the two numeric fields and never logs the
+  the parser extracts only the three numeric fields and never logs the
   raw response.
 
 ### parlay_placer

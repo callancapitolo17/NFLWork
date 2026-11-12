@@ -90,6 +90,15 @@ class WzBalances:
     free_play: float | None     # free play balance, spent only by a free play wager
 
 
+def read_account_balances(account_label: str) -> WzBalances:
+    """One account's two pots, read now (after a free play, to see which pot it drew on)."""
+    account = next((a for a in list_accounts() if a.label == account_label), None)
+    if account is None:
+        return WzBalances(None, None)
+    snapshot = wagerzon_balance.fetch_available_balance(account)
+    return WzBalances(snapshot.available, snapshot.free_play)
+
+
 def read_balances() -> dict[str, WzBalances]:
     """Each account's cash 'available' and free play balance, from one
     PlayerInfoHelper read per account — the budget new bets must fit."""
@@ -205,9 +214,8 @@ def place_fecta(account_label: str, special: WzSpecial, risk: float, use_free_pl
         "bet_hash": f"nfl-fecta-{special.wz_game_id}",
         "market": "nfl_fecta",
         "bet_on": special.description,
-        "use_free_play": use_free_play,
     }
-    result = single_placer.place_single(account_label, bet)
+    result = single_placer.place_single(account_label, bet, use_free_play=use_free_play)
     if not _logged_out_at_preflight(result):
         return result
     # The page keeps one login per account for the life of the process; once
@@ -215,7 +223,7 @@ def place_fecta(account_label: str, special: WzSpecial, risk: float, use_free_pl
     log.warning("Wagerzon login for %s expired at preflight; logging in again and retrying once",
                 account_label)
     wagerzon_auth.clear_session_cache(account_label)
-    return single_placer.place_single(account_label, bet)
+    return single_placer.place_single(account_label, bet, use_free_play=use_free_play)
 
 
 def _logged_out_at_preflight(result: dict) -> bool:
