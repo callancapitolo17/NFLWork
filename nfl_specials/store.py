@@ -5,8 +5,9 @@ Tables:
                    fair (the special's, or a superfecta's trifecta part's) or
                    DraftKings' scores-first share, or the reason there is none.
                    The history that lets us check later whether fairs were right.
-    placed_fectas  APPEND — one row per placement ATTEMPT, whatever Wagerzon said.
-    settings       UPSERT — bankroll and Kelly fraction.
+    placed_fectas  APPEND — one row per placement ATTEMPT, whatever Wagerzon said;
+                   free_play TRUE when it risked the free play balance, not cash.
+    settings       UPSERT — bankroll, Kelly fraction and use_free_play (1 = on).
 Each call opens and closes its own read-write connection: the app's threads
 share one process, and DuckDB refuses a read-only connection to a file this
 process already holds read-write.
@@ -56,6 +57,8 @@ SCHEMA = [
         ticket_number   VARCHAR,
         error           VARCHAR
     )""",
+    # Added 2026-11-12; rows placed before it read NULL (cash).
+    "ALTER TABLE placed_fectas ADD COLUMN IF NOT EXISTS free_play BOOLEAN",
     """CREATE TABLE IF NOT EXISTS settings (
         key   VARCHAR PRIMARY KEY,
         value DOUBLE
@@ -67,7 +70,7 @@ QUOTE_COLUMNS = ("quoted_at", "wz_game_id", "rotation", "description", "team", "
                  "fair_prob", "sgp_decimal", "overround", "n_cells", "sf_share", "reason")
 PLACEMENT_COLUMNS = ("placed_at", "account", "wz_game_id", "rotation", "description",
                      "game_start_time", "wz_american", "risk", "fair_prob", "ev",
-                     "status", "ticket_number", "error")
+                     "status", "ticket_number", "error", "free_play")
 
 
 class Store:
@@ -131,22 +134,26 @@ class Store:
         finally:
             con.close()
 
-    def settings(self) -> dict[str, float]:
-        values = {"bankroll": config.DEFAULT_BANKROLL, "kelly_fraction": config.DEFAULT_KELLY_FRACTION}
+    def settings(self) -> dict:
+        """{bankroll, kelly_fraction, use_free_play (bool)}; defaults for keys never saved."""
+        values = {"bankroll": config.DEFAULT_BANKROLL, "kelly_fraction": config.DEFAULT_KELLY_FRACTION,
+                  "use_free_play": 0.0}
         con = duckdb.connect(str(self.db_path))
         try:
             for key, value in con.execute("SELECT key, value FROM settings").fetchall():
                 values[key] = value
         finally:
             con.close()
+        values["use_free_play"] = values["use_free_play"] == 1.0
         return values
 
-    def save_settings(self, bankroll: float, kelly_fraction: float) -> None:
+    def save_settings(self, bankroll: float, kelly_fraction: float, use_free_play: bool) -> None:
         con = duckdb.connect(str(self.db_path))
         try:
             con.executemany(
                 "INSERT INTO settings (key, value) VALUES (?, ?) "
                 "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                [("bankroll", bankroll), ("kelly_fraction", kelly_fraction)])
+                [("bankroll", bankroll), ("kelly_fraction", kelly_fraction),
+                 ("use_free_play", 1.0 if use_free_play else 0.0)])
         finally:
             con.close()

@@ -301,3 +301,17 @@ def test_missing_odds_in_preflight_details_proceeds_to_step2():
     result = single_placer.place_single("primary", make_bet(), session=fake_session)
     assert result["status"] == "placed"
     assert result["ticket_number"] == "T-OK"
+
+
+@pytest.mark.parametrize("use_free_play", [False, True])
+def test_use_free_play_reaches_both_the_preflight_and_the_submission(use_free_play):
+    bet = make_bet(wz_odds_at_place=110, use_free_play=use_free_play)
+    fake_session = MagicMock()
+    fake_session.post.side_effect = [
+        _make_json_response({"result": {"details": [{"Win": 46.20, "Risk": 42.0, "Odds": 110}]}}),
+        _make_json_response({"result": {"WagerNumber": "T-1", "AvailBalance": 100.0}}),
+    ]
+    assert single_placer.place_single("primary", bet, session=fake_session)["status"] == "placed"
+    preflight, submission = (call.kwargs["data"] for call in fake_session.post.call_args_list)
+    assert preflight["useFreePlayAmount"] == ("true" if use_free_play else "false")
+    assert json.loads(submission["postWagerRequests"])[0]["useFreePlayAmount"] is use_free_play

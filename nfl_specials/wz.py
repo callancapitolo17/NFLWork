@@ -83,10 +83,17 @@ def account_labels() -> list[str]:
     return [account.label for account in list_accounts()]
 
 
-def available_balances() -> dict[str, float | None]:
-    """Each account's Wagerzon 'available' (credit left after pending bets
-    and the week's results) — the budget new bets must fit. None = unknown."""
-    return {snapshot.label: snapshot.available
+@dataclass(frozen=True)
+class WzBalances:
+    """One account's two Wagerzon pots. None = unknown."""
+    available: float | None     # cash 'available' (credit left after pending bets and the week's results)
+    free_play: float | None     # free play balance, spent only by a free play wager
+
+
+def read_balances() -> dict[str, WzBalances]:
+    """Each account's cash 'available' and free play balance, from one
+    PlayerInfoHelper read per account — the budget new bets must fit."""
+    return {snapshot.label: WzBalances(snapshot.available, snapshot.free_play)
             for snapshot in wagerzon_balance.fetch_all(list_accounts())}
 
 
@@ -170,8 +177,9 @@ def wagerzon_to_win(risk: float, american_odds: int) -> float:
     return float(math.floor(exact_win + 0.5))
 
 
-def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:
-    """Place `risk` dollars on `special` at its posted price.
+def place_fecta(account_label: str, special: WzSpecial, risk: float, use_free_play: bool = False) -> dict:
+    """Place `risk` dollars on `special` at its posted price — from the
+    account's free play balance instead of cash when `use_free_play`.
 
     Returns single_placer's result: status 'placed' (with ticket_number) or
     'price_moved' / 'rejected' / 'auth_error' / 'network_error' / 'orphaned'.
@@ -197,6 +205,7 @@ def place_fecta(account_label: str, special: WzSpecial, risk: float) -> dict:
         "bet_hash": f"nfl-fecta-{special.wz_game_id}",
         "market": "nfl_fecta",
         "bet_on": special.description,
+        "use_free_play": use_free_play,
     }
     result = single_placer.place_single(account_label, bet)
     if not _logged_out_at_preflight(result):

@@ -69,6 +69,7 @@ def test_fetch_returns_snapshot(acct):
         assert snap.label == "Wagerzon"
         assert snap.available == 3245.32
         assert snap.cash == 1300.00
+        assert snap.free_play == 0.0
         assert snap.error is None
         assert snap.fetched_at.tzinfo == timezone.utc
 

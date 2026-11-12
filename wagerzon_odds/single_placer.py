@@ -349,7 +349,9 @@ def _build_confirm_payload(bet: dict) -> dict:
         "open": "0",
         "sameAmount": "false",
         "sameAmountNumber": amount_str,
-        "useFreePlayAmount": "false",
+        # bet["use_free_play"] spends the account's free play balance instead
+        # of cash (nfl_specials' Use free play setting, 2026-11-12).
+        "useFreePlayAmount": "true" if bet.get("use_free_play") else "false",
         "sel": build_sel_for_single(bet),
         "detailData": _json.dumps(detail_data),
     }
@@ -366,7 +368,8 @@ def place_single(account: str, bet: dict, session=None) -> dict:
         account:  Wagerzon account label (e.g. "primary"). Ignored if
                   `session` is provided (test injection path).
         bet:      Dict with keys: idgm, play, line, american_odds,
-                  actual_size, wz_odds_at_place, and optionally pitcher.
+                  actual_size, wz_odds_at_place, and optionally pitcher
+                  and use_free_play (True: risk the free play balance).
         session:  For testing only — pass a MagicMock requests.Session.
                   Production code should leave this as None.
 
@@ -488,7 +491,7 @@ def place_single(account: str, bet: dict, session=None) -> dict:
     # types and includes `roundRobinCombinations: ""` — mirror it exactly.
     wager_request["open"]                   = 0
     wager_request["sameAmount"]             = False
-    wager_request["useFreePlayAmount"]      = False
+    wager_request["useFreePlayAmount"]      = bool(bet.get("use_free_play"))
     wager_request["roundRobinCombinations"] = ""
     # confirmPassword is required by WZ to authorize the placement (mirrors
     # parlay_placer._build_post_request). The test path (wz_account is None)
