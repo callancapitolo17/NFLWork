@@ -263,14 +263,19 @@ def test_a_whole_number_line_needs_two_books():
                     wz_prices=prices).fair_prob("away_over") == 0.25
 
 
-def test_a_held_whole_number_parlay_pays_pushes_at_its_own_price():
+def test_a_held_whole_number_parlay_pays_pushes_at_its_own_price(monkeypatch):
+    from nfl_specials import halves_board
     from nfl_specials.halves_board import HalfBoard, HeldHalfParlay, size_halves
     game = _game()
     fair = price_half_at_book(GridBook(TRUE_GRID, game), BOOK_GAME, game)
     line = HalfLine(game, "priced", book_fairs={"DraftKings": fair, "BetMGM": fair},
-                    wz_prices={c: WzParlayPrice(3.6, 500) for c in CORNERS})
-    assert line.fair_prob("away_over", 4.0) == pytest.approx(0.20 + fair.push_returns["away_over"] / 4.0)
+                    wz_prices={c: WzParlayPrice(5.0, 500) for c in CORNERS})
+    groups_seen = []
+    real = halves_board.budgeted_stakes
+    monkeypatch.setattr(halves_board, "budgeted_stakes",
+                        lambda groups, *args: groups_seen.append(groups) or real(groups, *args))
     board = HalfBoard(datetime.now(timezone.utc), None, [line], {})
-    held = (HeldHalfParlay(game.wz_game_id, "away_over", 50.0, 300),)
-    sized = size_halves(board, 5000, 0.25, None, held=held)
-    assert set(sized) == {(game.wz_game_id, c) for c in CORNERS}
+    size_halves(board, 5000, 0.25, None, held=(HeldHalfParlay(game.wz_game_id, "away_over", 50.0, 300),))
+    held = [h for group in groups_seen[0] for h in group.held]
+    # Placed at +300 (4.0): its pushes pay against 4.0, not today's 5.0.
+    assert [h.fair_prob for h in held] == pytest.approx([0.20 + fair.push_returns["away_over"] / 4.0])

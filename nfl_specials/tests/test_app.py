@@ -252,3 +252,22 @@ def test_no_other_site_can_frame_the_page(page_port):
         "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'none'",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer"}
+
+
+def test_a_single_book_whole_number_1h_parlay_is_refused_and_nothing_placed(app, monkeypatch):
+    from nfl_specials.halves_board import HalfBoard, HalfBookFair, HalfLine
+    from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
+    sent = []
+    monkeypatch.setattr(app_module.wz_halves, "place_half_parlay", lambda *args: sent.append(args))
+    game = WzHalfGame(league="NFL", wz_game_id=42, away="BUF", home="NYJ",
+                      game_start_time=datetime(2099, 1, 1, tzinfo=timezone.utc), away_spread=-6.0,
+                      away_spread_american=-110, home_spread_american=-110, total=26.0,
+                      over_american=-110, under_american=-110)
+    only = HalfBookFair("BetMGM", {c: 0.29 for c in CORNERS}, 1.2, push_returns={c: 0.06 for c in CORNERS})
+    line = HalfLine(game, "priced", note="whole-number line priced by BetMGM only; needs 2 books",
+                    book_fairs={"BetMGM": only}, wz_prices={c: WzParlayPrice(3.59, 500) for c in CORNERS})
+    app.publish_halves(HalfBoard(datetime.now(timezone.utc), datetime.now(timezone.utc), [line], {}))
+    with pytest.raises(ValueError, match="needs 2 books"):
+        app.place_half({"wz_game_id": 42, "corner": "away_over", "risk": 40, "wz_decimal": 3.59,
+                        "account": "Wagerzon"})
+    assert sent == []

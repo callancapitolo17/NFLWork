@@ -352,6 +352,10 @@ class SpecialsApp:
             sizing = self.size_halves_for(halves, fecta_board, fecta_sizing, settings, account,
                                           self.store.placements_since(week),
                                           self.store.half_placements_since(week))[(wz_game_id, corner)]
+            if sizing.fair_prob is None:
+                # e.g. a whole-number line only one book priced (halves_board.MIN_BOOKS_WHOLE_NUMBER)
+                raise ValueError(f"1H {corner} on game {wz_game_id} has no fair price: "
+                                 f"{line.note or 'no book priced it'}")
             result = wz_halves.place_half_parlay(account, line.game, corner, float(risk), price.decimal)
             if result.status == "placed":
                 self._lower_balance(account, float(risk), None)
