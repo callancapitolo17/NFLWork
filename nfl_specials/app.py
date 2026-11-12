@@ -21,7 +21,7 @@ can send here without a preflight this server never answers):
 Refreshes run only when asked (Refresh button; user decision 2026-10-02).
 Side effects: fecta_quotes and half_parlay_quotes APPEND (each refresh),
 placed_fectas and placed_half_parlays APPEND (each placement attempt),
-settings UPSERT — all in config.STATE_DB_PATH. A Place click submits a REAL
+settings UPSERT, all in config.STATE_DB_PATH. A Place click submits a REAL
 Wagerzon bet (wz.place_fecta / wz_halves.place_half_parlay).
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, urlparse
 from nfl_specials import config, wz, wz_halves
 from nfl_specials.board import Board, HeldPlacement, refresh_board, size_board
 from nfl_specials.books import parse_start
-from nfl_specials.halves_board import (HalfBoard, HeldFecta, HeldHalfParlay, conservative_american,
+from nfl_specials.halves_board import (HalfBoard, HeldHalfParlay, conservative_american,
                                        refresh_halves, size_halves)
 from nfl_specials.pricing import decimal_to_american, free_play_value
 from nfl_specials.store import Store
@@ -113,6 +113,10 @@ class SpecialsApp:
                 except Exception as exc:
                     log.exception("%s refresh failed", name)
                     errors.append(f"{name}: {type(exc).__name__}: {exc}")
+                    if name == "1H parlays":
+                        # Its old fairs must not stay placeable after a failed refresh.
+                        with self._lock:
+                            self._halves = None
             self._read_balances()   # bets may have settled while it priced
             self._last_error = "; ".join(errors)[:300] or None
         except Exception as exc:
@@ -147,6 +151,7 @@ class SpecialsApp:
             "account": account,
             "min_stake": config.WZ_MIN_STAKE,
             "max_stake": config.WZ_MAX_STAKE,
+            "half_max_stake": config.WZ_HALF_PARLAY_MAX_STAKE,
             "available_balance": None,     # the budget the stakes fit: free play with it on
             "cash_available": None,
             "free_play_balance": None,
@@ -169,8 +174,18 @@ class SpecialsApp:
                                0.0 if budget is None else budget,
                                held=_held_placements(placements, account))
         if halves is not None:
-            payload["halves"] = self._halves_json(halves, board, sized, settings, account,
-                                                  placements, half_placements)
+            half_budget = self.half_budget(account, sized)
+            half_sized = self.size_halves_for(halves, board, sized, half_budget, settings, account,
+                                              placements, half_placements)
+            payload["halves"] = {
+                "started_at": halves.started_at.isoformat(),
+                "finished_at": halves.finished_at.isoformat() if halves.finished_at else None,
+                "progress_done": halves.progress_done,
+                "progress_total": halves.progress_total,
+                "book_status": halves.book_status,
+                "budget": half_budget,
+                "lines": [_half_line_json(line, half_sized) for line in halves.lines],
+            }
         if board is None:
             return payload
         payload["board"] = {
@@ -184,7 +199,7 @@ class SpecialsApp:
         }
         return payload
 
-    def half_budget(self, account: str, fecta_board: Board | None, fecta_sizing: list) -> float | None:
+    def half_budget(self, account: str, fecta_sizing: list) -> float | None:
         """Cash left for 1H parlays: the account's cash 'available' less the
         fectas' recommended stakes (fectas get first call; with Use free play
         on they draw on the free play balance, not this one). None = unknown."""
@@ -195,28 +210,13 @@ class SpecialsApp:
         return max(0.0, cash - fecta_cash)
 
     def size_halves_for(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list,
-                        settings: dict, account: str | None, placements: list[dict],
-                        half_placements: list[dict]) -> dict:
-        budget = self.half_budget(account, fecta_board, fecta_sizing)
+                        budget: float | None, settings: dict, account: str | None,
+                        placements: list[dict], half_placements: list[dict]) -> dict:
+        """size_halves on this account's bets; an unknown budget recommends nothing."""
         return size_halves(halves, settings["bankroll"], settings["kelly_fraction"],
                            0.0 if budget is None else budget, fecta_board, fecta_sizing,
-                           held_fectas=tuple(HeldFecta(h.wz_game_id, h.risk, h.wz_american)
-                                             for h in _held_placements(placements, account)),
+                           held_fectas=_held_placements(placements, account),
                            held=_held_half_parlays(half_placements, account))
-
-    def _halves_json(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list, settings: dict,
-                     account: str | None, placements: list[dict], half_placements: list[dict]) -> dict:
-        sized = self.size_halves_for(halves, fecta_board, fecta_sizing, settings, account,
-                                     placements, half_placements)
-        return {
-            "started_at": halves.started_at.isoformat(),
-            "finished_at": halves.finished_at.isoformat() if halves.finished_at else None,
-            "progress_done": halves.progress_done,
-            "progress_total": halves.progress_total,
-            "book_status": halves.book_status,
-            "budget": self.half_budget(account, fecta_board, fecta_sizing),
-            "lines": [_half_line_json(line, sized) for line in halves.lines],
-        }
 
     # --- write -------------------------------------------------------------
     def save_settings(self, body: dict) -> dict:
@@ -315,8 +315,10 @@ class SpecialsApp:
             raise ValueError("wz_game_id must be a whole number and corner one of " + ", ".join(wz_halves.CORNERS))
         if not isinstance(shown_decimal, (int, float)):
             raise ValueError("wz_decimal must be a number")
-        if not isinstance(risk, (int, float)) or risk < config.WZ_MIN_STAKE or risk != int(risk):
-            raise ValueError(f"risk must be whole dollars, at least ${config.WZ_MIN_STAKE:.0f}, got {risk!r}")
+        if (not isinstance(risk, (int, float)) or risk != int(risk)
+                or not config.WZ_MIN_STAKE <= risk <= config.WZ_HALF_PARLAY_MAX_STAKE):
+            raise ValueError(f"risk must be whole dollars, ${config.WZ_MIN_STAKE:.0f}-"
+                             f"${config.WZ_HALF_PARLAY_MAX_STAKE:.0f}, got {risk!r}")
         if account not in wz.account_labels():
             raise ValueError(f"unknown Wagerzon account {account!r}")
         with self._lock:
@@ -335,38 +337,52 @@ class SpecialsApp:
             cash = self.budget(account)
             if cash is not None and risk > cash:
                 raise ValueError(f"risk ${risk:.2f} is more than the ${cash:.2f} Wagerzon shows available")
-            since = datetime.now(timezone.utc) - DUPLICATE_PLACEMENT_WINDOW
-            recent = [p for p in self.store.half_placements_since(since)
-                      if p["account"] == account and p["wz_game_id"] == wz_game_id
-                      and p["corner"] == corner and p["status"] == "placed"]
+            now = datetime.now(timezone.utc)
+            week = now - timedelta(days=PLACEMENT_HISTORY_DAYS)
+            placements, half_placements = self.store.placements_since(week), self.store.half_placements_since(week)
+            mine = [p for p in half_placements if p["account"] == account and p["wz_game_id"] == wz_game_id
+                    and p["corner"] == corner and p["status"] in wz_halves.MAYBE_PLACED]
+            recent = [p for p in mine if p["placed_at"] >= now - DUPLICATE_PLACEMENT_WINDOW]
             if recent:
-                raise ValueError(f"${recent[0]['risk']:.0f} already placed on this parlay at "
-                                 f"{recent[0]['placed_at']:%H:%M:%S} (ticket {recent[0]['ticket_number']}); "
+                raise ValueError(f"${recent[0]['risk']:.0f} went to Wagerzon on this parlay at "
+                                 f"{recent[0]['placed_at']:%H:%M:%S} ({recent[0]['status']}); "
                                  f"wait 2 minutes to add more")
+            already = sum(p["risk"] for p in mine)
+            if already + risk > config.WZ_HALF_PARLAY_MAX_STAKE:
+                raise ValueError(f"${already:.0f} already on this parlay this week; at most "
+                                 f"${config.WZ_HALF_PARLAY_MAX_STAKE - already:.0f} more")
             settings = self.store.settings()
-            week = datetime.now(timezone.utc) - timedelta(days=PLACEMENT_HISTORY_DAYS)
             fecta_sizing = (size_board(fecta_board, settings["bankroll"], settings["kelly_fraction"],
                                        self.budget(account, settings["use_free_play"]) or 0.0,
-                                       held=_held_placements(self.store.placements_since(week), account))
+                                       held=_held_placements(placements, account))
                             if fecta_board is not None else [])
-            sizing = self.size_halves_for(halves, fecta_board, fecta_sizing, settings, account,
-                                          self.store.placements_since(week),
-                                          self.store.half_placements_since(week))[(wz_game_id, corner)]
-            result = wz_halves.place_half_parlay(account, line.game, corner, float(risk), price.decimal)
-            if result.status == "placed":
-                self._lower_balance(account, float(risk), None)
+            sizing = self.size_halves_for(halves, fecta_board, fecta_sizing, self.half_budget(account, fecta_sizing),
+                                          settings, account, placements, half_placements)[(wz_game_id, corner)]
             game = line.game
-            self.store.record_half_placement({
-                "placed_at": datetime.now(timezone.utc), "account": account, "league": game.league,
-                "wz_game_id": game.wz_game_id, "corner": corner, "away_team": game.away,
-                "home_team": game.home, "game_start_time": game.game_start_time,
-                "away_spread": game.away_spread, "total": game.total, "wz_decimal": price.decimal,
-                "wz_american": conservative_american(price.decimal), "risk": float(risk),
-                "to_win": result.actual_win, "fair_prob": sizing.fair_prob, "ev": sizing.ev,
-                "status": result.status, "ticket_number": result.ticket_number, "error": result.error_msg or None,
-            })
+            row = {"placed_at": now, "account": account, "league": game.league, "wz_game_id": game.wz_game_id,
+                   "corner": corner, "away_team": game.away, "home_team": game.home,
+                   "game_start_time": game.game_start_time, "away_spread": game.away_spread,
+                   "total": game.total, "wz_decimal": price.decimal,
+                   "wz_american": conservative_american(price.decimal), "risk": float(risk), "to_win": None,
+                   "fair_prob": sizing.fair_prob, "ev": sizing.ev, "status": None, "ticket_number": None,
+                   "error": None}
+            try:
+                result = wz_halves.place_half_parlay(account, game, corner, float(risk), price.decimal)
+            except Exception as exc:  # recorded as maybe placed, then surfaced
+                self.store.record_half_placement({**row, "placed_at": datetime.now(timezone.utc),
+                                                  "status": "unknown", "error": f"{type(exc).__name__}: {exc}"[:300]})
+                raise
+            if result.win is not None:
+                # The price Wagerzon quoted at the stake, which held-bet sizing reads.
+                row["wz_decimal"] = 1.0 + result.win / float(risk)
+                row["wz_american"] = conservative_american(row["wz_decimal"])
+            if result.status in wz_halves.MAYBE_PLACED:
+                self._lower_balance(account, float(risk), None)
+            self.store.record_half_placement({**row, "placed_at": datetime.now(timezone.utc), "to_win": result.win,
+                                              "status": result.status, "ticket_number": result.ticket_number,
+                                              "error": result.error})
         return {"status": result.status, "ticket_number": result.ticket_number,
-                "error": result.error_msg or None, "to_win": result.actual_win}
+                "error": result.error, "to_win": result.win}
 
     def _lower_balance(self, account: str, risk: float, balance_after: float | None) -> None:
         """Keep the budget right between refreshes: Wagerzon's reported
@@ -481,9 +497,9 @@ def _half_line_json(line, sized: dict) -> dict:
 
 
 def _held_half_parlays(half_placements: list[dict], account: str | None) -> tuple[HeldHalfParlay, ...]:
-    """The 1H parlays `account` has placed, among `half_placements`."""
+    """The 1H parlays `account` has (or may have) on Wagerzon, among `half_placements`."""
     return tuple(HeldHalfParlay(p["wz_game_id"], p["corner"], p["risk"], p["wz_american"])
-                 for p in half_placements if p["account"] == account and p["status"] == "placed")
+                 for p in half_placements if p["account"] == account and p["status"] in wz_halves.MAYBE_PLACED)
 
 
 def _held_placements(placements: list[dict], account: str | None) -> tuple[HeldPlacement, ...]:

@@ -6,9 +6,10 @@ Reads:  ActiveLeaguesHelper (resolve WZ_HALF_LEAGUES by Description), then
         Each 1H line is its own Wagerzon game (idgmtyp 15) with its own idgm.
 Prices: ConfirmWagerHelper with RiskWin=2 (a preview: no balance check, never
         placed), through wagerzon_odds/parlay_pricer.get_combined_parlay_price.
-Places: wagerzon_odds/parlay_placer.place_parlays with an explicit account
-        (ConfirmWagerHelper preflight, $0.01 win-drift check, then
-        PostWagerMultipleHelper).
+Places: re-reads the line, then parlay_placer's ConfirmWagerHelper preflight
+        (RiskWin=0) and ONE PostWagerMultipleHelper submit on an explicit
+        account. Never parlay_placer.place_parlays: it re-submits after a
+        logged-out reply to the submit, which can place the bet twice.
 No DB writes here. Wagerzon refuses quarter lines in any parlay
 (WAGERTYPENOALLOWGAME, checked live 2026-11-12), so only halves are read.
 """
@@ -24,26 +25,25 @@ from nfl_specials.books import CFB, NFL
 from nfl_specials.teams import resolve_wz_team
 
 import parlay_placer  # noqa: E402  (wz put wagerzon_odds on sys.path)
-from parlay_pricer import get_combined_parlay_price  # noqa: E402
+import requests  # noqa: E402
+from parlay_pricer import (PLAY_AWAY_SPREAD, PLAY_HOME_SPREAD, PLAY_OVER, PLAY_UNDER,  # noqa: E402
+                           get_combined_parlay_price)
 from scraper_v2 import _wz_game_start_time, fetch_active_leagues  # noqa: E402
 
 log = logging.getLogger("nfl_specials.wz_halves")
 
 # Wagerzon catalog Description -> league (resolved to an id on every read).
 WZ_HALF_LEAGUES = {"NFL - 1ST HALVES": NFL, "NCAA FOOTBALL - 1ST HALVES": CFB}
-SCHEDULE_URL = wz.config.WZ_BASE_URL + "/wager/NewScheduleHelper.aspx?WT=0&lg={league_id}"
 WZ_FIRST_HALF_GAME_TYPE = 15
-# Play codes ConfirmWagerHelper takes (parlay_pricer).
-PLAY_AWAY_SPREAD, PLAY_HOME_SPREAD, PLAY_OVER, PLAY_UNDER = 0, 1, 2, 3
 # What parlay_pricer sends; Wagerzon priced football parlays with it (2026-11-12).
 WZ_PITCHER_FIELD = 3
 # Preview stakes, largest first: $500 prices to +/-0.001 in decimal; $100 is
 # the fallback when a parlay's win would pass Wagerzon's max (MLB measured).
 PREVIEW_STAKES = (500, 100)
 PREVIEW_WORKERS = 8
-# The preview at the stake may differ from the board price by Wagerzon's
-# whole-dollar rounding; past this many dollars of to-win the price moved.
-PRICE_MOVE_TOLERANCE_DOLLARS = 1.0
+# Wagerzon pays whole dollars (wz.wagerzon_to_win), so the to-win at a stake
+# can sit up to $0.50 under the board's price; any lower is a worse price.
+WIN_ROUNDING_DOLLARS = 0.5
 
 SPREAD_SIDES = ("away", "home")
 TOTAL_SIDES = ("over", "under")
@@ -73,7 +73,6 @@ class WzHalfGame:
 @dataclass(frozen=True)
 class WzParlayPrice:
     decimal: float | None        # Wagerzon's parlay payout as decimal odds
-    preview_stake: int | None
     error: str | None = None     # Wagerzon's ErrorMsgKey or why there is no price
 
 
@@ -114,7 +113,7 @@ def _fetch_half_games_once() -> list[WzHalfGame]:
     games: dict[int, WzHalfGame] = {}
     # One request per league: a combined lg=430,540 answers only the first sport (2026-11-12).
     for league_id, league_name in sorted(league_of_id.items()):
-        resp = session.get(SCHEDULE_URL.format(league_id=league_id), timeout=30,
+        resp = session.get(wz.SCHEDULE_URL.format(league_id=league_id), timeout=30,
                            headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"})
         resp.raise_for_status()
         for league in ((resp.json().get("result") or {}).get("listLeagues") or [[]])[0]:
@@ -181,37 +180,77 @@ def _price_corner(session, game: WzHalfGame, corner: str) -> WzParlayPrice:
     for stake in PREVIEW_STAKES:
         quote = get_combined_parlay_price(session, legs, amount=stake)
         if quote is not None:
-            return WzParlayPrice(decimal=quote["decimal"], preview_stake=stake)
-    return WzParlayPrice(None, None, error="Wagerzon gave no preview price (see the log for its error)")
+            return WzParlayPrice(decimal=quote["decimal"])
+    return WzParlayPrice(None, error="Wagerzon gave no preview price (see the log for its error)")
+
+
+@dataclass(frozen=True)
+class HalfPlacement:
+    status: str               # 'placed' | 'unknown' | 'network_error' (both: may have placed) |
+                              # 'line_moved' | 'price_moved' | 'rejected' | 'auth_error' (not placed)
+    win: float | None         # the to-win Wagerzon quoted at the stake
+    ticket_number: str | None = None
+    error: str | None = None
+
+
+# Placement statuses after which the bet may be on Wagerzon.
+MAYBE_PLACED = ("placed", "unknown", "network_error")
+CHECK_OPEN_BETS = "check Wagerzon's open bets before placing again"
 
 
 def place_half_parlay(account_label: str, game: WzHalfGame, corner: str, risk: float,
-                      board_decimal: float) -> parlay_placer.PlacementResult:
-    """Place `risk` dollars on one corner at the board's price.
+                      board_decimal: float) -> HalfPlacement:
+    """Place `risk` dollars on one corner at the board's price, or refuse.
 
-    Previews the parlay at `risk` first (RiskWin=2, nothing placed) and
-    refuses with status 'price_moved' when the to-win differs from
-    risk x (board_decimal - 1) by more than PRICE_MOVE_TOLERANCE_DOLLARS;
-    otherwise places it with that previewed to-win, which place_parlays'
-    own preflight must match to the cent. Never retried here: a resent
-    submission can place the bet twice.
+    1. Re-reads Wagerzon's 1H lines: a game whose numbers or prices differ
+       from `game` is 'line_moved' (the fair was priced at those numbers).
+    2. ConfirmWagerHelper preflight at `risk` (RiskWin=0, balance-checked;
+       one re-login on a logged-out reply, nothing is placed by it). A to-win
+       more than WIN_ROUNDING_DOLLARS under risk x (board_decimal - 1) is
+       'price_moved'.
+    3. ONE PostWagerMultipleHelper submit, never re-sent. A logged-out,
+       failed or unreadable reply is 'unknown' / 'network_error': the bet
+       may be on Wagerzon.
     """
     account = next((a for a in wz.list_accounts() if a.label == account_label), None)
     if account is None:
         raise ValueError(f"unknown Wagerzon account {account_label!r}")
-    legs = corner_legs(game, corner)
-    parlay_hash = f"wz-1h-{game.wz_game_id}-{corner}"
-    quote = get_combined_parlay_price(wz.wagerzon_auth.get_session(account), legs, amount=risk)
-    if quote is None:
-        return parlay_placer.PlacementResult(parlay_hash, "rejected", error_msg="Wagerzon refused the preview")
-    expected_win = risk * (board_decimal - 1.0)
-    if abs(quote["win"] - expected_win) > PRICE_MOVE_TOLERANCE_DOLLARS:
-        return parlay_placer.PlacementResult(
-            parlay_hash, "price_moved", actual_win=quote["win"],
-            error_msg=f"board to-win ${expected_win:.2f}, Wagerzon now ${quote['win']:.2f}")
-    spec = parlay_placer.ParlaySpec(
-        parlay_hash=parlay_hash,
-        legs=[parlay_placer.Leg(idgm=leg["idgm"], play=leg["play"], points=leg["points"], odds=leg["odds"],
-                                pitcher=WZ_PITCHER_FIELD) for leg in legs],
-        amount=risk, expected_win=float(quote["win"]), expected_risk=risk)
-    return parlay_placer.place_parlays([spec], account)[0]
+    current = {g.wz_game_id: g for g in fetch_half_games()}.get(game.wz_game_id)
+    if current != game:
+        return HalfPlacement("line_moved", None, error="Wagerzon's 1H line changed since the board priced it; refresh")
+    legs = [parlay_placer.Leg(idgm=leg["idgm"], play=leg["play"], points=leg["points"], odds=leg["odds"],
+                              pitcher=WZ_PITCHER_FIELD) for leg in corner_legs(game, corner)]
+    try:
+        win, _risk = _preflight(legs, risk, account)
+    except parlay_placer.PreflightRejected as exc:
+        return HalfPlacement("rejected", None, error=exc.error_msg_key or exc.error_msg or "rejected")
+    except parlay_placer.AuthExpired:
+        return HalfPlacement("auth_error", None, error="Wagerzon login failed at the preflight")
+    except requests.RequestException as exc:
+        return HalfPlacement("rejected", None, error=f"preflight failed: {type(exc).__name__}")
+    if win < risk * (board_decimal - 1.0) - WIN_ROUNDING_DOLLARS:
+        return HalfPlacement("price_moved", win,
+                             error=f"board to-win ${risk * (board_decimal - 1.0):.2f}, Wagerzon now ${win:.2f}")
+    spec = parlay_placer.ParlaySpec(parlay_hash=f"wz-1h-{game.wz_game_id}-{corner}", legs=legs,
+                                    amount=risk, expected_win=win, expected_risk=risk)
+    try:
+        result = parlay_placer._post_wagers([spec], account)[0]
+    except parlay_placer.AuthExpired:
+        return HalfPlacement("unknown", win, error=f"Wagerzon answered the submit logged out; {CHECK_OPEN_BETS}")
+    except requests.RequestException as exc:
+        return HalfPlacement("network_error", win, error=f"submit failed ({type(exc).__name__}); {CHECK_OPEN_BETS}")
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        return HalfPlacement("unknown", win, error=f"unreadable submit reply ({type(exc).__name__}); {CHECK_OPEN_BETS}")
+    if result.status == "placed":
+        return HalfPlacement("placed", result.actual_win or win, ticket_number=result.ticket_number)
+    return HalfPlacement(result.status, win, error=result.error_msg or result.error_msg_key or None)
+
+
+def _preflight(legs: list, risk: float, account) -> tuple[float, float]:
+    """parlay_placer's ConfirmWagerHelper preflight, logged in again once when
+    Wagerzon answers logged out (a preflight places nothing)."""
+    try:
+        return parlay_placer._confirm_preflight(legs, risk, account)
+    except parlay_placer.AuthExpired:
+        wz.wagerzon_auth.clear_session_cache(account.label)
+        return parlay_placer._confirm_preflight(legs, risk, account)

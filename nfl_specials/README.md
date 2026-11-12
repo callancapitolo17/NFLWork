@@ -272,10 +272,12 @@ only 1st halves are read.
    | BetMGM | "1st half spread" (one market per line) | "1st half totals" (one market per line) |
    | DraftKings | "Spread 1st Half" or "Spread Alternate - 1st Half" | "Total 1st Half" or "Total Alternate - 1st Half" |
 
-   College lists by school name: Wagerzon's name must be the book's name or its
-   start (`MEMPHIS` = "Memphis Tigers"; `ST` reads `STATE`) with kickoffs within
-   30 minutes; with no listing matching both teams, exactly one listing matching
-   one team in its slot; anything else is "this game is not listed". On
+   College lists by school name: both of Wagerzon's names must be the book's
+   names or their start followed by a mascot (`MEMPHIS` = "Memphis Tigers"; `ST`
+   reads `STATE`; never "Michigan State" for `MICHIGAN` or "Texas Tech" for
+   `TEXAS`), in their home/away slots, with kickoffs within 30 minutes and one
+   such listing only; anything else is "this game is not listed". A game a book
+   names differently (`UL LAFAYETTE` vs "Louisiana") is not priced there. On
    2026-11-12 BetMGM declined every college cell (its college 1H markets are
    suspended until near kickoff) and DraftKings posts 1H alternates only a day or
    two out, so many college corners price at one or two books.
@@ -292,16 +294,26 @@ only 1st halves are read.
    around, as one nested chain, the maximum correlation the fairs allow, so a
    parlay beside a fecta gets less, never more. A team's over and under corners
    cannot both win, which the chain also over-counts (cautious). Placed 1H
-   parlays (`placed_half_parlays`) shrink the next stake on that side; a placed
-   bet the board cannot price blocks its side. $20 minimum; no maximum is
-   enforced here (Wagerzon's preflight refuses an oversize stake).
+   parlays (`placed_half_parlays`, counting the ones that may have gone through)
+   shrink the next stake on that side; a placed bet the board cannot price
+   blocks its side. $20 minimum, $250 per parlay a week
+   (`config.WZ_HALF_PARLAY_MAX_STAKE`, a mistyped-stake guard, not a measured
+   Wagerzon limit).
 6. **Place**: the server re-checks the corner is priced at the price the page
-   showed, the game has not started, the stake is whole dollars of at least $20
-   and within the cash available, and no placement on that parlay in the last 2
-   minutes; then `wz_halves.place_half_parlay` previews it at the stake (refused
-   as `price_moved` when the to-win is more than $1 off the board's price) and
-   places it with `parlay_placer.place_parlays` on the chosen account. Every
-   attempt is recorded.
+   showed, the game has not started, the stake is whole dollars, $20 to $250
+   with the week's earlier tickets on that parlay, and within the cash
+   available, and nothing went to Wagerzon on that parlay in the last 2 minutes.
+   Then `wz_halves.place_half_parlay` re-reads Wagerzon's 1H lines (a changed
+   number or price is `line_moved`), runs `parlay_placer`'s ConfirmWagerHelper
+   preflight at the stake (a to-win more than $0.50 under the board's price is
+   `price_moved`) and sends ONE PostWagerMultipleHelper submit on the chosen
+   account. It does not use `parlay_placer.place_parlays`, which re-submits
+   after a logged-out reply to the submit. A submit that fails, answers logged
+   out or cannot be read is `unknown` / `network_error`: it may be on Wagerzon,
+   so it blocks a retry, counts as held and shows "?" under placed. Every
+   attempt that reaches Wagerzon is recorded (refusals by the server's own
+   checks are not). A failed 1H refresh clears the 1H board, so its old fairs
+   cannot be placed.
 
 Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
 2026-11-12), one after the other so each book's pacing holds.
@@ -331,7 +343,7 @@ Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
 | `placed_fectas` | APPEND every Place click | the attempt and Wagerzon's answer; `free_play` TRUE for a free play bet |
 | `settings` | UPSERT | bankroll, Kelly fraction, use free play |
 | `half_parlay_quotes` | APPEND every refresh | one (1H game, book, corner) fair, or Wagerzon's parlay price (`book = 'Wagerzon'`, `wz_decimal`), or the reason there is none |
-| `placed_half_parlays` | APPEND every 1H Place click | the attempt and Wagerzon's answer |
+| `placed_half_parlays` | APPEND every 1H Place that reaches Wagerzon | the attempt and Wagerzon's answer, `wz_decimal` the price quoted at the stake |
 
 ## Troubleshooting
 

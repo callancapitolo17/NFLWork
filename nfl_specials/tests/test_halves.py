@@ -7,9 +7,9 @@ import pytest
 from scipy.stats import norm
 
 from nfl_specials import halves_board
-from nfl_specials.board import Board, FectaLine, Sizing
+from nfl_specials.board import Board, FectaLine, HeldPlacement, Sizing
 from nfl_specials.books import BookGame, LegMarket, Outcome
-from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldFecta, HeldHalfParlay,
+from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
                                        college_names_match, conservative_american, match_book_game,
                                        price_half_at_book, size_halves)
 from nfl_specials.pricing import BookFair
@@ -93,22 +93,31 @@ def test_college_names_match_the_book_name_or_its_start():
     assert college_names_match("MICHIGAN ST", "Michigan State Spartans")
     assert not college_names_match("UL LAFAYETTE", "Louisiana-Lafayette Ragin Cajuns")
     assert not college_names_match("FLORIDA STATE", "Florida Gators")
+    # The next token names another school, not a mascot.
+    assert not college_names_match("MICHIGAN", "Michigan State Spartans")
+    assert not college_names_match("TEXAS", "Texas Tech Red Raiders")
+    assert not college_names_match("TEXAS", "Texas A&M Aggies")
 
 
-def test_college_match_needs_close_kickoffs_and_fails_closed_on_two_candidates():
+def test_college_match_needs_both_teams_close_kickoffs_and_one_candidate():
     game = _game(league="CFB", away="MEMPHIS", home="SOUTH FLORIDA")
     right = BookGame("right", "South Florida Bulls", "Memphis Tigers", "2099-01-01T18:00:00Z")
     late = BookGame("late", "South Florida Bulls", "Memphis Tigers", "2099-01-01T19:00:00Z")
     assert match_book_game(game, [right, late]).book_event_id == "right"
-    # One team matching in its slot is enough when it is the only such listing...
-    ulm = _game(league="CFB", away="UL LAFAYETTE", home="UL MONROE")
-    one = BookGame("one", "ULM", "Louisiana", "2099-01-01T18:00:00Z")
-    assert match_book_game(ulm, [one]) is None
-    memphis_only = BookGame("m", "USF", "Memphis", "2099-01-01T18:00:00Z")
-    assert match_book_game(game, [memphis_only]).book_event_id == "m"
-    # ...but two such listings at the kickoff is no match.
-    other = BookGame("o", "Tulane", "Memphis", "2099-01-01T18:10:00Z")
-    assert match_book_game(game, [memphis_only, other]) is None
+    # One team alone is never a match: the true game may be missing from the list.
+    assert match_book_game(game, [BookGame("m", "USF", "Memphis", "2099-01-01T18:00:00Z")]) is None
+    michigan = _game(league="CFB", away="C MICHIGAN", home="MICHIGAN")
+    assert match_book_game(michigan, [BookGame("msu", "Michigan State Spartans", "Indiana Hoosiers",
+                                               "2099-01-01T18:00:00Z")]) is None
+    twin = BookGame("twin", "South Florida", "Memphis", "2099-01-01T18:05:00Z")
+    assert match_book_game(game, [right, twin]) is None
+
+
+def test_a_listing_with_no_start_is_skipped_not_fatal():
+    game = _game(league="CFB", away="MEMPHIS", home="SOUTH FLORIDA")
+    blank = BookGame("blank", "South Florida Bulls", "Memphis Tigers", "")
+    right = BookGame("right", "South Florida Bulls", "Memphis Tigers", "2099-01-01T18:00:00Z")
+    assert match_book_game(game, [blank, right]).book_event_id == "right"
 
 
 # --- pricing ---------------------------------------------------------------------
@@ -200,7 +209,7 @@ def _half_board(*lines: HalfLine) -> HalfBoard:
 
 def _priced_line(game: WzHalfGame, fairs: dict[str, float], decimals: dict[str, float]) -> HalfLine:
     return HalfLine(game, "priced", book_fairs={"FanDuel": HalfBookFair("FanDuel", fairs, 1.2)},
-                    wz_prices={c: WzParlayPrice(d, 500) for c, d in decimals.items()})
+                    wz_prices={c: WzParlayPrice(d) for c, d in decimals.items()})
 
 
 EVEN_PRICES = {c: 3.64 for c in CORNERS}
@@ -239,7 +248,7 @@ def test_a_held_fecta_the_board_cannot_price_blocks_that_team():
     fecta = FectaLine(special, parse_fecta(special.description), "unpriced", game=fecta_game)
     fecta_board = Board(datetime.now(timezone.utc), None, [fecta], {})
     sized = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(None, None, 0.0, 0.0, None)],
-                        held_fectas=(HeldFecta(99, 50.0, 500),))
+                        held_fectas=(HeldPlacement(99, 50.0, 500),))
     assert sized[(line.game.wz_game_id, "away_over")].recommended_stake == 0
     assert sized[(line.game.wz_game_id, "home_under")].recommended_stake > 0
 
@@ -267,7 +276,7 @@ def test_refresh_skips_whole_numbers_and_prices_each_book_once(monkeypatch):
     priced, whole = _game(), _game(wz_game_id=2, total=24.0)
     monkeypatch.setattr(halves_board.wz_halves, "fetch_half_games", lambda: [priced, whole])
     monkeypatch.setattr(halves_board.wz_halves, "price_corners",
-                        lambda games: {(g.wz_game_id, c): WzParlayPrice(3.64, 500) for g in games for c in CORNERS})
+                        lambda games: {(g.wz_game_id, c): WzParlayPrice(3.64) for g in games for c in CORNERS})
 
     class ListedBook(CorrelatedBook):
         def games(self):
@@ -290,3 +299,136 @@ def test_refresh_skips_whole_numbers_and_prices_each_book_once(monkeypatch):
     assert board.progress_done == board.progress_total == 1
     assert sorted({row["book"] for row in store.rows}) == ["FanDuel", "Wagerzon"]
     assert len(store.rows) == 8
+
+
+# --- placing -----------------------------------------------------------------------
+from nfl_specials import app as app_module  # noqa: E402
+from nfl_specials import wz_halves  # noqa: E402
+from nfl_specials.app import SpecialsApp  # noqa: E402
+from nfl_specials.store import Store  # noqa: E402
+from nfl_specials.wz_halves import HalfPlacement  # noqa: E402
+
+class FakeAccount:
+    label = "Wagerzon"
+
+
+@pytest.fixture
+def placer(monkeypatch):
+    """wz_halves.place_half_parlay against a fake Wagerzon: records every submit."""
+    calls = {"preflight": 0, "submits": 0}
+    state = {"win": 1319.0 / 500 * 100, "lines": [_game()], "submit": "placed"}
+    monkeypatch.setattr(wz_halves.wz, "list_accounts", lambda: [FakeAccount()])
+    monkeypatch.setattr(wz_halves, "fetch_half_games", lambda: state["lines"])
+
+    def preflight(legs, risk, account):
+        calls["preflight"] += 1
+        return state["win"], risk
+
+    def submit(specs, account):
+        calls["submits"] += 1
+        if state["submit"] == "logged_out":
+            raise wz_halves.parlay_placer.AuthExpired("html")
+        return [wz_halves.parlay_placer.PlacementResult(specs[0].parlay_hash, "placed", ticket_number="T1",
+                                                        actual_win=specs[0].expected_win)]
+
+    monkeypatch.setattr(wz_halves.parlay_placer, "_confirm_preflight", preflight)
+    monkeypatch.setattr(wz_halves.parlay_placer, "_post_wagers", submit)
+    return calls, state
+
+
+def test_placing_previews_then_submits_once(placer):
+    calls, _state = placer
+    assert wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638) == HalfPlacement(
+        "placed", 263.8, ticket_number="T1")
+    assert calls == {"preflight": 1, "submits": 1}
+
+
+def test_a_moved_line_or_worse_price_places_nothing(placer):
+    calls, state = placer
+    state["lines"] = [_game(total=21.5)]
+    assert wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638).status == "line_moved"
+    state["lines"], state["win"] = [_game()], 262.0      # $1.80 under 100 x 2.638
+    moved = wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638)
+    assert (moved.status, moved.win) == ("price_moved", 262.0)
+    assert calls["submits"] == 0
+
+
+def test_a_logged_out_submit_is_never_resent(placer):
+    calls, state = placer
+    state["submit"] = "logged_out"
+    result = wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638)
+    assert result.status == "unknown" and "open bets" in result.error
+    assert calls["submits"] == 1
+
+
+@pytest.fixture
+def half_app(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module.wz, "account_labels", lambda: ["Wagerzon"])
+    outcomes = []
+
+    def fake_place(account, game, corner, risk, board_decimal):
+        outcome = outcomes.pop(0) if outcomes else HalfPlacement("placed", risk * (board_decimal - 1), "T1")
+        return outcome
+
+    monkeypatch.setattr(app_module.wz_halves, "place_half_parlay", fake_place)
+    specials_app = SpecialsApp(Store(tmp_path / "state.duckdb"))
+    specials_app.publish_halves(_half_board(_priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)))
+    specials_app._balances = {"Wagerzon": 500.0}
+    specials_app.outcomes = outcomes
+    return specials_app
+
+
+def _half_bet(risk=40, decimal=3.64, corner="away_over"):
+    return {"wz_game_id": 6118382, "corner": corner, "wz_decimal": decimal, "risk": risk, "account": "Wagerzon"}
+
+
+def test_a_placed_parlay_is_recorded_whole_and_blocks_a_second_click(half_app):
+    assert half_app.place_half(_half_bet()) == {"status": "placed", "ticket_number": "T1", "error": None,
+                                                "to_win": pytest.approx(105.6)}
+    week = datetime.now(timezone.utc) - timedelta(days=7)
+    [row] = half_app.store.half_placements_since(week)
+    row.pop("placed_at")
+    assert row == {"account": "Wagerzon", "league": "NFL", "wz_game_id": 6118382, "corner": "away_over",
+                   "away_team": "WAS", "home_team": "NYG", "game_start_time": KICKOFF, "away_spread": 0.5,
+                   "total": 20.5, "wz_decimal": pytest.approx(3.64), "wz_american": 264, "risk": 40.0,
+                   "to_win": pytest.approx(105.6), "fair_prob": 0.29, "ev": pytest.approx(0.29 * 3.64 - 1),
+                   "status": "placed", "ticket_number": "T1", "error": None}
+    assert half_app.budget("Wagerzon") == 460.0
+    with pytest.raises(ValueError, match="wait 2 minutes"):
+        half_app.place_half(_half_bet())
+
+
+def test_an_unknown_submit_counts_as_held_and_blocks_a_retry(half_app):
+    half_app.outcomes.append(HalfPlacement("unknown", 105.6, error="check Wagerzon's open bets"))
+    assert half_app.place_half(_half_bet())["status"] == "unknown"
+    with pytest.raises(ValueError, match="wait 2 minutes"):
+        half_app.place_half(_half_bet())
+    held = app_module._held_half_parlays(half_app.store.half_placements_since(KICKOFF - timedelta(days=36500)),
+                                         "Wagerzon")
+    assert held == (HeldHalfParlay(6118382, "away_over", 40.0, 264),)
+
+
+def test_place_refuses_a_changed_price_a_big_stake_and_too_much_cash(half_app):
+    with pytest.raises(ValueError, match="price changed"):
+        half_app.place_half(_half_bet(decimal=3.7))
+    with pytest.raises(ValueError, match="whole dollars"):
+        half_app.place_half(_half_bet(risk=2000))
+    with pytest.raises(ValueError, match="whole dollars"):
+        half_app.place_half(_half_bet(risk=19))
+    half_app._balances = {"Wagerzon": 30.0}
+    with pytest.raises(ValueError, match="more than"):
+        half_app.place_half(_half_bet(risk=40))
+    assert half_app.store.half_placements_since(KICKOFF - timedelta(days=36500)) == []
+
+
+def test_a_failed_1h_refresh_clears_the_board(half_app, monkeypatch):
+    monkeypatch.setattr(app_module, "refresh_board", lambda store, publish: None)
+    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
+
+    def broken(store, publish):
+        raise RuntimeError("no 1H league in Wagerzon's catalog")
+
+    monkeypatch.setattr(app_module, "refresh_halves", broken)
+    half_app._run_refresh()
+    assert half_app._halves is None
+    assert half_app._last_error == "1H parlays: RuntimeError: no 1H league in Wagerzon's catalog"

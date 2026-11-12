@@ -989,7 +989,9 @@ function halfBooksLine(line, c) {
 
 function halfKey(line, corner) { return `half:${line.wz_game_id}:${corner}`; }
 
-function ownHalfPlacements(p) { return (p.half_placements || []).filter(r => r.status === "placed" && r.account === p.account); }
+// Statuses after which the parlay may be on Wagerzon (wz_halves.MAYBE_PLACED).
+const MAYBE_PLACED = ["placed", "unknown", "network_error"];
+function ownHalfPlacements(p) { return (p.half_placements || []).filter(r => MAYBE_PLACED.includes(r.status) && r.account === p.account); }
 
 function halfStakeCell(line, corner, c, p) {
   if (c.fair_prob == null || c.wz_decimal == null) return el("div", { class: "stake-col stake-none", text: "Unpriced" });
@@ -1112,7 +1114,7 @@ function renderHalves(p) {
 
 function renderHalfPlaced(p) {
   const list = document.getElementById("half-placed");
-  const placed = (p.half_placements || []).filter(r => r.status === "placed");
+  const placed = (p.half_placements || []).filter(r => MAYBE_PLACED.includes(r.status));
   document.getElementById("half-placed-summary").textContent =
     placed.length ? `${placed.length} placed · ${money(placed.reduce((s, r) => s + r.risk, 0))} risked` : "";
   if (!placed.length) {
@@ -1120,18 +1122,20 @@ function renderHalfPlaced(p) {
     return;
   }
   list.replaceChildren(...placed.map(r => el("div", { class: "placed-row" }, [
-    el("span", { class: "status-ok", "aria-label": "placed", text: "✓" }),
+    r.status === "placed" ? el("span", { class: "status-ok", "aria-label": "placed", text: "✓" })
+      : el("span", { class: "msg-err", "aria-label": "may be placed", title: r.error || "", text: "?" }),
     el("span", { text: cornerTitle({ away: r.away_team, home: r.home_team, away_spread: r.away_spread, total: r.total }, r.corner) }),
     el("span", { class: "num", text: `${money(r.risk)} at ${r.wz_decimal.toFixed(3)}` }),
     el("span", { class: "faint small placed-when", text: dayClock(parseTime(r.placed_at)) }),
-    el("div", { class: "placed-detail", text: `Ticket ${r.ticket_number} · to win ${money(r.to_win || 0)}` + (p.accounts.length > 1 ? ` · ${r.account}` : "") }),
+    el("div", { class: "placed-detail", text: (r.status === "placed" ? `Ticket ${r.ticket_number} · to win ${money(r.to_win || 0)}`
+      : `May be placed (${r.status}): check Wagerzon's open bets`) + (p.accounts.length > 1 ? ` · ${r.account}` : "") }),
   ])));
 }
 
 function askToPlaceHalf(line, corner, c, input) {
   const p = lastPayload, id = halfKey(line, corner), risk = Number(input.value);
-  if (!(risk >= p.min_stake) || risk !== Math.round(risk)) {
-    placeMessages.set(id, { ok: false, text: `Enter whole dollars, at least ${money(p.min_stake)}` });
+  if (!(risk >= p.min_stake && risk <= p.half_max_stake) || risk !== Math.round(risk)) {
+    placeMessages.set(id, { ok: false, text: `Enter whole dollars, ${money(p.min_stake)} to ${money(p.half_max_stake)}` });
     render();
     return;
   }

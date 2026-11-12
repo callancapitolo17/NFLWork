@@ -68,3 +68,6 @@ DEFAULT_KELLY_FRACTION = 0.25
 WZ_MIN_STAKE = 20.0
 # Wagerzon's maximum risk per special (Cal, 2026-10-02).
 WZ_MAX_STAKE = 250.0
+# The most one 1H parlay stakes or Place accepts: a guard against a mistyped
+# stake, not a measured Wagerzon limit.
+WZ_HALF_PARLAY_MAX_STAKE = 250.0
