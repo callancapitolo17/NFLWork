@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from kalshi_parlay_quoter import scope
 from kalshi_parlay_quoter.pricer import PricerBacklog, PricerError, PriceResult
 
-LEG_FIELDS = ("ok", "reason", "detail", "fair", "fair_lo", "fair_hi", "bracketed",
+LEG_FIELDS = ("ok", "reason", "detail", "priced_at_ms", "cache_age_ms", "fair", "fair_lo", "fair_hi", "bracketed",
               "sigma", "c", "tau", "line", "kickoff_ms", "fair_age_ms",
               "kalshi_status", "kalshi_yes_bid", "kalshi_yes_ask",
               "kalshi_no_ask")
@@ -101,8 +101,14 @@ def decide(rfq: dict, legs: list[dict] | None, price_fn, *,
             lr[f] = got.get(f)
         lr["ok"] = bool(got.get("ok"))
         for f in ("fair", "fair_lo", "fair_hi", "sigma", "c", "tau",
-                  "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask"):
+                  "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask",
+                  "cache_age_ms"):
             lr[f] = _num(lr[f])
+        kickoff = _num(lr["kickoff_ms"])
+        if lr["ok"] and kickoff is not None and kickoff <= now_ms:
+            # The runner's started gate ran when it priced the leg; a cached
+            # price must not outlive kickoff.
+            lr.update(ok=False, reason="started", detail="started after it was priced")
 
     kickoffs = [k for k in (_num(lr["kickoff_ms"]) for lr in leg_rows) if k]
     if kickoffs:

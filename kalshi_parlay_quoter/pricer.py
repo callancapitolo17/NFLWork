@@ -11,6 +11,7 @@ GET {RUNNER_URL}/rfq_price.json?rfq_id=...&legs=TICKER:side,TICKER:side
 Any transport error, non-200, or a response whose legs do not line up with
 the request raises PricerError; the caller logs it as decline pricer_error.
 """
+import http.client
 import json
 import threading
 import time
@@ -25,9 +26,9 @@ class PricerError(Exception):
 
 
 class PricerTimeout(PricerError):
-    """The runner answered too slowly. Not a reason to back off: a slow
-    call with many uncached legs (each a Kalshi read on the runner) says
-    nothing about the next call."""
+    """The runner answered too slowly. One slow call (many uncached legs,
+    each a Kalshi read on the runner) says little about the next, so only
+    TIMEOUTS_BEFORE_BACKOFF in a row back off."""
 
 
 @dataclass
@@ -55,14 +56,13 @@ def price(base_url: str, rfq_id: str, legs: list[tuple[str, str]], *,
             body = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         raise PricerError(f"http_{e.code}") from e
-    except TimeoutError as e:
-        raise PricerTimeout("timeout") from e
-    except urllib.error.URLError as e:
-        if isinstance(e.reason, TimeoutError):
+    except OSError as e:     # URLError and TimeoutError are OSErrors
+        reason = getattr(e, "reason", e)
+        if isinstance(e, TimeoutError) or isinstance(reason, TimeoutError):
             raise PricerTimeout("timeout") from e
         raise PricerError(f"transport: {e}") from e
-    except OSError as e:
-        raise PricerError(f"transport: {e}") from e
+    except http.client.HTTPException as e:   # e.g. IncompleteRead mid-body
+        raise PricerError(f"transport: {type(e).__name__}") from e
     except (ValueError, UnicodeDecodeError) as e:
         raise PricerError(f"bad_json: {e}") from e
     elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -76,18 +76,26 @@ def price(base_url: str, rfq_id: str, legs: list[tuple[str, str]], *,
 
 
 class PricerBacklog(PricerError):
-    """Not priced because the pricer queue was full (logged as its own
-    decline reason, pricer_backlog, so it is never mistaken for a runner
-    failure)."""
+    """Not priced because the pricer queue was full; logged as its own
+    reason, pricer_backlog. A runner stuck on timeouts backs off
+    (CachingPricer), so its RFQs log pricer_error, not this."""
+
+
+TIMEOUTS_BEFORE_BACKOFF = 3
 
 
 class CachingPricer:
     """Leg-level cache + failure backoff in front of price().
 
-    Measured 2026-11-07 on the VM: ~100 in-league RFQs/s, mostly the same
-    legs re-asked. Each (ticker, side) is priced at most once per ttl_sec;
-    a request sends the runner only the legs not in cache. After a runner
-    failure, calls fail fast for backoff_sec instead of queueing more.
+    ~100 in-league RFQs/s re-ask the same legs (VM, 2026-11-07). Each
+    (ticker, side) the runner priced ok is reused for ttl_sec, counted from
+    when the call was SENT; a request asks the runner only for the rest.
+    Declined legs are never cached (a one-off kalshi_unread must not decline
+    every RFQ for ttl_sec). Every returned leg carries its own priced_at_ms
+    and cache_age_ms, and fair_age_ms grows by the cache age, so the log
+    never shows a reused price as fresh. A runner error, or
+    TIMEOUTS_BEFORE_BACKOFF timeouts in a row, fails calls fast for
+    backoff_sec.
     """
 
     def __init__(self, inner, *, ttl_sec: float, backoff_sec: float,
@@ -96,9 +104,11 @@ class CachingPricer:
         self._ttl = ttl_sec
         self._backoff = backoff_sec
         self._clock = clock
-        self._cache: dict[tuple[str, str], tuple[float, dict, int | None]] = {}
+        # (ticker, side) -> (expiry, leg, runner priced_at_ms, stored_at)
+        self._cache: dict[tuple[str, str], tuple[float, dict, int | None, float]] = {}
         self._backoff_until = 0.0
         self._last_error = ""
+        self._timeouts_in_a_row = 0
         self._lock = threading.Lock()
         self.runner_calls = 0
         self.cache_hits = 0
@@ -113,26 +123,47 @@ class CachingPricer:
             if len(self._cache) > 50_000:
                 self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
         missing = list(dict.fromkeys(k for k in legs if k not in hits))
-        elapsed, priced_at = 0.0, None
+        elapsed = 0.0
+        fresh: dict = {}
         if missing:
+            sent_at = self._clock()
             try:
                 res = self._inner(rfq_id, missing)
-            except PricerTimeout:
-                raise
             except PricerError as e:
-                with self._lock:
-                    self._backoff_until = self._clock() + self._backoff
-                    self._last_error = str(e)[:200]
+                self._note_failure(e)
                 raise
-            elapsed, priced_at = res.elapsed_ms, res.priced_at_ms
-            expiry = self._clock() + self._ttl
-            fresh = {k: (expiry, leg, priced_at) for k, leg in zip(missing, res.legs)}
+            elapsed = res.elapsed_ms
+            expiry = sent_at + self._ttl
+            fresh = {k: (expiry, leg, res.priced_at_ms, sent_at)
+                     for k, leg in zip(missing, res.legs)}
             with self._lock:
                 self.runner_calls += 1
-                self._cache.update(fresh)
-            hits.update(fresh)
+                self._timeouts_in_a_row = 0
+                self._cache.update({k: v for k, v in fresh.items() if v[1].get("ok")})
         with self._lock:
             self.cache_hits += len(legs) - len(missing)
-        if priced_at is None:
-            priced_at = min((v[2] for v in hits.values() if v[2] is not None), default=None)
-        return PriceResult([dict(hits[k][1]) for k in legs], priced_at, elapsed)
+        entries = {**hits, **fresh}
+        now = self._clock()
+        out = [self._aged_leg(*entries[k], now=now) for k in legs]
+        stamps = [leg["priced_at_ms"] for leg in out if leg["priced_at_ms"] is not None]
+        return PriceResult(out, min(stamps) if stamps else None, elapsed)
+
+    @staticmethod
+    def _aged_leg(_expiry, leg: dict, priced_at_ms, stored_at: float, *, now: float) -> dict:
+        """A copy of a cached leg stamped with its true age."""
+        age_ms = max(0.0, (now - stored_at) * 1000.0)
+        aged = dict(leg)
+        aged["priced_at_ms"] = priced_at_ms
+        aged["cache_age_ms"] = age_ms
+        if isinstance(leg.get("fair_age_ms"), (int, float)):
+            aged["fair_age_ms"] = leg["fair_age_ms"] + age_ms
+        return aged
+
+    def _note_failure(self, e: PricerError) -> None:
+        with self._lock:
+            if isinstance(e, PricerTimeout):
+                self._timeouts_in_a_row += 1
+                if self._timeouts_in_a_row < TIMEOUTS_BEFORE_BACKOFF:
+                    return
+            self._backoff_until = self._clock() + self._backoff
+            self._last_error = str(e)[:200]

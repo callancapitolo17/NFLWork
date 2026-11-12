@@ -44,7 +44,8 @@ PRICER_WORKERS = int(_get("PARLAY_PRICER_WORKERS", "8"))
 # not 3: the runner reads Kalshi per uncached leg (4 in flight) and could
 # not keep ~2k live legs fresh every 3 s (2026-11-12 VM run).
 PRICE_CACHE_SEC = float(_get("PARLAY_PRICE_CACHE_SEC", "10"))
-# After a runner failure, skip calls for this long (logged pricer_error).
+# After a runner error, or 3 timeouts in a row, skip calls for this long
+# (logged pricer_error, detail "backoff after ...").
 PRICER_BACKOFF_SEC = float(_get("PARLAY_PRICER_BACKOFF_SEC", "5"))
 # In-scope RFQs waiting for a pricer worker beyond this are logged as
 # pricer_backlog instead of queueing without bound.

@@ -30,7 +30,7 @@ sends no quotes and no orders**; nothing in this package can.
 | table | one row per | notes |
 |---|---|---|
 | `rfq_decisions` | in-league RFQ id | size, leagues, leg count, same-game flag, decision, reason, parlay fair and bracket, max leg sigma, product of Kalshi's single-leg asks, hours to kickoff, pricer latency, `queue_ms` (wait for a free pricer worker) |
-| `rfq_legs` | leg of an RFQ that reached the pricer | everything the pricer returned for the leg (`line` is JSON, `detail` is the runner's note) |
+| `rfq_legs` | leg of an RFQ that reached the pricer | everything the pricer returned for the leg (`line` is JSON, `detail` is the runner's note), plus `priced_at_ms` and `cache_age_ms` |
 | `door_counts` | minute | RFQs that got no row: `other_league`, `below_floor` (size under `PARLAY_MIN_RFQ_TARGET_COST_USD`, default $50), `too_many_legs` (always 0, no cap), `malformed`; plus `logged`, the pricer `backlog` and the feed mode |
 
 Every RFQ seen is either a row in `rfq_decisions` or a count in
@@ -61,11 +61,18 @@ touch ~/unabated-data/parlay_quoter.stop      # pause the loop (rm to resume);
                                               # the WS feed keeps running
 ```
 
-Load (measured on the VM, 2026-11-07): ~100 in-league RFQs a second at the
-$50 floor. Each leg is priced at most once per `PARLAY_PRICE_CACHE_SEC`; RFQs
-beyond `PARLAY_MAX_BACKLOG` waiting for a worker log as `pricer_backlog`; a
-runner failure pauses calls for `PARLAY_PRICER_BACKOFF_SEC`. Leg rows are
-written only for RFQs that reached the pricer.
+Load (measured on the VM, 2026-11-07 and -12): ~100 in-league RFQs a
+second at the $50 floor. Each leg the runner priced ok is reused for
+`PARLAY_PRICE_CACHE_SEC`, counted from when the call was sent; declined legs
+are never reused. Every leg row records `priced_at_ms` (the runner's stamp)
+and `cache_age_ms`, `fair_age_ms` includes the reuse, the RFQ's
+`priced_at_ms` is its oldest leg's, and a reused leg whose kickoff has
+passed logs `started`. RFQs beyond `PARLAY_MAX_BACKLOG` waiting for a worker
+log as `pricer_backlog`. A runner error, or 3 timeouts in a row, pauses calls
+for `PARLAY_PRICER_BACKOFF_SEC` (logged `pricer_error`, detail `backoff after
+...`). Leg rows are written only for RFQs that reached the pricer. Rows are
+inserted in multi-row statements: DuckDB's `executemany` goes row by row and
+was the first VM run's CPU sink.
 
 It signs with the same read-only Kalshi key as the bets service
 (`KALSHI_API_KEY_ID`, read from `bets_service/.env` and nothing else from
@@ -77,13 +84,13 @@ Locally: `KALSHI_API_KEY_ID=… KALSHI_PRIVATE_KEY_PATH=… python -m kalshi_par
 |---|---|---|
 | `PARLAY_QUOTER_DB_PATH` | package dir | decision log |
 | `UNABATED_RUNNER_URL` | `http://127.0.0.1:8095` | leg pricer |
-| `PARLAY_PRICER_TIMEOUT_SEC` | 3 | slower = `pricer_error` (detail `timeout`, no backoff) |
+| `PARLAY_PRICER_TIMEOUT_SEC` | 3 | slower = `pricer_error` (detail `timeout`); 3 in a row back off |
 | `PARLAY_PRICER_WORKERS` | 8 | concurrent pricer calls |
 | `PARLAY_MIN_RFQ_TARGET_COST_USD` | 50 | 0 logs every size as a row |
 | `PARLAY_MAX_MARKET_FETCHES_PER_SEC` | 5 | legless WS frames need a REST market fetch |
 | `PARLAY_PRICE_CACHE_SEC` | 10 | reuse a leg's price this long |
 | `PARLAY_MAX_BACKLOG` | 200 | queue cap; beyond it `pricer_backlog` |
-| `PARLAY_PRICER_BACKOFF_SEC` | 5 | pause after a runner failure |
+| `PARLAY_PRICER_BACKOFF_SEC` | 5 | pause after a runner error or 3 timeouts in a row |
 | `PARLAY_STOP_PATH` | package dir `.stop` | pause file |
 
 Tests: `python -m pytest kalshi_parlay_quoter/tests`.

@@ -377,3 +377,132 @@ def test_flush_writes_more_than_one_chunk(tmp_path):
     assert dlog.query("SELECT count(*) FROM rfq_decisions")[0][0] == n
     assert dlog.query("SELECT count(*) FROM rfq_legs")[0][0] == 2 * n
     dlog.close()
+
+
+def _stamped_pricer(fairs, stamps, ok=None):
+    """inner pricer whose PriceResult carries the next stamp per call."""
+    calls = []
+
+    def fn(rid, legs):
+        calls.append(legs)
+        out = [priced(t, s, fairs[t], ok=(ok or {}).get(t, True),
+                      reason=None if (ok or {}).get(t, True) else "kalshi_unread")
+               for t, s in legs]
+        return pricer.PriceResult(out, stamps[len(calls) - 1], 5.0)
+    fn.calls = calls
+    return fn
+
+
+def test_mixed_hit_and_miss_reports_oldest_leg_and_true_ages():
+    t = [100.0]
+    inner = _stamped_pricer({NFL_SPREAD: .5, NBA_ML: .4}, [1_000, 9_000])
+    cp = pricer.CachingPricer(inner, ttl_sec=10, backoff_sec=5, clock=lambda: t[0])
+    cp("r1", [(NFL_SPREAD, "yes")])
+    t[0] = 108.0                                     # 8 s later
+    res = cp("r2", [(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
+    assert inner.calls[1] == [(NBA_ML, "yes")]
+    assert res.priced_at_ms == 1_000                 # the oldest leg, not the fresh call
+    cached, new = res.legs
+    assert (cached["priced_at_ms"], cached["cache_age_ms"]) == (1_000, 8_000.0)
+    assert cached["fair_age_ms"] == 1_200 + 8_000    # runner's age plus reuse
+    assert (new["priced_at_ms"], new["cache_age_ms"]) == (9_000, 0.0)
+
+
+def test_cache_ttl_counts_from_send_not_reply():
+    t = [0.0]
+
+    def slow(rid, legs):
+        t[0] += 2.9                                  # the call itself takes 2.9 s
+        return pricer.PriceResult([priced(NFL_SPREAD, "yes", .5)], 1, 2900.0)
+    cp = pricer.CachingPricer(slow, ttl_sec=10, backoff_sec=5, clock=lambda: t[0])
+    cp("r1", [(NFL_SPREAD, "yes")])
+    t[0] = 10.5                                      # 10.5 s after the send
+    cp("r2", [(NFL_SPREAD, "yes")])
+    assert cp.runner_calls == 2
+
+
+def test_declined_legs_are_never_cached():
+    inner = _stamped_pricer({NFL_SPREAD: .5}, [1, 2], ok={NFL_SPREAD: False})
+    cp = pricer.CachingPricer(inner, ttl_sec=10, backoff_sec=5, clock=lambda: 0.0)
+    for rid in ("r1", "r2"):
+        assert cp(rid, [(NFL_SPREAD, "yes")]).legs[0]["ok"] is False
+    assert len(inner.calls) == 2
+
+
+def test_three_timeouts_in_a_row_back_off_and_a_success_resets():
+    t = [0.0]
+    script = ["timeout", "timeout", "ok", "timeout", "timeout", "timeout"]
+    calls = []
+
+    def inner(rid, legs):
+        calls.append(rid)
+        if script[len(calls) - 1] == "timeout":
+            raise pricer.PricerTimeout("timeout")
+        return pricer.PriceResult([priced(t_, s, .5, ok=False, reason="x")
+                                   for t_, s in legs], 1, 1.0)
+    cp = pricer.CachingPricer(inner, ttl_sec=10, backoff_sec=5, clock=lambda: t[0])
+    for rid in ("a", "b", "c", "d", "e", "f"):
+        try:
+            cp(rid, [(NFL_SPREAD, "yes")])
+        except pricer.PricerTimeout:
+            pass
+    with pytest.raises(pricer.PricerError, match="backoff after timeout"):
+        cp("g", [(NFL_SPREAD, "yes")])
+    assert calls == ["a", "b", "c", "d", "e", "f"]
+
+
+class _BrokenBody:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        raise self.exc
+
+
+def test_mid_read_failures_map_to_pricer_errors():
+    import http.client
+    with pytest.raises(pricer.PricerTimeout):
+        pricer.price("http://x", "r1", [(NFL_SPREAD, "yes")], timeout=1,
+                     opener=lambda r, timeout: _BrokenBody(TimeoutError("read timed out")))
+    with pytest.raises(pricer.PricerError, match="IncompleteRead"):
+        pricer.price("http://x", "r1", [(NFL_SPREAD, "yes")], timeout=1,
+                     opener=lambda r, timeout: _BrokenBody(http.client.IncompleteRead(b"")))
+
+
+def test_timeout_logs_pricer_error_with_timeout_detail():
+    def fn(rid, ls):
+        raise pricer.PricerTimeout("timeout")
+    row, _ = decide.decide(rfq(), [leg(NFL_SPREAD), leg(NBA_ML)], fn)
+    assert (row["decision"], row["reason"], row["reason_detail"]) == (
+        "decline", "pricer_error", "timeout")
+
+
+def test_reused_price_does_not_outlive_kickoff():
+    kickoff = 1_800_000_000_000
+    fn = fixed_pricer({NFL_SPREAD: .5, NBA_ML: .4})
+    row, legs = decide.decide(rfq(), [leg(NFL_SPREAD), leg(NBA_ML)], fn,
+                              now_ms=kickoff + 1)
+    assert (row["decision"], row["reason"]) == ("decline", "leg_started")
+    assert legs[0]["detail"] == "started after it was priced"
+
+
+def test_in_chunk_duplicate_keeps_first_row_and_columns_line_up(tmp_path):
+    dlog = DecisionLog(tmp_path / "q.duckdb")
+    fn = fixed_pricer({NFL_SPREAD: .5, NBA_ML: .4})
+    first = decide.decide(rfq("dup", cost="500.00"), [leg(NFL_SPREAD), leg(NBA_ML)], fn)
+    second = decide.decide(rfq("dup", cost="999.00"), [leg(NFL_SPREAD), leg(NBA_ML)], fn)
+    dlog.add(*first)
+    dlog.add(*second)                                 # same chunk, same rfq_id
+    dlog.flush()
+    assert dlog.query("SELECT target_cost_usd, decision, parlay_fair, n_legs, leagues "
+                      "FROM rfq_decisions") == [(500.0, "would_quote", 0.2, 2, "NFL,NBA")]
+    assert dlog.query("SELECT leg_idx, market_ticker, side, fair, kalshi_no_ask, ok "
+                      "FROM rfq_legs ORDER BY leg_idx") == [
+        (0, NFL_SPREAD, "yes", 0.5, 0.52, True), (1, NBA_ML, "yes", 0.4, 0.52, True)]
+    dlog.close()

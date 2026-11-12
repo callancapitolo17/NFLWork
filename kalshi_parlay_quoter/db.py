@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS rfq_legs (
 );
 -- Added after the first VM deploy (2026-11-07): the runner's per-leg detail.
 ALTER TABLE rfq_legs ADD COLUMN IF NOT EXISTS detail VARCHAR;
+-- 2026-11-12: when the runner priced the leg and how long the quoter reused it.
+ALTER TABLE rfq_legs ADD COLUMN IF NOT EXISTS priced_at_ms BIGINT;
+ALTER TABLE rfq_legs ADD COLUMN IF NOT EXISTS cache_age_ms DOUBLE;
 CREATE TABLE IF NOT EXISTS door_counts (
     minute          TIMESTAMPTZ PRIMARY KEY,
     logged          BIGINT,
@@ -94,7 +97,8 @@ LEG_COLS = [
     "rfq_id", "leg_idx", "market_ticker", "side", "series", "league", "market",
     "game_key", "ok", "reason", "fair", "fair_lo", "fair_hi", "bracketed",
     "sigma", "c", "tau", "line", "kickoff_ms", "fair_age_ms", "kalshi_status",
-    "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask", "detail"]
+    "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask", "detail",
+    "priced_at_ms", "cache_age_ms"]
 DOOR_COLS = ["minute", "logged", "other_league", "below_floor",
              "too_many_legs", "malformed", "backlog", "feed_mode"]
 
@@ -103,10 +107,8 @@ CHUNK_ROWS = 500
 
 
 def _insert_many(con, table, cols, rows):
-    """One multi-row INSERT per CHUNK_ROWS rows. DuckDB's executemany runs
-    row by row (~12 ms a row with the PK check, measured 2026-11-12): at the
-    VM's ~100 rows/s that was over a CPU second per second and stalled the
-    main loop. A multi-row VALUES insert is ~40x cheaper."""
+    """One multi-row INSERT per CHUNK_ROWS rows, not executemany, which
+    DuckDB runs row by row (~4-12 ms a row with the PK check; ~12x slower)."""
     one = "(" + ",".join("?" * len(cols)) + ")"
     for i in range(0, len(rows), CHUNK_ROWS):
         chunk = rows[i:i + CHUNK_ROWS]
@@ -140,6 +142,7 @@ class DecisionLog:
             lr["line"] = None if lr.get("line") is None else json.dumps(lr["line"])
             lr["kickoff_ms"] = _int(lr.get("kickoff_ms"))
             lr["fair_age_ms"] = _int(lr.get("fair_age_ms"))
+            lr["priced_at_ms"] = _int(lr.get("priced_at_ms"))
             b = lr.get("bracketed")
             lr["bracketed"] = None if b is None else bool(b)
             legs.append(tuple(lr.get(c) for c in LEG_COLS))
