@@ -27,7 +27,10 @@ helpers used by the MLB correlated parlay dashboard.
   returns a `BalanceSnapshot`. The `available` field is
   `RealAvailBalance` (cash + credit) — the amount WZ will actually let
   you wager, not raw cash. `cash` (`CurrentBalance`) is exposed for
-  tooltip / debug.
+  tooltip / debug. `free_play` (`FreePlayAmount`) is the free play
+  balance; `single_placer.place_single(..., use_free_play=True)` spends
+  it (`useFreePlayAmount` on preview and submit; an argument, never a
+  bet-dict key, since the MLB dashboard passes its request body as `bet`).
 - **Account registry:** `wagerzon_accounts.py` discovers accounts by
   env-var suffix (`WAGERZON{X}_USERNAME` / `WAGERZON{X}_PASSWORD`).
   See `README.md` for the pattern.
@@ -71,7 +74,7 @@ helpers used by the MLB correlated parlay dashboard.
   WZ moves it, update the constant + retest.
 - The balance response body contains `result.Player` and
   `result.Password` (plaintext password) — never log the raw response.
-  The parser extracts only the two numeric balance fields. The
+  The parser extracts only the three numeric balance fields. The
   `WagerzonAccount` dataclass has `password` marked `repr=False` so
   it's excluded from any default representation.
 - Pricing always uses the primary account regardless of which account

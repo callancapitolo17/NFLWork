@@ -213,6 +213,35 @@ may have gone through (2026-11-08). Every attempt
 is logged, whatever Wagerzon answered; a placed bet lowers the page's available
 balance right away. Wagerzon's minimum online wager on a special is $20.
 
+### Free play (Cal, 2026-11-12)
+
+**Use free play** in Settings (saved as `settings.use_free_play`) bets the
+Wagerzon account's free play balance instead of cash:
+
+- **Balance:** `FreePlayAmount` off the same `PlayerInfoHelper` read as the cash
+  `RealAvailBalance` (`wagerzon_balance.BalanceSnapshot.free_play`), read when a
+  refresh starts and ends, lowered by each free play bet.
+- **Stakes:** the same Kelly stakes on the same cash edges, fitted to the free play
+  balance instead of the cash one ($20 minimum and $250 per special unchanged) —
+  the rule Cal chose for BFA free play (option A, 2026-11-09). The Available tile
+  becomes Free play; Expected profit becomes free play value, stake x fair x net
+  odds (a free play's win pays only the to-win and a loss costs no cash). A held
+  free play bet is sized around as if it were cash (conservative: it assumes a
+  loss the free play never costs).
+- **Place:** the request carries `free_play`, refused unless it matches the saved
+  setting or when the stake is over the free play balance (or the balance is
+  unknown), checked inside the one-at-a-time placement lock; `single_placer` then
+  sends `useFreePlayAmount` true on the preview and the submit.
+- **Which pot it drew on:** after a placed free play the server reads both balances
+  again. Free play fell by the stake: recorded `free_play` TRUE. Cash fell instead:
+  recorded FALSE and the page warns "Wagerzon charged this to cash". Neither, or
+  the read failed: recorded TRUE (as sent) with a "couldn't confirm" warning.
+  Placed this week tags free play rows. `placed_fectas.ev` stays the cash EV.
+- **Unverified until the first live click:** that Wagerzon takes free play on a
+  special, and that its preview quotes the same to-win (a free play's stake is not
+  returned on a win; if the preview's Win differs, the placer refuses it as a moved
+  price and nothing is submitted).
+
 ## Files
 
 | File | Job |
@@ -233,8 +262,8 @@ balance right away. Wagerzon's minimum online wager on a special is $20.
 | Table | Write | Row |
 |---|---|---|
 | `fecta_quotes` | APPEND every refresh | one (special, book) fair or the reason there is none |
-| `placed_fectas` | APPEND every Place click | the attempt and Wagerzon's answer |
-| `settings` | UPSERT | bankroll, Kelly fraction |
+| `placed_fectas` | APPEND every Place click | the attempt and Wagerzon's answer; `free_play` TRUE for a free play bet |
+| `settings` | UPSERT | bankroll, Kelly fraction, use free play |
 
 ## Troubleshooting
 

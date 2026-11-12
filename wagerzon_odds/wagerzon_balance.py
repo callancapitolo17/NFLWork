@@ -32,6 +32,9 @@ class BalanceSnapshot:
     cash: Optional[float]
     fetched_at: datetime
     error: Optional[str]  # one of: timeout, auth_failed, wz_error, parse_error, None
+    # FreePlayAmount: the account's free play (bonus) balance, a separate pot
+    # from `available`. None when unknown or the response omits it.
+    free_play: Optional[float] = None
 
 
 def fetch_available_balance(account: WagerzonAccount) -> BalanceSnapshot:
@@ -89,7 +92,7 @@ def _fetch_once(account: WagerzonAccount) -> BalanceSnapshot:
         return _error_snapshot(account, "wz_error")
 
     try:
-        available, cash = _parse_balance_response(resp)
+        available, cash, free_play = _parse_balance_response(resp)
     except Exception as e:
         logger.warning("balance parse error for %s: %s", account.label, e)
         return _error_snapshot(account, "parse_error")
@@ -100,10 +103,11 @@ def _fetch_once(account: WagerzonAccount) -> BalanceSnapshot:
         cash=cash,
         fetched_at=datetime.now(timezone.utc),
         error=None,
+        free_play=free_play,
     )
 
 
-def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[float]]:
+def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[float], Optional[float]]:
     """Parse the WZ PlayerInfoHelper response.
 
     Response shape:
@@ -113,7 +117,7 @@ def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[fl
                     "Password": "<plaintext>", ...}}
 
     Returns:
-        (available, cash)
+        (available, cash, free_play)
         - available: RealAvailBalance — the actual wagerable amount
           (= AvailBalance + CreditLimit, precomputed by WZ). This is
           what determines whether WZ will accept a new bet, so it's
@@ -123,9 +127,12 @@ def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[fl
           cause the warning to fire on almost every bet.
         - cash: CurrentBalance — raw cash on deposit, exposed for
           tooltip / debugging. Optional.
+        - free_play: FreePlayAmount — the free play (bonus) balance, which
+          a wager spends only when it is sent with useFreePlayAmount true.
+          Optional.
 
     Numbers come as strings with comma thousand-separators and a
-    trailing space. We extract ONLY the two numeric fields above.
+    trailing space. We extract ONLY the three numeric fields above.
     The response body also contains the user's password in plaintext
     (result.Password); never log the raw body.
     """
@@ -140,7 +147,21 @@ def _parse_balance_response(resp: requests.Response) -> tuple[float, Optional[fl
     raw_cash = result.get("CurrentBalance")
     cash = _parse_money_string(raw_cash) if raw_cash is not None else None
 
-    return available, cash
+    free_play = _parse_optional_money(result.get("FreePlayAmount"))
+
+    return available, cash, free_play
+
+
+def _parse_optional_money(s) -> Optional[float]:
+    """An optional money field: None when missing or unreadable, so it can
+    never turn a good `available` into a parse_error snapshot."""
+    if s is None:
+        return None
+    try:
+        return _parse_money_string(s)
+    except ValueError:
+        logger.warning("balance field not a number: %r", s)
+        return None
 
 
 def _parse_money_string(s) -> float:

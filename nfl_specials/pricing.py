@@ -122,6 +122,12 @@ def expected_value(fair_prob: float, wz_american: int) -> float:
     return fair_prob * american_to_decimal(wz_american) - 1.0
 
 
+def free_play_value(fair_prob: float, wz_american: int) -> float:
+    """What $1 of free play is worth at Wagerzon's price: a win pays only the
+    to-win and a loss costs no cash, so fair x net odds."""
+    return fair_prob * (american_to_decimal(wz_american) - 1.0)
+
+
 def kelly_stake(fair_prob: float, wz_american: int, bankroll: float, kelly_fraction: float) -> float:
     net_odds = american_to_decimal(wz_american) - 1.0
     full_kelly = expected_value(fair_prob, wz_american) / net_odds

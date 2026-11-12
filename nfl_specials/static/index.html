@@ -56,6 +56,9 @@
   .popover { position: absolute; right: 0; top: 40px; width: 280px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; padding: 14px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14); display: grid; gap: 10px; z-index: 10; }
   .popover label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
   .popover input { width: 100%; }
+  .popover label.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+  .popover label.check input { width: auto; margin: 0; }
+  .chip.fp { margin-left: 6px; }
 
   main { max-width: 1100px; margin: 0 auto; padding: 14px 16px 48px; }
 
@@ -211,6 +214,7 @@
         <div class="popover" id="settings-pop" hidden>
           <label>Bankroll ($)<input id="bankroll" type="number" min="1" step="100" inputmode="decimal"></label>
           <label>Kelly fraction<input id="kelly" type="number" min="0.01" max="1" step="0.05" inputmode="decimal"></label>
+          <label class="check"><input id="free-play" type="checkbox">Use free play</label>
           <div class="small muted" id="settings-help"></div>
           <div class="small" id="settings-status" aria-live="polite"></div>
         </div>
@@ -279,6 +283,8 @@ function compactMoney(x) {
   if (x >= 1000) return "$" + (x / 1000).toFixed(x % 1000 === 0 ? 0 : 1) + "k";
   return money(x);
 }
+// With Use free play on, stakes fit and bets draw on the free play balance, not cash.
+function potName(p) { return p.settings.use_free_play ? "free play" : "available"; }
 function kellyLabel(k) { return (KELLY_LABEL[k] || k + "×") + " Kelly"; }
 function halfPoints(line) {
   const whole = Math.trunc(Math.abs(line));
@@ -374,11 +380,14 @@ function renderHeader(p) {
   const bankroll = document.getElementById("bankroll"), kelly = document.getElementById("kelly");
   if (document.activeElement !== bankroll) bankroll.value = Math.round(p.settings.bankroll);
   if (document.activeElement !== kelly) kelly.value = p.settings.kelly_fraction;
+  document.getElementById("free-play").checked = p.settings.use_free_play;
   document.getElementById("settings-label").textContent =
-    `${compactMoney(p.settings.bankroll)} · ${kellyLabel(p.settings.kelly_fraction)}`;
+    `${compactMoney(p.settings.bankroll)} · ${kellyLabel(p.settings.kelly_fraction)}` +
+    (p.settings.use_free_play ? " · Free play" : "");
   document.getElementById("settings-help").textContent =
-    `Stake = bankroll × Kelly fraction × full Kelly, fitted to the Wagerzon available, ` +
-    `${money(p.min_stake)}–${money(p.max_stake)} per bet.`;
+    `Stake = bankroll × Kelly fraction × full Kelly, fitted to the Wagerzon ${potName(p)}, ` +
+    `${money(p.min_stake)}–${money(p.max_stake)} per bet.` +
+    (p.settings.use_free_play ? " Free play: bets spend the free play balance, a win pays only the to-win." : "");
 
   const account = document.getElementById("account");
   const optionValues = [...account.options].map(o => o.value).join("|");
@@ -415,27 +424,33 @@ function renderTiles(p) {
   if (!p.board) return;
   const recommended = p.board.lines.filter(l => l.recommended_stake > 0);
   const totalStake = recommended.reduce((sum, l) => sum + l.recommended_stake, 0);
-  const expectedProfit = recommended.reduce((sum, l) => sum + l.recommended_stake * l.ev, 0);
+  const freePlay = p.settings.use_free_play;
+  // A free play loses no cash, so its expected profit is stake x fair x net odds.
+  const expectedProfit = recommended.reduce((sum, l) => sum + l.recommended_stake * (freePlay ? l.free_play_value : l.ev), 0);
   const unlimitedTotal = p.board.lines.reduce((sum, l) => sum + (l.unlimited_stake || 0), 0);
   const available = p.available_balance;
   const share = available ? Math.min(1, totalStake / available) : 0;
 
+  const potLabel = freePlay ? "Free play" : "Available";
+  const otherPot = freePlay
+    ? (p.cash_available != null ? ` · ${money(p.cash_available)} cash` : "")
+    : (p.free_play_balance > 0.5 ? ` · ${money(p.free_play_balance)} free play` : "");
   const availableTile = available == null
-    ? el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Available" }),
+    ? el("div", { class: "tile" }, [el("div", { class: "tile-label", text: potLabel }),
         el("div", { class: "tile-value", text: "Unknown" }),
         el("div", { class: "tile-sub keep", text: "No stakes until Refresh reads it" })])
-    : el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Available" }),
+    : el("div", { class: "tile" }, [el("div", { class: "tile-label", text: potLabel }),
         el("div", { class: "tile-value num", text: money(available) }),
-        el("div", { class: "tile-sub", text: p.accounts.length > 1 ? "Wagerzon · " + p.account : "Wagerzon" })]);
+        el("div", { class: "tile-sub", text: (p.accounts.length > 1 ? "Wagerzon · " + p.account : "Wagerzon") + otherPot })]);
   tiles.replaceChildren(
     availableTile,
     el("div", { class: "tile" }, [
       el("div", { class: "tile-label", text: "Recommended" }),
       el("div", { class: "tile-value num", text: money(totalStake) }),
-      el("div", { class: "meter", title: `${Math.round(share * 100)}% of available` },
+      el("div", { class: "meter", title: `${Math.round(share * 100)}% of ${potName(p)}` },
         el("span", { style: `width:${(share * 100).toFixed(1)}%` })),
       el("div", { class: "tile-sub", text: `${recommended.length} bet${recommended.length === 1 ? "" : "s"}` +
-        (available ? ` · ${Math.round(share * 100)}% of available` : "") }),
+        (available ? ` · ${Math.round(share * 100)}% of ${potName(p)}` : "") }),
       unlimitedTotal > 0.5
         ? el("div", { class: "tile-sub", text: `${money(unlimitedTotal)} with no balance limit` }) : null,
     ]),
@@ -443,7 +458,7 @@ function renderTiles(p) {
       el("div", { class: "tile-label", text: "Expected profit" }),
       el("div", { class: "tile-value num", style: expectedProfit > 0 ? "color:var(--good)" : null,
                   text: (expectedProfit > 0 ? "+" : "") + money(expectedProfit) }),
-      el("div", { class: "tile-sub", text: "at worst-case fair" }),
+      el("div", { class: "tile-sub", text: freePlay ? "free play value at worst-case fair" : "at worst-case fair" }),
     ]),
   );
 }
@@ -596,9 +611,9 @@ function stakeReason(line, p, byRotation, teamLines) {
   if (unpricedHeld) return { warn: true, text: `No stake: your bet on the ${specialTitle(unpricedHeld.description)} (${unpricedHeld.rotation}) can't be priced, so this team isn't sized` };
   if (rec < 0.5) {
     if (unlimited > 0.5 && p.available_balance < p.min_stake) {
-      return { warn: true, text: `$0: your ${money(p.available_balance)} available is under Wagerzon's ${money(p.min_stake)} minimum` };
+      return { warn: true, text: `$0: your ${money(p.available_balance)} ${potName(p)} is under Wagerzon's ${money(p.min_stake)} minimum` };
     }
-    if (unlimited > 0.5) return { warn: true, text: "$0: your available balance went to bigger edges" };
+    if (unlimited > 0.5) return { warn: true, text: `$0: your ${potName(p)} balance went to bigger edges` };
     if (heldOwn > 0) {
       const teamHeld = teamPlacements(p, line).reduce((sum, r) => sum + r.risk, 0);
       return { warn: true, text: teamHeld > heldOwn + 0.5 ? `No more: your ${money(teamHeld)} on this team already reaches Kelly`
@@ -619,7 +634,7 @@ function stakeReason(line, p, byRotation, teamLines) {
     const takesRest = teamLines.find(l => l !== line && l.recommended_stake > 0.5 && l.kelly_stake < l.recommended_stake - 0.5);
     return { warn: false, text: `Capped at Wagerzon's ${money(p.max_stake)} max` + (takesRest ? `; the rest goes to the ${specialTitle(takesRest.description)}` : "") };
   }
-  if (rec < unlimited - 0.5) return { warn: false, text: `Trimmed to fit your ${money(p.available_balance)} available` };
+  if (rec < unlimited - 0.5) return { warn: false, text: `Trimmed to fit your ${money(p.available_balance)} ${potName(p)}` };
   if (kelly < rec - 0.5) {
     const capped = teamLines.find(l => l !== line && isCapped(l));
     if (capped) return { warn: false, text: `Takes the rest: the ${specialTitle(capped.description)} stops at ${money(p.max_stake)}, short of its ${money(capped.kelly_stake)} Kelly` };
@@ -836,7 +851,8 @@ function renderPlaced(p) {
     return el("div", { class: "placed-row" }, [
       el("span", { class: "status-ok", "aria-label": "placed", text: "✓" }),
       el("span", { text: r.description, title: String(r.rotation) }),
-      el("span", { class: "num", text: `${money(r.risk)} at ${signed(r.wz_american)}` }),
+      el("span", { class: "num" }, [`${money(r.risk)} at ${signed(r.wz_american)}`,
+        r.free_play ? el("span", { class: "chip fp", text: "free play" }) : null]),
       el("span", { class: "faint small placed-when", text: when }),
       el("div", { class: "placed-detail", text: detail + " · " + when }),
     ]);
@@ -853,7 +869,7 @@ function askToPlace(line, input) {
     return;
   }
   if (p.available_balance != null && risk > p.available_balance) {
-    placeMessages.set(id, { ok: false, text: `Only ${money(p.available_balance)} available` });
+    placeMessages.set(id, { ok: false, text: `Only ${money(p.available_balance)} ${potName(p)}` });
     render();
     return;
   }
@@ -865,25 +881,33 @@ function askToPlace(line, input) {
     ["Risk", money(risk)], ["To win", money(toWin(risk, line.wz_american))], ["Wagerzon price", signed(line.wz_american)],
     ["Fair · EV", `${signed(line.fair_american)} · ${pct(line.ev)}`], ["Account", account],
   ];
+  const freePlay = p.settings.use_free_play;
+  if (freePlay) {
+    rows.splice(1, 0, ["Pays from", "Free play balance"]);
+    rows.push(["Free play value", `${money(risk * line.free_play_value)} (${Math.round(line.free_play_value * 100)}¢ per $1)`]);
+  }
   document.getElementById("confirm-grid").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
-  document.getElementById("confirm-ok").textContent = `Place ${money(risk)}`;
+  document.getElementById("confirm-ok").textContent = `Place ${money(risk)}` + (freePlay ? " free play" : "");
   const dialog = document.getElementById("confirm");
   dialog.returnValue = "";
-  dialog.onclose = () => { if (dialog.returnValue === "place") place(line, risk, account); };
+  dialog.onclose = () => { if (dialog.returnValue === "place") place(line, risk, account, freePlay); };
   dialog.showModal();
   document.getElementById("confirm-cancel").focus();
 }
 
-async function place(line, risk, account) {
+async function place(line, risk, account, freePlay) {
   const id = line.wz_game_id;
   if (placing.has(id)) return;
   placing.add(id);
   placeMessages.delete(id);
   render();
   try {
-    const r = await api("/api/place", { wz_game_id: id, wz_american: line.wz_american, risk, account });
+    const r = await api("/api/place", { wz_game_id: id, wz_american: line.wz_american, risk, account, free_play: freePlay });
     if (r.status === "placed") {
-      placeMessages.set(id, { ok: true, text: `Placed ${money(risk)} · ticket ${r.ticket_number}` });
+      // The server re-reads both balances after a free play: r.warning says
+      // when Wagerzon charged cash instead, or which pot it was is unknown.
+      placeMessages.set(id, { ok: !r.warning, text: `Placed ${money(risk)}${r.free_play ? " free play" : ""} · ticket ${r.ticket_number}` +
+        (r.warning ? ` · ${r.warning}` : "") });
       editingStake.delete(id);
     } else {
       placeMessages.set(id, { ok: false, text: `Not placed — ${r.status}: ${r.error || "no reason given"}` });
@@ -943,9 +967,10 @@ async function startRefresh() {
 async function saveSettings() {
   const bankroll = Number(document.getElementById("bankroll").value);
   const kelly_fraction = Number(document.getElementById("kelly").value);
+  const use_free_play = document.getElementById("free-play").checked;
   const status = document.getElementById("settings-status");
   try {
-    await api("/api/settings", { bankroll, kelly_fraction });
+    await api("/api/settings", { bankroll, kelly_fraction, use_free_play });
     editingStake.clear();
     status.className = "small msg-ok"; status.textContent = "Saved — stakes re-sized";
   } catch (e) {
@@ -963,6 +988,7 @@ function toggleSettings(open) {
 
 document.getElementById("bankroll").addEventListener("change", saveSettings);
 document.getElementById("kelly").addEventListener("change", saveSettings);
+document.getElementById("free-play").addEventListener("change", saveSettings);
 document.getElementById("settings-btn").addEventListener("click", () =>
   toggleSettings(document.getElementById("settings-pop").hidden));
 document.addEventListener("click", e => {
