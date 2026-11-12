@@ -8,6 +8,11 @@ Tables:
     placed_fectas  APPEND — one row per placement ATTEMPT, whatever Wagerzon said;
                    free_play TRUE when it risked the free play balance, not cash.
     settings       UPSERT — bankroll, Kelly fraction and use_free_play (1 = on).
+    half_parlay_quotes   APPEND — one row per (refresh, 1H game, book, corner):
+                   a book's devigged corner fair, or Wagerzon's parlay price
+                   (book 'Wagerzon', wz_decimal), or the reason there is none.
+    placed_half_parlays  APPEND — one row per 1H parlay placement ATTEMPT,
+                   whatever Wagerzon said.
 Each call opens and closes its own read-write connection: the app's threads
 share one process, and DuckDB refuses a read-only connection to a file this
 process already holds read-write.
@@ -59,6 +64,43 @@ SCHEMA = [
     )""",
     # Added 2026-11-12; rows placed before it read NULL (cash).
     "ALTER TABLE placed_fectas ADD COLUMN IF NOT EXISTS free_play BOOLEAN",
+    """CREATE TABLE IF NOT EXISTS half_parlay_quotes (
+        quoted_at       TIMESTAMPTZ,
+        league          VARCHAR,     -- 'NFL' | 'CFB'
+        wz_game_id      BIGINT,      -- Wagerzon idgm of the 1H line
+        away_team       VARCHAR,
+        home_team       VARCHAR,
+        game_start_time TIMESTAMPTZ,
+        away_spread     DOUBLE,
+        total           DOUBLE,
+        corner          VARCHAR,     -- 'away_over' | 'away_under' | 'home_over' | 'home_under'
+        book            VARCHAR,     -- a sportsbook, or 'Wagerzon' for its parlay price
+        fair_prob       DOUBLE,
+        overround       DOUBLE,
+        wz_decimal      DOUBLE,
+        reason          VARCHAR
+    )""",
+    """CREATE TABLE IF NOT EXISTS placed_half_parlays (
+        placed_at       TIMESTAMPTZ,
+        account         VARCHAR,
+        league          VARCHAR,
+        wz_game_id      BIGINT,
+        corner          VARCHAR,
+        away_team       VARCHAR,
+        home_team       VARCHAR,
+        game_start_time TIMESTAMPTZ,
+        away_spread     DOUBLE,
+        total           DOUBLE,
+        wz_decimal      DOUBLE,
+        wz_american     INTEGER,     -- the conservative whole odds it was sized at
+        risk            DOUBLE,
+        to_win          DOUBLE,
+        fair_prob       DOUBLE,
+        ev              DOUBLE,
+        status          VARCHAR,
+        ticket_number   VARCHAR,
+        error           VARCHAR
+    )""",
     """CREATE TABLE IF NOT EXISTS settings (
         key   VARCHAR PRIMARY KEY,
         value DOUBLE
@@ -68,6 +110,11 @@ SCHEMA = [
 QUOTE_COLUMNS = ("quoted_at", "wz_game_id", "rotation", "description", "team", "prop_type",
                  "home_team", "away_team", "game_start_time", "wz_american", "book", "quote_kind",
                  "fair_prob", "sgp_decimal", "overround", "n_cells", "sf_share", "reason")
+HALF_QUOTE_COLUMNS = ("quoted_at", "league", "wz_game_id", "away_team", "home_team", "game_start_time",
+                      "away_spread", "total", "corner", "book", "fair_prob", "overround", "wz_decimal", "reason")
+HALF_PLACEMENT_COLUMNS = ("placed_at", "account", "league", "wz_game_id", "corner", "away_team", "home_team",
+                          "game_start_time", "away_spread", "total", "wz_decimal", "wz_american", "risk",
+                          "to_win", "fair_prob", "ev", "status", "ticket_number", "error")
 PLACEMENT_COLUMNS = ("placed_at", "account", "wz_game_id", "rotation", "description",
                      "game_start_time", "wz_american", "risk", "fair_prob", "ev",
                      "status", "ticket_number", "error", "free_play")
@@ -131,6 +178,22 @@ class Store:
                 "WHERE account = ? AND wz_game_id = ? AND status = 'placed' AND placed_at >= ?",
                 [account, wz_game_id, since]).fetchone()[0]
             return float(total)
+        finally:
+            con.close()
+
+    def append_half_quotes(self, rows: list[dict]) -> None:
+        self._insert("half_parlay_quotes", HALF_QUOTE_COLUMNS, rows)
+
+    def record_half_placement(self, row: dict) -> None:
+        self._insert("placed_half_parlays", HALF_PLACEMENT_COLUMNS, [row])
+
+    def half_placements_since(self, since: datetime) -> list[dict]:
+        con = duckdb.connect(str(self.db_path))
+        try:
+            cursor = con.execute(
+                f"SELECT {', '.join(HALF_PLACEMENT_COLUMNS)} FROM placed_half_parlays "
+                "WHERE placed_at >= ? ORDER BY placed_at DESC", [since])
+            return [dict(zip(HALF_PLACEMENT_COLUMNS, row)) for row in cursor.fetchall()]
         finally:
             con.close()
 
