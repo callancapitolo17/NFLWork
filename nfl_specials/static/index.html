@@ -1002,7 +1002,8 @@ function halfStakeCell(line, corner, c, p) {
   const held = ownHalfPlacements(p).filter(r => r.wz_game_id === line.wz_game_id && r.corner === corner);
   if (held.length) {
     children.push(el("span", { class: "chip ok held num",
-      text: `Already bet ${money(held.reduce((s, r) => s + r.risk, 0))} · ticket ${held[0].ticket_number}` }));
+      text: `Already bet ${money(held.reduce((s, r) => s + r.risk, 0))}` +
+        (held[0].ticket_number ? ` · ticket ${held[0].ticket_number}` : " · may be placed, check Wagerzon") }));
   }
   const typed = editingStake.get(id);
   const input = el("input", { type: "text", inputmode: "decimal", autocomplete: "off",
@@ -1116,7 +1117,7 @@ function renderHalfPlaced(p) {
   const list = document.getElementById("half-placed");
   const placed = (p.half_placements || []).filter(r => MAYBE_PLACED.includes(r.status));
   document.getElementById("half-placed-summary").textContent =
-    placed.length ? `${placed.length} placed · ${money(placed.reduce((s, r) => s + r.risk, 0))} risked` : "";
+    placed.length ? `${placed.length} on Wagerzon or maybe · ${money(placed.reduce((s, r) => s + r.risk, 0))} risked` : "";
   if (!placed.length) {
     list.replaceChildren(el("div", { class: "placed-row" }, el("span", { class: "faint", style: "grid-column: 1 / -1", text: "Nothing placed yet." })));
     return;
@@ -1169,6 +1170,8 @@ async function placeHalf(line, corner, c, risk, account) {
     if (r.status === "placed") {
       placeMessages.set(id, { ok: true, text: `Placed ${money(risk)} · ticket ${r.ticket_number}` });
       editingStake.delete(id);
+    } else if (MAYBE_PLACED.includes(r.status)) {
+      placeMessages.set(id, { ok: false, text: `May be placed (${r.status}): ${r.error || "check Wagerzon's open bets"}` });
     } else {
       placeMessages.set(id, { ok: false, text: `Not placed: ${r.status}: ${r.error || "no reason given"}` });
     }

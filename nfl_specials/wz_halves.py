@@ -42,8 +42,10 @@ WZ_PITCHER_FIELD = 3
 PREVIEW_STAKES = (500, 100)
 PREVIEW_WORKERS = 8
 # Wagerzon pays whole dollars (wz.wagerzon_to_win), so the to-win at a stake
-# can sit up to $0.50 under the board's price; any lower is a worse price.
+# can sit up to $0.50 under the board's price, plus the board decimal's own
+# rounding (a whole-dollar to-win on a $100 preview, the fallback: +/-0.005).
 WIN_ROUNDING_DOLLARS = 0.5
+BOARD_DECIMAL_PRECISION = 0.005
 
 SPREAD_SIDES = ("away", "home")
 TOTAL_SIDES = ("over", "under")
@@ -197,8 +199,9 @@ def place_half_parlay(account_label: str, game: WzHalfGame, corner: str, risk: f
        from `game` is 'line_moved' (the fair was priced at those numbers).
     2. ConfirmWagerHelper preflight at `risk` (RiskWin=0, balance-checked;
        one re-login on a logged-out reply, nothing is placed by it). A to-win
-       more than WIN_ROUNDING_DOLLARS under risk x (board_decimal - 1) is
-       'price_moved'.
+       under risk x (board_decimal - 1) by more than the two roundings
+       (WIN_ROUNDING_DOLLARS, BOARD_DECIMAL_PRECISION) is 'price_moved'.
+       A failure in steps 1-2 is 'rejected': nothing was sent.
     3. ONE PostWagerMultipleHelper submit, never re-sent. A logged-out,
        failed or unreadable reply is 'unknown' / 'network_error': the bet
        may be on Wagerzon.
@@ -206,7 +209,10 @@ def place_half_parlay(account_label: str, game: WzHalfGame, corner: str, risk: f
     account = next((a for a in wz.list_accounts() if a.label == account_label), None)
     if account is None:
         raise ValueError(f"unknown Wagerzon account {account_label!r}")
-    current = {g.wz_game_id: g for g in fetch_half_games()}.get(game.wz_game_id)
+    try:
+        current = {g.wz_game_id: g for g in fetch_half_games()}.get(game.wz_game_id)
+    except Exception as exc:  # nothing sent yet: a refusal, never a maybe-placed bet
+        return HalfPlacement("rejected", None, error=f"couldn't re-read Wagerzon's 1H lines ({type(exc).__name__})")
     if current != game:
         return HalfPlacement("line_moved", None, error="Wagerzon's 1H line changed since the board priced it; refresh")
     legs = [parlay_placer.Leg(idgm=leg["idgm"], play=leg["play"], points=leg["points"], odds=leg["odds"],
@@ -217,9 +223,9 @@ def place_half_parlay(account_label: str, game: WzHalfGame, corner: str, risk: f
         return HalfPlacement("rejected", None, error=exc.error_msg_key or exc.error_msg or "rejected")
     except parlay_placer.AuthExpired:
         return HalfPlacement("auth_error", None, error="Wagerzon login failed at the preflight")
-    except requests.RequestException as exc:
+    except Exception as exc:  # nothing sent yet: a refusal, never a maybe-placed bet
         return HalfPlacement("rejected", None, error=f"preflight failed: {type(exc).__name__}")
-    if win < risk * (board_decimal - 1.0) - WIN_ROUNDING_DOLLARS:
+    if win < risk * (board_decimal - 1.0) - WIN_ROUNDING_DOLLARS - risk * BOARD_DECIMAL_PRECISION:
         return HalfPlacement("price_moved", win,
                              error=f"board to-win ${risk * (board_decimal - 1.0):.2f}, Wagerzon now ${win:.2f}")
     spec = parlay_placer.ParlaySpec(parlay_hash=f"wz-1h-{game.wz_game_id}-{corner}", legs=legs,

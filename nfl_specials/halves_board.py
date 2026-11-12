@@ -55,9 +55,9 @@ MIN_BOOKS_WHOLE_NUMBER = 2
 # College matches by name prefix, so the kickoff must agree closely.
 CFB_KICKOFF_TOLERANCE = timedelta(minutes=30)
 # A book name whose next token after Wagerzon's name is one of these is another
-# school ('TEXAS' vs 'Texas Tech', 'MICHIGAN' vs 'Michigan State'), not a mascot.
+# school ('TEXAS' vs 'Texas Tech', 'MIAMI' vs 'Miami (OH)'), not a mascot.
 OTHER_SCHOOL_TOKENS = frozenset({"STATE", "TECH", "AND", "A", "CHRISTIAN", "INTERNATIONAL", "SOUTHERN",
-                                 "NORTHERN", "EASTERN", "WESTERN", "CENTRAL", "ATLANTIC", "MIAMI"})
+                                 "NORTHERN", "EASTERN", "WESTERN", "CENTRAL", "ATLANTIC", "OH", "OHIO"})
 
 
 def has_whole_number_line(game: WzHalfGame) -> bool:
@@ -177,7 +177,7 @@ def _kickoff_gap(book_game: BookGame, game: WzHalfGame) -> timedelta | None:
     """|book kickoff - Wagerzon kickoff|, or None when the book lists no start."""
     try:
         return abs(parse_start(book_game.game_start_time) - game.game_start_time)
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):
         return None
 
 
@@ -426,6 +426,9 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
             held_by_key.setdefault(key, []).extend(fixed)
 
     line_by_id = {line.game.wz_game_id: line for line in board.lines}
+    held_risk: dict[tuple[int, str], float] = {}
+    for bet in held:
+        held_risk[(bet.wz_game_id, bet.corner)] = held_risk.get((bet.wz_game_id, bet.corner), 0.0) + bet.risk
     for bet in held:
         line = line_by_id.get(bet.wz_game_id)
         if line is None:
@@ -454,7 +457,7 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
     groups = []
     for key in keys:
         candidates = tuple(Candidate(line_by_id[gid].fair_prob(c), line_by_id[gid].wz_american(c),
-                                     config.WZ_HALF_PARLAY_MAX_STAKE)
+                                     max(0.0, config.WZ_HALF_PARLAY_MAX_STAKE - held_risk.get((gid, c), 0.0)))
                            for gid, c in members[key])
         groups.append(ExposureGroup(candidates, tuple(held_by_key.get(key, []))))
     fitted = budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)

@@ -427,3 +427,38 @@ def test_a_failed_1h_refresh_clears_the_board(half_app, monkeypatch):
     half_app._run_refresh()
     assert half_app._halves is None
     assert half_app._last_error == "1H parlays: RuntimeError: no 1H league in Wagerzon's catalog"
+
+
+def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatch):
+    calls, _state = placer
+
+    def unreadable(legs, risk, account):
+        raise KeyError("Win")
+
+    monkeypatch.setattr(wz_halves.parlay_placer, "_confirm_preflight", unreadable)
+    assert wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638) == HalfPlacement(
+        "rejected", None, error="preflight failed: KeyError")
+
+    def offline():
+        raise RuntimeError("no 1H league")
+
+    monkeypatch.setattr(wz_halves, "fetch_half_games", offline)
+    assert wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638).status == "rejected"
+    assert calls["submits"] == 0
+
+
+def test_the_board_price_rounding_is_not_a_moved_price(placer):
+    _calls, state = placer
+    state["win"] = 422.0     # $126 at a true 4.3530; the $500 board preview read 4.354
+    assert wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 126.0, 4.354).status == "placed"
+
+
+def test_a_held_parlay_lowers_what_the_next_stake_may_reach():
+    rich = {"away_over": 0.40, "away_under": 0.10, "home_over": 0.10, "home_under": 0.40}
+    line = _priced_line(_game(), rich, EVEN_PRICES)
+    key = (line.game.wz_game_id, "away_over")
+    alone = size_halves(_half_board(line), 1_000_000, 0.25, None)[key]
+    assert alone.recommended_stake == 250
+    held = size_halves(_half_board(line), 1_000_000, 0.25, None,
+                       held=(HeldHalfParlay(line.game.wz_game_id, "away_over", 200.0, 264),))[key]
+    assert held.recommended_stake == 50
