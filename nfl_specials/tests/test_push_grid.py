@@ -200,6 +200,17 @@ def test_a_three_way_half_point_spread_adds_the_tie_cells():
     fair = price_half_at_book(ThreeWayBook(), BOOK_GAME, _game(away_spread=-0.5, total=26.5))
     assert fair.corner_fairs == pytest.approx({"away_over": 0.25, "away_under": 0.20,
                                                "home_over": 0.23, "home_under": 0.32}, abs=1e-6)
+    # +0.5: the away team wins on its own outcome OR the tie.
+    class PlusHalfBook(ThreeWayBook):
+        def leg_market(self, book_game, role, leg):
+            if leg.kind == "spread":
+                away, tie, home = (Outcome(x, x) for x in ("away", "tie", "home"))
+                return LegMarket(winning=frozenset([away, tie]), group=(away, tie, home))
+            return super().leg_market(book_game, role, leg)
+
+    fair = price_half_at_book(PlusHalfBook(), BOOK_GAME, _game(away_spread=0.5, total=26.5))
+    assert fair.corner_fairs == pytest.approx({"away_over": 0.30, "away_under": 0.28,
+                                               "home_over": 0.18, "home_under": 0.24}, abs=1e-6)
 
 
 def test_push_return_is_stored_and_an_old_file_gains_the_column(tmp_path):
@@ -250,3 +261,16 @@ def test_a_whole_number_line_needs_two_books():
     half = _game(away_spread=-6.5, total=26.5)
     assert HalfLine(half, "priced", book_fairs={"DraftKings": HalfBookFair("DraftKings", {c: 0.25 for c in CORNERS}, 1.2)},
                     wz_prices=prices).fair_prob("away_over") == 0.25
+
+
+def test_a_held_whole_number_parlay_pays_pushes_at_its_own_price():
+    from nfl_specials.halves_board import HalfBoard, HeldHalfParlay, size_halves
+    game = _game()
+    fair = price_half_at_book(GridBook(TRUE_GRID, game), BOOK_GAME, game)
+    line = HalfLine(game, "priced", book_fairs={"DraftKings": fair, "BetMGM": fair},
+                    wz_prices={c: WzParlayPrice(3.6, 500) for c in CORNERS})
+    assert line.fair_prob("away_over", 4.0) == pytest.approx(0.20 + fair.push_returns["away_over"] / 4.0)
+    board = HalfBoard(datetime.now(timezone.utc), None, [line], {})
+    held = (HeldHalfParlay(game.wz_game_id, "away_over", 50.0, 300),)
+    sized = size_halves(board, 5000, 0.25, None, held=held)
+    assert set(sized) == {(game.wz_game_id, c) for c in CORNERS}

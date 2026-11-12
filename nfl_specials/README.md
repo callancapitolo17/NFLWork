@@ -320,7 +320,13 @@ Pricing is books only (Cal, 2026-11-12):
    `halves_board.py`); with one, the board notes it and stakes nothing.
 
 `half_parlay_quotes.fair_prob` is the both-win chance and `push_return` the
-push return, so the effective fair can be rebuilt from the table.
+push return, so the effective fair can be rebuilt from the table;
+`placed_half_parlays.fair_prob` is the effective fair the stake was sized on.
+A held whole-number parlay counts its pushes at the price it was placed at.
+
+Unverified: the push rule (other leg at its straight price, both push
+refunds) is as Wagerzon was described, not read off a graded ticket. Check
+the first graded whole-number push against it.
 
 Coverage (probe 2026-11-12): DraftKings posts 1H alt lines about 2 days out
 (NFL) and 1 day out (college); BetMGM college 1H legs price only near

@@ -38,8 +38,8 @@ from nfl_specials.books import CFB, NFL, BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (Candidate, ExposureGroup, HeldBet, budgeted_stakes, expected_value,
-                                  price_partition)
+from nfl_specials.pricing import (Candidate, ExposureGroup, HeldBet, american_to_decimal, budgeted_stakes,
+                                  expected_value, price_partition)
 from nfl_specials.special_parser import Leg
 from nfl_specials.store import Store
 from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
@@ -90,15 +90,20 @@ class HalfLine:
     book_fairs: dict[str, HalfBookFair] = field(default_factory=dict)
     wz_prices: dict[str, WzParlayPrice] = field(default_factory=dict)
 
-    def book_fair(self, book: str, corner: str) -> float | None:
-        price = self.wz_prices.get(corner)
-        return self.book_fairs[book].effective_fair(corner, price.decimal if price else None)
+    def book_fair(self, book: str, corner: str, wz_decimal: float | None = None) -> float | None:
+        """`book`'s effective fair at `wz_decimal`, default Wagerzon's current price."""
+        if wz_decimal is None:
+            price = self.wz_prices.get(corner)
+            wz_decimal = price.decimal if price else None
+        return self.book_fairs[book].effective_fair(corner, wz_decimal)
 
-    def fair_prob(self, corner: str) -> float | None:
+    def fair_prob(self, corner: str, wz_decimal: float | None = None) -> float | None:
         """The LOWEST (effective) fair among books that priced the partition
         (a parlay is only ever backed); a whole-number line needs
-        MIN_BOOKS_WHOLE_NUMBER of them."""
-        priced = [fair for fair in (self.book_fair(name, corner) for name in self.book_fairs) if fair is not None]
+        MIN_BOOKS_WHOLE_NUMBER of them. `wz_decimal`: the price the push
+        return is paid against, default Wagerzon's current one."""
+        priced = [fair for fair in (self.book_fair(name, corner, wz_decimal) for name in self.book_fairs)
+                  if fair is not None]
         if has_whole_number_line(self.game) and len(priced) < MIN_BOOKS_WHOLE_NUMBER:
             return None
         return min(priced) if priced else None
@@ -417,7 +422,8 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
         if line is None:
             continue    # a started game or one off the board
         key = _group_key(line.game, bet.corner)
-        fair = line.fair_prob(bet.corner)
+        # A held whole-number parlay pays its pushes against the price it was placed at.
+        fair = line.fair_prob(bet.corner, american_to_decimal(bet.wz_american))
         if fair is None:
             blocked.add(key)
             continue
