@@ -77,11 +77,11 @@ Locally: `KALSHI_API_KEY_ID=… KALSHI_PRIVATE_KEY_PATH=… python -m kalshi_par
 |---|---|---|
 | `PARLAY_QUOTER_DB_PATH` | package dir | decision log |
 | `UNABATED_RUNNER_URL` | `http://127.0.0.1:8095` | leg pricer |
-| `PARLAY_PRICER_TIMEOUT_SEC` | 1.5 | slower = `pricer_error` |
-| `PARLAY_PRICER_WORKERS` | 4 | concurrent pricer calls |
+| `PARLAY_PRICER_TIMEOUT_SEC` | 3 | slower = `pricer_error` (detail `timeout`, no backoff) |
+| `PARLAY_PRICER_WORKERS` | 8 | concurrent pricer calls |
 | `PARLAY_MIN_RFQ_TARGET_COST_USD` | 50 | 0 logs every size as a row |
 | `PARLAY_MAX_MARKET_FETCHES_PER_SEC` | 5 | legless WS frames need a REST market fetch |
-| `PARLAY_PRICE_CACHE_SEC` | 3 | reuse a leg's price this long |
+| `PARLAY_PRICE_CACHE_SEC` | 10 | reuse a leg's price this long |
 | `PARLAY_MAX_BACKLOG` | 200 | queue cap; beyond it `pricer_backlog` |
 | `PARLAY_PRICER_BACKOFF_SEC` | 5 | pause after a runner failure |
 | `PARLAY_STOP_PATH` | package dir `.stop` | pause file |

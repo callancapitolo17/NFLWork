@@ -99,9 +99,21 @@ DOOR_COLS = ["minute", "logged", "other_league", "below_floor",
              "too_many_legs", "malformed", "backlog", "feed_mode"]
 
 
-def _ins(table, cols):
-    return (f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) "
-            f"VALUES ({','.join('?' * len(cols))})")
+CHUNK_ROWS = 500
+
+
+def _insert_many(con, table, cols, rows):
+    """One multi-row INSERT per CHUNK_ROWS rows. DuckDB's executemany runs
+    row by row (~12 ms a row with the PK check, measured 2026-11-12): at the
+    VM's ~100 rows/s that was over a CPU second per second and stalled the
+    main loop. A multi-row VALUES insert is ~40x cheaper."""
+    one = "(" + ",".join("?" * len(cols)) + ")"
+    for i in range(0, len(rows), CHUNK_ROWS):
+        chunk = rows[i:i + CHUNK_ROWS]
+        con.execute(
+            f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES "
+            + ",".join([one] * len(chunk)),
+            [v for r in chunk for v in r])
 
 
 def _int(v):
@@ -148,11 +160,11 @@ class DecisionLog:
         self._con.execute("BEGIN")
         try:
             if d:
-                self._con.executemany(_ins("rfq_decisions", DECISION_COLS), d)
+                _insert_many(self._con, "rfq_decisions", DECISION_COLS, d)
             if l:
-                self._con.executemany(_ins("rfq_legs", LEG_COLS), l)
+                _insert_many(self._con, "rfq_legs", LEG_COLS, l)
             if o:
-                self._con.executemany(_ins("door_counts", DOOR_COLS), o)
+                _insert_many(self._con, "door_counts", DOOR_COLS, o)
             self._con.execute("COMMIT")
         except Exception:
             self._con.execute("ROLLBACK")

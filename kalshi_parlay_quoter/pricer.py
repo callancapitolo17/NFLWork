@@ -24,6 +24,12 @@ class PricerError(Exception):
     pass
 
 
+class PricerTimeout(PricerError):
+    """The runner answered too slowly. Not a reason to back off: a slow
+    call with many uncached legs (each a Kalshi read on the runner) says
+    nothing about the next call."""
+
+
 @dataclass
 class PriceResult:
     legs: list[dict]
@@ -49,7 +55,13 @@ def price(base_url: str, rfq_id: str, legs: list[tuple[str, str]], *,
             body = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         raise PricerError(f"http_{e.code}") from e
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except TimeoutError as e:
+        raise PricerTimeout("timeout") from e
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, TimeoutError):
+            raise PricerTimeout("timeout") from e
+        raise PricerError(f"transport: {e}") from e
+    except OSError as e:
         raise PricerError(f"transport: {e}") from e
     except (ValueError, UnicodeDecodeError) as e:
         raise PricerError(f"bad_json: {e}") from e
@@ -105,6 +117,8 @@ class CachingPricer:
         if missing:
             try:
                 res = self._inner(rfq_id, missing)
+            except PricerTimeout:
+                raise
             except PricerError as e:
                 with self._lock:
                     self._backoff_until = self._clock() + self._backoff

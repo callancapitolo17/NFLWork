@@ -342,3 +342,38 @@ def test_contract_sized_rfqs_meet_the_floor(tmp_path):
     assert [r[0] for r in dlog.query("SELECT rfq_id FROM rfq_decisions")] == ["big"]
     assert q.door_row(datetime.now(timezone.utc))["below_floor"] == 1
     dlog.close()
+
+
+def test_timeout_does_not_back_off():
+    t = [0.0]
+    calls = []
+
+    def slow(rid, legs):
+        calls.append(rid)
+        raise pricer.PricerTimeout("timeout")
+    cp = pricer.CachingPricer(slow, ttl_sec=10, backoff_sec=5, clock=lambda: t[0])
+    for rid in ("r1", "r2"):
+        with pytest.raises(pricer.PricerTimeout):
+            cp(rid, [(NFL_SPREAD, "yes")])
+    assert calls == ["r1", "r2"]
+
+
+def test_url_timeout_maps_to_pricer_timeout():
+    def opener(req, timeout):
+        raise urllib.error.URLError(TimeoutError("timed out"))
+    with pytest.raises(pricer.PricerTimeout):
+        pricer.price("http://x", "r1", [(NFL_SPREAD, "yes")], timeout=1, opener=opener)
+
+
+def test_flush_writes_more_than_one_chunk(tmp_path):
+    from kalshi_parlay_quoter import db as dbmod
+    dlog = DecisionLog(tmp_path / "q.duckdb")
+    fn = fixed_pricer({NFL_SPREAD: .5, NBA_ML: .4})
+    n = dbmod.CHUNK_ROWS + 7
+    for i in range(n):
+        dlog.add(*decide.decide(rfq(f"r{i}"), [leg(NFL_SPREAD), leg(NBA_ML)], fn))
+    dlog.add(*decide.decide(rfq("r0"), [leg(NFL_SPREAD), leg(NBA_ML)], fn))  # dup ignored
+    assert dlog.flush() == n + 1
+    assert dlog.query("SELECT count(*) FROM rfq_decisions")[0][0] == n
+    assert dlog.query("SELECT count(*) FROM rfq_legs")[0][0] == 2 * n
+    dlog.close()

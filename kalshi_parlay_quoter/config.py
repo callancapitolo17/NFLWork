@@ -37,11 +37,13 @@ DB_PATH = Path(_get("PARLAY_QUOTER_DB_PATH",
 
 # The runner's leg pricer (#282), loopback only.
 RUNNER_URL = _get("UNABATED_RUNNER_URL", "http://127.0.0.1:8095").rstrip("/")
-PRICER_TIMEOUT_SEC = float(_get("PARLAY_PRICER_TIMEOUT_SEC", "1.5"))
-PRICER_WORKERS = int(_get("PARLAY_PRICER_WORKERS", "4"))
+PRICER_TIMEOUT_SEC = float(_get("PARLAY_PRICER_TIMEOUT_SEC", "3"))
+PRICER_WORKERS = int(_get("PARLAY_PRICER_WORKERS", "8"))
 # Each (ticker, side) is priced at most once per this many seconds; RFQs
-# re-ask the same legs constantly (~100 in-league RFQs/s, 2026-11-07).
-PRICE_CACHE_SEC = float(_get("PARLAY_PRICE_CACHE_SEC", "3"))
+# re-ask the same legs constantly (~100 in-league RFQs/s, 2026-11-07). 10 s,
+# not 3: the runner reads Kalshi per uncached leg (4 in flight) and could
+# not keep ~2k live legs fresh every 3 s (2026-11-12 VM run).
+PRICE_CACHE_SEC = float(_get("PARLAY_PRICE_CACHE_SEC", "10"))
 # After a runner failure, skip calls for this long (logged pricer_error).
 PRICER_BACKOFF_SEC = float(_get("PARLAY_PRICER_BACKOFF_SEC", "5"))
 # In-scope RFQs waiting for a pricer worker beyond this are logged as
