@@ -137,8 +137,10 @@
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
 //   GET /teasers.json  the panel's Teasers tab, as words (server/teasers_payload.js)
-//   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, so a
-//                    Dismiss, Can't tease or Attach the page just wrote shows at once
+//   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, in a read
+//                    that starts after the ask (one running waits, then one more
+//                    is shared), so a Place, Dismiss, Can't tease or Attach the
+//                    page just wrote shows at once
 //   GET /ticket_line.json?key=<line key>  the open Ticket's line read off its
 //                    venue's book now and sized as /edges.json sizes it, with no
 //                    Min edge cut (ticketLinePayloadNow; the phone polls it every 2 s)
@@ -1012,16 +1014,15 @@ function createRunner(deps) {
     return teaser.openTeasers(held.records, boardLines(), { now: now(), ladderOf: currentTeaserBoard().ladderOf });
   }
 
-  // A /bets.json read that starts no earlier than this call, so a page that
-  // just wrote (a Place, a Dismiss) is built on bets that include it. While a
-  // read runs, every call shares one read queued to start when it ends.
+  // A /bets.json read that starts no earlier than this call. While a read
+  // runs, every call shares one read queued to start when it ends.
   function pollBets() {
     if (!betsRead) {
       betsRead = readBets().finally(() => { betsRead = null; });
       return betsRead;
     }
     if (!betsReadAfter) {
-      betsReadAfter = betsRead.then(() => {
+      betsReadAfter = betsRead.catch(() => {}).then(() => {
         betsReadAfter = null;
         return pollBets();
       });
@@ -1029,7 +1030,7 @@ function createRunner(deps) {
     return betsReadAfter;
   }
 
-  // The 10 s poll: skipped while a read runs.
+  // Skipped while a read runs.
   function pollBetsOnTimer() {
     if (!betsRead) pollBets();
   }

@@ -2708,8 +2708,8 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
 | `BETS_SERVICE_URL` | `http://127.0.0.1:8094` | where `/bets.json` and `/settings.json` come from |
 
 - **Reads**: Unabated's public league snapshots (no login, ~6–8 MB/min with
-  every league on, as the panel); the bets service's `/bets.json` every 10 s
-  (the panel and phone read it every 30 s), applied exactly as the panel applies it
+  every league on, as the panel); the bets service's `/bets.json` every 10 s,
+  a tick skipped while a read runs (the panel and phone read it every 30 s), applied exactly as the panel applies it
   (`edgeRows.applyBetsPayload`); `/settings.json` every 10 s. A league change
   in the settings restarts the scan, as the panel's checkboxes do (NFL and
   CFB stay loaded either way).
@@ -2926,7 +2926,10 @@ the open panel used to do.
   `GET /attach.json?betId=&query=` (pick a game) /
   `?betId=&eventId=&swapped=0|1` (the plan and the `/pins.json` body).
   `?fresh=1` on `/edges.json` or `/teasers.json` re-reads `/bets.json` first,
-  so a mark or pin the page just wrote shows at once. `&reread=<line key>` on a fresh `/edges.json`
+  in a read that starts after the ask (one already running is waited out, then
+  one more read is shared by every ask that came during it; 2026-11-11: a placed
+  teaser read as unplaced until the next poll), so a Place, mark or pin the page
+  just wrote shows at once. `&reread=<line key>` on a fresh `/edges.json`
   also reads that one line at its venue (above). The bets service
   proxies both routes with the query string and passes the runner's own
   400/404 through.
