@@ -460,7 +460,7 @@ def _half_line_json(line, sized: dict) -> dict:
             "wz_decimal": price.decimal if price else None,
             "wz_american": line.wz_american(corner),
             "wz_error": price.error if price else None,
-            "books": {name: (fair.corner_fairs or {}).get(corner) for name, fair in line.book_fairs.items()},
+            "books": {name: line.book_fair(name, corner) for name in line.book_fairs},
             "fair_prob": sizing.fair_prob,
             "fair_american": _american(sizing.fair_prob),
             "ev": sizing.ev,

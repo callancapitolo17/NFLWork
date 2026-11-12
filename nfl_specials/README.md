@@ -291,3 +291,34 @@ Wagerzon account's free play balance instead of cash:
   fixed 0.776; FanDuel's standalone first-to-score (independence, ~0.50)
   never bets.
 - Correlation across games is ignored (cross-game NFL correlation measured ~0).
+
+## 1H parlays on whole-number lines (`push_grid.py`)
+
+A 1H spread or total on a whole number (spread 6, total 26) can push. Wagerzon
+then pays the other leg alone at its straight price; both pushing refunds.
+Pricing is books only (Cal, 2026-11-12):
+
+1. At each book, price the 2 x 2 corner partition at the half-point lines
+   either side (5.5 / 6.5 x 25.5 / 26.5: four partitions, or two with one
+   whole-number leg), probit-devigged per partition.
+2. `fit_push_grid` least-squares fits the cover/push/lose x over/push/under
+   grid those bands imply. A both-push cell is left out when the spread and
+   total differ in parity (a 1H margin and total are both even or both odd).
+3. Refused (the book prices nothing for the game): a cell below -0.005
+   (smaller negatives are rounding, clamped to 0), a spread push over 20% or a
+   total push over 15% (NFL 1H 2019-2025 maxes: margin 3 at 12.3%, total 20 at
+   8.6%), or partitions that disagree with the fit by over 0.03.
+4. Each corner's fair is the **effective** fair at Wagerzon's parlay decimal D:
+   P(both win) + push return / D, where push return = P(spread wins, total
+   pushes) x spread decimal + P(spread pushes, total wins) x total decimal +
+   P(both push). Same EV as the real bet; Kelly on it is the smaller,
+   cautious stake (the binary swings more than the real payout). Worst case
+   across books as for half-point lines.
+
+`half_parlay_quotes.fair_prob` is the both-win chance and `push_return` the
+push return, so the effective fair can be rebuilt from the table.
+
+Coverage (probe 2026-11-12): DraftKings posts 1H alt lines about 2 days out
+(NFL) and 1 day out (college); BetMGM college 1H legs price only near
+kickoff; FanDuel has no 1H alt totals in the SGP tab, so it prices only a
+whole-number spread with a half-point total.

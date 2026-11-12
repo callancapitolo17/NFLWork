@@ -1,4 +1,4 @@
-"""1H parlays: Wagerzon parsing, the whole-number skip, game matching, the
+"""1H parlays: Wagerzon parsing, game matching, the
 2 x 2 partition fair, worst case across books, and sizing after the fectas.
 No network."""
 from datetime import date, datetime, timedelta, timezone
@@ -15,8 +15,7 @@ from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldFe
 from nfl_specials.pricing import BookFair
 from nfl_specials.special_parser import parse_fecta
 from nfl_specials.wz import WzSpecial
-from nfl_specials.wz_halves import (CORNERS, WzHalfGame, WzParlayPrice, corner_legs, parse_half_game,
-                                    whole_number_skip_reason)
+from nfl_specials.wz_halves import (CORNERS, WzHalfGame, WzParlayPrice, corner_legs, parse_half_game)
 
 KICKOFF = datetime(2099, 1, 1, 18, 0, tzinfo=timezone.utc)
 
@@ -53,13 +52,6 @@ def test_college_names_stay_wagerzons_and_a_missing_total_is_skipped():
     assert parse_half_game(raw, "CFB") is None
     raw["idgmtyp"] = 20   # a quarter line
     assert parse_half_game(raw, "CFB") is None
-
-
-def test_whole_number_lines_are_skipped_with_the_push_reason():
-    assert whole_number_skip_reason(_game()) is None
-    assert whole_number_skip_reason(_game(total=26.0)) == "whole-number line, push not priced"
-    assert whole_number_skip_reason(_game(away_spread=-6.0)) == "whole-number line, push not priced"
-    assert whole_number_skip_reason(_game(away_spread=0.0)) == "whole-number line, push not priced"
 
 
 def test_corner_legs_follow_wagerzons_encoding():
@@ -237,7 +229,7 @@ def test_budget_and_minimum_apply_and_a_started_game_gets_nothing():
     assert all(s.recommended_stake == 0 for s in size_halves(_half_board(started), 5000, 0.25, None).values())
 
 
-def test_refresh_skips_whole_numbers_and_prices_each_book_once(monkeypatch):
+def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
     priced, whole = _game(), _game(wz_game_id=2, total=24.0)
     monkeypatch.setattr(halves_board.wz_halves, "fetch_half_games", lambda: [priced, whole])
     monkeypatch.setattr(halves_board.wz_halves, "price_corners",
@@ -259,8 +251,10 @@ def test_refresh_skips_whole_numbers_and_prices_each_book_once(monkeypatch):
     store = MemoryStore()
     board = halves_board.refresh_halves(store, lambda _board: None)
     assert [(l.game.wz_game_id, l.status, l.note) for l in board.lines] == [
-        (6118382, "priced", None), (2, "skipped", "whole-number line, push not priced")]
+        (6118382, "priced", None), (2, "priced", None)]
     assert board.lines[0].fair_prob("home_under") == pytest.approx(0.30, abs=1e-6)
-    assert board.progress_done == board.progress_total == 1
+    # The same prices either side of 24 mean no chance of landing on 24.
+    assert board.lines[1].book_fairs["FanDuel"].push_returns == pytest.approx({c: 0.0 for c in CORNERS}, abs=1e-6)
+    assert board.progress_done == board.progress_total == 2
     assert sorted({row["book"] for row in store.rows}) == ["FanDuel", "Wagerzon"]
-    assert len(store.rows) == 8
+    assert len(store.rows) == 16

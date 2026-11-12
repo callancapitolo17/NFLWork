@@ -75,11 +75,14 @@ SCHEMA = [
         total           DOUBLE,
         corner          VARCHAR,     -- 'away_over' | 'away_under' | 'home_over' | 'home_under'
         book            VARCHAR,     -- a sportsbook, or 'Wagerzon' for its parlay price
-        fair_prob       DOUBLE,
+        fair_prob       DOUBLE,      -- whole-number line: the chance BOTH legs win
         overround       DOUBLE,
         wz_decimal      DOUBLE,
-        reason          VARCHAR
+        reason          VARCHAR,
+        push_return     DOUBLE       -- whole-number line: Wagerzon's expected $ back per $1 from pushes
     )""",
+    # A file made before whole-number lines were priced lacks push_return.
+    "ALTER TABLE half_parlay_quotes ADD COLUMN IF NOT EXISTS push_return DOUBLE",
     """CREATE TABLE IF NOT EXISTS placed_half_parlays (
         placed_at       TIMESTAMPTZ,
         account         VARCHAR,
@@ -111,7 +114,8 @@ QUOTE_COLUMNS = ("quoted_at", "wz_game_id", "rotation", "description", "team", "
                  "home_team", "away_team", "game_start_time", "wz_american", "book", "quote_kind",
                  "fair_prob", "sgp_decimal", "overround", "n_cells", "sf_share", "reason")
 HALF_QUOTE_COLUMNS = ("quoted_at", "league", "wz_game_id", "away_team", "home_team", "game_start_time",
-                      "away_spread", "total", "corner", "book", "fair_prob", "overround", "wz_decimal", "reason")
+                      "away_spread", "total", "corner", "book", "fair_prob", "overround", "wz_decimal", "reason",
+                      "push_return")
 HALF_PLACEMENT_COLUMNS = ("placed_at", "account", "league", "wz_game_id", "corner", "away_team", "home_team",
                           "game_start_time", "away_spread", "total", "wz_decimal", "wz_american", "risk",
                           "to_win", "fair_prob", "ev", "status", "ticket_number", "error")
