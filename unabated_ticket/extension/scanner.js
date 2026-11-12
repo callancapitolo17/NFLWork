@@ -487,6 +487,8 @@
       getState: () => state,
       getLeagueLines: leagueLines,
       getLeagueVersion: (leagueId) => leagueVersions.get(leagueId) ?? null,
+      // When Unabated built the league's last loaded snapshot (its Last-Modified), or null.
+      getLeagueBuiltAt: (leagueId) => (leagueMeta[leagueId] ? leagueMeta[leagueId].builtAt ?? null : null),
       getLiveBoard: (leagueId) => liveBoards.get(leagueId) || null,
       liveLeagueOfEvent,
       getHistory: () => history,

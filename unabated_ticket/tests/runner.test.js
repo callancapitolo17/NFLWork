@@ -35,7 +35,8 @@ function response({ status = 200, body = "", headers = {} }) {
 
 // The scanner always loads NFL and CFB (the panel's Teasers leagues) and CBB
 // (its fair ladders are stored with theirs, laddersnapshot.js) on top of the settings' leagues.
-const ALWAYS_LOADED = [SNAPSHOT_BASE_URL(1), SNAPSHOT_BASE_URL(2), SNAPSHOT_BASE_URL(4)];
+// NFL, CFB, CBB (teasers, ladders) plus NBA and MLB (RFQ legs, rfqprice.RFQ_LEAGUE_IDS).
+const ALWAYS_LOADED = [1, 2, 3, 4, 5].map(SNAPSHOT_BASE_URL);
 
 // Unabated's CDN: the NFL slice (or `body`, a string or a function of none)
 // for league 1, a 404 for anything else.
@@ -180,7 +181,7 @@ test("edges.json lists exactly what the panel's modules list for the same settin
   assert.equal(payload.generatedAt, new Date(NOW).toISOString());
   assert.deepEqual([payload.settings.source, payload.settings.error, payload.settings.updatedAt], ["service", null, "2026-10-01T12:00:00Z"]);
   assert.equal(payload.settings.edges.bookIds, null);
-  assert.deepEqual([payload.scanner.phase, payload.scanner.leagues, payload.scanner.leaguesLoaded], ["live", [1, 2, 4], [1]]);
+  assert.deepEqual([payload.scanner.phase, payload.scanner.leagues, payload.scanner.leaguesLoaded], ["live", [1, 2, 3, 4, 5], [1]]);
   assert.deepEqual([payload.betsService.openBets, payload.betsService.error], [1, null]);
   assert.deepEqual([payload.books.mode, payload.books.ids, payload.books.liveCount], ["all", null, 5]);
   assert.deepEqual([payload.grouped, payload.unit, payload.total, payload.maxShown], [true, "cards", 4, 200]);
@@ -258,32 +259,32 @@ test("a settings change of leagues restarts the scan; a failed settings poll kee
   assert.deepEqual(fetchImpl.calls.slice().sort(), ALWAYS_LOADED.slice().sort());
   await runner.pollSettings(); // unchanged leagues: no reload
   assert.deepEqual(fetchImpl.calls.slice().sort(), ALWAYS_LOADED.slice().sort());
-  // Ticking CFB changes the list, not the scan: the scanner holds NFL and CFB anyway.
+  // Ticking CFB changes the list, not the scan: the scanner holds NFL and CFB anyway (and NBA, for RFQs).
   settingsBody = { settings: { ...OPEN_SETTINGS, leagues: [1, 2] }, updatedAt: null };
   await runner.pollSettings();
   assert.deepEqual(fetchImpl.calls.slice().sort(), ALWAYS_LOADED.slice().sort());
-  settingsBody = { settings: { ...OPEN_SETTINGS, leagues: [1, 3] }, updatedAt: null };
+  settingsBody = { settings: { ...OPEN_SETTINGS, leagues: [1, 6] }, updatedAt: null };
   await runner.pollSettings();
   await runner.scanLoaded();
-  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 3, 4]);
-  assert.deepEqual(fetchImpl.calls.slice(3).sort(), [...ALWAYS_LOADED, SNAPSHOT_BASE_URL(3)].sort());
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(fetchImpl.calls.slice(ALWAYS_LOADED.length).sort(), [...ALWAYS_LOADED, SNAPSHOT_BASE_URL(6)].sort());
   settingsBody = { nope: true };
   await runner.pollSettings();
   const payload = runner.edgesPayload();
   assert.deepEqual([payload.settings.source, payload.settings.error], ["service", "settings.json has no settings object"]);
-  assert.deepEqual(payload.settings.edges.leagues, [1, 3]);
+  assert.deepEqual(payload.settings.edges.leagues, [1, 6]);
 });
 
-test("scannerLeaguesOf: the settings' leagues plus NFL, CFB and CBB, sorted, once each", () => {
-  assert.deepEqual(runnerLib.scannerLeaguesOf([]), [1, 2, 4]);
-  assert.deepEqual(runnerLib.scannerLeaguesOf([5, 1, 4]), [1, 2, 4, 5]);
+test("scannerLeaguesOf: the settings' leagues plus NFL, CFB, NBA, CBB and MLB (the RFQ leagues), sorted, once each", () => {
+  assert.deepEqual(runnerLib.scannerLeaguesOf([]), [1, 2, 3, 4, 5]);
+  assert.deepEqual(runnerLib.scannerLeaguesOf([6, 1, 4]), [1, 2, 3, 4, 5, 6]);
   // The open bets' leagues load too, for their closing fairs.
-  assert.deepEqual(runnerLib.scannerLeaguesOf([1], [5, 12]), [1, 2, 4, 5, 12]);
+  assert.deepEqual(runnerLib.scannerLeaguesOf([1], [5, 12]), [1, 2, 3, 4, 5, 12]);
 });
 
 test("Football unticked: the scan still holds NFL for the teasers, the list shows none of it", async () => {
-  const { runner, fetchImpl } = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: { ...OPEN_SETTINGS, leagues: [3] }, updatedAt: null } });
-  assert.deepEqual(fetchImpl.calls.sort(), [...ALWAYS_LOADED, SNAPSHOT_BASE_URL(3)].sort());
+  const { runner, fetchImpl } = await startedRunner({ "/bets.json": betsBody([]), "/settings.json": { settings: { ...OPEN_SETTINGS, leagues: [6] }, updatedAt: null } });
+  assert.deepEqual(fetchImpl.calls.sort(), [...ALWAYS_LOADED, SNAPSHOT_BASE_URL(6)].sort());
   const payload = runner.edgesPayload();
   assert.deepEqual([payload.scanner.leaguesLoaded, payload.total, payload.tailFlex], [[1], 0, ""]);
 });
@@ -688,13 +689,13 @@ test("an open bet's league is loaded for its close, and stays loaded after the b
   const service = serviceFetch({ "/bets.json": () => betsBody(bets), "/settings.json": { settings: { ...OPEN_SETTINGS, leagues: [1] }, updatedAt: null } });
   const runner = runnerLib.createRunner({ fetchImpl, serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers: noTimers, ...quiet });
   await runner.start();
-  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 4, 5, 12]);
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 3, 4, 5, 12]);
   const loads = fetchImpl.calls.length;
   bets = [{ ...mlbBet, status: "won" }];
   await runner.pollBets();
   await runner.scanLoaded();
   assert.equal(fetchImpl.calls.length, loads, "no restart when the last MLB bet settles");
-  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 4, 5, 12]);
+  assert.deepEqual(runner.edgesPayload().scanner.leagues, [1, 2, 3, 4, 5, 12]);
   runner.stop();
 });
 
@@ -778,7 +779,8 @@ test("edges.json: the per-league build lists, orders and price-checks what a wal
   // A league change restarts the scanner; until a league lands the list stays the old board's.
   Object.assign(feed, { failNfl: false, dropCfbPregame: false });
   const oldBoard = runner.scanner.getState();
-  settings.current = { ...settings.current, leagues: [1, 2, 3] };
+  // NHL: NBA is already scanned for RFQ legs (rfqprice.RFQ_LEAGUE_IDS), so ticking it would not restart the scan.
+  settings.current = { ...settings.current, leagues: [1, 2, 6] };
   await runner.pollSettings();
   assert.notEqual(runner.scanner.getState(), oldBoard);
   assert.deepEqual(assertWalked(oldBoard, "league change, nothing landed").items, relanded.items);
@@ -1187,6 +1189,61 @@ test("taker: each order carries its market's Kalshi cash pot (exchange_index), n
   const orders = service.posts.filter((post) => post.route === "/taker/order.json").map((post) => post.body);
   const byTicker = Object.fromEntries(orders.map((order) => [order.ticker, order.exchangeIndex]));
   assert.deepEqual(byTicker, { "KXNCAAFSPREAD-26SEP19DUQWSU-WSU42": 3, [TAKER_TICKER]: null });
+  runner.stop();
+});
+
+// ---- GET /rfq_price.json: RFQ legs priced off Unabated (#282, places nothing) ----
+test("rfq_price: legs in request order, each priced or declined; Kalshi's market re-read after 10 s, its book after 2 s, a failed read next time", async () => {
+  let clock = TAKER_NOW;
+  const { runner, kalshi, service } = await quoteRunner({}, { now: () => clock });
+  const legs = `${TAKER_TICKER}:yes,KXNCAAFTOTAL-26SEP19DUQWSU-53:no,KXNFL1HSPREAD-26NOV09KCDEN-KC4:yes`;
+  const out = await runner.rfqPrice(new URLSearchParams({ rfq_id: "r1", legs }));
+  assert.deepEqual([out.rfq_id, out.priced_at_ms], ["r1", TAKER_NOW]);
+  const [spread, total, half] = out.legs;
+  assert.deepEqual([spread.market_ticker, spread.side, spread.ok, spread.bracketed], [TAKER_TICKER, "yes", true, false]);
+  assert.ok(spread.fair > 0.5 && spread.fair < 0.7, String(spread.fair));
+  assert.ok(spread.sigma > 0, "an alt 3 points off the main carries tail-flex uncertainty");
+  assert.deepEqual([spread.line.team, spread.line.number, spread.kickoff_ms], ["Washington State", -35.5, Date.parse(WSU_UNABATED_START)]);
+  assert.deepEqual([spread.kalshi_status, spread.kalshi_yes_ask], ["active", 0.57]);
+  assert.equal(typeof spread.fair_age_ms, "number", "the league's snapshot time reaches the leg");
+  // The fake Kalshi lists no total market: priced off Unabated, but never answered unchecked.
+  assert.deepEqual([total.ok, total.reason, total.line.over_under], [false, "kalshi_unread", "under"]);
+  assert.ok(total.fair > 0.4 && total.fair < 0.6);
+  assert.deepEqual([half.ok, half.reason], [false, "unsupported_series"]);
+  assert.ok(!kalshi.calls.some((url) => url.includes("KXNFL1H")), "an unsupported leg reads nothing");
+  const reads = kalshi.calls.length;
+  const readsOf = (suffix) => kalshi.calls.filter((url) => url === `https://kalshi.test/v2/markets/${TAKER_TICKER}${suffix}`).length;
+  await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:no` }));
+  assert.equal(kalshi.calls.length, reads, "the same market within its TTLs is not read again");
+  clock += 3000;
+  await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:no,KXNCAAFTOTAL-26SEP19DUQWSU-53:no` }));
+  assert.deepEqual([readsOf(""), readsOf("/orderbook")], [1, 2], "past 2 s the book is read again, the market is not");
+  assert.equal(kalshi.calls.filter((url) => url.endsWith("/markets/KXNCAAFTOTAL-26SEP19DUQWSU-53")).length, 2, "a failed read is not held");
+  clock += 10 * 1000;
+  await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:no` }));
+  assert.deepEqual([readsOf(""), readsOf("/orderbook")], [2, 3], "past 10 s the market is read again");
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, 0);
+  runner.stop();
+});
+
+test("rfq_price over HTTP: a malformed legs param is a 400", async () => {
+  const { runner } = await quoteRunner();
+  const server = runnerLib.createHttpServer(runner, { host: "127.0.0.1" });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const get = (route) => new Promise((resolve, reject) => {
+    require("node:http").get({ host: "127.0.0.1", port, path: route }, (reply) => {
+      let body = "";
+      reply.on("data", (chunk) => { body += chunk; });
+      reply.on("end", () => resolve({ status: reply.statusCode, body: JSON.parse(body) }));
+    }).on("error", reject);
+  });
+  const bad = await get("/rfq_price.json?legs=KXNFLGAME-26NOV09KCDEN-KC");
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /TICKER:yes\|no/);
+  const good = await get(`/rfq_price.json?legs=${encodeURIComponent(`${TAKER_TICKER}:yes`)}`);
+  assert.deepEqual([good.status, good.body.legs.length, good.body.legs[0].ok], [200, 1, true]);
+  await new Promise((resolve) => server.close(resolve));
   runner.stop();
 });
 
