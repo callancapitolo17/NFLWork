@@ -31,7 +31,7 @@ log = logging.getLogger("nfl_specials.wz_halves")
 
 # Wagerzon catalog Description -> league (resolved to an id on every read).
 WZ_HALF_LEAGUES = {"NFL - 1ST HALVES": NFL, "NCAA FOOTBALL - 1ST HALVES": CFB}
-SCHEDULE_URL = wz.config.WZ_BASE_URL + "/wager/NewScheduleHelper.aspx?WT=0&lg={league_ids}"
+SCHEDULE_URL = wz.config.WZ_BASE_URL + "/wager/NewScheduleHelper.aspx?WT=0&lg={league_id}"
 WZ_FIRST_HALF_GAME_TYPE = 15
 # Play codes ConfirmWagerHelper takes (parlay_pricer).
 PLAY_AWAY_SPREAD, PLAY_HOME_SPREAD, PLAY_OVER, PLAY_UNDER = 0, 1, 2, 3
@@ -111,18 +111,17 @@ def _fetch_half_games_once() -> list[WzHalfGame]:
                     if (row.get("Description") or "").strip() in WZ_HALF_LEAGUES and row.get("IdLeague")}
     if not league_of_id:
         raise RuntimeError(f"none of {sorted(WZ_HALF_LEAGUES)} in Wagerzon's catalog")
-    resp = session.get(SCHEDULE_URL.format(league_ids=",".join(str(i) for i in sorted(league_of_id))),
-                       timeout=30, headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"})
-    resp.raise_for_status()
     games: dict[int, WzHalfGame] = {}
-    for league in ((resp.json().get("result") or {}).get("listLeagues") or [[]])[0]:
-        league_name = WZ_HALF_LEAGUES.get((league.get("Description") or "").strip())
-        if league_name is None:
-            continue
-        for raw in league.get("Games", []):
-            game = parse_half_game(raw, league_name)
-            if game is not None:
-                games[game.wz_game_id] = game
+    # One request per league: a combined lg=430,540 answers only the first sport (2026-11-12).
+    for league_id, league_name in sorted(league_of_id.items()):
+        resp = session.get(SCHEDULE_URL.format(league_id=league_id), timeout=30,
+                           headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"})
+        resp.raise_for_status()
+        for league in ((resp.json().get("result") or {}).get("listLeagues") or [[]])[0]:
+            for raw in league.get("Games", []):
+                game = parse_half_game(raw, league_name)
+                if game is not None:
+                    games[game.wz_game_id] = game
     return list(games.values())
 
 

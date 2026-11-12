@@ -95,6 +95,10 @@
   .toggle[aria-pressed="true"] { background: var(--good-bg); color: var(--good); border-color: transparent; font-weight: 600; }
   .count { color: var(--faint); font-weight: 400; margin-left: 2px; }
   .spacer { flex: 1; }
+  .tabs { margin-bottom: 12px; }
+  .tabs button { height: 34px; padding: 0 16px; }
+  .skipped-list { font-size: 12px; color: var(--muted); padding: 10px 14px; }
+  .skipped-list div { padding: 2px 0; overflow-wrap: anywhere; }
 
   /* --- board --- */
   .group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
@@ -226,6 +230,8 @@
 
 <main>
   <div id="banner"></div>
+  <div class="seg tabs" role="tablist" aria-label="Board" id="tab-seg"></div>
+  <div id="fecta-tab">
   <section id="tiles" class="tiles" hidden></section>
   <section id="progress" class="card progress" aria-live="polite" hidden></section>
   <div id="book-warnings" class="chips book-warnings" hidden></div>
@@ -242,6 +248,20 @@
     <span class="muted small num" id="placed-summary"></span>
   </div>
   <div id="placed" class="placed-list"></div>
+  </div>
+  <div id="halves-tab" hidden>
+    <section id="half-tiles" class="tiles" hidden></section>
+    <div class="toolbar" id="half-toolbar" hidden>
+      <div class="seg" role="group" aria-label="League" id="league-seg"></div>
+      <button class="toggle" id="half-ev-only" aria-pressed="false">+EV only</button>
+    </div>
+    <div id="half-board"></div>
+    <div class="section-head">
+      <h2 class="section">1H parlays placed this week</h2>
+      <span class="muted small num" id="half-placed-summary"></span>
+    </div>
+    <div id="half-placed" class="placed-list"></div>
+  </div>
 </main>
 
 <dialog id="confirm" aria-labelledby="confirm-title">
@@ -342,7 +362,7 @@ function el(tag, attrs = {}, children = []) {
 }
 
 function loadPrefs() {
-  const defaults = { type: "all", evOnly: false, view: "game" };
+  const defaults = { type: "all", evOnly: false, view: "game", tab: "fectas", league: "all", halfEvOnly: false };
   try { return { ...defaults, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") }; }
   catch (e) { return defaults; }
 }
@@ -920,6 +940,242 @@ async function place(line, risk, account, freePlay) {
   }
 }
 
+// --- 1H parlays ----------------------------------------------------------------
+const CORNER_ORDER = ["away_over", "away_under", "home_over", "home_under"];
+const LEAGUE_LABEL = { NFL: "NFL", CFB: "College" };
+
+function renderTabs(p) {
+  const tabs = [["fectas", "Fectas"], ["halves", "1H Parlays"]];
+  document.getElementById("tab-seg").replaceChildren(...tabs.map(([key, label]) =>
+    el("button", { role: "tab", "aria-selected": String(prefs.tab === key), "aria-pressed": String(prefs.tab === key),
+                   text: label, onclick: () => setPref("tab", key) })));
+  document.getElementById("fecta-tab").hidden = prefs.tab !== "fectas";
+  document.getElementById("halves-tab").hidden = prefs.tab !== "halves";
+}
+
+function cornerTitle(line, corner) {
+  const [side, total] = corner.split("_");
+  const team = side === "away" ? line.away : line.home;
+  const spread = side === "away" ? line.away_spread : -line.away_spread;
+  return `${team} ${halfPoints(spread)} & ${total === "over" ? "Over" : "Under"} ${halfPoints(line.total).slice(1)}`;
+}
+
+function cornerLegs(line, corner) {
+  const [side, total] = corner.split("_");
+  const spreadPrice = side === "away" ? line.away_spread_american : line.home_spread_american;
+  const totalPrice = total === "over" ? line.over_american : line.under_american;
+  return `legs ${signed(spreadPrice)} / ${signed(totalPrice)}`;
+}
+
+function halfBooksLine(line, c) {
+  const names = BOOK_ORDER.filter(n => n in c.books);
+  const priced = names.filter(n => c.books[n] != null);
+  const worst = priced.length ? Math.min(...priced.map(n => c.books[n])) : null;
+  const parts = [];
+  names.forEach((name, i) => {
+    const prob = c.books[name];
+    if (i > 0) parts.push(" · ");
+    if (prob == null) {
+      parts.push(el("span", { class: "none", title: (line.book_reasons || {})[name] || "", text: `${BOOK_SHORT[name]} -` }));
+    } else {
+      const american = signed(Math.round(prob >= 0.5 ? -100 * prob / (1 - prob) : 100 * (1 - prob) / prob));
+      parts.push(priced.length > 1 && prob === worst
+        ? el("span", { class: "worst", title: "Worst case: the fair this row uses", text: `${BOOK_SHORT[name]} ${american} (worst)` })
+        : `${BOOK_SHORT[name]} ${american}`);
+    }
+  });
+  return el("div", { class: "books-line num" }, parts);
+}
+
+function halfKey(line, corner) { return `half:${line.wz_game_id}:${corner}`; }
+
+function ownHalfPlacements(p) { return (p.half_placements || []).filter(r => r.status === "placed" && r.account === p.account); }
+
+function halfStakeCell(line, corner, c, p) {
+  if (c.fair_prob == null || c.wz_decimal == null) return el("div", { class: "stake-col stake-none", text: "Unpriced" });
+  if (c.ev <= 0) return el("div", { class: "stake-col stake-none", text: "No bet" });
+  if (hasStarted(line)) return el("div", { class: "stake-col stake-none", text: "Game started" });
+  const id = halfKey(line, corner);
+  const children = [];
+  const held = ownHalfPlacements(p).filter(r => r.wz_game_id === line.wz_game_id && r.corner === corner);
+  if (held.length) {
+    children.push(el("span", { class: "chip ok held num",
+      text: `Already bet ${money(held.reduce((s, r) => s + r.risk, 0))} · ticket ${held[0].ticket_number}` }));
+  }
+  const typed = editingStake.get(id);
+  const input = el("input", { type: "text", inputmode: "decimal", autocomplete: "off",
+                              "aria-label": `Risk on ${cornerTitle(line, corner)}`, "data-stake-id": id });
+  input.value = typed !== undefined ? typed : (c.recommended_stake ? String(Math.round(c.recommended_stake)) : "");
+  const toWinText = el("span", { class: "to-win num" });
+  const updateToWin = () => {
+    const risk = Number(input.value);
+    toWinText.textContent = risk > 0 ? `to win ${money(risk * (c.wz_decimal - 1))}` : "";
+  };
+  input.addEventListener("input", () => { editingStake.set(id, input.value); placeMessages.delete(id); updateToWin(); });
+  input.addEventListener("keydown", e => { if (e.key === "Enter") button.click(); });
+  updateToWin();
+  const inFlight = placing.has(id);
+  const button = el("button", { disabled: inFlight, onclick: () => askToPlaceHalf(line, corner, c, input) },
+    inFlight ? [el("span", { class: "spinner", "aria-hidden": "true" }), "Placing…"] : ["Place"]);
+  children.push(el("div", { class: "stake-form" }, [el("div", { class: "money-input" }, [el("span", { text: "$" }), input]), button, toWinText]));
+  children.push(el("dl", { class: "sizes num" }, [["Recommended", c.recommended_stake], ["No balance limit", c.unlimited_stake],
+    ["Kelly", c.kelly_stake]].flatMap(([label, stake]) => [el("dt", { text: label }), el("dd", { class: stake < 0.5 ? "zero" : null, text: money(stake) })])));
+  if (c.recommended_stake < 0.5 && c.kelly_stake > 0.5 && c.kelly_stake < p.min_stake) {
+    children.push(el("div", { class: "why", text: `$0: Kelly's ${money(c.kelly_stake)} is under Wagerzon's ${money(p.min_stake)} minimum` }));
+  } else if (c.recommended_stake < 0.5 && c.unlimited_stake > 0.5) {
+    children.push(el("div", { class: "why", text: "$0: the cash the fectas leave went to bigger edges" }));
+  } else if (c.recommended_stake < 0.5 && c.kelly_stake < 0.5) {
+    children.push(el("div", { class: "why", text: "$0: this team's fecta or parlay already holds its Kelly" }));
+  }
+  const message = placeMessages.get(id);
+  if (message) children.push(el("div", { class: message.ok ? "msg-ok" : "msg-err", role: "status", text: message.text }));
+  return el("div", { class: "stake-col" }, children);
+}
+
+function halfRow(line, corner, p) {
+  const c = line.corners[corner];
+  const dim = c.fair_prob == null || !(c.ev > 0) || hasStarted(line);
+  return el("div", { class: "row" + (dim ? " dim" : "") }, [
+    el("div", { class: "info-col" }, [
+      el("div", { class: "title-line" }, [el("span", { class: "title", text: cornerTitle(line, corner) }),
+        el("span", { class: "faint small num", text: cornerLegs(line, corner) })]),
+      halfBooksLine(line, c),
+      c.wz_error ? el("div", { class: "note", text: c.wz_error }) : null,
+    ]),
+    el("div", { class: "price-col num" }, [
+      el("div", {}, [el("span", { class: "price-main", text: c.wz_american != null ? signed(c.wz_american) : "-" }),
+        el("span", { class: "faint small", text: c.wz_decimal != null ? ` WZ ${c.wz_decimal.toFixed(3)}` : " WZ" })]),
+      el("div", { class: "price-sub", text: c.fair_american != null ? `fair ${signed(c.fair_american)}` : "fair -" }),
+      c.ev != null ? el("span", { class: "ev " + evClass(c.ev), text: pct(c.ev) }) : null,
+    ]),
+    halfStakeCell(line, corner, c, p),
+  ]);
+}
+
+function renderHalves(p) {
+  const h = p.halves, root = document.getElementById("half-board");
+  const tiles = document.getElementById("half-tiles"), bar = document.getElementById("half-toolbar");
+  tiles.hidden = bar.hidden = !h;
+  renderHalfPlaced(p);
+  if (!h) {
+    root.replaceChildren(isBusy(p) ? "" : emptyState("Price the 1H parlays",
+      "Wagerzon's NFL and college 1st-half spread + total, every same-game pairing, against FanDuel, BetMGM and DraftKings.", true));
+    return;
+  }
+  const corners = h.lines.flatMap(line => CORNER_ORDER.map(corner => ({ line, corner, c: line.corners[corner] })));
+  const live = corners.filter(x => x.c.recommended_stake > 0.5);
+  const total = live.reduce((s, x) => s + x.c.recommended_stake, 0);
+  const profit = live.reduce((s, x) => s + x.c.recommended_stake * x.c.ev, 0);
+  tiles.replaceChildren(
+    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Cash after fectas" }),
+      el("div", { class: "tile-value num", text: h.budget == null ? "Unknown" : money(h.budget) }),
+      el("div", { class: "tile-sub keep", text: h.budget == null ? "No stakes until Refresh reads it" : "fectas get first call" })]),
+    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Recommended" }),
+      el("div", { class: "tile-value num", text: money(total) }),
+      el("div", { class: "tile-sub", text: `${live.length} parlay${live.length === 1 ? "" : "s"}` })]),
+    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Expected profit" }),
+      el("div", { class: "tile-value num", style: profit > 0 ? "color:var(--good)" : null, text: (profit > 0 ? "+" : "") + money(profit) }),
+      el("div", { class: "tile-sub", text: "at worst-case fair" })]),
+  );
+  const counts = { all: h.lines.length, NFL: h.lines.filter(l => l.league === "NFL").length, CFB: h.lines.filter(l => l.league === "CFB").length };
+  document.getElementById("league-seg").replaceChildren(...[["all", "All"], ["NFL", "NFL"], ["CFB", "College"]].map(([key, label]) =>
+    el("button", { "aria-pressed": String(prefs.league === key), onclick: () => setPref("league", key) },
+      [label, el("span", { class: "count", text: counts[key] })])));
+  document.getElementById("half-ev-only").setAttribute("aria-pressed", String(prefs.halfEvOnly));
+
+  const inLeague = h.lines.filter(l => prefs.league === "all" || l.league === prefs.league);
+  const priced = inLeague.filter(l => l.status === "priced" || l.status === "pricing");
+  const parts = [];
+  for (const line of priced) {
+    const shown = CORNER_ORDER.filter(corner => !prefs.halfEvOnly || (line.corners[corner].ev > 0 && !hasStarted(line)));
+    if (!shown.length) continue;
+    const start = parseTime(line.game_start_time);
+    parts.push(el("div", { class: "group" }, [
+      el("div", { class: "group-head" }, [
+        el("span", {}, [el("span", { class: "matchup", text: `${line.away} @ ${line.home}` }),
+          el("span", { class: "muted small num", text: ` · ${LEAGUE_LABEL[line.league]} · 1H ${line.away} ${halfPoints(line.away_spread)}, total ${halfPoints(line.total).slice(1)}` })]),
+        el("span", { class: "muted small num", text: `${dayClock(start)} · ${untilKickoff(start)}` }),
+      ]),
+      ...shown.map(corner => halfRow(line, corner, p)),
+    ]));
+  }
+  const rest = inLeague.filter(l => l.status === "skipped" || l.status === "unpriced");
+  if (!parts.length) parts.push(el("div", { class: "card empty" }, [el("h2", { text: prefs.halfEvOnly ? "No +EV 1H parlays" : "No priced 1H parlays" })]));
+  if (rest.length) {
+    parts.push(el("div", { class: "group" }, [
+      el("div", { class: "group-head" }, [el("span", { class: "matchup", text: `${rest.length} game${rest.length === 1 ? "" : "s"} not priced` })]),
+      el("div", { class: "skipped-list" }, rest.map(l => el("div", { text: `${l.away} @ ${l.home} (1H ${halfPoints(l.away_spread)}, ${halfPoints(l.total).slice(1)}): ${l.note || l.status}` }))),
+    ]));
+  }
+  root.replaceChildren(...parts);
+}
+
+function renderHalfPlaced(p) {
+  const list = document.getElementById("half-placed");
+  const placed = (p.half_placements || []).filter(r => r.status === "placed");
+  document.getElementById("half-placed-summary").textContent =
+    placed.length ? `${placed.length} placed · ${money(placed.reduce((s, r) => s + r.risk, 0))} risked` : "";
+  if (!placed.length) {
+    list.replaceChildren(el("div", { class: "placed-row" }, el("span", { class: "faint", style: "grid-column: 1 / -1", text: "Nothing placed yet." })));
+    return;
+  }
+  list.replaceChildren(...placed.map(r => el("div", { class: "placed-row" }, [
+    el("span", { class: "status-ok", "aria-label": "placed", text: "✓" }),
+    el("span", { text: cornerTitle({ away: r.away_team, home: r.home_team, away_spread: r.away_spread, total: r.total }, r.corner) }),
+    el("span", { class: "num", text: `${money(r.risk)} at ${r.wz_decimal.toFixed(3)}` }),
+    el("span", { class: "faint small placed-when", text: dayClock(parseTime(r.placed_at)) }),
+    el("div", { class: "placed-detail", text: `Ticket ${r.ticket_number} · to win ${money(r.to_win || 0)}` + (p.accounts.length > 1 ? ` · ${r.account}` : "") }),
+  ])));
+}
+
+function askToPlaceHalf(line, corner, c, input) {
+  const p = lastPayload, id = halfKey(line, corner), risk = Number(input.value);
+  if (!(risk >= p.min_stake) || risk !== Math.round(risk)) {
+    placeMessages.set(id, { ok: false, text: `Enter whole dollars, at least ${money(p.min_stake)}` });
+    render();
+    return;
+  }
+  if (p.cash_available != null && risk > p.cash_available) {
+    placeMessages.set(id, { ok: false, text: `Only ${money(p.cash_available)} available` });
+    render();
+    return;
+  }
+  const account = currentAccount();
+  document.getElementById("confirm-title").textContent = cornerTitle(line, corner);
+  document.getElementById("confirm-desc").textContent = `1H parlay · ${line.away} @ ${line.home} ${dayClock(parseTime(line.game_start_time))}`;
+  const rows = [["Risk", money(risk)], ["To win", money(risk * (c.wz_decimal - 1))], ["Wagerzon price", `${signed(c.wz_american)} (${c.wz_decimal.toFixed(3)})`],
+    ["Fair · EV", `${signed(c.fair_american)} · ${pct(c.ev)}`], ["Account", account]];
+  document.getElementById("confirm-grid").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
+  document.getElementById("confirm-ok").textContent = `Place ${money(risk)}`;
+  const dialog = document.getElementById("confirm");
+  dialog.returnValue = "";
+  dialog.onclose = () => { if (dialog.returnValue === "place") placeHalf(line, corner, c, risk, account); };
+  dialog.showModal();
+  document.getElementById("confirm-cancel").focus();
+}
+
+async function placeHalf(line, corner, c, risk, account) {
+  const id = halfKey(line, corner);
+  if (placing.has(id)) return;
+  placing.add(id);
+  placeMessages.delete(id);
+  render();
+  try {
+    const r = await api("/api/place_half", { wz_game_id: line.wz_game_id, corner, wz_decimal: c.wz_decimal, risk, account });
+    if (r.status === "placed") {
+      placeMessages.set(id, { ok: true, text: `Placed ${money(risk)} · ticket ${r.ticket_number}` });
+      editingStake.delete(id);
+    } else {
+      placeMessages.set(id, { ok: false, text: `Not placed: ${r.status}: ${r.error || "no reason given"}` });
+    }
+  } catch (e) {
+    placeMessages.set(id, { ok: false, text: "Not placed: " + e.message });
+  } finally {
+    placing.delete(id);
+    load();
+  }
+}
+
 // --- load / render loop ---------------------------------------------------------
 function render() {
   const p = lastPayload;
@@ -929,7 +1185,9 @@ function render() {
   const active = document.activeElement;
   const focusedId = active && active.dataset ? active.dataset.stakeId : null;
   const caret = focusedId ? [active.selectionStart, active.selectionEnd] : null;
-  renderHeader(p); renderTiles(p); renderProgress(p); renderToolbar(p); renderBoard(p); renderPlaced(p);
+  renderHeader(p); renderTabs(p);
+  renderTiles(p); renderProgress(p); renderToolbar(p); renderBoard(p); renderPlaced(p);
+  renderHalves(p);
   if (focusedId) {
     const again = document.querySelector(`input[data-stake-id="${focusedId}"]`);
     if (again) { again.focus(); again.setSelectionRange(caret[0], caret[1]); }
@@ -999,6 +1257,7 @@ document.getElementById("account").addEventListener("change", () => {
   editingStake.clear(); placeMessages.clear(); load();
 });
 document.getElementById("ev-only").addEventListener("click", () => setPref("evOnly", !prefs.evOnly));
+document.getElementById("half-ev-only").addEventListener("click", () => setPref("halfEvOnly", !prefs.halfEvOnly));
 document.getElementById("refresh").addEventListener("click", startRefresh);
 load();
 </script>

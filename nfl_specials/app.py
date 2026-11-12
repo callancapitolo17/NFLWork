@@ -326,7 +326,7 @@ class SpecialsApp:
             raise ValueError(f"1H game {wz_game_id!r} is not priced on the current board")
         price = line.wz_prices.get(corner)
         if price is None or price.decimal is None or abs(price.decimal - shown_decimal) > 1e-9:
-            raise ValueError("the board's Wagerzon price changed since the page loaded — refresh the page")
+            raise ValueError("the board's Wagerzon price changed since the page loaded; refresh the page")
         if line.game.game_start_time <= datetime.now(timezone.utc):
             raise ValueError("game has started")
 

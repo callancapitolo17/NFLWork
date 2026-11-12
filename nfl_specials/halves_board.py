@@ -300,7 +300,7 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBo
 
 # --- sizing ------------------------------------------------------------------
 def _group_key(game: WzHalfGame, corner: str) -> tuple:
-    """NFL: (home, away, spread team) — the fectas' board._team_key, so a
+    """NFL: (home, away, spread team), the fectas' board._team_key, so a
     parlay and that team's fectas in the game size as one group. College:
     the Wagerzon game and spread side (no college fectas)."""
     side = corner.split("_")[0]
@@ -317,8 +317,8 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
 
     `budget` is what the fectas left of the Wagerzon balance (None = no cap).
     Each NFL group (one team's side of one game) holds, as fixed bets, that
-    team's fectas in the game — the ones already placed and the stakes the
-    fecta board recommends — and the 1H parlays already placed. The group is
+    team's fectas in the game (the ones already placed and the stakes the
+    fecta board recommends) and the 1H parlays already placed. The group is
     one nested chain (pricing.ExposureGroup): the maximum correlation the
     fairs allow, the cautious case, so a parlay next to a fecta gets a
     smaller stake, never a bigger one. A team's two corners (over and under)
