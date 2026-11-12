@@ -305,14 +305,14 @@ only 1st halves are read.
    available, and nothing went to Wagerzon on that parlay in the last 2 minutes.
    Then `wz_halves.place_half_parlay` re-reads Wagerzon's 1H lines (a changed
    number or price is `line_moved`), runs `parlay_placer`'s ConfirmWagerHelper
-   preflight at the stake (a to-win more than $0.50 under the board's price is
-   `price_moved`) and sends ONE PostWagerMultipleHelper submit on the chosen
+   preflight at the stake (a to-win under the board's price by more than
+   Wagerzon's whole-dollar rounding plus the board price's own, $0.50 + 0.005 x
+   stake, is `price_moved`; a failure before the submit is `rejected`) and sends ONE PostWagerMultipleHelper submit on the chosen
    account. It does not use `parlay_placer.place_parlays`, which re-submits
    after a logged-out reply to the submit. A submit that fails, answers logged
    out or cannot be read is `unknown` / `network_error`: it may be on Wagerzon,
    so it blocks a retry, counts as held and shows "?" under placed. Every
-   attempt that reaches Wagerzon is recorded (refusals by the server's own
-   checks are not). A failed 1H refresh clears the 1H board, so its old fairs
+   attempt past the server's own checks is recorded (those refusals are not). A failed 1H refresh clears the 1H board, so its old fairs
    cannot be placed.
 
 Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
@@ -343,7 +343,7 @@ Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
 | `placed_fectas` | APPEND every Place click | the attempt and Wagerzon's answer; `free_play` TRUE for a free play bet |
 | `settings` | UPSERT | bankroll, Kelly fraction, use free play |
 | `half_parlay_quotes` | APPEND every refresh | one (1H game, book, corner) fair, or Wagerzon's parlay price (`book = 'Wagerzon'`, `wz_decimal`), or the reason there is none |
-| `placed_half_parlays` | APPEND every 1H Place that reaches Wagerzon | the attempt and Wagerzon's answer, `wz_decimal` the price quoted at the stake |
+| `placed_half_parlays` | APPEND every 1H Place past the server's checks | the attempt and Wagerzon's answer, `wz_decimal` the price quoted at the stake |
 
 ## Troubleshooting
 

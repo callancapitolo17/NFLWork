@@ -11,8 +11,8 @@ Tables:
     half_parlay_quotes   APPEND: one row per (refresh, 1H game, book, corner):
                    a book's devigged corner fair, or Wagerzon's parlay price
                    (book 'Wagerzon', wz_decimal), or the reason there is none.
-    placed_half_parlays  APPEND: one row per 1H parlay placement that reached
-                   Wagerzon, whatever it said.
+    placed_half_parlays  APPEND: one row per 1H Place past the page's own
+                   checks, whatever happened (placed, refused, or may be placed).
 Each call opens and closes its own read-write connection: the app's threads
 share one process, and DuckDB refuses a read-only connection to a file this
 process already holds read-write.
