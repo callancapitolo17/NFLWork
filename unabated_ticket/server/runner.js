@@ -137,8 +137,10 @@
 //   GET /edges.json  the Edges list the panel would show for those settings
 //                    (server/edges_payload.js documents the shape)
 //   GET /teasers.json  the panel's Teasers tab, as words (server/teasers_payload.js)
-//   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, so a
-//                    Dismiss, Can't tease or Attach the page just wrote shows at once
+//   ?fresh=1 on /edges.json or /teasers.json reads /bets.json first, in a read
+//                    that starts after the ask (one running waits, then one more
+//                    is shared), so a Place, Dismiss, Can't tease or Attach the
+//                    page just wrote shows at once
 //   GET /ticket_line.json?key=<line key>  the open Ticket's line read off its
 //                    venue's book now and sized as /edges.json sizes it, with no
 //                    Min edge cut (ticketLinePayloadNow; the phone polls it every 2 s)
@@ -638,7 +640,9 @@ function createRunner(deps) {
   // The scanner's current full load (scanner.start), resolved when it lands.
   let scanLoad = Promise.resolve();
   let pollTimers = [];
-  let betsBusy = false;
+  // The /bets.json read in flight, and the one queued to start after it (pollBets).
+  let betsRead = null;
+  let betsReadAfter = null;
   let settingsBusy = false;
   let closingBusy = false;
   // betId -> what was last POSTed for it (closefair.unsentRows).
@@ -1010,11 +1014,30 @@ function createRunner(deps) {
     return teaser.openTeasers(held.records, boardLines(), { now: now(), ladderOf: currentTeaserBoard().ladderOf });
   }
 
+  // A /bets.json read that starts no earlier than this call. While a read
+  // runs, every call shares one read queued to start when it ends.
+  function pollBets() {
+    if (!betsRead) {
+      betsRead = readBets().finally(() => { betsRead = null; });
+      return betsRead;
+    }
+    if (!betsReadAfter) {
+      betsReadAfter = betsRead.catch(() => {}).then(() => {
+        betsReadAfter = null;
+        return pollBets();
+      });
+    }
+    return betsReadAfter;
+  }
+
+  // Skipped while a read runs.
+  function pollBetsOnTimer() {
+    if (!betsRead) pollBets();
+  }
+
   // One GET of /bets.json, applied exactly as the panel applies it. A failure
   // keeps the held bets and records since when the service has been unreachable.
-  async function pollBets() {
-    if (betsBusy) return;
-    betsBusy = true;
+  async function readBets() {
     const at = now();
     try {
       const applied = edgeRows.applyBetsPayload(held, await getServiceJson(serviceFetch, `${deps.betsServiceUrl}/bets.json`), at);
@@ -1032,8 +1055,6 @@ function createRunner(deps) {
     } catch (error) {
       if (betsStatus.error !== error.message) logWarning(`bets poll failed: ${error.message}`);
       Object.assign(betsStatus, { error: error.message, unreachableSince: betsStatus.unreachableSince ?? at });
-    } finally {
-      betsBusy = false;
     }
     learn();
   }
@@ -3285,7 +3306,7 @@ function createRunner(deps) {
     await pollBets();
     await pollSettings();
     pollTimers = [
-      timers.setInterval(() => pollBets(), BETS_POLL_MS),
+      timers.setInterval(() => pollBetsOnTimer(), BETS_POLL_MS),
       timers.setInterval(() => pollSettings(), SETTINGS_POLL_MS),
       timers.setInterval(() => postClosingFairs(), CLOSING_FAIRS_POST_MS),
       timers.setInterval(() => postLadders(), CLOSING_FAIRS_POST_MS),

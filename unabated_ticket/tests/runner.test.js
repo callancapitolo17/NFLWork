@@ -110,7 +110,7 @@ function serviceFetch(script) {
     const answer = script[route];
     if (answer instanceof Error) throw answer;
     if (answer === undefined) return response({ status: 404, body: "{}" });
-    return response({ body: JSON.stringify(typeof answer === "function" ? answer() : answer) });
+    return response({ body: JSON.stringify(typeof answer === "function" ? await answer() : answer) });
   };
   impl.calls = calls;
   return impl;
@@ -879,6 +879,93 @@ test("teasers.json: the panel's Teasers tab in its words, the open BFA teaser he
   assert.deepEqual([payload.open[0].size, payload.open[0].stake, payload.open[0].inPlay], ["2-team · $400 to win $1,200", 400, true]);
   assert.deepEqual(payload.open[0].legs[1], { label: "Elsewhere +3.5", note: "no board game; counted as won", win: "—", counted: true });
   assert.equal(payload.breakEven, "70.7% a leg breaks even at +300");
+});
+
+// A /bets.json answer that waits on `hold.gate` when one is set, then answers `hold.answer()`.
+function heldBetsAnswer(hold) {
+  return async () => {
+    const answer = hold.answer();
+    if (hold.gate) await hold.gate;
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+}
+
+function betsReads(service) {
+  return service.calls.filter((url) => url === `${SERVICE_URL}/bets.json`).length;
+}
+
+async function heldBetsRunner(hold, timers = noTimers) {
+  const service = serviceFetch({ "/bets.json": heldBetsAnswer(hold), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const runner = runnerLib.createRunner({ fetchImpl: unabatedFetch(), serviceFetch: service, betsServiceUrl: SERVICE_URL, now: () => NOW, timers, ...quiet });
+  await runner.start();
+  return { runner, service };
+}
+
+// The Teasers tab's open tickets on a runner started with these bets.
+async function openTeasersStartedWith(bets) {
+  const { runner } = await startedRunner({ "/bets.json": betsBody(bets), "/settings.json": { settings: OPEN_SETTINGS, updatedAt: null } });
+  const open = runner.teasersPayload().open;
+  runner.stop();
+  return open;
+}
+
+test("pollBets: a call while a read runs gets a read that starts after it, shared by every such call", async () => {
+  const placed = [BEARS_HELD, ...PANTHERS_TEASER];
+  const hold = { gate: null, answer: () => betsBody([BEARS_HELD]) };
+  const { runner, service } = await heldBetsRunner(hold);
+  assert.deepEqual(runner.teasersPayload().open, []);
+  let release;
+  hold.gate = new Promise((resolve) => { release = resolve; });
+  const running = runner.pollBets();
+  // The teaser is placed while that read, which answered before it, is still running.
+  hold.answer = () => betsBody(placed);
+  const afterPlace = [runner.pollBets(), runner.pollBets()];
+  assert.equal(afterPlace[0], afterPlace[1], "the two asks share one queued read");
+  release();
+  await Promise.all([running, ...afterPlace]);
+  assert.equal(betsReads(service), 3, "start, the running read, one shared read after it");
+  assert.deepEqual(runner.teasersPayload().open, await openTeasersStartedWith(placed));
+  assert.equal(runner.edgesPayload().betsService.error, null);
+  runner.stop();
+});
+
+test("pollBets: a running read that fails still lets the queued read land the new bets", async () => {
+  const placed = [BEARS_HELD, ...PANTHERS_TEASER];
+  const hold = { gate: null, answer: () => betsBody([BEARS_HELD]) };
+  const { runner, service } = await heldBetsRunner(hold);
+  let release;
+  hold.gate = new Promise((resolve) => { release = resolve; });
+  hold.answer = () => new Error("bets service down");
+  const running = runner.pollBets();
+  hold.answer = () => betsBody(placed);
+  const afterPlace = runner.pollBets();
+  release();
+  await Promise.all([running, afterPlace]);
+  assert.equal(betsReads(service), 3);
+  assert.deepEqual(runner.teasersPayload().open, await openTeasersStartedWith(placed));
+  assert.equal(runner.edgesPayload().betsService.error, null, "the queued read's success clears the failure");
+  runner.stop();
+});
+
+test("pollBets: the bets poll's tick is skipped while a read runs", async () => {
+  const intervals = [];
+  const timers = { setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; }, clearInterval: () => {} };
+  const hold = { gate: null, answer: () => betsBody([BEARS_HELD]) };
+  const { runner, service } = await heldBetsRunner(hold, timers);
+  const betsTimer = intervals.find((entry) => String(entry.fn).includes("pollBetsOnTimer"));
+  assert.ok(betsTimer, "the bets poll's interval is registered");
+  let release;
+  hold.gate = new Promise((resolve) => { release = resolve; });
+  const running = runner.pollBets();
+  betsTimer.fn();
+  release();
+  await running;
+  assert.equal(betsReads(service), 2, "start and the running read; the tick read nothing");
+  betsTimer.fn();
+  await runner.pollBets();
+  assert.equal(betsReads(service), 4, "an idle tick reads, and a call during it queues one more");
+  runner.stop();
 });
 
 test("attach.json: step 1 lists the bet's games best first, step 2 the plan and the pins body; a settled or unknown bet is a 404", async () => {
