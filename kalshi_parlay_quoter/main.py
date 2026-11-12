@@ -44,11 +44,19 @@ class Quoter:
     def __init__(self, source, dlog: DecisionLog, *, price_fn=None,
                  workers: int = config.PRICER_WORKERS,
                  seen_ttl_sec: float = config.SEEN_TTL_SEC,
-                 market_fetch_rate: float = config.MAX_MARKET_FETCHES_PER_SEC):
+                 market_fetch_rate: float = config.MAX_MARKET_FETCHES_PER_SEC,
+                 max_backlog: int = config.MAX_BACKLOG,
+                 min_cost_usd: float = config.MIN_RFQ_TARGET_COST_USD):
         self.source = source
         self.dlog = dlog
-        self.price_fn = price_fn or (lambda rid, legs: pricer.price(
-            config.RUNNER_URL, rid, legs, timeout=config.PRICER_TIMEOUT_SEC))
+        self.price_fn = price_fn or pricer.CachingPricer(
+            lambda rid, legs: pricer.price(config.RUNNER_URL, rid, legs,
+                                           timeout=config.PRICER_TIMEOUT_SEC),
+            ttl_sec=config.PRICE_CACHE_SEC, backoff_sec=config.PRICER_BACKOFF_SEC)
+        self._max_backlog = max_backlog
+        self._min_cost = min_cost_usd
+        self._below_floor = 0
+        self._pending = 0
         self._pool = ThreadPoolExecutor(max_workers=workers,
                                         thread_name_prefix="pricer")
         self._seen: dict[str, float] = {}
@@ -80,7 +88,19 @@ class Quoter:
         legs = market.get("mve_selected_legs")
         return (legs, None) if isinstance(legs, list) and legs else (None, "no_mve_legs")
 
-    def handle(self, rfq: dict, seen_at: datetime | None = None) -> None:
+    @staticmethod
+    def _backlogged(rid, legs):
+        raise pricer.PricerBacklog("")
+
+    def _handle_pooled(self, rfq: dict, seen_at: datetime) -> None:
+        try:
+            self.handle(rfq, seen_at)
+        finally:
+            with self._lock:
+                self._pending -= 1
+
+    def handle(self, rfq: dict, seen_at: datetime | None = None,
+               price_fn=None) -> None:
         """seen_at is when tick() first saw the RFQ, so a pricer backlog
         shows up as queue_ms instead of hiding inside seen_at."""
         try:
@@ -91,7 +111,13 @@ class Quoter:
                 with self._lock:
                     self._other_league += 1
                 return
-            row, leg_rows = decide.decide(rfq, legs, self.price_fn, seen_at=seen_at)
+            row, leg_rows = decide.decide(rfq, legs, price_fn or self.price_fn,
+                                          seen_at=seen_at)
+            if row["n_legs"] and row["reason"] in scope.SCOPE_REASONS:
+                # Out-of-scope legs say nothing a margin needs, and at
+                # ~100 RFQs/s they were most of the DB; reason_detail keeps
+                # the series / game that failed.
+                leg_rows = []
             row["queue_ms"] = (datetime.now(timezone.utc) - seen_at).total_seconds() * 1000.0
             if legs is None and why:
                 row["reason_detail"] = why
@@ -114,13 +140,42 @@ class Quoter:
             if not rid or rid in self._seen:
                 continue
             self._seen[rid] = now
-            self._pool.submit(self.handle, rfq, datetime.now(timezone.utc))
+            if self._below_contract_floor(rfq):
+                with self._lock:
+                    self._below_floor += 1
+                continue
+            seen_at = datetime.now(timezone.utc)
+            with self._lock:
+                full = self._pending >= self._max_backlog
+                if not full:
+                    self._pending += 1
+            if full:
+                # Decided here, without the pricer: scope still runs, so an
+                # out-of-scope RFQ keeps its real reason.
+                self.handle(rfq, seen_at, price_fn=self._backlogged)
+            else:
+                self._pool.submit(self._handle_pooled, rfq, seen_at)
             submitted += 1
         if now - self._last_prune > 60 or len(self._seen) > 200_000:
             cutoff = now - self._seen_ttl
             self._seen = {k: t for k, t in self._seen.items() if t >= cutoff}
             self._last_prune = now
         return submitted
+
+    def _below_contract_floor(self, rfq: dict) -> bool:
+        """The WS door's $ floor skips contract-sized RFQs (no dollar target),
+        which were 63% of in-league RFQs on 2026-11-07. A contract pays at
+        most $1, so contracts < floor means the RFQ's cost is under the floor
+        whatever the price."""
+        if self._min_cost <= 0:
+            return False
+        try:
+            if float(rfq.get("target_cost_dollars") or 0) > 0:
+                return False          # dollar-sized: the WS door judged it
+            contracts = float(rfq.get("contracts_fp") or 0)
+        except (TypeError, ValueError):
+            return False
+        return 0 < contracts < self._min_cost
 
     def door_row(self, minute: datetime) -> dict:
         drops = dict(getattr(self.source, "ingestion_drops", {}) or {})
@@ -129,18 +184,21 @@ class Quoter:
         malformed = getattr(self.source, "malformed_count", 0)
         mal_delta, self._malformed_base = malformed - self._malformed_base, malformed
         with self._lock:
-            logged, other = self._logged, self._other_league
-            self._logged = self._other_league = 0
+            logged, other, floor = self._logged, self._other_league, self._below_floor
+            self._logged = self._other_league = self._below_floor = 0
         return {"minute": minute, "logged": logged,
-                "backlog": self._pool._work_queue.qsize(),
+                "backlog": self._pending,
                 "other_league": other + delta.get("non_mlb", 0),
-                "below_floor": delta.get("below_floor", 0),
+                "below_floor": floor + delta.get("below_floor", 0),
                 "too_many_legs": delta.get("too_many_legs", 0),
                 "malformed": mal_delta,
                 "feed_mode": getattr(self.source, "_mode", None)}
 
-    def shutdown(self) -> None:
-        self._pool.shutdown(wait=True, cancel_futures=False)
+    def shutdown(self, cancel_pending: bool = False) -> None:
+        """cancel_pending drops queued (not running) RFQs, so SIGTERM ends
+        within Docker's 10 s grace instead of draining the queue; the first
+        VM deploy was SIGKILLed (exit 137) doing that."""
+        self._pool.shutdown(wait=True, cancel_futures=cancel_pending)
 
 
 def _build_source():
@@ -200,7 +258,7 @@ def run() -> None:
 
     log.info("[quoter] stopping")
     source.stop()
-    quoter.shutdown()
+    quoter.shutdown(cancel_pending=True)
     dlog.close()
 
 

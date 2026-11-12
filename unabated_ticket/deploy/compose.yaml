@@ -117,8 +117,8 @@ services:
   # Dry-run Kalshi parlay quoter (#283): reads the RFQ feed, prices in-scope
   # parlays through the runner's /rfq_price.json, logs a decision per RFQ to
   # /data/kalshi_parlay_quoter.duckdb. Sends NO quotes or orders. Behind a
-  # profile so deploy.sh's plain `up -d` leaves it alone; start it with
-  #   docker compose --profile parlay_quoter up -d parlay_quoter
+  # profile: deploy.sh builds, starts and checks it only when deploy/.env
+  # sets COMPOSE_PROFILES=parlay_quoter (deploy.sh stays the one deploy route).
   # Signs with the read key (KALSHI_API_KEY_ID read from bets_service/.env,
   # that one line only) and the same read-only .pem as the bets service.
   parlay_quoter:
