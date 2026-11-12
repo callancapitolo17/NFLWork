@@ -171,7 +171,8 @@ def price_half_at_book(book: SgpBook, book_game: BookGame, game: WzHalfGame) -> 
     for (spread_outcome, total_outcome), fair in zip(partition.cells, partition.cell_fairs):
         side = "away" if spread_outcome in spread.winning else "home"
         side_total = "over" if total_outcome in total.winning else "under"
-        fairs[f"{side}_{side_total}"] = fair
+        key = f"{side}_{side_total}"
+        fairs[key] = fairs.get(key, 0.0) + fair
     return HalfBookFair(book.name, fairs, partition.overround)
 
 

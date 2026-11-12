@@ -149,6 +149,32 @@ def test_one_partition_gives_all_four_corner_fairs():
     assert fair.corner_fairs == pytest.approx(TRUE_CORNERS, abs=1e-6)
 
 
+class ThreeWayBook:
+    """A +0.5 spread read off a 3-way 1H winner widened with the tie
+    (books.widen_with_tie), as FanDuel and DraftKings price it: 6 cells."""
+
+    name = "FanDuel"
+    TRUE = {("away", "over"): 0.20, ("away", "under"): 0.18, ("tie", "over"): 0.03,
+            ("tie", "under"): 0.07, ("home", "over"): 0.29, ("home", "under"): 0.23}
+
+    def leg_market(self, game, role, leg):
+        if leg.kind == "spread":
+            away, tie, home = Outcome("away", "away"), Outcome("tie", "Tie"), Outcome("home", "home")
+            return LegMarket(winning=frozenset([away, tie]), group=(away, tie, home))
+        over, under = Outcome("over", "over"), Outcome("under", "under")
+        return LegMarket.single(over, (over, under))
+
+    def price(self, game, refs):
+        return 1.0 / norm.cdf(norm.ppf(self.TRUE[refs]) + 0.1)
+
+
+def test_a_three_way_widened_spread_puts_the_tie_on_the_plus_half_side():
+    fair = price_half_at_book(ThreeWayBook(), BOOK_GAME, _game(away_spread=0.5))
+    assert fair.corner_fairs == pytest.approx(
+        {"away_over": 0.23, "away_under": 0.25, "home_over": 0.29, "home_under": 0.23}, abs=1e-6)
+    assert sum(fair.corner_fairs.values()) == pytest.approx(1.0)
+
+
 def test_a_missing_total_or_declined_cell_prices_nothing():
     no_total = price_half_at_book(CorrelatedBook("FanDuel", TRUE_CORNERS, has_total=False), BOOK_GAME, _game())
     assert (no_total.corner_fairs, no_total.reason) == (None, "no SGP 1H total at 20.5")
