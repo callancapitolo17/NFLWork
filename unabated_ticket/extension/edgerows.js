@@ -417,12 +417,15 @@
   // then start).
   //   context  {edgeSettings, stakeSettings, effective (effectiveFilter), minEdgePct, measurement,
   //             records, boardLines, ladderReaderOf, teasers, now,
-  //             lineView (liveprices.createLineView; optional: the exchanges at their live prices)}
+  //             lineView (liveprices.createLineView; optional: the exchanges at their live prices),
+  //             priceIndex (optional: built for this feed update, else built here),
+  //             selectEdges (optional: feed.selectEdges or a feed.createEdgeSelector reader with the same answers)}
   function sizedEdgeRows(feedState, context) {
     if (!feedState) return [];
     const lineView = context.lineView || null;
     const priceIndex = context.priceIndex || createPriceIndex(feedState, context.edgeSettings, context.now, lineView);
-    const selected = feed.selectEdges(feedState, { ...edgeSelectionOptions(context.edgeSettings, context.effective, context.now, lineView), minEdge: context.minEdgePct / 100 })
+    const selectEdges = context.selectEdges || feed.selectEdges;
+    const selected = selectEdges(feedState, { ...edgeSelectionOptions(context.edgeSettings, context.effective, context.now, lineView), minEdge: context.minEdgePct / 100 })
       .map((row) => withStakeAndRank(row, context.measurement, context.stakeSettings))
       .filter((row) => meetsShrunkFloor(row.shrunkEdgePct, context.edgeSettings.minShrunkEdgePct))
       .map((row) => withPriceCheck(row, priceIndex));
@@ -434,7 +437,11 @@
   // Callers that render often build it once per feed update and pass it as
   // context.priceIndex.
   function createPriceIndex(feedState, edgeSettings, now, lineView = null) {
-    return pricecheck.buildPriceIndex(feedState, { now, maxLineAgeMs: edgeSettings.maxLineAgeHours * 3600 * 1000, lineView });
+    return pricecheck.buildPriceIndex(feedState, priceIndexOptions(edgeSettings, now, lineView));
+  }
+
+  function priceIndexOptions(edgeSettings, now, lineView = null) {
+    return { now, maxLineAgeMs: edgeSettings.maxLineAgeHours * 3600 * 1000, lineView };
   }
 
   // The row with `priceCheck`: how its price compares with every other book
@@ -617,7 +624,7 @@
     feedTeamsByLeague, applyBetsPayload,
     liveBooks, defaultBookIds, effectiveFilter, edgeSelectionOptions,
     shrunkEdgePctOf, meetsShrunkFloor, stakeFor, withStakeAndRank, ticketSizingRow, boardLines, createLadderReaders, withBetFlags, exposureDollars, meetsMinStake,
-    sizedEdgeRows, createPriceIndex, withPriceCheck, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
+    sizedEdgeRows, createPriceIndex, priceIndexOptions, withPriceCheck, sortEdgeRows, listedEdgeRows, groupEdgeRows, describeTailFlex, edgeTier, fmtDollars, stakeRail,
     fmtAmerican, fmtFairEntry, fmtBetPrice, heldInThisDirection, tagReading, moveDetail, moveTag, moveWords,
   };
 

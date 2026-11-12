@@ -91,13 +91,14 @@
   //   livePrices  the /live_prices.json body: {bookIds: [ids the runner reads],
   //               reads: {lineKey: {points, allIn, depthDollars, readAtMs} | {points, empty: true, readAtMs}}}
   //   now         ms epoch on the reads' clock
-  // Returns (line) -> {line, liveCheck: "live" | "unchecked" | null} | null (the line is gone).
+  // Returns (line) -> {line, liveCheck: "live" | "unchecked" | null} | null (the line is gone),
+  // with `readKeys`: the keys of the only lines whose price or presence it can change.
   // A read whose number is not the line's (a main line moved) is no read.
   function createLineView(livePrices, now) {
     if (!livePrices || !Array.isArray(livePrices.bookIds) || !livePrices.reads || typeof livePrices.reads !== "object") return null;
     const covered = new Set(livePrices.bookIds);
     const reads = livePrices.reads;
-    return (line) => {
+    const view = (line) => {
       if (!covered.has(line.bookId)) return { line, liveCheck: null };
       const read = Object.prototype.hasOwnProperty.call(reads, line.key) ? reads[line.key] : null;
       if (!isUsableRead(read) || now - read.readAtMs > LIVE_READ_MAX_AGE_MS || (read.points ?? null) !== (line.points ?? null)) {
@@ -106,6 +107,8 @@
       const live = liveLineOf(line, read);
       return live ? { line: live, liveCheck: LIVE } : null;
     };
+    view.readKeys = Object.keys(reads);
+    return view;
   }
 
   const api = { LIVE_READ_MAX_AGE_MS, LIVE, UNCHECKED, fairProbOf, liveLineOf, createLineView };

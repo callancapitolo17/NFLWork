@@ -2647,6 +2647,17 @@ the runner keeps each league's board rows and kickoff odds, rebuilt only
 for the league that landed (`scanner.getLeagueLines` / `getLeagueVersion`).
 Before, five passes over the whole ~1.2M-line board per landing froze the
 runner for 6-8 s at a time (CPU profile on the VM, 2026-10-18).
+The Edges list's line walk is kept per league the same way (2026-11-11):
+`feed.createEdgeSelector` keeps each league's lines that pass the gates no
+clock or live read changes, and `pricecheck.createGroupedPriceIndex` prices
+a number only when a row reads it, off each league's lines grouped by
+number (`pricecheck.groupPriceLines`). A build re-checks only those lines
+and the lines with a live read against the clock and the books, so it gives
+`feed.selectEdges` / `buildPriceIndex`'s answers. Before, every
+`/edges.json` build walked every line of the board (~340k on 2026-11-11)
+about four times (0.7-3.7 s on
+the Mac, 5-14 s on the VM during a Place burst, which timed out Place's
+Novig reads).
 
 The board runs on its own thread (2026-10-19, `server/board_thread.js`):
 a worker thread holds the whole runner (the scanner and the board, the bets

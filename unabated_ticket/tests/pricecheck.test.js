@@ -306,3 +306,59 @@ test("the phone's /edges.json carries each row's check, its tag and the header c
   assert.ok(!skipped.items.some((row) => row.key === southPoint.key));
   assert.equal(skipped.total, payload.total - 1);
 });
+
+// ---- createGroupedPriceIndex: buildPriceIndex's answers off per-league groups ----
+
+const livePricesForIndex = require("../extension/liveprices.js");
+
+// Every comparePrice answer and every rung / side read of both indexes agree.
+function assertSameIndex(state, options) {
+  const leagueIds = Array.from(new Set(Object.values(state.lines).map((line) => line.leagueId)));
+  const groups = leagueIds.map((id) => pricecheck.groupPriceLines(Object.values(state.lines).filter((line) => line.leagueId === id)));
+  const eager = pricecheck.buildPriceIndex(state, options);
+  const grouped = pricecheck.createGroupedPriceIndex(state, groups, options);
+  for (const [key, byBook] of eager.byRung) assert.deepEqual(grouped.byRung.get(key), byBook, key);
+  for (const [key, points] of eager.pointsBySide) assert.deepEqual(grouped.pointsBySide.get(key), points, key);
+  for (const line of Object.values(state.lines)) {
+    const spec = { ...line, bookName: (state.books[line.bookId] || {}).name };
+    assert.deepEqual(grouped.byRung.get(pricecheck.rungKeyOf(line)), eager.byRung.get(pricecheck.rungKeyOf(line)));
+    assert.deepEqual(pricecheck.comparePrice(grouped, spec), pricecheck.comparePrice(eager, spec), line.key);
+  }
+  return eager;
+}
+
+test("createGroupedPriceIndex: off board, blurred, dead, Unabated's and aged lines count nowhere; a book's best price wins", () => {
+  const state = stateWith([
+    [1, 0, 47.5, -112], [2, 0, 47.5, -105], [2, 0, 47.5, -101, { key: "alt:2:47.5", isAlt: true }],
+    [3, 0, 47.5, -107, { statusId: 2 }], [4, 0, 47.5, -100, { isBlurred: true }], [6, 0, 47.5, -102],
+    [49, 0, 47.5, -103], [5, 0, 47.5, -104, { modifiedOn: new Date(NOW - 30 * HOUR).toISOString() }],
+    [1, 0, 48.5, -120], [5, 1, 47.5, -108], [1, 0, null, -150], [2, 0, null, -140],
+  ]);
+  for (const maxLineAgeMs of [null, 24 * HOUR]) {
+    const eager = assertSameIndex(state, { now: NOW, maxLineAgeMs });
+    assert.equal(eager.byRung.get(pricecheck.rungKeyOf(overSpec(2, -101))).get(2).price, -101);
+  }
+  const grouped = pricecheck.createGroupedPriceIndex(state, [pricecheck.groupPriceLines(Object.values(state.lines))], { now: NOW });
+  assert.equal(grouped.byRung.get("100:1:3:0|99.5"), undefined);
+  assert.equal(grouped.pointsBySide.get("100:1:3:9"), undefined);
+});
+
+test("createGroupedPriceIndex agrees with buildPriceIndex on two real leagues, with live reads", () => {
+  const fixture = (name) => JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8"));
+  const state = feed.mergeStates([
+    feed.parseSnapshot(fixture("v2_slice.json"), { leagueId: 1 }),
+    feed.parseSnapshot(fixture("v2_venue_ids_slice.json"), { leagueId: 2 }),
+  ]);
+  const at = Date.parse("2026-09-10T00:00:00Z");
+  assertSameIndex(state, { now: at, maxLineAgeMs: null });
+  assertSameIndex(state, { now: at, maxLineAgeMs: 14 * 24 * HOUR });
+  const exchange = Object.values(state.lines).filter((line) => line.bookId === 105 || line.bookId === 89);
+  const reads = {};
+  exchange.forEach((line, i) => {
+    reads[line.key] = i % 3 === 0
+      ? { points: line.points ?? null, empty: true, readAtMs: at }
+      : { points: line.points ?? null, allIn: 0.2 + (i % 60) / 100, depthDollars: 10 + i, readAtMs: at };
+  });
+  const lineView = livePricesForIndex.createLineView({ bookIds: [105, 89], reads }, at);
+  assertSameIndex(state, { now: at, maxLineAgeMs: null, lineView });
+});

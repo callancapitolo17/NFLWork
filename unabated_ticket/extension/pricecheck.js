@@ -76,13 +76,18 @@
   // not Unabated's own line, and changed within maxLineAgeMs when set (a dead
   // feed's week-old price must not read as "better").
   function countsAsPrice(line, state, now, maxLineAgeMs) {
-    if (line.bookId === feed.UNABATED_LINE_BOOK_ID || line.statusId !== STATUS_ON_BOARD || line.isBlurred) return false;
+    if (!canEverCountAsPrice(line)) return false;
     if (impliedProb(line.price) == null) return false;
     const book = state.books[line.bookId];
     if (!book || !book.isLive) return false;
     if (maxLineAgeMs == null) return true;
     const changedMs = feed.lineChangedMs(line);
     return changedMs != null && now - changedMs <= maxLineAgeMs;
+  }
+
+  // A book's own line on the board, not blurred: what no price, age or live read changes.
+  function canEverCountAsPrice(line) {
+    return line.bookId !== feed.UNABATED_LINE_BOOK_ID && line.statusId === STATUS_ON_BOARD && !line.isBlurred;
   }
 
   // A book's name without a trailing country tag: "TheScore US" and
@@ -125,6 +130,33 @@
     return `${eventId}:${periodTypeId}:${betTypeId}:${sideIndex}`;
   }
 
+  function priceIndexPlan(options) {
+    return {
+      now: options.now,
+      maxLineAgeMs: typeof options.maxLineAgeMs === "number" && options.maxLineAgeMs > 0 ? options.maxLineAgeMs : null,
+      lineView: typeof options.lineView === "function" ? options.lineView : null,
+    };
+  }
+
+  // The board line as it stands as a price (through the live view, then
+  // countsAsPrice), or null when it does not count.
+  function countedPriceLine(boardLine, state, opts) {
+    const view = opts.lineView ? opts.lineView(boardLine) : { line: boardLine };
+    if (!view) return null;
+    return countsAsPrice(view.line, state, opts.now, opts.maxLineAgeMs) ? view.line : null;
+  }
+
+  // Keeps the book's best price at the line's number in byBook (bookId -> entry).
+  function keepBestPrice(byBook, line, state) {
+    const held = byBook.get(line.bookId);
+    if (held && impliedProb(held.price) <= impliedProb(line.price)) return;
+    byBook.set(line.bookId, { bookId: line.bookId, bookName: state.books[line.bookId].name, price: line.price, liquidity: line.liquidity ?? null });
+  }
+
+  function hasNumber(line) {
+    return line.betTypeId !== BET_TYPE_MONEYLINE && typeof line.points === "number";
+  }
+
   // Every book's best price at each number (a book can sit on a number twice:
   // main and alt), and the numbers each side is posted at (for the nearest
   // lines). Build once per feed update; read it only through comparePrice.
@@ -137,27 +169,85 @@
     const pointsBySide = new Map();
     const built = { byRung: index, pointsBySide };
     if (!state) return built;
-    const now = options.now;
-    const maxLineAgeMs = typeof options.maxLineAgeMs === "number" && options.maxLineAgeMs > 0 ? options.maxLineAgeMs : null;
-    const lineView = typeof options.lineView === "function" ? options.lineView : null;
+    const opts = priceIndexPlan(options);
     for (const boardLine of Object.values(state.lines)) {
-      const view = lineView ? lineView(boardLine) : { line: boardLine };
-      if (!view) continue;
-      const line = view.line;
-      if (!countsAsPrice(line, state, now, maxLineAgeMs)) continue;
-      const key = rungKeyOf(line);
-      if (line.betTypeId !== BET_TYPE_MONEYLINE && typeof line.points === "number") {
+      const line = countedPriceLine(boardLine, state, opts);
+      if (!line) continue;
+      if (hasNumber(line)) {
         const sideKey = sideKeyOf(line);
         if (!pointsBySide.has(sideKey)) pointsBySide.set(sideKey, new Set());
         pointsBySide.get(sideKey).add(line.points);
       }
+      const key = rungKeyOf(line);
       if (!index.has(key)) index.set(key, new Map());
-      const byBook = index.get(key);
-      const held = byBook.get(line.bookId);
-      if (held && impliedProb(held.price) <= impliedProb(line.price)) continue;
-      byBook.set(line.bookId, { bookId: line.bookId, bookName: state.books[line.bookId].name, price: line.price, liquidity: line.liquidity ?? null });
+      keepBestPrice(index.get(key), line, state);
     }
     return built;
+  }
+
+  // One league's lines that can ever stand as a price (countsAsPrice's
+  // checks no live read or clock changes), grouped by number and by side, in
+  // the lines' order. Build once per league snapshot for createGroupedPriceIndex.
+  //   {byRung: Map(rung key -> [line]), bySide: Map(side key -> [line])}
+  function groupPriceLines(lines) {
+    const byRung = new Map();
+    const bySide = new Map();
+    for (const line of lines) {
+      if (!canEverCountAsPrice(line)) continue;
+      const key = rungKeyOf(line);
+      if (!byRung.has(key)) byRung.set(key, []);
+      byRung.get(key).push(line);
+      if (!hasNumber(line)) continue;
+      const sideKey = sideKeyOf(line);
+      if (!bySide.has(sideKey)) bySide.set(sideKey, []);
+      bySide.get(sideKey).push(line);
+    }
+    return { byRung, bySide };
+  }
+
+  // buildPriceIndex's index over per-league groupPriceLines, each number and
+  // side priced on its first read and kept: the same answers to
+  // comparePrice, without a pass over every line of the board.
+  //   groupsList  [groupPriceLines(one league's lines)], one per board league
+  //   options     as buildPriceIndex
+  function createGroupedPriceIndex(state, groupsList, options) {
+    const opts = priceIndexPlan(options);
+    const linesOf = (mapName, key) => {
+      for (const groups of groupsList) {
+        const lines = groups[mapName].get(key);
+        if (lines) return lines;
+      }
+      return [];
+    };
+    const rungs = new Map();
+    const sides = new Map();
+    const byRung = {
+      get(key) {
+        if (!rungs.has(key)) {
+          const byBook = new Map();
+          for (const boardLine of linesOf("byRung", key)) {
+            const line = countedPriceLine(boardLine, state, opts);
+            if (line) keepBestPrice(byBook, line, state);
+          }
+          rungs.set(key, byBook.size ? byBook : undefined);
+        }
+        return rungs.get(key);
+      },
+    };
+    const pointsBySide = {
+      get(sideKey) {
+        if (!sides.has(sideKey)) {
+          const points = new Set();
+          for (const boardLine of linesOf("bySide", sideKey)) {
+            const line = countedPriceLine(boardLine, state, opts);
+            if (line) points.add(line.points);
+          }
+          sides.set(sideKey, points.size ? points : undefined);
+        }
+        return sides.get(sideKey);
+      },
+    };
+    return { byRung, pointsBySide };
   }
 
   // "u159" / "o47.5" for a total, "+3.5" / "-7" for a spread: the number a
@@ -321,7 +411,7 @@
 
   const api = {
     BOOKS_BETTER_TO_SKIP, OUTLIER_PROB_GAP, MIN_OTHER_BOOK_LIQUIDITY,
-    impliedProb, isThin, rungKeyOf, sameNameKey, mergeSameNameBooks, buildPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
+    impliedProb, isThin, rungKeyOf, sameNameKey, mergeSameNameBooks, buildPriceIndex, groupPriceLines, createGroupedPriceIndex, comparePrice, priceCheckTag, describePriceChecks,
     skipKeyOf, skipLineOf, skipsByLine, canSkip, splitSkipped,
   };
 

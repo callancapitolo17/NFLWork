@@ -605,3 +605,113 @@ test("gameStateOf: missing fields read null, never zero", () => {
     statusId: null, awayScore: null, homeScore: null, gameClock: null, periodId: null, overtimeNumber: null, snapshotAtMs: null,
   });
 });
+
+// ---- createEdgeSelector: selectEdges' rows, its line walk kept per league ------
+
+const livePricesForSelector = require("../extension/liveprices.js");
+
+// NFL (v2_slice) and CFB (v2_venue_ids_slice) merged as the scanner merges
+// them, with a board that names each league's lines and a version per league.
+function twoLeagueBoard() {
+  const state = feed.mergeStates([
+    feed.parseSnapshot(snapshotJson(), { leagueId: NFL }),
+    feed.parseSnapshot(venueSnapshotJson(), { leagueId: CFB }),
+  ]);
+  const versions = new Map([[NFL, 1], [CFB, 1]]);
+  const board = {
+    leagueIds: [NFL, CFB],
+    linesOf: (id) => Object.values(state.lines).filter((line) => line.leagueId === id),
+    versionOf: (id) => versions.get(id),
+  };
+  return { state, versions, board };
+}
+
+const SELECTOR_START = Date.parse("2026-09-10T00:00:00Z");
+const selectorOptions = (fields) => ({
+  now: SELECTOR_START, leagueIds: new Set([NFL, CFB]), periods: new Set([1, 2]), betTypes: new Set([1, 2, 3]),
+  // The CFB slice's best edge is -6.8%: a negative floor lists both leagues.
+  includeAlts: true, minEdge: -0.1, ...fields,
+});
+
+test("createEdgeSelector lists what selectEdges lists, in the same order, across settings", () => {
+  const { state, board } = twoLeagueBoard();
+  const select = feed.createEdgeSelector();
+  const variants = [
+    {}, { includeAlts: false }, { minEdge: 0.005 }, { minEdge: 0.03 }, { periods: new Set([1]) }, { leagueIds: new Set([CFB]) },
+    { betTypes: new Set([2]) }, { bookIds: new Set([105, 89]) }, { minLiquidityToWin: 500 }, { maxLineAgeMs: 30 * 86400 * 1000 },
+  ];
+  for (const fields of variants) {
+    const expected = feed.selectEdges(state, selectorOptions(fields));
+    assert.ok(expected.length > 0, `variant ${JSON.stringify(Object.keys(fields))} lists nothing`);
+    assert.deepEqual(select(state, selectorOptions(fields), board), expected);
+  }
+});
+
+test("createEdgeSelector re-reads the clock every call: an aged line and a started game drop at once", () => {
+  const { state, board } = twoLeagueBoard();
+  const select = feed.createEdgeSelector();
+  const DAY = 86400 * 1000;
+  const counts = [];
+  // The slice's lines changed Aug 29-30: a 12-day age gate cuts some a day later and more two days later.
+  for (const now of [SELECTOR_START, SELECTOR_START + DAY, SELECTOR_START + 2 * DAY, KICKOFF_MS + 1]) {
+    const options = selectorOptions({ now, maxLineAgeMs: 12 * DAY });
+    const rows = select(state, options, board);
+    assert.deepEqual(rows, feed.selectEdges(state, options));
+    counts.push(rows.length);
+  }
+  assert.deepEqual(counts, [53, 49, 47, 3]);
+  assert.equal(select(state, selectorOptions({ now: KICKOFF_MS + 30 * DAY }), board).length, 0);
+});
+
+test("createEdgeSelector rebuilds a league only when its version changes", () => {
+  const { state, versions, board } = twoLeagueBoard();
+  const select = feed.createEdgeSelector();
+  const options = selectorOptions({ minEdge: 0.05 });
+  const listed = select(state, options, board);
+  const unlisted = Object.values(state.lines).find((line) => line.leagueId === NFL && !line.isAlt && line.ge != null
+    && line.ge < 0.05 && line.statusId === 1 && state.books[line.bookId].isLive && line.bookId !== feed.UNABATED_LINE_BOOK_ID
+    && Math.abs(line.price) >= 100 && !feed.isClampedFair(line.bacr));
+  assert.ok(unlisted, "the fixture has a live NFL main line under 5%");
+  moveLine(state, unlisted.key, { ge: 0.2 });
+  // The NFL snapshot has not landed again: its kept lines stand.
+  assert.deepEqual(select(state, options, board).map((row) => row.key), listed.map((row) => row.key));
+  versions.set(NFL, 2);
+  const after = select(state, options, board);
+  assert.ok(after.some((row) => row.key === unlisted.key));
+  assert.deepEqual(after, feed.selectEdges(state, options));
+});
+
+test("createEdgeSelector drops a listed alt once its league lands with the main on the alt's number", () => {
+  const { state, versions, board } = twoLeagueBoard();
+  const select = feed.createEdgeSelector();
+  const listed = select(state, selectorOptions({}), board);
+  const alt = listed.find((row) => row.isAlt && state.lines[state.lines[row.key].mainKey]);
+  assert.ok(alt, "the fixture lists an alt whose main is on the board");
+  const altLine = state.lines[alt.key];
+  moveLine(state, altLine.mainKey, { points: altLine.points });
+  versions.set(altLine.leagueId, 2);
+  const after = select(state, selectorOptions({}), board);
+  assert.ok(!after.some((row) => row.key === alt.key));
+  assert.deepEqual(after, feed.selectEdges(state, selectorOptions({})));
+});
+
+test("createEdgeSelector judges every live-read line at its live price, and drops an empty one", () => {
+  const { state, board } = twoLeagueBoard();
+  const select = feed.createEdgeSelector();
+  const exchangeLines = Object.values(state.lines).filter((line) => (line.bookId === 105 || line.bookId === 89) && line.statusId === 1 && line.bacr != null);
+  const listedKeys = new Set(feed.selectEdges(state, selectorOptions({})).map((row) => row.key));
+  const gone = exchangeLines.find((line) => listedKeys.has(line.key));
+  const lifted = exchangeLines.filter((line) => !listedKeys.has(line.key));
+  assert.ok(gone && lifted.length > 0, "the fixture has listed and unlisted exchange lines");
+  const reads = { [gone.key]: { points: gone.points ?? null, empty: true, readAtMs: SELECTOR_START } };
+  for (const line of lifted) reads[line.key] = { points: line.points ?? null, allIn: 0.02, depthDollars: 5000, readAtMs: SELECTOR_START };
+  const lineView = livePricesForSelector.createLineView({ bookIds: [105, 89], reads }, SELECTOR_START);
+  const options = selectorOptions({ lineView });
+  const expected = feed.selectEdges(state, options);
+  assert.ok(!expected.some((row) => row.key === gone.key));
+  assert.ok(expected.some((row) => row.liveCheck === "live"));
+  assert.deepEqual(select(state, options, board), expected);
+  // A view that does not say which lines it reads could change any: selectEdges answers.
+  const opaque = (line) => lineView(line);
+  assert.deepEqual(select(state, selectorOptions({ lineView: opaque }), board), feed.selectEdges(state, selectorOptions({ lineView: opaque })));
+});
