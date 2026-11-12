@@ -251,7 +251,8 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
     store = MemoryStore()
     board = halves_board.refresh_halves(store, lambda _board: None)
     assert [(l.game.wz_game_id, l.status, l.note) for l in board.lines] == [
-        (6118382, "priced", None), (2, "priced", None)]
+        (6118382, "priced", None), (2, "priced", "whole-number line priced by FanDuel only; needs 2 books")]
+    assert board.lines[1].fair_prob("home_under") is None
     assert board.lines[0].fair_prob("home_under") == pytest.approx(0.30, abs=1e-6)
     # The same prices either side of 24 mean no chance of landing on 24.
     assert board.lines[1].book_fairs["FanDuel"].push_returns == pytest.approx({c: 0.0 for c in CORNERS}, abs=1e-6)

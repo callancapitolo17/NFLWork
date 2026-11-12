@@ -48,10 +48,18 @@ log = logging.getLogger("nfl_specials.halves_board")
 
 BOOK_ORDER = ("FanDuel", "BetMGM", "DraftKings")
 LEAGUES = (NFL, CFB)
+# A whole-number line's push slices rest on how one book prices the lines
+# either side, which nothing in that book's own prices can check; a second
+# book can. Fewer books priced = no fair, so no stake.
+MIN_BOOKS_WHOLE_NUMBER = 2
 # NFL: same two teams; books list future weeks, so the kickoff must agree too.
 NFL_KICKOFF_TOLERANCE = timedelta(hours=12)
 # College matches by name prefix, so the kickoff must agree closely.
 CFB_KICKOFF_TOLERANCE = timedelta(minutes=30)
+
+
+def has_whole_number_line(game: WzHalfGame) -> bool:
+    return push_grid.is_whole_number(game.away_spread) or push_grid.is_whole_number(game.total)
 
 
 @dataclass(frozen=True)
@@ -87,8 +95,12 @@ class HalfLine:
         return self.book_fairs[book].effective_fair(corner, price.decimal if price else None)
 
     def fair_prob(self, corner: str) -> float | None:
-        """The LOWEST (effective) fair among books that priced the partition (a parlay is only ever backed)."""
+        """The LOWEST (effective) fair among books that priced the partition
+        (a parlay is only ever backed); a whole-number line needs
+        MIN_BOOKS_WHOLE_NUMBER of them."""
         priced = [fair for fair in (self.book_fair(name, corner) for name in self.book_fairs) if fair is not None]
+        if has_whole_number_line(self.game) and len(priced) < MIN_BOOKS_WHOLE_NUMBER:
+            return None
         return min(priced) if priced else None
 
     def wz_american(self, corner: str) -> int | None:
@@ -337,6 +349,10 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBo
             continue
         if line in priced:
             line.status = "priced"
+            books_priced = [b for b, f in line.book_fairs.items() if f.corner_fairs]
+            if has_whole_number_line(line.game) and len(books_priced) < MIN_BOOKS_WHOLE_NUMBER:
+                line.note = (f"whole-number line priced by {', '.join(books_priced)} only; "
+                             f"needs {MIN_BOOKS_WHOLE_NUMBER} books")
             continue
         line.status = "unpriced"
         line.note = "; ".join(f"{b}: {f.reason}" for b, f in line.book_fairs.items() if f.reason) or "no book priced it"

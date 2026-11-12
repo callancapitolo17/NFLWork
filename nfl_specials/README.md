@@ -316,6 +316,8 @@ Pricing is books only (Cal, 2026-11-12):
    P(both push). Same EV as the real bet; Kelly on it is the smaller,
    cautious stake (the binary swings more than the real payout). Worst case
    across books as for half-point lines.
+5. A whole-number game needs two books priced (`MIN_BOOKS_WHOLE_NUMBER`,
+   `halves_board.py`); with one, the board notes it and stakes nothing.
 
 `half_parlay_quotes.fair_prob` is the both-win chance and `push_return` the
 push return, so the effective fair can be rebuilt from the table.

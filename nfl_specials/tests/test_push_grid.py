@@ -162,7 +162,7 @@ def test_book_prices_the_four_bracket_partitions_and_the_fair_is_effective():
     fair = price_half_at_book(GridBook(TRUE_GRID, game), BOOK_GAME, game)
     assert fair.reason is None
     assert fair.corner_fairs["away_over"] == pytest.approx(0.20, abs=1e-6)
-    line = HalfLine(game, "priced", book_fairs={"DraftKings": fair},
+    line = HalfLine(game, "priced", book_fairs={"DraftKings": fair, "BetMGM": fair},
                     wz_prices={c: WzParlayPrice(3.6, 500) for c in CORNERS})
     push_back = 0.02 * american_to_decimal(-110) + 0.03 * american_to_decimal(-110) + 0.01
     assert line.fair_prob("away_over") == pytest.approx(0.20 + push_back / 3.6, abs=1e-6)
@@ -235,3 +235,18 @@ def test_real_betmgm_brackets_fit_within_rounding():
     assert fit.reason is None and fit.residual < 0.002
     assert fit.grid.prob(A, P) == pytest.approx(0.056, abs=0.002)
     assert fit.grid.prob(H, P) == pytest.approx(0.036, abs=0.002)
+
+
+def test_a_whole_number_line_needs_two_books():
+    game = _game()
+    one = price_half_at_book(GridBook(TRUE_GRID, game), BOOK_GAME, game)
+    prices = {c: WzParlayPrice(3.6, 500) for c in CORNERS}
+    alone = HalfLine(game, "priced", book_fairs={"DraftKings": one}, wz_prices=prices)
+    assert all(alone.fair_prob(c) is None for c in CORNERS)
+    lower = HalfBookFair("BetMGM", {c: f - 0.01 for c, f in one.corner_fairs.items()}, 1.2,
+                         push_returns=one.push_returns)
+    both = HalfLine(game, "priced", book_fairs={"DraftKings": one, "BetMGM": lower}, wz_prices=prices)
+    assert both.fair_prob("away_over") == pytest.approx(lower.effective_fair("away_over", 3.6))
+    half = _game(away_spread=-6.5, total=26.5)
+    assert HalfLine(half, "priced", book_fairs={"DraftKings": HalfBookFair("DraftKings", {c: 0.25 for c in CORNERS}, 1.2)},
+                    wz_prices=prices).fair_prob("away_over") == 0.25
