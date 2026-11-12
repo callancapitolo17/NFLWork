@@ -615,19 +615,6 @@
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
   }
 
-  // Alt-only gates. An alt is listed only when includeAlts is on, the main
-  // line is not currently sitting on the same number (same bet twice), its
-  // fair and price are inside the depth cap (altWithinDepthCap), and its fair
-  // is not a flat-lined tail (flatFairRungKeys). Inside the cap the panel
-  // ranks deep rungs down with the tail flex (tailflex.js).
-  function altPassesGates(line, state, opts) {
-    if (!opts.includeAlts) return false;
-    const main = state.lines[line.mainKey];
-    if (main && main.points === line.points) return false;
-    if (!altWithinDepthCap(line.bacr, line.price)) return false;
-    return !opts.flatRungKeys.has(rungKeyOf(line));
-  }
-
   // Dollars won per dollar staked at an American price: +2000 -> 20, -110 -> 0.909.
   function winPerDollarStaked(americanPrice) {
     return americanPrice > 0 ? americanPrice / 100 : 100 / Math.abs(americanPrice);
@@ -643,60 +630,163 @@
     return line.liquidity * winPerDollarStaked(line.price) >= minLiquidityToWin;
   }
 
-  // Lines worth listing: on the board, edge known and >= minEdge (a fraction),
-  // league ticked (leagueIds: the state can hold leagues the Edges tab does
-  // not show — the scanner always loads NFL and CFB for the Teasers tab),
-  // period/bet type enabled, book allowed, game not started, and — when
-  // maxLineAgeMs is set — changed by the book within that window (a 96-day-old
-  // line at a "live" book is a dead feed, and its 36% "edge" is not bettable;
-  // a line whose change time is unknowable is excluded too). Alt lines
-  // additionally pass altPassesGates. Every line passes liquidityCanWin.
+  // The options selectEdges reads, with their defaults.
+  function edgeSelectionPlan(options) {
+    const opts = options || {};
+    return {
+      minEdge: typeof opts.minEdge === "number" ? opts.minEdge : 0.01,
+      leagueIds: opts.leagueIds instanceof Set ? opts.leagueIds : null,
+      periods: opts.periods instanceof Set ? opts.periods : new Set([1]),
+      betTypes: opts.betTypes instanceof Set ? opts.betTypes : new Set([1, 2, 3]),
+      bookIds: opts.bookIds instanceof Set ? opts.bookIds : null,
+      now: typeof opts.now === "number" ? opts.now : Date.now(),
+      maxLineAgeMs: positiveNumberOrNull(opts.maxLineAgeMs),
+      minLiquidityToWin: positiveNumberOrNull(opts.minLiquidityToWin),
+      includeAlts: opts.includeAlts === true,
+      lineView: typeof opts.lineView === "function" ? opts.lineView : null,
+    };
+  }
+
+  // Gates on what the line is, which neither its price nor the clock
+  // changes. An alt lists only when includeAlts is on, the main line is not
+  // sitting on the same number (same bet twice) and its fair is not a
+  // flat-lined tail (flatFairRungKeys over the line's own league or more).
+  function passesShapeGates(line, state, plan, flatRungKeys) {
+    if (line.bookId === UNABATED_LINE_BOOK_ID) return false;
+    if (plan.leagueIds && !plan.leagueIds.has(line.leagueId)) return false;
+    if (!plan.periods.has(line.periodTypeId) || !plan.betTypes.has(line.betTypeId)) return false;
+    if (line.betTypeId !== 1 && line.points == null) return false;
+    if (!line.isAlt) return true;
+    if (!plan.includeAlts) return false;
+    const main = state.lines[line.mainKey];
+    if (main && main.points === line.points) return false;
+    return !flatRungKeys.has(rungKeyOf(line));
+  }
+
+  // Gates on the line's own price, edge and liquidity (a live read changes
+  // them): on the board, edge known and >= minEdge, a real fair and price, an
+  // alt inside the depth cap (altWithinDepthCap), and liquidityCanWin.
+  function passesPriceGates(line, plan) {
+    if (line.statusId !== STATUS_ON_BOARD) return false;
+    if (line.ge == null || line.ge < plan.minEdge) return false;
+    if (isClampedFair(line.bacr)) return false;
+    // Not a valid American price: nothing downstream (cents, Kelly) can use it.
+    if (Math.abs(line.price) < 100) return false;
+    if (line.isAlt && !altWithinDepthCap(line.bacr, line.price)) return false;
+    return liquidityCanWin(line, plan.minLiquidityToWin);
+  }
+
+  // Gates on the clock and the board around the line: book allowed, game not
+  // started, and changed within maxLineAgeMs when set (a 96-day-old line at a
+  // "live" book is a dead feed, and its 36% "edge" is not bettable; a line
+  // whose change time is unknowable is excluded too).
+  function passesBoardGates(line, state, plan) {
+    const book = state.books[line.bookId];
+    if (plan.bookIds ? !plan.bookIds.has(line.bookId) : !(book && book.isLive)) return false;
+    const event = state.events[line.eventId];
+    if (!event || event.eventStart == null || event.eventStart <= plan.now) return false;
+    if (plan.maxLineAgeMs == null) return true;
+    const changedMs = lineChangedMs(line);
+    return changedMs != null && plan.now - changedMs <= plan.maxLineAgeMs;
+  }
+
+  // The board line's row when it lists, read through plan.lineView first (an
+  // exchange line judged at its live price; null from the view = gone), else null.
+  function edgeRowOf(boardLine, state, plan) {
+    const view = plan.lineView ? plan.lineView(boardLine) : { line: boardLine, liveCheck: null };
+    if (!view) return null;
+    const line = view.line;
+    if (!passesPriceGates(line, plan) || !passesBoardGates(line, state, plan)) return null;
+    return { ...describeLine(line, state), liveCheck: view.liveCheck };
+  }
+
+  function sortByEdge(rows) {
+    return rows.sort((a, b) => b.edgePct - a.edgePct || a.eventStartMs - b.eventStartMs);
+  }
+
+  // Lines worth listing: passesShapeGates, passesPriceGates and
+  // passesBoardGates. leagueIds: the state can hold leagues the Edges tab
+  // does not show (the scanner always loads NFL and CFB for the Teasers tab).
   // Sorted by edge.
   // opts.lineView (liveprices.createLineView): each line is read through it
   // first, so an exchange line is judged at its live price; a line it returns
   // null for is gone, and each row carries the view's liveCheck.
   function selectEdges(state, options) {
-    const opts = options || {};
-    const minEdge = typeof opts.minEdge === "number" ? opts.minEdge : 0.01;
-    const leagueIds = opts.leagueIds instanceof Set ? opts.leagueIds : null;
-    const periods = opts.periods instanceof Set ? opts.periods : new Set([1]);
-    const betTypes = opts.betTypes instanceof Set ? opts.betTypes : new Set([1, 2, 3]);
-    const bookIds = opts.bookIds instanceof Set ? opts.bookIds : null;
-    const now = typeof opts.now === "number" ? opts.now : Date.now();
-    const maxLineAgeMs = positiveNumberOrNull(opts.maxLineAgeMs);
-    const minLiquidityToWin = positiveNumberOrNull(opts.minLiquidityToWin);
+    const plan = edgeSelectionPlan(options);
     const lines = Object.values(state.lines);
-    const includeAlts = opts.includeAlts === true;
-    const altOpts = { includeAlts, flatRungKeys: includeAlts ? flatFairRungKeys(lines) : new Set() };
-    const lineView = typeof opts.lineView === "function" ? opts.lineView : null;
+    const flatRungKeys = plan.includeAlts ? flatFairRungKeys(lines) : new Set();
     const rows = [];
     for (const boardLine of lines) {
-      if (boardLine.bookId === UNABATED_LINE_BOOK_ID) continue;
-      const view = lineView ? lineView(boardLine) : { line: boardLine, liveCheck: null };
-      if (!view) continue;
-      const line = view.line;
-      if (leagueIds && !leagueIds.has(line.leagueId)) continue;
-      if (line.isAlt && !altPassesGates(line, state, altOpts)) continue;
-      if (line.statusId !== STATUS_ON_BOARD) continue;
-      if (line.ge == null || line.ge < minEdge) continue;
-      if (isClampedFair(line.bacr)) continue;
-      if (!periods.has(line.periodTypeId) || !betTypes.has(line.betTypeId)) continue;
-      const book = state.books[line.bookId];
-      if (bookIds ? !bookIds.has(line.bookId) : !(book && book.isLive)) continue;
-      const event = state.events[line.eventId];
-      if (!event || event.eventStart == null || event.eventStart <= now) continue;
-      if (line.betTypeId !== 1 && line.points == null) continue;
-      // Not a valid American price: nothing downstream (cents, Kelly) can use it.
-      if (Math.abs(line.price) < 100) continue;
-      if (!liquidityCanWin(line, minLiquidityToWin)) continue;
-      if (maxLineAgeMs != null) {
-        const changedMs = lineChangedMs(line);
-        if (changedMs == null || now - changedMs > maxLineAgeMs) continue;
-      }
-      rows.push({ ...describeLine(line, state), liveCheck: view.liveCheck });
+      if (!passesShapeGates(boardLine, state, plan, flatRungKeys)) continue;
+      const row = edgeRowOf(boardLine, state, plan);
+      if (row) rows.push(row);
     }
-    rows.sort((a, b) => b.edgePct - a.edgePct || a.eventStartMs - b.eventStartMs);
-    return rows;
+    return sortByEdge(rows);
+  }
+
+  // What the shape and price gates depend on besides the line.
+  function prefilterSignature(plan) {
+    const list = (set) => (set ? Array.from(set).sort((a, b) => a - b).join(",") : "*");
+    return [plan.minEdge, list(plan.leagueIds), list(plan.periods), list(plan.betTypes), plan.includeAlts, plan.minLiquidityToWin].join("|");
+  }
+
+  // selectEdges with its line walk kept per league: each league's lines that
+  // pass the shape gates and, at Unabated's own price, the price gates are
+  // found once per league snapshot and settings, and a call re-checks only
+  // those plus the lines the live view has a read for (the only lines whose
+  // price it changes), clock and board gates included. Same rows in the same
+  // order as selectEdges over the same state.
+  //   board  {leagueIds (state.leagues order, no repeats), linesOf(leagueId)
+  //          (the league's lines in state.lines order), versionOf(leagueId)
+  //          (changes whenever the league's lines do)}
+  // A lineView without `readKeys` (liveprices.createLineView sets it) could
+  // change any line, so that call is selectEdges itself.
+  function createEdgeSelector() {
+    const byLeague = new Map();
+
+    function leagueEntry(state, leagueId, board, plan, signature) {
+      const version = board.versionOf(leagueId);
+      const held = byLeague.get(leagueId);
+      if (held && held.version === version && held.signature === signature) return held;
+      const lines = board.linesOf(leagueId);
+      const flatRungKeys = plan.includeAlts ? flatFairRungKeys(lines) : new Set();
+      const indexOfKey = new Map();
+      const prefiltered = [];
+      lines.forEach((line, index) => {
+        indexOfKey.set(line.key, index);
+        if (passesShapeGates(line, state, plan, flatRungKeys) && passesPriceGates(line, plan)) prefiltered.push(index);
+      });
+      const entry = { version, signature, lines, flatRungKeys, indexOfKey, prefiltered };
+      byLeague.set(leagueId, entry);
+      return entry;
+    }
+
+    return function selectEdgesByLeague(state, options, board) {
+      const plan = edgeSelectionPlan(options);
+      if (plan.lineView && !Array.isArray(plan.lineView.readKeys)) return selectEdges(state, options);
+      const signature = prefilterSignature(plan);
+      const leagueIds = board.leagueIds.filter((id) => !plan.leagueIds || plan.leagueIds.has(id));
+      for (const id of byLeague.keys()) if (!board.leagueIds.includes(id)) byLeague.delete(id);
+      const entries = new Map(leagueIds.map((id) => [id, leagueEntry(state, id, board, plan, signature)]));
+      const readIndexes = new Map(leagueIds.map((id) => [id, []]));
+      for (const key of plan.lineView ? plan.lineView.readKeys : []) {
+        const line = state.lines[key];
+        const entry = line ? entries.get(line.leagueId) : null;
+        const index = entry ? entry.indexOfKey.get(key) : undefined;
+        if (index === undefined || !passesShapeGates(line, state, plan, entry.flatRungKeys)) continue;
+        readIndexes.get(line.leagueId).push(index);
+      }
+      const rows = [];
+      for (const id of leagueIds) {
+        const entry = entries.get(id);
+        const indexes = Array.from(new Set(entry.prefiltered.concat(readIndexes.get(id)))).sort((a, b) => a - b);
+        for (const index of indexes) {
+          const row = edgeRowOf(entry.lines[index], state, plan);
+          if (row) rows.push(row);
+        }
+      }
+      return sortByEdge(rows);
+    };
   }
 
   // ---- grouping ------------------------------------------------------------
@@ -779,7 +869,7 @@
     kalshiEventSuffixOf,
     parseLeagueKey, parseEventStart, parseModifiedOn, lineChangedMs, lineKeyOf, altLineKeyOf, emptyState, teamSpellingsFromEventName,
     parseSnapshot, mergeStates, gameStateOf,
-    describeLine, selectEdges, groupEdges, groupKeyOf, countLines, countAltLines,
+    describeLine, selectEdges, createEdgeSelector, groupEdges, groupKeyOf, countLines, countAltLines,
   };
 
   if (typeof module !== "undefined" && module.exports) {

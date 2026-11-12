@@ -162,3 +162,13 @@ test("a live Kalshi request says so and carries when the Unabated tab last saw t
   const pregame = place.placeRequestOf({ line: LINE, stakeInput: "150", readAts: READS, clickId: "abc12345" });
   assert.deepEqual(["live" in pregame.body, "liveFairReadAt" in pregame.body], [false, false]);
 });
+
+test("free play goes out only at BFA, as freePlay true, and never on a cash Place", () => {
+  const freePlay = place.placeRequestOf({ line: BFA_LINE, stakeInput: "100", readAts: READS, clickId: "abc12345", freePlay: true });
+  assert.equal(freePlay.path, "/place_bfa.json");
+  assert.equal(freePlay.body.freePlay, true);
+  const cash = place.placeRequestOf({ line: BFA_LINE, stakeInput: "100", readAts: READS, clickId: "abc12345" });
+  assert.equal("freePlay" in cash.body, false);
+  assert.deepEqual(place.placeRequestOf({ line: LINE, stakeInput: "100", readAts: READS, clickId: "abc12345", freePlay: true }),
+    { error: "Kalshi takes no free play from Place" });
+});

@@ -14,7 +14,8 @@
 //    (both football boards in or failed), status, empty (why the list is
 //    empty, or null), ticketCount, summary (teaserview.summaryView, or null),
 //    open: [ticket] (open BFA teasers; [] before the board is ready),
-//    tickets: [{...pendingTicketView, signature, place: {body} | {error}}],
+//    tickets: [{...pendingTicketView, signature, winAll (the chance all four
+//              legs win, for the phone's free play worth), place: {body} | {error}}],
 //    moreLabel (the fold under the first teaserview.TICKETS_SHOWN, "" when none),
 //    legs: {gameCount, items: [{divider: true} | {row}], folded: [row],
 //    foldLabel}, breakEven}
@@ -39,6 +40,7 @@ function pendingTicketOf(ticket) {
   return {
     ...teaserView.pendingTicketView(ticket),
     signature: teaser.ticketSignatureOf(ticket),
+    winAll: typeof ticket.winAll === "number" ? ticket.winAll : null,
     place: request.error ? { error: request.error } : { body: request.body },
   };
 }

@@ -26,7 +26,12 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     [bet_fill_snapshots / bet_close_snapshots rows of those
                                     bets] (every book's two sides at each bet's number at the
                                     fill and at the close; opt-in, they are large)
-           GET /health              {ok, generatedAt, uptimeSec, sources}
+           GET /health              {ok, generatedAt, uptimeSec, sources, novigStream?,
+                                    novigPlaceStream?, prophetxStream?, prophetxLive?,
+                                    polymarketStream?, kalshiStream?}: each stream's status(); the two
+                                    Novig ones carry `orders` {live, subscribed, synced,
+                                    seq, epoch, version, error}, the private orders
+                                    channel of the bot's and Place's sub-accounts
            POST /crosswalk.json     body {rows: [{venue, league, venueTeamKey,
                                     unabatedTeamId, venueTeamName?, unabatedTeamName?,
                                     learnedFrom?}]} -> {ok, learned, conflicts, crosswalk}
@@ -120,6 +125,14 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     else — sources/draftkings.py parses; a settled bet
                                     carries the venue's result, an open bet neither list
                                     carries is closed with no result)
+           POST /underdog.json      body {fetchedAt, active: page, settled: [page], complete}
+                                    -> {ok, count, closed}, or {error} -> {ok, recorded:
+                                    "error"} (pushed like Bet105: Underdog's login server
+                                    is behind a Cloudflare bot wall, so the extension reads
+                                    the slips on the app's own login in Cal's Chrome —
+                                    sources/underdog.py parses; a settled slip is graded
+                                    off what it paid, a stored open slip the settled pages
+                                    passed without seeing is closed with no result)
            GET /settings.json       {settings: {bankroll, multiplier, leagues, periods, betTypes,
                                     bookMode, bookIds, minEdgePct, minStake, maxLineAgeHours,
                                     minLiquidityToWin, includeAlts, sortBy, groupByMarket,
@@ -127,7 +140,7 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     updatedAt} — the Edges settings the server
                                     runner (unabated_ticket/server/runner.js) reads every cycle;
                                     null = the panel's default (extension/edgerows.js)
-           POST /place_teaser.json  body {stake, legs: [4 x {league, betType, side, rotation, points,
+           POST /place_teaser.json  body {stake, freePlay?, legs: [4 x {league, betType, side, rotation, points,
                                     eventStart, label}]} -> {ok, status: placed | refused |
                                     unconfirmed, message, ticket?} (the Teasers tab's Place
                                     button: ONE 4-team 6-point teaser at BFA, real money —
@@ -162,8 +175,13 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     on Cal's main account with the PROPHETX_* key pair, real money —
                                     prophetx_place.py checks the live price against the Ticket's
                                     first; 503 while that key pair is unset or refused)
+           GET /bfa_free_play.json  {ok, freePlay, maxPayout, oddsLimit} | {ok: false, error}: the
+                                    BFA account's free play balance (held 30 s) and the tightest
+                                    free play limits its bet types carry, for the Ticket's Use
+                                    free play switch (bfa_free_play.py; reads only; 503 when no
+                                    BFA account is read)
            POST /place_bfa.json     body {clickId, eventId, periodTypeId, betTypeId, sideIndex,
-                                    points, stake (whole dollars), ticketAllIn, bfaReadAt,
+                                    points, stake (whole dollars), freePlay?, ticketAllIn, bfaReadAt,
                                     kalshiReadAt, novigReadAt, polymarketReadAt, prophetxReadAt}
                                     -> {ok, status: filled | refused | rejected | unknown, message,
                                     ticket?, legsMatch?} (the Ticket's Place button at BFA: ONE
@@ -192,6 +210,17 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
                                     for a new market's first book. marketData is the REST
                                     gateway /book's. Loopback only (the runner); 503 {error}
                                     with no Polymarket US key
+           POST /kalshi_books.json  body {tickers: [..], waitMs, priority?, background?} -> {stream:
+                                    {connected, lastFrameAgeMs, error, resyncs, ...}, books:
+                                    {ticker: {orderbook_fp: {yes_dollars, no_dollars}, ageMs} |
+                                    {error}}}: Kalshi's live books off the READ-ONLY key's
+                                    orderbook_delta websocket (kalshi_book_stream.py; reads
+                                    only), each market subscribed on first ask (priority: a
+                                    Ticket refresh or Place quote; background: the runner's
+                                    live price pass), waiting up to waitMs (capped at
+                                    kalshi_book_stream.MAX_WAIT_SEC) for a new market's
+                                    snapshot. orderbook_fp is the REST /orderbook's. Loopback
+                                    only (the runner); 503 {error} with no Kalshi read key
            POST /novig_read.json    body {path, query?} -> {status, body}: one GET of Novig's
                                     keyed catalog (/v3/catalog/markets[?league,eventStatus,
                                     limit,after], /markets/<id>, /markets/<id>/book,
@@ -245,6 +274,9 @@ Outputs: HTTP on 127.0.0.1:8094 (loopback only, no auth):
            GET /tau.json, /live_prices.json  the server runner's pooled tail-flex tau and
                                     its live exchange price reads (extension/liveprices.js),
                                     passed through the same way for the panel
+           GET /ticket_line.json?key=...  the server runner's read of the open
+                                    Ticket's one line (the phone's 2 s refresh), query
+                                    string passed on, the same way
            GET / and the phone page's files   STATIC_FILES, a fixed map of URL path ->
                                     file (server/phone/ and the extension's pure modules
                                     the page loads under /ext/; the Bet Tracker,
@@ -304,7 +336,7 @@ every 30 s, runner or no runner.
 POST /taker/novig_order.json places a bot order on Novig (money) on the bot's
 own trading key, which trades only in the bot's Novig subaccount, and INSERTs /
 UPDATEs taker.duckdb::novig_taker_orders (novig_taker_desk.py: stop files,
-holdings freshness, its own $850 ceiling, one IOC buy); its thread reads final
+holdings freshness, its own $850 ceiling, its cash after a refusal, one IOC buy); its thread reads final
 fills and frees settled markets every 30 s. The bot's (and the Novig Place
 button's) subaccount is read as its own source, novig_bot / novig_place
 (sources/novig_subaccount.py).
@@ -348,12 +380,13 @@ from unabated_ticket.bets_service.novig_place import (NOVIG_PLACE_READ_SOURCES, 
 from unabated_ticket.bets_service.normalize import parse_iso_ms, utc_now_iso
 from unabated_ticket.bets_service.novig_book_stream import NovigBookStream, stream_url
 from unabated_ticket.bets_service.polymarket_book_stream import PolymarketBookStream
+from unabated_ticket.bets_service.kalshi_book_stream import KalshiBookStream
 from unabated_ticket.bets_service.polymarket_book_stream import stream_url as polymarket_stream_url
 from unabated_ticket.bets_service.novig_catalog_reads import NovigCatalogReads, pooled_transport, validate_read_request
 from unabated_ticket.bets_service.novig_orders import NovigError, NovigOrderClient
 from unabated_ticket.bets_service.novig_taker_desk import NovigTakerDesk, account_problem, novig_unseen_fill
 from unabated_ticket.bets_service.novig_taker_desk import validate_order_request as validate_novig_order_request
-from unabated_ticket.bets_service.sources import Source, bet105, draftkings
+from unabated_ticket.bets_service.sources import Source, bet105, draftkings, underdog
 from unabated_ticket.bets_service.sources.betonline import source_if_configured as betonline_source_if_configured
 from unabated_ticket.bets_service.sources.bfa import BFASource, normalize_open_bets
 from unabated_ticket.bets_service.sources.bfa import source_if_configured as bfa_source_if_configured
@@ -385,6 +418,8 @@ FAILED_POLL_RETRY_SEC = 60.0
 # Wagerzon ran between them and every venue waited ~35 s). Novig's three sources
 # share a lane: each read is ~1 s or less, and one queue keeps their requests apart.
 OWN_LANES = (("kalshi",), ("novig", "novig_bot", "novig_place"), ("polymarket_us",))
+# The balance book venue of the bot subaccount (sources/novig_subaccount.py names it SOURCE_PREFIX + "bot").
+NOVIG_BOT_BALANCE_VENUE = "novig_bot"
 # A Place that may hold contracts reads its venue's sources before it answers
 # (Cal, 2026-10-29), so the panel's and phone's /bets.json read right after the
 # reply already counts it and the next Place on the game is not refused as
@@ -467,6 +502,10 @@ MAX_NOVIG_BOOK_MARKETS = 500
 NOVIG_BOOK_STREAM_OFF_REASON = "no bot Novig key is configured (NOVIG_TAKER_KEY_ID / NOVIG_TAKER_PRIVATE_KEY_PATH)"
 # POST /polymarket_books.json: the most markets one ask may name.
 MAX_POLYMARKET_BOOK_SLUGS = 500
+# POST /kalshi_books.json: the most markets one ask may name.
+MAX_KALSHI_BOOK_TICKERS = 500
+# Why POST /kalshi_books.json answers 503 when the Kalshi read key is unset or unreadable.
+KALSHI_BOOK_STREAM_OFF_REASON = "no Kalshi read key is configured (KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH)"
 # Why POST /polymarket_books.json answers 503: the stream signs with the Place key.
 POLYMARKET_BOOK_STREAM_OFF_REASON = POLYMARKET_PLACE_OFF_REASON
 # Why POST /novig_read.json answers 503: its reads are signed with the same key.
@@ -517,10 +556,10 @@ PAGE_SECURITY_HEADERS = {
 _RUNNER_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 # Sources with no poll here: the extension POSTs their records (/bet105.json,
-# /draftkings.json).
+# /draftkings.json, /underdog.json).
 # Listed so the panel reads "no completed poll yet" before the first push, not
 # "no source configured".
-PUSHED_SOURCES = (bet105.VENUE, draftkings.VENUE)
+PUSHED_SOURCES = (bet105.VENUE, draftkings.VENUE, underdog.VENUE)
 
 
 def _now() -> datetime:
@@ -1387,7 +1426,8 @@ def validate_settings_update(body: object, held: dict) -> dict | str:
 
 
 # The runner's JSON routes the bets service passes through (one origin for the pages).
-RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json", "/tau.json", "/live_prices.json")
+RUNNER_ROUTES = ("/edges.json", "/scenarios.json", "/teasers.json", "/attach.json", "/tau.json", "/live_prices.json",
+                 "/ticket_line.json")
 # The runner's own answer about the request (no such open bet, a game gone
 # from the board) passes through as it came; any other failure is a 502.
 RUNNER_PASSTHROUGH_ERRORS = (400, 404)
@@ -1417,17 +1457,23 @@ def health_payload(store: BetsStore, started_at: float, source_names: list[str] 
                    novig_book_stream: NovigBookStream | None = None,
                    prophetx_order_stream: ProphetXOrderStream | None = None,
                    prophetx_live: ProphetXLiveBooks | None = None,
-                   polymarket_book_stream: PolymarketBookStream | None = None) -> dict:
+                   polymarket_book_stream: PolymarketBookStream | None = None,
+                   novig_place_stream: NovigBookStream | None = None,
+                   kalshi_book_stream: KalshiBookStream | None = None) -> dict:
     payload = {"ok": True, "generatedAt": _iso(_now()), "uptimeSec": int(time.monotonic() - started_at),
                "sources": source_status(store, list(source_names))}
     if novig_book_stream is not None:
         payload["novigStream"] = novig_book_stream.status()
+    if novig_place_stream is not None:
+        payload["novigPlaceStream"] = novig_place_stream.status()
     if prophetx_order_stream is not None:
         payload["prophetxStream"] = prophetx_order_stream.status()
     if prophetx_live is not None:
         payload["prophetxLive"] = prophetx_live.status()
     if polymarket_book_stream is not None:
         payload["polymarketStream"] = polymarket_book_stream.status()
+    if kalshi_book_stream is not None:
+        payload["kalshiStream"] = kalshi_book_stream.status()
     return payload
 
 
@@ -1441,6 +1487,11 @@ def validate_novig_books_request(body: object) -> tuple[list[str], float, bool, 
 def validate_polymarket_books_request(body: object) -> tuple[list[str], float, bool, bool] | str:
     """(slugs, wait seconds, priority, background) or why the body is refused (as for Novig's)."""
     return validate_book_stream_request(body, "slugs", MAX_POLYMARKET_BOOK_SLUGS, "market slugs")
+
+
+def validate_kalshi_books_request(body: object) -> tuple[list[str], float, bool, bool] | str:
+    """(tickers, wait seconds, priority, background) or why the body is refused (as for Novig's)."""
+    return validate_book_stream_request(body, "tickers", MAX_KALSHI_BOOK_TICKERS, "Kalshi tickers")
 
 
 def validate_book_stream_request(body: object, list_key: str, max_items: int,
@@ -1509,7 +1560,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                  prophetx_live: ProphetXLiveBooks | None = None,
                  source_reader: SourceReader | None = None,
                  polymarket_book_stream: PolymarketBookStream | None = None,
-                 ladder_store: LadderStore | None = None) -> type[BaseHTTPRequestHandler]:
+                 novig_place_stream: NovigBookStream | None = None,
+                 ladder_store: LadderStore | None = None,
+                 kalshi_book_stream: KalshiBookStream | None = None) -> type[BaseHTTPRequestHandler]:
     """The request handler class. `runner_url` / `runner_timeout_sec` /
     `extra_hosts` default to config.RUNNER_URL / RUNNER_TIMEOUT_SEC /
     EXTRA_ALLOWED_HOSTS (the tests pass their own). `teaser_placer` is the
@@ -1532,7 +1585,8 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
     catalog reads on the same key (None: POST /novig_read.json 503s). `prophetx_live`
     serves ProphetX's live prices on the live key pair (None: POST /prophetx_live.json 503s).
     `polymarket_book_stream` serves Polymarket US's live books (None: POST
-    /polymarket_books.json 503s). `source_reader` reads a
+    /polymarket_books.json 503s), `kalshi_book_stream` Kalshi's on the read key
+    (None: POST /kalshi_books.json 503s). `source_reader` reads a
     Place's venue before its reply (None: the reply goes at once and the next
     scheduled poll counts the fill)."""
     names = list(source_names)
@@ -1547,13 +1601,20 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             url = urlparse(self.path)
             if url.path == "/health":
                 self._send_json(200, health_payload(store, started_at, names, novig_book_stream,
-                                                             prophetx_order_stream, prophetx_live, polymarket_book_stream))
+                                                             prophetx_order_stream, prophetx_live, polymarket_book_stream,
+                                                             novig_place_stream, kalshi_book_stream))
                 return
             if url.path == "/settings.json":
                 self._send_json(200, store.load_edge_settings())
                 return
             if url.path == "/balances.json":
                 self._send_json(200, balances_payload(balance_book or BalanceBook()))
+                return
+            if url.path == "/bfa_free_play.json":
+                if bfa_placer is None:
+                    self._send_json(503, {"error": "no BFA account is read: set BFA_USERNAME and BFA_PASSWORD"})
+                    return
+                self._send_json(200, bfa_placer.free_play())
                 return
             if url.path == "/bot.json":
                 self._send_bot_report(url.query)
@@ -1590,6 +1651,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                                                  (config.TAKER_STOP_PATH,))
             novig_desk = bot_report.desk_status(novig_taker_desk is not None, novig_taker_desk_off_reason,
                                                 (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH))
+            novig_desk["cashShort"] = novig_taker_desk.cash_short_detail() if novig_taker_desk is not None else None
             runner = bot_report.runner_pass(
                 lambda: fetch_runner_json(edges_runner_url, "/taker.json", edges_timeout_sec))
             self._send_json(200, bot_report.bot_payload(taker_store, kalshi_desk, novig_desk, runner, *window,
@@ -1611,10 +1673,10 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path not in ("/crosswalk.json", "/pins.json", "/fill_fairs.json", "/fill_books.json", "/closing_fairs.json",
                                 "/fill_snapshots.json", "/close_snapshots.json", "/tau_samples.json",
                                 "/exclusions.json", "/dismissals.json", "/teaser_blocks.json", "/edge_skips.json", "/bet105.json",
-                                "/draftkings.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
+                                "/draftkings.json", "/underdog.json", "/place_teaser.json", "/place_kalshi.json", "/place_novig.json",
                                 "/place_polymarket.json", "/place_prophetx.json", "/place_bfa.json", "/taker_decisions.json", "/ladders.json",
                                 "/edge_segments.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json", "/novig_read.json",
-                                "/prophetx_live.json", "/polymarket_books.json"):
+                                "/prophetx_live.json", "/polymarket_books.json", "/kalshi_books.json"):
                 self._send_json(404, {"error": f"no route for POST {url.path}"})
                 return
             body = self._read_json_body()
@@ -1661,6 +1723,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             if url.path == "/draftkings.json":
                 self._push_draftkings(body)
                 return
+            if url.path == "/underdog.json":
+                self._push_underdog(body)
+                return
             if url.path == "/place_teaser.json":
                 self._place_teaser(body)
                 return
@@ -1680,7 +1745,7 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 self._place_bfa(body)
                 return
             if (url.path in ("/taker_decisions.json", "/ladders.json", "/edge_segments.json", "/taker/order.json", "/taker/novig_order.json", "/novig_books.json",
-                             "/novig_read.json", "/prophetx_live.json", "/polymarket_books.json")
+                             "/novig_read.json", "/prophetx_live.json", "/polymarket_books.json", "/kalshi_books.json")
                     and self._refused_non_loopback()):
                 return
             if url.path == "/novig_books.json":
@@ -1688,6 +1753,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
                 return
             if url.path == "/polymarket_books.json":
                 self._polymarket_books(body)
+                return
+            if url.path == "/kalshi_books.json":
+                self._kalshi_books(body)
                 return
             if url.path == "/novig_read.json":
                 self._novig_read(body)
@@ -1919,6 +1987,18 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             slugs, wait_sec, priority, background = request
             self._send_json(200, polymarket_book_stream.books_for(slugs, wait_sec, priority, background))
 
+        # POST /kalshi_books.json: Kalshi's live books for the runner (kalshi_book_stream.py).
+        def _kalshi_books(self, body: object) -> None:
+            if kalshi_book_stream is None:
+                self._send_json(503, {"error": KALSHI_BOOK_STREAM_OFF_REASON})
+                return
+            request = validate_kalshi_books_request(body)
+            if isinstance(request, str):
+                self._send_json(400, {"error": request})
+                return
+            tickers, wait_sec, priority, background = request
+            self._send_json(200, kalshi_book_stream.books_for(tickers, wait_sec, priority, background))
+
         # POST /prophetx_live.json: ProphetX's live prices for the runner's live price pass (prophetx_live.py).
         def _prophetx_live(self, body: object) -> None:
             if prophetx_live is None:
@@ -1993,6 +2073,26 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             store.log_source_run(draftkings.VENUE, started_at, _now(), True, None, len(records))
             self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed), "skipped": len(skipped)})
 
+        # POST /underdog.json: the extension's read of the account's slips, as one source
+        # run — a complete push UPSERTs the prediction slips and closes the stored open ones
+        # the settled pages passed without seeing; an error push is a failed run and the
+        # records stand.
+        def _push_underdog(self, body: object) -> None:
+            push = underdog.validate_push(body)
+            if isinstance(push, str):
+                self._send_json(400, {"error": push})
+                return
+            started_at = _now()
+            if "error" in push:
+                store.log_source_run(underdog.VENUE, started_at, _now(), False, push["error"], 0)
+                self._send_json(200, {"ok": True, "recorded": "error"})
+                return
+            stored = store.load_records_of_venue(underdog.VENUE)
+            records, closed = underdog.records_of_push(push, stored)
+            store.upsert_bets(records + closed, started_at)
+            store.log_source_run(underdog.VENUE, started_at, _now(), True, None, len(records))
+            self._send_json(200, {"ok": True, "count": len(records), "closed": len(closed)})
+
         # POST /place_teaser.json: one teaser at BFA (bfa_teaser.py). An exception out of
         # place() is raised before the wager goes out, so it reads "Not placed". The open
         # bets read while confirming are stored at once, the BFA source's own way.
@@ -2013,6 +2113,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             except Exception as error:  # noqa: BLE001 — place() answers for itself once the POST is out
                 log.exception("bfa teaser: placement failed before the wager went out")
                 result = {"status": bfa_teaser.STATUS_REFUSED, "message": f"Not placed: {type(error).__name__}: {error}"}
+            if request["freePlay"] and bfa_placer is not None:
+                # The free play balance may have changed: the next GET /bfa_free_play.json reads BFA.
+                bfa_placer.forget_free_play()
             open_wagers = result.pop("openWagers", None)
             if open_wagers:
                 self._store_bfa_open_bets(open_wagers)
@@ -2116,6 +2219,9 @@ def make_handler(store: BetsStore, started_at: float, source_names: list[str] = 
             except Exception as error:  # noqa: BLE001 — place() answers for itself once its row is inserted
                 log.exception("bfa place: failed before the wager went out")
                 result = {"status": bfa_place.STATUS_REFUSED, "message": f"Not placed: {type(error).__name__}: {error}"}
+            if request["free_play"]:
+                # The free play balance may have changed: the next GET /bfa_free_play.json reads BFA.
+                bfa_placer.forget_free_play()
             open_wagers = result.pop("openWagers", None)
             if open_wagers:
                 self._store_bfa_open_bets(open_wagers)
@@ -2301,8 +2407,11 @@ def novig_trading_client(key_id: str | None, key_path: str | None, variable: str
 
 def open_novig_taker_desk(store: TakerStore | None, holdings_status: Callable[[], dict[str, dict]],
                           check: Callable[[NovigOrderClient], tuple[str | None, float | None]] = account_problem,
+                          bot_cash: Callable[[], dict | None] = lambda: None,
                           ) -> tuple[NovigTakerDesk | None, str]:
-    """(the bot's Novig desk, "") or (None, why): without its own trading key,
+    """(the bot's Novig desk, "") or (None, why). `bot_cash` is the balance
+    book's latest novig_bot reading, which the desk waits on after a cash
+    refusal. Without its own trading key,
     Novig's word that it is a trading key on its own subaccount (it reads
     that balance and is refused the key listing), or its log, nothing is sent."""
     client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
@@ -2320,18 +2429,25 @@ def open_novig_taker_desk(store: TakerStore | None, holdings_status: Callable[[]
         return None, reason
     log.info("novig taker: ARMED on its own trading key %s (subaccount balance $%s); stop files %s, %s",
              config.NOVIG_TAKER_KEY_ID[:8], f"{balance:,.2f}", config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH)
-    return NovigTakerDesk(client, store, (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH), holdings_status), ""
+    return NovigTakerDesk(client, store, (config.TAKER_STOP_PATH, config.NOVIG_TAKER_STOP_PATH), holdings_status,
+                          bot_cash), ""
 
 
-def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -> list[Source]:
+def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore,
+                             bot_stream: NovigBookStream | None = None,
+                             place_stream: NovigBookStream | None = None) -> list[Source]:
     """The bot's and the Place button's Novig subaccounts, each read on its
     own trading key when one is configured. The bot's bets are named by the
     board lines its desk kept (taker.duckdb), Place's by the lines its orders
-    bought (bets.duckdb::manual_orders), which also keep Place's settle times."""
+    bought (bets.duckdb::manual_orders), which also keep Place's settle times.
+    Each source takes its fills off its key's private orders channel
+    (`bot_stream` / `place_stream`, the sockets opened on the same keys) and
+    reads Novig's REST fills only on connect, after a gap and hourly; without
+    a stream it polls REST every pass as before."""
     sources: list[Source] = []
     bot_client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
     if bot_client is not None and taker_store is not None:
-        sources.append(NovigSubaccountSource("bot", bot_client, taker_store.novig_order_contexts))
+        sources.append(NovigSubaccountSource("bot", bot_client, taker_store.novig_order_contexts, order_stream=bot_stream))
     elif bot_client is not None:
         log.error("novig_bot: the taker log is not open, so the bot subaccount's bets cannot be named; not read")
     else:
@@ -2344,20 +2460,34 @@ def novig_subaccount_sources(taker_store: TakerStore | None, store: BetsStore) -
             adopt_order=lambda client_order_id, order_id: store.adopt_novig_place_order(client_order_id, order_id, _now()),
             unconfirmed_orders=store.unconfirmed_novig_place_orders,
             confirm_order=lambda client_order_id, outcome, filled, paid: store.confirm_novig_place_order(
-                client_order_id, outcome, filled, paid, _now())))
+                client_order_id, outcome, filled, paid, _now()),
+            order_stream=place_stream))
     else:
         log.info("novig_place: %s, not read", reason)
     return sources
 
 
 def open_novig_book_stream() -> NovigBookStream | None:
-    """The live Novig book stream on the bot's Novig key, or None without one.
+    """The live Novig book stream on the bot's Novig key, or None without one,
+    with the bot sub-account's private orders channel on the same socket.
     Reads only: it runs whether or not the bot desk is armed or stopped."""
     client, reason = novig_trading_client(config.NOVIG_TAKER_KEY_ID, config.NOVIG_TAKER_PRIVATE_KEY_PATH, "bot")
     if client is None:
         log.info("novig stream: %s, no live Novig books and no keyed catalog reads (the runner's Novig checks fail closed)", reason)
         return None
-    return NovigBookStream(client, stream_url(config.NOVIG_API_URL))
+    return NovigBookStream(client, stream_url(config.NOVIG_API_URL), orders_channel=True)
+
+
+def open_novig_place_stream() -> NovigBookStream | None:
+    """A second Novig socket on Place's own key for Place's sub-account's
+    private orders channel (a channel covers only the signing key's
+    sub-account), or None without that key. No market is ever asked of it:
+    it carries Place's pushed fills to the desk and the novig_place source."""
+    client, reason = novig_trading_client(config.NOVIG_PLACE_KEY_ID, config.NOVIG_PLACE_PRIVATE_KEY_PATH, "Place")
+    if client is None:
+        log.info("novig place stream: %s, Place polls its orders over REST", reason)
+        return None
+    return NovigBookStream(client, stream_url(config.NOVIG_API_URL), orders_channel=True)
 
 
 def open_polymarket_book_stream(client_factory: Callable[[str, str], PolymarketOrderClient] = PolymarketOrderClient,
@@ -2374,6 +2504,27 @@ def open_polymarket_book_stream(client_factory: Callable[[str, str], PolymarketO
         log.error("polymarket stream: the POLYMARKET_US_* key could not be used: %s; no live Polymarket US books", error)
         return None
     return PolymarketBookStream(client, polymarket_stream_url(POLYMARKET_API_BASE_URL))
+
+
+def open_kalshi_book_stream(client_factory: Callable[[str, str, str], KalshiOrderClient] = KalshiOrderClient,
+                            ) -> KalshiBookStream | None:
+    """The live Kalshi book stream on the READ-ONLY key the Kalshi source polls
+    with (KALSHI_API_KEY_ID; its own client, never a trade key), or None
+    without it. Reads only."""
+    if not config.KALSHI_API_KEY_ID or not config.KALSHI_PRIVATE_KEY_PATH:
+        log.info("kalshi stream: %s, the runner reads Kalshi books over REST", KALSHI_BOOK_STREAM_OFF_REASON)
+        return None
+    if ("demo" in config.KALSHI_BASE_URL) != ("demo" in config.KALSHI_WS_URL):
+        log.error("kalshi stream: KALSHI_WS_URL %s and KALSHI_BASE_URL %s are not the same Kalshi; "
+                  "the runner reads Kalshi books over REST", config.KALSHI_WS_URL, config.KALSHI_BASE_URL)
+        return None
+    try:
+        client = client_factory(config.KALSHI_API_KEY_ID, config.KALSHI_PRIVATE_KEY_PATH, config.KALSHI_BASE_URL)
+    except (OSError, ValueError) as error:
+        log.error("kalshi stream: the read key %s could not be read: %s; the runner reads Kalshi books over REST",
+                  config.KALSHI_PRIVATE_KEY_PATH, error)
+        return None
+    return KalshiBookStream(client, config.KALSHI_WS_URL)
 
 
 def open_novig_catalog_reads() -> NovigCatalogReads | None:
@@ -2421,7 +2572,7 @@ def open_kalshi_place_desk(store: BetsStore) -> tuple[ManualKalshiDesk | None, s
 
 def open_novig_place_desk(store: BetsStore, source_names: list[str],
                           check: Callable[[NovigOrderClient], tuple[str | None, float | None]] = account_problem,
-                          ) -> tuple[ManualNovigDesk | None, str]:
+                          order_stream: NovigBookStream | None = None) -> tuple[ManualNovigDesk | None, str]:
     """(the Place button's Novig desk on Place's own sub-account, "") or (None, why).
     It signs only with Place's own trading key (NOVIG_PLACE_*), proven by Novig
     a trading key on its own sub-account (it reads that balance and is refused
@@ -2448,7 +2599,7 @@ def open_novig_place_desk(store: BetsStore, source_names: list[str],
     return ManualNovigDesk(client, store,
                            lambda line: read_runner_quote(config.RUNNER_URL, line, RUNNER_NOVIG_QUOTE_PATH,
                                                           RUNNER_NOVIG_QUOTE_TIMEOUT_SEC),
-                           read_sources=read_sources), ""
+                           read_sources=read_sources, order_stream=order_stream), ""
 
 
 def open_polymarket_place_desk(store: BetsStore, source_names: list[str],
@@ -2558,9 +2709,12 @@ def open_ladder_store(db_path: Path) -> LadderStore | None:
 
 
 def serve(sources: list[Source], store: BetsStore, host: str, port: int,
-          taker_store: TakerStore | None = None) -> None:
+          taker_store: TakerStore | None = None, novig_book_stream: NovigBookStream | None = None,
+          novig_place_stream: NovigBookStream | None = None) -> None:
     """Run the poll thread and the HTTP server until SIGINT/SIGTERM. The
-    taker log is opened here unless main() opened it for the Novig sources."""
+    taker log is opened here unless main() opened it for the Novig sources;
+    the two Novig sockets (main() opens them for those sources) are None
+    without their keys."""
     stop = threading.Event()
     started_at = time.monotonic()
     source_names = [source.name for source in sources] + list(PUSHED_SOURCES)
@@ -2570,9 +2724,10 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
     taker_desk, taker_desk_off_reason = open_taker_desk(taker_store)
     ladder_store = open_ladder_store(config.LADDER_DB_PATH)
     novig_taker_desk, novig_taker_desk_off_reason = open_novig_taker_desk(
-        taker_store, lambda: source_status(store, source_names))
+        taker_store, lambda: source_status(store, source_names),
+        bot_cash=lambda: balance_book.snapshot().get(NOVIG_BOT_BALANCE_VENUE))
     kalshi_place_desk, kalshi_place_off_reason = open_kalshi_place_desk(store)
-    novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names)
+    novig_place_desk, novig_place_off_reason = open_novig_place_desk(store, source_names, order_stream=novig_place_stream)
     polymarket_place_desk, polymarket_place_off_reason = open_polymarket_place_desk(store, source_names)
     prophetx_order_stream = open_prophetx_order_stream(sources)
     prophetx_live = prophetx_live_reader_if_configured(
@@ -2580,8 +2735,8 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
         lambda league, away, home: read_runner_team_keys(config.RUNNER_URL, PROPHETX_VENUE, league, away, home))
     prophetx_place_desk, prophetx_place_off_reason = open_prophetx_place_desk(store, sources, prophetx_order_stream,
                                                                               prophetx_live)
-    novig_book_stream = open_novig_book_stream()
     polymarket_book_stream = open_polymarket_book_stream()
+    kalshi_book_stream = open_kalshi_book_stream()
     novig_catalog_reads = open_novig_catalog_reads()
     source_reader = SourceReader(sources, store)
     server = ThreadingHTTPServer((host, port), make_handler(store, started_at, source_names,
@@ -2606,7 +2761,9 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                                                             balance_book=balance_book,
                                                             source_reader=source_reader,
                                                             polymarket_book_stream=polymarket_book_stream,
-                                                            ladder_store=ladder_store))
+                                                            novig_place_stream=novig_place_stream,
+                                                            ladder_store=ladder_store,
+                                                            kalshi_book_stream=kalshi_book_stream))
     server.daemon_threads = True
     pollers = [threading.Thread(target=poll_loop, args=(lane, store, stop, balance_book, source_reader),
                                 name=f"poll-{lane[0].name}" if len(lane) == 1 else "poll", daemon=True)
@@ -2616,8 +2773,14 @@ def serve(sources: list[Source], store: BetsStore, host: str, port: int,
                    for desk, name in ((taker_desk, "taker-desk"), (novig_taker_desk, "novig-taker-desk")) if desk is not None]
     if novig_book_stream is not None:
         background_threads.append(threading.Thread(target=novig_book_stream.run, args=(stop,), name="novig-stream", daemon=True))
+    if novig_place_stream is not None:
+        background_threads.append(threading.Thread(target=novig_place_stream.run, args=(stop,), name="novig-place-stream",
+                                                   daemon=True))
     if polymarket_book_stream is not None:
         background_threads.append(threading.Thread(target=polymarket_book_stream.run, args=(stop,), name="polymarket-stream",
+                                                   daemon=True))
+    if kalshi_book_stream is not None:
+        background_threads.append(threading.Thread(target=kalshi_book_stream.run, args=(stop,), name="kalshi-stream",
                                                    daemon=True))
     if prophetx_live is not None:
         background_threads.append(threading.Thread(target=prophetx_live.run, args=(stop,), name="prophetx-live", daemon=True))
@@ -2676,16 +2839,21 @@ def main() -> None:
                                           final_tickers=store.load_kalshi_final_tickers,
                                           subaccounts=kalshi_subaccounts_read(config.KALSHI_TAKER_SUBACCOUNT))]
     for venue, factory in OPTIONAL_SOURCE_FACTORIES:
-        # ProphetX drops ended games from its lists, so its source reuses the stored records' game fields.
-        # Its order history also settles Place's unconfirmed ProphetX orders.
-        optional = (factory(lambda: store.load_records_of_venue("prophetx"),
-                            lambda orders, trades: settle_prophetx_place_orders(store, orders, trades, _now()))
-                    if venue == "prophetx" else factory())
+        if venue == "prophetx":
+            # ProphetX drops ended games from its lists, so its source reuses the stored records' game fields.
+            # Its order history also settles Place's unconfirmed ProphetX orders.
+            optional = factory(lambda: store.load_records_of_venue("prophetx"),
+                               lambda orders, trades: settle_prophetx_place_orders(store, orders, trades, _now()))
+        else:
+            optional = factory()
         if optional is not None:
             sources.append(optional)
     taker_store = open_taker_store(config.TAKER_DB_PATH)
-    sources.extend(novig_subaccount_sources(taker_store, store))
-    serve(sources, store, config.BIND_HOST, config.PORT, taker_store=taker_store)
+    novig_book_stream = open_novig_book_stream()
+    novig_place_stream = open_novig_place_stream()
+    sources.extend(novig_subaccount_sources(taker_store, store, novig_book_stream, novig_place_stream))
+    serve(sources, store, config.BIND_HOST, config.PORT, taker_store=taker_store, novig_book_stream=novig_book_stream,
+          novig_place_stream=novig_place_stream)
 
 
 if __name__ == "__main__":

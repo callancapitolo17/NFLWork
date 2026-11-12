@@ -22,9 +22,10 @@ Rules, in order, for every request (validate_prophetx_place_request's shape):
      /team_keys.json, teams.js + the crosswalk, as bet matching does) and equal
      the board line's ids (a swapped or unresolved team refuses: the side
      would be wrong);
-  4. the one strike among the game's markets that reads as the board line
-     (prophetx_markets.lines_of_event; the line's own strike id when Unabated
-     names one), and its best offer now;
+  4. the strike: Unabated's own strike id for the line when it names one
+     (alt rungs), which must also read as the board line; else the one strike
+     among the game's markets that reads as the board line
+     (prophetx_markets.lines_of_event); and its best offer now;
   5. that offer's implied probability is at most PRICE_TOLERANCE (0.1c) worse
      than the Ticket's; a better one is taken. ProphetX's fee is set per
      account and unpublished, so it is not counted (Cal, 2026-10-31: use
@@ -220,6 +221,27 @@ def matching_lines(lines: list[dict], wanted: dict) -> list[dict]:
     return [line for line in lines if all(line[key] == wanted[key] for key in ("betType", "period", "side", "points"))]
 
 
+def line_target(lines: list[dict], wanted: dict, own_strike: str | None, label: str, px_event_id: object) -> dict | str:
+    """The one ProphetX side Place buys, or why there is none. With
+    Unabated's own strike id for the line (alt rungs carry one), that strike,
+    and only if it also reads as the board line: two independent ways of
+    naming the contract must agree. Without one (main lines), the one side
+    that reads as the board line."""
+    if own_strike:
+        own = [candidate for candidate in lines if candidate["strike_id"] == own_strike]
+        if not own:
+            return f"Unabated's ProphetX strike {own_strike} for {label} is not among ProphetX's game lines on game {px_event_id}."
+        if not matching_lines(own, wanted):
+            reads = own[0]
+            return (f"Unabated's ProphetX strike {own_strike} reads as {reads['side']} {reads['points']} {reads['period']} "
+                    f"{reads['betType']} on ProphetX, not {label}.")
+        return own[0]
+    found = matching_lines(lines, wanted)
+    if len(found) != 1:
+        return f"{len(found)} ProphetX strikes read as {label} on game {px_event_id} ({len(lines)} sides listed)."
+    return found[0]
+
+
 def event_of_line(client: ProphetXClient, team_keys_of: TeamKeysReader, quote: dict, line: dict) -> dict | str:
     """ProphetX's one listed game the board line is on, or why there is none:
     by the ProphetX strike ids Unabated carries for the game (quote's
@@ -350,14 +372,10 @@ class ManualProphetXDesk:
             return f"ProphetX could not be read ({error})."
         if isinstance(lines, str):
             return f"{lines}."
-        found = matching_lines(lines, board_line_of(line))
-        own_strike = quote.get("lineStrikeId")
         label = f"{line.get('side')} {line.get('points') if line.get('points') is not None else ''} {line.get('period')}".strip()
-        if len(found) != 1:
-            return f"{len(found)} ProphetX strikes read as {label} on game {event['event_id']} ({len(lines)} sides listed)."
-        target = found[0]
-        if own_strike and own_strike != target["strike_id"]:
-            return f"Unabated's ProphetX strike {own_strike} is not the one that reads as {label} ({target['strike_id']})."
+        target = line_target(lines, board_line_of(line), quote.get("lineStrikeId"), label, event["event_id"])
+        if isinstance(target, str):
+            return target
         offer = best_offer_of(target["ladder"])
         if offer is None:
             return f"nothing rests on ProphetX at {label}."

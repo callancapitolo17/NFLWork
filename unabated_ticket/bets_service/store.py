@@ -325,6 +325,9 @@ ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS polymarket_order_id VARCHAR;
 -- `cost_filled`), `count_requested` the stake in whole cents (a ProphetX
 -- order's quantity is dollars). `external_id` is the client order id.
 ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS prophetx_order_id VARCHAR;
+-- BFA free play (bfa_place.py, 2026-11-09): the stake was the account's free play, not cash;
+-- `cost_filled` is then 0 (no cash paid) and `count_filled` the free play risked.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS free_play BOOLEAN DEFAULT false;
 CREATE TABLE IF NOT EXISTS tau_samples (
     sample_key      VARCHAR PRIMARY KEY,   -- '<bookId>|<eventId>:<period>:<betType>:<side>:<points>|<sideIndex>'
     market_key      VARCHAR NOT NULL,      -- '<leagueId>:<periodTypeId>:<betTypeId>' (tailflex.marketKeyOf)
@@ -345,7 +348,10 @@ MANUAL_ORDER_NOVIG_LINE_COLUMNS = (
 )
 MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "polymarket_order_id",
                                "prophetx_order_id", "count_filled", "cost_filled", "error")
-_INSERT_MANUAL_ORDER_COLUMNS = MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
+# Whether a BFA row bet free play; every other row leaves it false.
+MANUAL_ORDER_FREE_PLAY_COLUMN = "free_play"
+_INSERT_MANUAL_ORDER_COLUMNS = (MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
+                                + (MANUAL_ORDER_FREE_PLAY_COLUMN,))
 _INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
                         f"VALUES ({', '.join(['?'] * len(_INSERT_MANUAL_ORDER_COLUMNS))})")
 # Every Novig Place order Novig gave an id, as the sub-account read's
@@ -369,30 +375,45 @@ WHERE event_id = ?
   AND (? IS NULL OR coalesce(venue, 'kalshi') = ?)
   AND ((placed_at >= ? AND (status IN ('sending', 'unknown', 'filled', 'partial')
                             OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unfilled')))
-       OR (coalesce(venue, 'kalshi') = 'novig' AND status = 'unknown' AND novig_order_id IS NULL))
+       OR (coalesce(venue, 'kalshi') = 'novig' AND status IN ('unknown', 'sending') AND novig_order_id IS NULL))
 ORDER BY placed_at
 """
 # Novig Place orders Novig never answered (no order id): looked up by clientId.
+# A row left 'sending' with no id is the same thing once it is older than any
+# click still in flight (SENDING_ABANDONED_AFTER): the desk died mid-send.
 _SELECT_LOST_NOVIG_PLACE = """
 SELECT client_order_id, ticker
 FROM manual_orders
-WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NULL AND placed_at <= ?
+WHERE venue = 'novig' AND novig_order_id IS NULL
+  AND ((status = 'unknown' AND placed_at <= ?) OR (status = 'sending' AND placed_at <= ?))
 ORDER BY placed_at
 """
 # Novig Place orders Novig named but never showed final to the desk: settled by
-# Place's sub-account read once Novig shows them final.
+# Place's sub-account read once Novig shows them final. A row left 'sending'
+# WITH an id past SENDING_ABANDONED_AFTER is one the desk never finished
+# reading (2026-11-07: Under 45.5 Fresno St @ Utah St sat 'sending' with its
+# Novig id for hours and nothing re-read it); it is confirmed the same way.
 _SELECT_UNCONFIRMED_NOVIG_PLACE = """
 SELECT client_order_id, novig_order_id, ticker, count_requested
 FROM manual_orders
-WHERE venue = 'novig' AND status = 'unknown' AND novig_order_id IS NOT NULL AND placed_at <= ? AND placed_at >= ?
+WHERE venue = 'novig' AND novig_order_id IS NOT NULL AND placed_at >= ?
+  AND ((status = 'unknown' AND placed_at <= ?) OR (status = 'sending' AND placed_at <= ?))
 ORDER BY placed_at
 """
 # An unconfirmed order is re-read for this long, then left 'unknown' (a row
 # Novig never shows final must not slow every novig_place poll for good).
 UNCONFIRMED_NOVIG_PLACE_WINDOW = timedelta(hours=24)
+# A Novig 'sending' row this old is not a click still in flight: the desk sets
+# the Novig id right after the POST (10 s timeout) and finishes reading within
+# the Place window (novig_place.PLACE_FINAL_READ_WINDOW_SEC), both well under this.
+SENDING_ABANDONED_AFTER = timedelta(minutes=2)
+# The newest Novig Place send, whatever became of it.
+_SELECT_LAST_NOVIG_PLACE_AT = """
+SELECT epoch_ms(max(placed_at)) FROM manual_orders WHERE venue = 'novig'
+"""
 
 # ProphetX Place orders the order history still checks: every finished,
-# unknown, or mid-send-abandoned ('sending' past PROPHETX_SENDING_ABANDONED_AFTER)
+# unknown, or mid-send-abandoned ('sending' past SENDING_ABANDONED_AFTER)
 # row placed within UNCONFIRMED_PROPHETX_PLACE_WINDOW. The history is the record:
 # prophetx_place.settle_unconfirmed_place_orders settles an unknown row and
 # corrects a finished one whose numbers the history does not bear out (Place
@@ -406,7 +427,6 @@ ORDER BY placed_at
 """
 UNCONFIRMED_PROPHETX_PLACE_WINDOW = timedelta(hours=24)
 # A 'sending' row this old is not a click still in flight (the desk reads for 8 s).
-PROPHETX_SENDING_ABANDONED_AFTER = timedelta(minutes=2)
 
 # An open straight Novig bet (app or sub-account) on one outcome.
 _SELECT_OPEN_NOVIG_ON_OUTCOME = """
@@ -1380,7 +1400,8 @@ class BetsStore:
             if held:
                 return False
             values = ([order[column] for column in MANUAL_ORDER_INSERT_COLUMNS]
-                      + [order.get(column) for column in MANUAL_ORDER_NOVIG_LINE_COLUMNS])
+                      + [order.get(column) for column in MANUAL_ORDER_NOVIG_LINE_COLUMNS]
+                      + [bool(order.get(MANUAL_ORDER_FREE_PLAY_COLUMN, False))])
             self._con.execute(_INSERT_MANUAL_ORDER, values)
         return True
 
@@ -1415,12 +1436,14 @@ class BetsStore:
 
     def unconfirmed_novig_place_orders(self, placed_before: datetime) -> list[dict]:
         """Novig Place orders with a Novig id still 'unknown' (never read final,
-        or their fills unread), placed at or before `placed_before` and within
+        or their fills unread), placed at or before `placed_before`, or left
+        'sending' SENDING_ABANDONED_AFTER before it, both within
         UNCONFIRMED_NOVIG_PLACE_WINDOW of it: [{client_order_id, novig_order_id,
         outcome_id, count_requested}]."""
         with self._lock:
             rows = self._con.execute(_SELECT_UNCONFIRMED_NOVIG_PLACE,
-                                     [placed_before, placed_before - UNCONFIRMED_NOVIG_PLACE_WINDOW]).fetchall()
+                                     [placed_before - UNCONFIRMED_NOVIG_PLACE_WINDOW, placed_before,
+                                      placed_before - SENDING_ABANDONED_AFTER]).fetchall()
         return [{"client_order_id": client_order_id, "novig_order_id": novig_order_id, "outcome_id": outcome_id,
                  "count_requested": count_requested}
                 for client_order_id, novig_order_id, outcome_id, count_requested in rows]
@@ -1431,7 +1454,7 @@ class BetsStore:
         with self._lock:
             rows = self._con.execute(_SELECT_UNCONFIRMED_PROPHETX_PLACE,
                                      [now - UNCONFIRMED_PROPHETX_PLACE_WINDOW,
-                                      now - PROPHETX_SENDING_ABANDONED_AFTER]).fetchall()
+                                      now - SENDING_ABANDONED_AFTER]).fetchall()
         return [{"client_order_id": client_order_id, "prophetx_order_id": order_id, "count_requested": count_requested,
                  "status": status, "count_filled": count_filled, "cost_filled": cost_filled}
                 for client_order_id, order_id, count_requested, status, count_filled, cost_filled in rows]
@@ -1473,10 +1496,20 @@ class BetsStore:
 
     def lost_novig_place_orders(self, placed_before: datetime) -> list[dict]:
         """Novig Place orders with no definite answer and no Novig order id,
-        placed at or before `placed_before`: [{client_order_id, outcome_id}]."""
+        placed at or before `placed_before`, and rows left 'sending' with no id
+        SENDING_ABANDONED_AFTER before it: [{client_order_id, outcome_id}]."""
         with self._lock:
-            rows = self._con.execute(_SELECT_LOST_NOVIG_PLACE, [placed_before]).fetchall()
+            rows = self._con.execute(_SELECT_LOST_NOVIG_PLACE,
+                                     [placed_before, placed_before - SENDING_ABANDONED_AFTER]).fetchall()
         return [{"client_order_id": client_order_id, "outcome_id": ticker} for client_order_id, ticker in rows]
+
+    def last_novig_place_at(self) -> datetime | None:
+        """When the newest Novig Place order was sent (any outcome), or None
+        when none was: novig_place's read-blip rule (a failed read is tolerated
+        only when the last good one came after every send)."""
+        with self._lock:
+            row = self._con.execute(_SELECT_LAST_NOVIG_PLACE_AT).fetchone()
+        return _utc_of_epoch_ms(row[0]) if row and row[0] is not None else None
 
     def source_status(self) -> dict[str, dict]:
         """{source: {fetchedAt, ok, error, count}} — fetchedAt/count from the

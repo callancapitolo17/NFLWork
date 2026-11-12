@@ -72,6 +72,16 @@
   const PIVOT_FULL_SHADE_ROI = 0.3;
   const DAILY_ROWS = 14;
   const LOG_PAGE = 50;
+  // Overview lists only the newest settled bets; the full, filterable list is Analysis's bet log.
+  const OVERVIEW_SETTLED_ROWS = 10;
+  // Tabs that read the header date range; the others hide it.
+  // The Bot tab has its own range picker, which drives every panel on it.
+  const RANGED_VIEWS = ["overview", "analysis"];
+  // The Live tab's own filters (Cal, 2026-11-09: watch only the bets he placed
+  // by hand). Who placed it: Mine is any bet the two bots did not place (Place
+  // clicks count as his); the value is the trackerstats origin each shows.
+  const LIVE_ORIGINS = { All: null, Mine: stats.ORIGINS.other, Bot: stats.ORIGINS.bot };
+  const LIVE_FILTERS = FILTERS.filter((f) => ["venue", "league", "kind"].includes(f.key));
   const CALENDAR_WEEKS = 6;
   const CI_SCALE = 0.3;
   const CHART_W = 1000;
@@ -87,13 +97,13 @@
     // The drill path: filter keys in the order they came into use, so the
     // breadcrumb reads like the clicks that built it. oddsMin/oddsMax are the
     // typed American odds range (null = open end).
-    drillOrder: [], oddsMin: null, oddsMax: null, moreFilters: false,
+    drillOrder: [], oddsMin: null, oddsMax: null, moreFilters: false, filtersOpen: false,
     pivotRows: "side", pivotCols: "timing", pivotMetric: "roi",
     betsQuery: "", betsVenue: "All", betsFilter: "All", betsLimit: LOG_PAGE, saving: false,
     // Per table: {col: column index, dir: "asc" | "desc"}; absent = the table's own order.
     sorts: {},
-    settledLimit: LOG_PAGE,
-    // Bot tab: its own Activity range (Today / 7D / 30D / All / Custom, Cal 2026-11-04) and the reasons panel's bot.
+    settledLimit: OVERVIEW_SETTLED_ROWS,
+    // Bot tab: its own range for every panel (stats.BOT_ACTIVITY_RANGES, Cal 2026-11-04 / 11-09) and the reasons panel's bot.
     botRange: "Today", botCustomFirst: null, botCustomLast: null, botReasonVenue: "kalshi",
     // A calendar-day click (Cal, 2026-10-07): { day, anchor, range, customFirst,
     // customLast } so a second click restores the range it replaced and the
@@ -102,6 +112,9 @@
     // Cal's decision 2026-10-05: the Kalshi bots' combo fills count in every
     // total by default; the header toggle hides them.
     includeBotCombos: true,
+    // The Live tab's filters, kept on this device: liveOrigin a LIVE_ORIGINS key,
+    // liveOff[key] the values switched off (as state.off on Analysis).
+    liveOrigin: "All", liveOff: Object.fromEntries(LIVE_FILTERS.map((f) => [f.key, []])), liveFiltersOpen: false,
   }, loadPrefs(), { view: viewOfHash() });
   const BOT_COMBO_KIND = "Kalshi combo";
   let payload = null;
@@ -130,11 +143,17 @@
       if (RANGES.includes(saved.range)) prefs.range = saved.range;
       if (stats.isDayKey(saved.customFirst)) prefs.customFirst = saved.customFirst;
       if (stats.isDayKey(saved.customLast)) prefs.customLast = saved.customLast;
+      if (stats.BOT_ACTIVITY_RANGES.includes(saved.botRange)) prefs.botRange = saved.botRange;
+      if (stats.isDayKey(saved.botCustomFirst)) prefs.botCustomFirst = saved.botCustomFirst;
+      if (stats.isDayKey(saved.botCustomLast)) prefs.botCustomLast = saved.botCustomLast;
       if (typeof saved.units === "boolean") prefs.units = saved.units;
       if (typeof saved.includeBotCombos === "boolean") prefs.includeBotCombos = saved.includeBotCombos;
       if (Number.isFinite(saved.unitSize) && saved.unitSize > 0) prefs.unitSize = saved.unitSize;
       const pick = saved.calendarPick;
       if (pick && stats.isDayKey(pick.day) && stats.isDayKey(pick.anchor) && RANGES.includes(pick.range)) prefs.calendarPick = pick;
+      if (Object.prototype.hasOwnProperty.call(LIVE_ORIGINS, saved.liveOrigin)) prefs.liveOrigin = saved.liveOrigin;
+      const liveOff = saved.liveOff || {};
+      prefs.liveOff = Object.fromEntries(LIVE_FILTERS.map((f) => [f.key, Array.isArray(liveOff[f.key]) ? liveOff[f.key].filter((v) => typeof v === "string") : []]));
       return prefs;
     } catch (_error) {
       return {};
@@ -143,7 +162,8 @@
 
   function savePrefs() {
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ range: state.range, customFirst: state.customFirst, customLast: state.customLast, botRange: state.botRange, botCustomFirst: state.botCustomFirst, botCustomLast: state.botCustomLast, units: state.units, unitSize: state.unitSize, includeBotCombos: state.includeBotCombos, calendarPick: state.calendarPick,
+        liveOrigin: state.liveOrigin, liveOff: state.liveOff }));
     } catch (_error) {
       // Private window or blocked storage: the choice lasts until reload.
     }
@@ -261,12 +281,12 @@
     return el("div", { className: "empty", text });
   }
 
-  /** Tiles {label, value, sub, color?, onClick?}; a tile with onClick is a button-like link. */
+  /** Tiles {label, value, sub, color?, onClick?, hero?}; a tile with onClick is a button-like link, a hero tile is the page's headline number. */
   function kpiTiles(id, tiles) {
     fill(id, ...tiles.map((tile) => {
       const link = typeof tile.onClick === "function";
       const node = el("div", {
-        className: "panel kpi" + (link ? " link" : ""),
+        className: "panel kpi" + (link ? " link" : "") + (tile.hero ? " hero" : ""),
         attrs: link ? { role: "link", tabindex: "0" } : null,
         onClick: link ? tile.onClick : null,
       }, [
@@ -301,6 +321,46 @@
     })));
     return el("table", { className: "tbl" }, [el("thead", null, [head]), el("tbody", null, body)]);
   }
+
+  /**
+   * The phone's form of a bet table (CSS shows it under 640px, the table above):
+   * two lines per bet, the bet and its main number on top, game · venue · league
+   * and price · stake under, in the table's own row order. Day headers
+   * (opts.dayOf) show only while the table keeps its default newest-first order.
+   * opts {sortKey, dayOf(t), main(t) -> {text, className}, detail(t) -> string}.
+   */
+  function betCards(rows, opts) {
+    const byDay = opts.dayOf && !state.sorts[opts.sortKey];
+    const nodes = [];
+    let lastDay = null;
+    for (const ticket of rows) {
+      const day = byDay ? opts.dayOf(ticket) : null;
+      if (byDay && day !== lastDay) { nodes.push(el("div", { className: "bet-card-day", text: day })); lastDay = day; }
+      const main = opts.main(ticket);
+      const where = [ticket.event || ticket.kind, ticket.venue + (ticket.origin === stats.ORIGINS.bot ? " · Bot" : ""), ticket.league].filter(Boolean).join(" · ");
+      nodes.push(el("div", { className: "bet-card" }, [
+        el("span", { className: "bet-card-what", text: ticket.selection }),
+        el("span", { className: "bet-card-main num " + (main.className || ""), text: main.text }),
+        el("span", { className: "bet-card-where", text: where }),
+        el("span", { className: "bet-card-detail num", text: opts.detail(ticket) }),
+      ]));
+    }
+    return el("div", { className: "bet-cards" }, nodes);
+  }
+
+  /** A bet table plus its phone form; CSS shows one or the other. */
+  function betTable(columns, rows, opts, cardOpts) {
+    const wide = table(columns, rows, opts);
+    wide.classList.add("wide-only");
+    return [wide, betCards(sortedRows(opts.sortKey, columns, rows), Object.assign({ sortKey: opts.sortKey }, cardOpts))];
+  }
+
+  /** Phone card parts of a settled bet: P&L on top, price · stake under. */
+  const SETTLED_CARD = {
+    main: (t) => ({ text: money(t.pnl, true), className: toneClass(t.pnl) }),
+    detail: (t) => american(t.displayPrice) + " · " + money(t.stake),
+    dayOf: (t) => dayLabel(t.settledDay, true),
+  };
 
   function headerCell(col, index, sortKey, current) {
     const className = col.right ? "r" : "";
@@ -401,7 +461,7 @@
 
     const luck = total.withFair ? total.fairPnl - total.expected : null;
     kpiTiles("ov-kpis", [
-      { label: "Net P&L", value: money(total.pnl, true), color: toneColor(total.pnl),
+      { label: "Net P&L", hero: true, value: money(total.pnl, true), color: toneColor(total.pnl),
         sub: total.bets + " settled · " + total.wins + "-" + total.losses + "-" + total.pushes
           + (total.winRate === null ? "" : " (" + pct(total.winRate) + ")") + (missing ? " · " + missing + " without a result" : "") },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.pnl), sub: "on " + money(total.handle) + " handle" },
@@ -524,7 +584,6 @@
         cell.title = dayLabel(day, true) + ": " + money(totals.pnl, true) + " on " + totals.bets + " bets";
       } else {
         cell.title = dayLabel(day, true) + (day === realToday ? ": results show after midnight Pacific" : day > realToday ? "" : ": no bets settled");
-        if (day === realToday) value.textContent = "Tomorrow";
       }
       if (isPickable) cell.title += isPicked ? " · click to clear" : " · click to filter to this day";
       cell.append(dayNumber, value);
@@ -553,7 +612,7 @@
       state.calendarPick = { day, anchor, range: previous.range, customFirst: previous.customFirst, customLast: previous.customLast };
       state.range = "Custom"; state.customFirst = day; state.customLast = day;
     }
-    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+    state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; savePrefs(); render();
   }
 
   function renderDaily(series) {
@@ -634,7 +693,7 @@
 
   /**
    * The Bot tab (Cal, 2026-11-04): a status card per automated taker, its
-   * activity in the tab's own range, settled results in the header range,
+   * activity and settled results in the tab's own range,
    * why it passed on lines, and its newest orders. A card's money at risk is
    * the desk's own open cost against its ceiling; cash is the bot's
    * subaccount balance from /balances.json.
@@ -669,6 +728,8 @@
     if (Date.now() - passMs > BOT_PASS_LATE_MS) return { tone: "warn", label: "Late", why: "last pass " + ago(runner.finishedAt) };
     if (entry.skipped) return { tone: "warn", label: "Paused", why: entry.skipped };
     if (typeof entry.runnerDesk === "string" && entry.runnerDesk.startsWith("geo_blocked")) return { tone: "warn", label: "Paused", why: entry.runnerDesk };
+    // Below the cap but the subaccount cannot pay (bot_report cashShort): top up or wait for wins to settle.
+    if (entry.cashShort) return { tone: "warn", label: "Out of cash", why: entry.cashShort };
     return { tone: "running", label: "Running", why: "last pass " + ago(runner.finishedAt) + (entry.lastOrderAt ? " · last order " + startLabel(entry.lastOrderAt) : " · no orders yet") };
   }
 
@@ -725,6 +786,7 @@
       state.botCustomFirst = win.first || today; state.botCustomLast = win.last || today;
     }
     state.botRange = range;
+    savePrefs();
     render();
     refreshBot().then(render);
   }
@@ -748,14 +810,24 @@
     fill("bot-activity", table(columns, bot.bots));
   }
 
-  // Settled results follow the header range, the same math as Overview.
+  // Settled results follow the tab's range, the same math as Overview; today's stay hidden until midnight.
   function renderBotResults() {
     if (!payload) { fill("bot-results", emptyNote("Loading…")); return; }
-    const { first, last } = rangeDays();
-    setText("bot-results-caption", rangeCaption(first, last) + " (the header range) · Expected uses the Unabated fair at fill");
-    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, first, last));
+    const win = botWindow();
+    const days = stats.botResultDays(win, lastShownDay());
+    const note = " · Expected uses the Unabated fair at fill";
+    if (days.empty) {
+      setText("bot-results-caption", rangeCaption(win.first, win.last) + note);
+      fill("bot-results", emptyNote("Today's results show after midnight Pacific."));
+      return;
+    }
+    const byVenue = stats.botTicketsByVenue(stats.inDayRange(tickets, days.first, days.last));
+    // All names its first day off the bets the table counts (inDayRange drops a settle with no result).
+    const both = byVenue.kalshi.concat(byVenue.novig);
+    const first = days.first === null ? stats.firstSettledDay(both) : days.first;
+    setText("bot-results-caption", (first === null ? "All time" : rangeCaption(first, days.last)) + note);
     const rows = BOT_VENUES.map((v) => ({ label: v.label, total: stats.summarize(byVenue[v.key]) }));
-    rows.push({ label: "Both", total: stats.summarize(byVenue.kalshi.concat(byVenue.novig)), isTotal: true });
+    rows.push({ label: "Both", total: stats.summarize(both), isTotal: true });
     const columns = [
       { label: "Bot", cell: (r) => r.label },
       { label: "Bets", right: true, num: true, cell: (r) => String(r.total.bets) },
@@ -834,7 +906,7 @@
       : "");
     document.getElementById("settled-more").hidden = settled.length <= shown.length;
     if (!shown.length) { fill("ov-settled", emptyNote("No settled bets in this range.")); return; }
-    fill("ov-settled", table(columns, shown, { sortKey: "settled" }));
+    fill("ov-settled", ...betTable(columns, shown, { sortKey: "settled" }, SETTLED_CARD));
   }
 
   /** P&L, record, expected and handle above a settled-bets table. */
@@ -916,7 +988,7 @@
       why ? el("span", { className: "note muted", text: why }) : null,
     ]);
     if (!group.length) return el("div", { className: "open-group" }, [head, emptyNote(emptyText)]);
-    return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, [table([
+    return el("div", { className: "open-group" }, [head, el("div", { className: "scroll" }, betTable([
       { label: startLabelText, className: () => "muted", cell: (t) => startLabel(t.eventStart), sort: (t) => msOf(t.eventStart) },
       VENUE_COLUMN,
       { label: "League", cell: (t) => el("span", { className: "tag", text: t.league }), sort: (t) => t.league },
@@ -928,7 +1000,10 @@
       { label: "CLV", right: true, num: true, className: clvClass, cell: clvCell, sort: (t) => t.clv },
       { label: "Stake", right: true, num: true, cell: (t) => money(t.stake), sort: (t) => t.stake },
       { label: "To win", right: true, num: true, cell: (t) => (Number.isFinite(t.toWin) ? money(t.toWin) : "—"), sort: (t) => (Number.isFinite(t.toWin) ? t.toWin : null) },
-    ], group, { sortKey: sortKey || "open" })])]);
+    ], group, { sortKey: sortKey || "open" }, {
+      main: (t) => ({ text: money(t.stake) }),
+      detail: (t) => american(t.displayPrice) + (Number.isFinite(t.toWin) ? " · to win " + money(t.toWin) : "") + " · " + startLabel(t.eventStart),
+    }))]);
   }
 
   // ---- live -----------------------------------------------------------------
@@ -943,16 +1018,90 @@
     return split.onCard.concat(split.tickets, split.offCard);
   }
 
+  // ---- live filters ---------------------------------------------------------
+
+  function inLiveOrigin(ticket) {
+    const origin = LIVE_ORIGINS[state.liveOrigin];
+    return !origin || ticket.origin === origin;
+  }
+
+  function passesLiveFilters(ticket) {
+    return inLiveOrigin(ticket) && LIVE_FILTERS.every((f) => !state.liveOff[f.key].includes(f.value(ticket)));
+  }
+
+  function activeLiveFilters() {
+    return LIVE_FILTERS.filter((f) => state.liveOff[f.key].length);
+  }
+
+  /** /scenarios.json's query for the Live tab's filter (scenarios.js liveFilterOf): the values hidden, "" when none. */
+  function liveScenariosQuery() {
+    const params = new URLSearchParams();
+    const origin = LIVE_ORIGINS[state.liveOrigin];
+    if (origin) for (const other of Object.values(stats.ORIGINS)) if (other !== origin) params.append("not_origin", other);
+    for (const f of LIVE_FILTERS) for (const value of state.liveOff[f.key]) params.append("not_" + f.key, value);
+    return params.toString();
+  }
+
+  /** A filter change: save it, then read the cards for it before drawing them. */
+  async function setLiveFilter(change) {
+    change();
+    savePrefs();
+    render();
+    await refreshScenarios();
+    render();
+  }
+
+  function liveFilterRow(filter, counted) {
+    const counts = new Map(valuesByCount(counted, filter.value));
+    const off = state.liveOff[filter.key];
+    const values = Array.from(new Set(Array.from(counts.keys()).concat(off)));
+    return chipRow(filter.label, values, counts, off, (next) => setLiveFilter(() => { state.liveOff[filter.key] = next; }));
+  }
+
+  /** A switched-off filter's summary pill: the values it hides ("Venue: hiding BFA, Wagerzon"). */
+  function liveFilterWords(filter) {
+    return filter.label + ": hiding " + state.liveOff[filter.key].join(", ");
+  }
+
+  function liveFiltering() {
+    return Boolean(activeLiveFilters().length || LIVE_ORIGINS[state.liveOrigin]);
+  }
+
+  function renderLiveFilters(allLive, shown) {
+    const seg = document.getElementById("lv-origin");
+    fill("lv-origin", ...Object.keys(LIVE_ORIGINS).map((name) => el("button", {
+      text: name, attrs: { type: "button", "aria-pressed": String(state.liveOrigin === name) },
+      onClick: () => setLiveFilter(() => { state.liveOrigin = name; }),
+    })));
+    seg.title = "Mine: every bet the bots did not place, Place clicks included";
+    const active = activeLiveFilters();
+    showFiltersToggle("lv-f-toggle", "lv-f-body", state.liveFiltersOpen, active.length);
+    const pills = active.map((filter) => el("span", { className: "crumb" }, [
+      el("span", { className: "crumb-go", text: liveFilterWords(filter) }),
+      el("button", { className: "crumb-x", text: "×", title: "Show every " + filter.label.toLowerCase(), attrs: { type: "button", "aria-label": "Clear " + filter.label },
+        onClick: () => setLiveFilter(() => { state.liveOff[filter.key] = []; }) }),
+    ]));
+    fill("lv-f-summary", ...pills, liveFiltering() ? el("span", { className: "note", text: shown.length + " of " + allLive.length + " live bets" }) : null);
+    const counted = allLive.filter(inLiveOrigin);
+    fill("lv-f-rows", ...LIVE_FILTERS.map((filter) => liveFilterRow(filter, counted)),
+      el("span", { className: "note", text: "Counts are live bets after the All / Mine / Bot switch. Your picks are kept on this device." }));
+  }
+
   function renderLiveView() {
     const split = liveSplit();
-    const games = scenarios ? scenarios.games : [];
+    const allLive = split.onCard.concat(split.tickets, split.offCard);
+    for (const part of ["onCard", "tickets", "offCard"]) split[part] = split[part].filter(passesLiveFilters);
     const live = split.onCard.concat(split.tickets, split.offCard);
+    renderLiveFilters(allLive, live);
+    // A card read for another filter (a change still loading) is not drawn as this one's.
+    const cardsMatch = Boolean(scenarios) && scenarios.query === liveScenariosQuery();
+    const games = cardsMatch ? scenarios.games : [];
     const stake = live.reduce((sum, t) => sum + t.stake, 0);
     const pricedGroups = games.flatMap((game) => game.groups).filter((group) => group.ev !== null);
     const ev = pricedGroups.reduce((sum, group) => sum + group.ev, 0);
     const best = games.flatMap((game) => game.groups).reduce((sum, group) => sum + group.best, 0);
     const worst = worstCase(games.flatMap((game) => game.groups));
-    setText("live-caption", scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
+    setText("live-caption", scenarios && !cardsMatch ? "Loading…" : scenarios ? "Updated " + ago(scenarios.generatedAt) : "");
     kpiTiles("lv-kpis", [
       { label: "Live bets", value: String(live.length), sub: games.length + (games.length === 1 ? " game" : " games") + " in progress · " + money(stake) + " at risk" },
       { label: "Best case", value: games.length ? money(best, true) : "—", color: games.length ? COLORS.pos : COLORS.muted, sub: "every game lands your way (straight bets)" },
@@ -963,7 +1112,10 @@
     const problem = scenariosError
       ? el("div", { className: "banner", text: "Game cards are unavailable: " + scenariosError + ". Live bets are listed below without them." })
       : null;
-    fill("lv-cards", problem, ...(games.length ? games.map(gameCard) : [problem ? null : emptyNote(live.length ? "No live bet could be placed on a game card." : "No games in progress.")]));
+    const emptyWords = scenarios && !cardsMatch ? "Loading the cards for these filters…"
+      : live.length ? "No live bet could be placed on a game card."
+      : liveFiltering() && allLive.length ? "No live bets match these filters." : "No games in progress.";
+    fill("lv-cards", problem, ...(games.length ? games.map(gameCard) : [problem ? null : emptyNote(emptyWords)]));
     const ticketRows = split.tickets;
     document.getElementById("lv-tickets-panel").hidden = !ticketRows.length;
     fill("lv-tickets", ticketRows.length ? openGroup("", ticketRows, "First leg", "", null, "liveTickets") : null);
@@ -1132,7 +1284,7 @@
   }
 
   function resetPaging() {
-    state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+    state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS;
   }
 
   function setOff(key, values) {
@@ -1198,7 +1350,7 @@
           onClick: () => { clearFilter(key); resetPaging(); render(); } }),
       ]));
     }
-    if (!keys.length) nodes.push(el("span", { className: "note", text: "Click any breakdown row or pivot cell to drill in." }));
+    if (!keys.length) nodes.push(el("span", { className: "note", text: "No filters. Click any breakdown row or pivot cell to drill in." }));
     fill("f-crumbs", ...nodes);
   }
 
@@ -1229,18 +1381,29 @@
 
   /** One filter row: label, All / None, then a chip per value with its count in the range. */
   function filterRow(filter, inRange) {
-    const allValues = orderedFilterValues(filter);
-    const inRangeCounts = new Map(valuesByCount(inRange, filter.value));
-    const off = state.off[filter.key];
+    const counts = new Map(valuesByCount(inRange, filter.value));
+    return chipRow(filter.label, orderedFilterValues(filter), counts, state.off[filter.key], (next) => setOff(filter.key, next));
+  }
+
+  /** A chip row (Analysis and Live): label, All / None, a chip per value with its count; onSet gets the new switched-off list. */
+  function chipRow(label, values, counts, off, onSet) {
     const quick = el("span", { className: "quick" }, [
-      el("button", { text: "All", attrs: { type: "button", "aria-pressed": String(off.length === 0) }, onClick: () => setOff(filter.key, []) }),
-      el("button", { text: "None", attrs: { type: "button", "aria-pressed": String(allValues.every((v) => off.includes(v))) }, onClick: () => setOff(filter.key, allValues.slice()) }),
+      el("button", { text: "All", attrs: { type: "button", "aria-pressed": String(off.length === 0) }, onClick: () => onSet([]) }),
+      el("button", { text: "None", attrs: { type: "button", "aria-pressed": String(values.length > 0 && values.every((v) => off.includes(v))) }, onClick: () => onSet(values.slice()) }),
     ]);
-    const chipNodes = allValues.map((value) => el("button", {
+    const chipNodes = values.map((value) => el("button", {
       className: "fchip", attrs: { type: "button", "aria-pressed": String(!off.includes(value)) },
-      onClick: () => setOff(filter.key, off.includes(value) ? off.filter((v) => v !== value) : off.concat(value)),
-    }, [document.createTextNode(value), el("span", { className: "n", text: String(inRangeCounts.get(value) || 0) })]));
-    return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: filter.label }), quick, ...chipNodes]);
+      onClick: () => onSet(off.includes(value) ? off.filter((v) => v !== value) : off.concat(value)),
+    }, [document.createTextNode(value), el("span", { className: "n", text: String(counts.get(value) || 0) })]));
+    return el("div", { className: "filter-row" }, [el("span", { className: "lbl", text: label }), quick, ...chipNodes]);
+  }
+
+  /** A "Filters" button that folds its chip rows: open state, and the count of filters in use when closed. */
+  function showFiltersToggle(toggleId, bodyId, open, activeCount) {
+    document.getElementById(bodyId).hidden = !open;
+    const toggle = document.getElementById(toggleId);
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.textContent = open ? "Hide filters" : "Filters" + (activeCount ? " (" + activeCount + ")" : "");
   }
 
   /** Parse a typed American price ("-120", "+120", "120"); null when blank, NaN when not a price. */
@@ -1286,20 +1449,22 @@
     });
     fill("f-rows", ...shown.map((filter) => filterRow(filter, inRange)), oddsRangeRow(), (state.moreFilters || hiddenCount) ? toggle : null);
     document.getElementById("f-reset").hidden = !active.length;
+    // The chip rows fold behind one button; the drill path above them always shows what is filtered.
+    showFiltersToggle("f-toggle", "f-body", state.filtersOpen, active.length);
     renderCrumbs();
   }
 
   function renderAnalysis() {
     const { first, last } = rangeDays();
     renderFilters(first, last);
-    segButtons("group-tabs", stats.GROUPS, (g) => g.key === state.groupBy, (g) => { state.groupBy = g.key; render(); });
+    renderGroupBySelect();
 
     const settled = filteredSettled();
     const total = stats.summarize(settled);
     setText("an-caption", rangeCaption(first, last) + " · " + total.bets + " settled bets");
     kpiTiles("an-kpis", [
+      { label: "P&L", hero: true, value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no fairs" },
       { label: "Bets", value: String(total.bets), sub: total.wins + "-" + total.losses + "-" + total.pushes + " W-L-P · " + money(total.handle) + " handle" },
-      { label: "P&L", value: money(total.pnl, true), color: toneColor(total.pnl), sub: total.withFair ? "expected " + money(total.expected, true) + " on " + total.withFair + " with a fair" : "no fairs" },
       { label: "ROI", value: pct(total.roi, true), color: toneColor(total.roi), sub: "95%: " + pct(total.roi - total.ciHalf, true) + " to " + pct(total.roi + total.ciHalf, true) },
       { label: "Avg edge", value: pct(total.expRoi, true), color: COLORS.exp, sub: "stake-weighted, fill fair else close" },
       clvTile(total),
@@ -1325,6 +1490,14 @@
       el("div", { className: "cap", style: { left: "calc(" + high + "% - 2px)", background: color } }),
       el("div", { className: "pt", style: { left: scale(row.roi) + "%", background: toneColor(row.roi) } }),
     ]);
+  }
+
+  function renderGroupBySelect() {
+    const select = document.getElementById("group-by");
+    if (!select.options.length) {
+      for (const group of stats.GROUPS) select.appendChild(el("option", { text: group.label, attrs: { value: group.key } }));
+    }
+    select.value = state.groupBy;
   }
 
   function renderGroups(settled) {
@@ -1492,7 +1665,7 @@
     setText("log-caption", "Showing " + shown.length + " of " + matching.length + " settled bets, " + orderCaption("log", columns, "newest first"));
     document.getElementById("log-more").hidden = matching.length <= shown.length;
     if (!shown.length) { fill("an-log", emptyNote(query ? "No bets match that search." : "No settled bets match these filters.")); return; }
-    fill("an-log", table(columns, shown, { sortKey: "log" }));
+    fill("an-log", ...betTable(columns, shown, { sortKey: "log" }, SETTLED_CARD));
   }
 
   // ---- bets -----------------------------------------------------------------
@@ -1578,25 +1751,35 @@
   }
 
   function renderHeader() {
-    for (const button of document.querySelectorAll(".nav button")) {
+    for (const button of document.querySelectorAll(".nav button, .tabbar button[data-view]")) {
       if (button.dataset.view === state.view) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
+    // The phone bar's More lights up while one of the tabs it holds is open.
+    const moreViews = [...document.querySelectorAll("#tb-more-menu button[data-view]")].map((button) => button.dataset.view);
+    document.getElementById("tb-more").classList.toggle("on", moreViews.includes(state.view));
     for (const view of VIEWS) document.getElementById("view-" + view).hidden = state.view !== view;
     const liveCount = payload ? liveTickets().length : 0;
-    const liveBadge = document.getElementById("live-count");
-    liveBadge.hidden = !liveCount;
-    liveBadge.textContent = String(liveCount);
     const openCount = payload ? openTickets().length - liveCount - liveSplit().finished.length : 0;
-    const badge = document.getElementById("open-count");
-    badge.hidden = !openCount;
-    badge.textContent = String(openCount);
+    for (const [id, count] of [["live-count", liveCount], ["open-count", openCount], ["tb-live-count", liveCount], ["tb-open-count", openCount]]) {
+      const tabBadge = document.getElementById(id);
+      tabBadge.hidden = !count;
+      tabBadge.textContent = String(count);
+    }
+    const ranged = RANGED_VIEWS.includes(state.view);
+    document.getElementById("ranges").hidden = !ranged;
     segButtons("ranges", RANGES, (r) => r === state.range, pickRange);
-    renderCustomRange();
+    renderCustomRange(ranged);
     document.getElementById("show-dollars").setAttribute("aria-pressed", String(!state.units));
     document.getElementById("show-units").setAttribute("aria-pressed", String(state.units));
     document.getElementById("unit-size-label").hidden = !state.units;
-    document.getElementById("bot-combos").setAttribute("aria-pressed", String(state.includeBotCombos));
+    const combos = document.getElementById("bot-combos");
+    combos.setAttribute("aria-checked", String(state.includeBotCombos));
+    combos.textContent = state.includeBotCombos ? "Counted" : "Hidden";
+    // The menu's button names the money format, and a dot flags a total that leaves the combos out.
+    setText("display-summary", state.units ? "Units" : "$");
+    document.getElementById("display-dot").hidden = state.includeBotCombos;
+    document.getElementById("display-menu").title = state.includeBotCombos ? "Display settings" : "Display settings · Kalshi bot combos hidden from every total";
     const unitInput = document.getElementById("unit-size");
     if (document.activeElement !== unitInput) unitInput.value = String(state.unitSize);
   }
@@ -1608,12 +1791,13 @@
       state.customFirst = first; state.customLast = last;
     }
     state.calendarPick = null;
-    state.range = range; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+    state.range = range; state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; savePrefs(); render();
   }
 
-  function renderCustomRange() {
-    document.getElementById("custom-range").hidden = state.range !== "Custom";
-    if (state.range !== "Custom") return;
+  function renderCustomRange(ranged) {
+    const custom = ranged && state.range === "Custom";
+    document.getElementById("custom-range").hidden = !custom;
+    if (!custom) return;
     const { first, last } = rangeDays();
     const lastShown = lastShownDay();
     for (const [id, value] of [["custom-first", first], ["custom-last", last]]) {
@@ -1682,18 +1866,27 @@
     applyBotComboFilter();
   }
 
-  // The live game cards; a failure keeps the last cards read and says why.
+  // The live game cards; a failure keeps the last cards read (drawn only while
+  // they match the filter) and says why.
+  // Each read is for the Live filter of the moment; a reply that lands after
+  // the filter changed again is dropped, and the newer read draws instead.
   async function refreshScenarios() {
+    const query = liveScenariosQuery();
     try {
-      const response = await fetch(SCENARIOS_URL, { cache: "no-store" });
+      const response = await fetch(SCENARIOS_URL + (query ? "?" + query : ""), { cache: "no-store" });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
       if (!body || !Array.isArray(body.games) || !Array.isArray(body.coveredBetIds)) throw new Error("scenarios.json has no games list");
       // A runner from before finished games were split out sends none.
       if (!Array.isArray(body.finishedBetIds)) body.finishedBetIds = [];
+      if (query !== liveScenariosQuery()) return;
+      // A runner from before the Live filters ignores them and would hand back every bet's cards.
+      if (query && body.filtered !== true) throw new Error("the server runner did not apply the Live filters; restart it on this version");
+      body.query = query;
       scenarios = body;
       scenariosError = null;
     } catch (error) {
+      if (query !== liveScenariosQuery()) return;
       scenariosError = error.message;
     }
   }
@@ -1714,14 +1907,18 @@
 
   // The Bot tab's read; a failure keeps the last one and says why.
   async function refreshBot() {
+    const query = botWindow().query;
     try {
-      const response = await fetch(BOT_URL + botWindow().query, { cache: "no-store" });
+      const response = await fetch(BOT_URL + query, { cache: "no-store" });
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error((body && body.error) || "the bets service answered HTTP " + response.status);
       if (!body || !Array.isArray(body.bots) || !Array.isArray(body.recentOrders)) throw new Error("bot.json has no bots list");
+      // A reply for a range picked away from while it was in flight would draw under the new range's caption.
+      if (query !== botWindow().query) return;
       bot = body;
       botError = null;
     } catch (error) {
+      if (query !== botWindow().query) return;
       botError = error.message;
     }
   }
@@ -1744,16 +1941,34 @@
   }
 
   function wire() {
-    for (const button of document.querySelectorAll(".nav button")) {
-      button.addEventListener("click", () => showView(button.dataset.view));
+    const moreMenu = document.getElementById("tb-more-menu");
+    const moreButton = document.getElementById("tb-more");
+    const setMoreOpen = (open) => { moreMenu.hidden = !open; moreButton.setAttribute("aria-expanded", String(open)); };
+    for (const button of document.querySelectorAll(".nav button, .tabbar button[data-view]")) {
+      button.addEventListener("click", () => { setMoreOpen(false); showView(button.dataset.view); });
     }
+    moreButton.addEventListener("click", () => setMoreOpen(moreMenu.hidden));
     document.getElementById("settled-more").addEventListener("click", () => { state.settledLimit += LOG_PAGE; render(); });
     document.getElementById("f-reset").addEventListener("click", resetFilters);
+    // pointerdown, not click: iOS Safari sends no click for a tap on a plain element, so a blank-page tap would leave a menu open.
+    const displayMenu = document.getElementById("display-menu");
+    document.addEventListener("pointerdown", (event) => {
+      if (displayMenu.open && !displayMenu.contains(event.target)) displayMenu.open = false;
+      if (!moreMenu.hidden && !moreMenu.contains(event.target) && !moreButton.contains(event.target)) setMoreOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      displayMenu.open = false;
+      setMoreOpen(false);
+    });
+    document.getElementById("f-toggle").addEventListener("click", () => { state.filtersOpen = !state.filtersOpen; render(); });
+    document.getElementById("lv-f-toggle").addEventListener("click", () => { state.liveFiltersOpen = !state.liveFiltersOpen; render(); });
+    document.getElementById("group-by").addEventListener("change", (event) => { state.groupBy = event.target.value; render(); });
     document.getElementById("show-dollars").addEventListener("click", () => { state.units = false; savePrefs(); render(); });
     document.getElementById("show-units").addEventListener("click", () => { state.units = true; savePrefs(); render(); });
     document.getElementById("bot-combos").addEventListener("click", () => {
       state.includeBotCombos = !state.includeBotCombos;
-      state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE;
+      state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS;
       savePrefs(); applyBotComboFilter(); render();
     });
     document.getElementById("unit-size").addEventListener("change", (event) => {
@@ -1765,31 +1980,27 @@
       document.getElementById(id).addEventListener("change", (event) => {
         if (!stats.isDayKey(event.target.value)) return;
         state.calendarPick = null;
-        state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; savePrefs(); render();
+        state[key] = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; savePrefs(); render();
       });
     }
     for (const [id, key] of [["bot-custom-first", "botCustomFirst"], ["bot-custom-last", "botCustomLast"]]) {
       document.getElementById(id).addEventListener("change", (event) => {
         if (!stats.isDayKey(event.target.value)) return;
         state[key] = event.target.value;
+        savePrefs();
         render();
         refreshBot().then(render);
       });
     }
     document.getElementById("log-search").addEventListener("input", (event) => {
-      state.query = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = LOG_PAGE; render();
+      state.query = event.target.value; state.logLimit = LOG_PAGE; state.settledLimit = OVERVIEW_SETTLED_ROWS; render();
     });
     document.getElementById("log-more").addEventListener("click", () => { state.logLimit += LOG_PAGE; render(); });
     document.getElementById("bets-search").addEventListener("input", (event) => {
       state.betsQuery = event.target.value; state.betsLimit = LOG_PAGE; render();
     });
     document.getElementById("bets-more").addEventListener("click", () => { state.betsLimit += LOG_PAGE; render(); });
-    window.addEventListener("hashchange", () => {
-      state.view = viewOfHash();
-      render();
-      if (state.view === "balances") refreshBalances().then(render);
-      if (state.view === "bot") Promise.all([refreshBot(), refreshBalances()]).then(render);
-    });
+    window.addEventListener("hashchange", () => { if (viewOfHash() !== state.view) showView(viewOfHash()); });
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
   }

@@ -169,7 +169,8 @@ def test_get_bot_json_over_http(store, tmp_path, monkeypatch):
     assert refused.value.code == 400
     kalshi, novig = body["bots"]
     assert (kalshi["status"], novig["status"], novig["detail"]) == ("off", "off", "no bot Novig key is configured")
-    assert kalshi["capDollars"] == 4500 and novig["capDollars"] == 850
+    assert novig["cashShort"] is None and "cashShort" not in kalshi
+    assert kalshi["capDollars"] == 4500 and novig["capDollars"] == 1000
     assert kalshi["openCost"] == pytest.approx(5.2)
     assert kalshi["activity"]["orders"] == 1
     assert body["runner"]["error"]  # no runner on port 9

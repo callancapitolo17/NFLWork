@@ -121,8 +121,9 @@ re-injection could not reach still needs one).
   and `sides["si<n>:tid<id>"]["ms<book>"]` path used to find the same line
   again. Not in the plan's contract; needed by the watcher.
 - `content.js` (isolated world) writes the ticket to `chrome.storage.local`
-  directly. `background.js` is off the hot path — it only sets the
-  panel-open-on-click behavior and handles edge-notification clicks — so a
+  directly. `background.js` is off the hot path — it sets the
+  panel-open-on-click behavior, handles edge-notification clicks and runs
+  the Underdog read (Underdog source section) — so a
   sleeping or crashed service worker can't stop a click from reaching the
   panel.
 - Every 5 s `page.js` re-reads the same book line through the grid API. If
@@ -770,8 +771,11 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   Every line the Edges list could show at those three books (its settings,
   by Unabated's price, no liquidity gate) not read in the last 20 s, oldest
   read first. Kalshi: `GET /markets/<ticker>` once per ticker per 10 min
-  (the taker's `marketMismatch`) and `/markets/<ticker>/orderbook`, at most
-  120 a pass, two at a time. Novig: the bets service's book stream
+  (the taker's `marketMismatch`, at most 120 fresh checks a pass) and the
+  book off the bets service's Kalshi stream (`POST /kalshi_books.json` with
+  `background: true`, no wait; see **Kalshi live books** below), else
+  `/markets/<ticker>/orderbook` for a market the stream has no book of yet, at
+  most 120 a pass, two at a time. Novig: the bets service's book stream
   (`POST /novig_books.json` with `background: true`, subscribed behind the
   bot's and Place's markets, no wait); a market the stream has no book of
   yet is read off the keyed REST `/v3/catalog/markets/<id>/book` through
@@ -1253,10 +1257,11 @@ Two kinds of source feed the flags:
 | Bet105 | the panel itself (`extension/bet105.js`, your own login at app.bet105.ag in this Chrome — Cloudflare challenges anything else) → `POST /bet105.json`, parsed by `bets_service/sources/bet105.py`; open bets 2026-09-29, graded bets 2026-10-07 | every 5 min while the panel is open; open bets plus every graded wager with its result and settle time |
 | DraftKings | the panel itself (`extension/draftkings.js`, your own login at sportsbook.draftkings.com in this Chrome — Akamai's bot checks and a login code stop anything else) → `POST /draftkings.json`, parsed by `bets_service/sources/draftkings.py`; 2026-10-10 | every 5 min while the panel is open; every open bet plus the last 31 days of settled bets with their result |
 | ProphetX | `bets_service/sources/prophetx.py` (local service, the account's own Trading API key pair `PROPHETX_ACCESS_KEY` / `PROPHETX_SECRET_KEY` in `bets_service/.env`; 2026-10-31) | every 30 s while the service runs; orders and fills back 60 days (ProphetX's window); older ones once per boot |
+| Underdog | the extension's service worker (`extension/underdog.js`, `underdogpage.js`, read inside your logged-in app.underdogsports.com tab on the app's own headers — Underdog's login server puts a Cloudflare bot wall in front of any script) → `POST /underdog.json`, parsed by `bets_service/sources/underdog.py`; 2026-11-09 | every 2 min while Chrome is open with an Underdog tab (the panel need not be open); every open prediction slip plus settled slips back 31 days |
 
 Start the service (next section), keep the panel open. Every 30 s while the
 panel is visible it fetches `http://127.0.0.1:8094/bets.json` (never from
-the service worker), resolves each record's teams through `teams.js`, dedupes
+the service worker, which only POSTs the Underdog read), resolves each record's teams through `teams.js`, dedupes
 on the venue's native id against what it already holds, and keeps open bets
 plus settled ones from the last 30 days in `chrome.storage.local`
 (`betsService`, which also carries the service's team crosswalk and the
@@ -2014,7 +2019,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   stored as that source's run. `POST /draftkings.json` with `{fetchedAt, open:
   [bet], settled: [bet], events: {eventId: event}}` (at most 2000 bets) →
   `{ok, count, closed, skipped}`, or `{error}` → `{ok, recorded: "error"}` —
-  the panel's read of DraftKings (the DraftKings source bullet). `POST /place_teaser.json`
+  the panel's read of DraftKings (the DraftKings source bullet). `POST /underdog.json`
+  with `{fetchedAt, active: page, settled: [page] (1-20), complete}` (at most
+  500 slips) → `{ok, count, closed}`, or `{error}` → `{ok, recorded: "error"}`
+  — the service worker's read of Underdog (the Underdog source section). `POST /place_teaser.json`
   with `{stake, legs: [4 x {league "nfl"|"cfb", betType "spread"|"total",
   side "away"|"home"|"over"|"under", rotation, points (Buckeye's number
   before the teaser), eventStart, label}]}` → `{ok, status: placed | refused
@@ -2528,8 +2536,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   `service.main()`. `fetch()` returns every record the venue knows and raises
   on failure — never a partial list. A venue no script can reach (Cloudflare
   challenging anything but the browser's own session — Bet105; Akamai and a
-  login code — DraftKings) is read by the panel instead and PUSHED to a route
-  of its own (`POST /bet105.json`, `POST /draftkings.json`), the
+  login code — DraftKings; a bot wall on the login server — Underdog) is read
+  in Chrome instead and PUSHED to a route of its own (`POST /bet105.json`,
+  `POST /draftkings.json`, `POST /underdog.json`), the
   parser still a module in `sources/` and the venue listed in
   `service.PUSHED_SOURCES`. Records follow the contract in the plan
   (`id` = `"<venue>:<native id>"`, `side`/`points` in the side's own number,
@@ -2638,6 +2647,17 @@ the runner keeps each league's board rows and kickoff odds, rebuilt only
 for the league that landed (`scanner.getLeagueLines` / `getLeagueVersion`).
 Before, five passes over the whole ~1.2M-line board per landing froze the
 runner for 6-8 s at a time (CPU profile on the VM, 2026-10-18).
+The Edges list's line walk is kept per league the same way (2026-11-11):
+`feed.createEdgeSelector` keeps each league's lines that pass the gates no
+clock or live read changes, and `pricecheck.createGroupedPriceIndex` prices
+a number only when a row reads it, off each league's lines grouped by
+number (`pricecheck.groupPriceLines`). A build re-checks only those lines
+and the lines with a live read against the clock and the books, so it gives
+`feed.selectEdges` / `buildPriceIndex`'s answers. Before, every
+`/edges.json` build walked every line of the board (~340k on 2026-11-11)
+about four times (0.7-3.7 s on
+the Mac, 5-14 s on the VM during a Place burst, which timed out Place's
+Novig reads).
 
 The board runs on its own thread (2026-10-19, `server/board_thread.js`):
 a worker thread holds the whole runner (the scanner and the board, the bets
@@ -2647,12 +2667,14 @@ sends, every page and quote). The main thread holds only the HTTP server:
 served at once from the board thread's last copy when it is under a minute
 old, and a new copy is built for the next ask (so a page polling every 15 s
 reads a list at most one poll old; `?fresh=1` and an older copy wait for a
-build; with the bets poll every 10 s, a list can stand on bets read up to
+build; fresh asks that land while a fresh build runs share one build after
+it, their `reread=` lines read at once (2026-11-11: a burst of Places each
+asked its own 5-14 s fresh build and starved the Place quotes); with the bets poll every 10 s, a list can stand on bets read up to
 ~70 s before, which Place covers by sending the reads its stake was sized
 on). `/health` answers from the health the board thread posts every 5 s,
 with `boardThread: {state, startedAt, restarts, lastExit, healthPostedAt}`;
-`ok` is false while it restarts or has posted nothing for 15 s. `/attach.json`
-and the Place quotes are one message to the board thread, answered after
+`ok` is false while it restarts or has posted nothing for 15 s. `/attach.json`,
+`/ticket_line.json` and the Place quotes are one message to the board thread, answered after
 the work in progress. A board thread that dies fails the requests waiting
 on it with 503 and is replaced after 5 s (doubling per death in a row, up
 to 5 min; reset after 10 min alive) with a fresh board (as a restart
@@ -2717,14 +2739,20 @@ plist's PATH) and logs to `unabated_ticket/server/edges_runner.log`
   `related` (the bets on the game with their tags and `fair then`) and
   `move` (`{kind, label, detail, sinceFill}` or null). The full shape is
   documented at the top of `server/edges_payload.js`. `GET /scenarios.json`
-  → `{generatedAt, scanner, betsService, games, coveredBetIds, finishedBetIds}`, the Bet
+  → `{generatedAt, scanner, betsService, games, coveredBetIds, finishedBetIds, filtered}`, the Bet
   Tracker's Live tab cards (`server/scenarios.js` documents the shape; the
-  bets service passes it through at its own `/scenarios.json`). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
+  bets service passes it through at its own `/scenarios.json`, query
+  included; `?not_<origin|venue|league|kind>=` rebuilds the cards without
+  those bets, any other key is a 400). `GET /tau.json` → `{generatedAt, markets: {"<league>:<period>:<betType>":
   {tau, measured, rungCount, sampleCount, covariance}}}`, the pooled tail-flex tau the
   panel ranks and gates on (Tail flex above; the pool's load state is on `/health`). `GET /live_prices.json` →
   `{generatedAt, maxAgeMs, bookIds, reads: {lineKey: {venue, points, allIn, depthDollars, readAtMs} |
   {venue, points, empty: true, readAtMs}}, lastPass}`, the exchanges' live prices the Edges list is priced
-  through (Live exchange prices above; the bets service passes it through). `GET /health` →
+  through (Live exchange prices above; the bets service passes it through). `GET /ticket_line.json?key=<line key>` →
+  `{key, readAt, minEdgePct, minShrunkEdgePct, betsService: {sources}, row, underMinEdge, venueReadAtMs, readError, readingId, reason, detail}`,
+  the phone's open Ticket (Live Ticket refresh below): that one line's venue book read now and the
+  line answered as `/edges.json` would, with every list gate but Min edge and Min shrunk edge; `row`
+  null with `reason` `gone` / `started` / `empty` / `no_fair` / `filtered`. `GET /health` →
   `{ok, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices}`. Any verb but GET is
   405; a request whose `Host` is not `127.0.0.1:<port>`, `localhost:<port>`
   or the bound address with the port is 403 (the bets service's #125 rule).
@@ -2797,15 +2825,45 @@ node unabated_ticket/server/runner.js                     # must be running too 
   books tiles, every book at the number, the related-bets table (each bet on
   two lines) and the card's other lines. Freshness and errors (edges or
   bets service unreachable since …, scanner errors, settings fallback) sit at
-  the top. A read whose body does not arrive whole inside the page's 10 s
+  the top, folded to one line (`⚠ N problems` and the worst one, cut to fit;
+  a tap lists them all, 2026-11-09). The Edges status is one line too
+  (`NFL · 62 lines · 5 books · ≥1% · by edge · 20s ago`); a tap opens the full
+  scanner, books, tail-flex and price-check lines under it. A read whose body does not arrive whole inside the page's 10 s
   timeout (a slow connection; `/bets.json` is the big one) reads "download
   cut off", not as an empty reply. The confirm tap on a venue Place
   (Kalshi, Novig, Polymarket US, ProphetX, BFA) closes the Ticket at once and
   follows the order in a toast above the tab bar (`Placing $X on <bet> at
   <venue>…`, then the service's reply), so several Places can run while you
   browse; a fill fades after 8 s, a refusal or an unsure reply stays until ✕.
+  While a Ticket is open the toasts fold into one chip beside Close
+  (`✓ 1 filled · 1 placing`, red on a refusal, amber on no answer) so they
+  never cover the Ticket; a tap drops them down under it (2026-11-10).
   A toast lives in the open page only: leave Safari mid-Place and the bet still
   goes through, but its result shows on Bets, not as a toast.
+  **Already-bet lines (2026-11-09)**: the row a Place was sent from (a
+  skipped one too) greys out at the confirm tap with a `placed $X` tag
+  (`placing · sending…`, then `placed · updating…`). After a fill or an
+  unsure reply the page reads `/bets.json` at once, then a `?fresh=1` Edges
+  list; the row stays grey until the list's runner bets read
+  (`betsService.generatedAt`) is newer than that `/bets.json` read (both
+  the bets service's clock, whole seconds), at most a minute after the reply
+  (`phoneView.placedMarkShows`). A refusal ungreys it. A refusal, or an
+  order sent that filled nothing or the venue rejected (`unfilled`,
+  `rejected`), asks for
+  `/edges.json?fresh=1&reread=<line key>` (2026-11-10): the runner reads that
+  one line at its venue beside the bets read (`rereadLiveLine`, waiting at most
+  2.5 s; the catalog, event lists and stream as held, no extra Novig or
+  Polymarket US catalog read; one per line at a time, none within 2 s of its
+  last reread), so a moved price shows its new price, edge and stake at once, or
+  the line drops when the edge is gone, instead of waiting up to a minute for
+  the next pass and poll. A read that fails or is still going drops the
+  line's older read, so the card shows `unchecked`, not the refused price; a
+  pass batch that ends later never puts its older book back (a read already
+  held that is newer than the moment a read was asked for stays). A line sized to $0
+  (`add $0`, the rail's `atSize`, also a line an open teaser sizes to zero;
+  a card by its best line) is not listed at all (`phoneView.withoutFullyBet`,
+  phone only; the panel still lists it); when that empties the list it says
+  every line is already bet to full size.
 - **Bets**: money at risk, Needs a game / Needs a code fix / Not on the board
   (the runner adds `betsService.unmatched`, `bets.unmatchedReasons` over
   its board, to `/edges.json`), venue freshness, open bets; Attach, Undo,
@@ -2815,6 +2873,21 @@ node unabated_ticket/server/runner.js                     # must be running too 
   set field has Reset (sends null). The runner picks a change up within 10 s.
 - **Polling**: `/edges.json` every 15 s and `/bets.json` every 30 s, only while
   the page is visible; at once on becoming visible and after a save.
+- **Live Ticket refresh (2026-11-10)**: while a Ticket is open and the page in
+  view it asks `GET /ticket_line.json` every 2 s (one ask in flight). The runner
+  reads that line's book then: Novig, Polymarket US and ProphetX off the bets
+  service's streams (no venue request; the stream subscribes the market first),
+  Kalshi off the bets service's Kalshi stream too, else one REST book read
+  (0.5/s per open Ticket); a read under 1.5 s old is
+  reused and a failed one is not retried for 10 s. Price, edge, stake and the
+  Place box follow the answer while it is under 10 s old (else the list's row),
+  with a note: `Live · read 2s ago`, or amber when the read is old or failed.
+  Under Min edge on the newest read, Place is off; the Ticket closes (with a
+  toast saying why) after two answers in a row under Min edge or with nothing to
+  bet, each off a new reading (a venue read, or a board snapshot at a book with
+  none), so one tick never closes it (Cal); a pause over
+  10 s starts the count again. A price or number that moves between Place and
+  its confirm disarms it. Phone only; the panel's Ticket is unchanged.
 - **Reuse**: `phoneview.js` (pure, tested in `tests/phoneview.test.js`) formats
   on top of the extension's `kelly.js`, `feed.js`, `teams.js`, `bets.js`,
   `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,
@@ -2853,7 +2926,8 @@ the open panel used to do.
   `GET /attach.json?betId=&query=` (pick a game) /
   `?betId=&eventId=&swapped=0|1` (the plan and the `/pins.json` body).
   `?fresh=1` on `/edges.json` or `/teasers.json` re-reads `/bets.json` first,
-  so a mark or pin the page just wrote shows at once. The bets service
+  so a mark or pin the page just wrote shows at once. `&reread=<line key>` on a fresh `/edges.json`
+  also reads that one line at its venue (above). The bets service
   proxies both routes with the query string and passes the runner's own
   400/404 through.
 - **The phone** gains the Teasers tab (Can't tease / Restore on college
@@ -2861,8 +2935,8 @@ the open panel used to do.
   learn), Undo, Dismiss / Restore, the learned team names with a two-tap
   Clear, a Line moved note on the ticket, and move tags and alt numbers on
   the card's other lines.
-- **Still Mac-only**: in-game Live edges, Bet105 and DraftKings need the
-  logged-in Chrome; desktop alerts; clicking a price on Unabated's screen.
+- **Still Mac-only**: in-game Live edges, Bet105, DraftKings and Underdog
+  need the logged-in Chrome; desktop alerts; clicking a price on Unabated's screen.
 
 ### Bet Tracker (`server/tracker/`)
 
@@ -2873,12 +2947,21 @@ fairs and removed bets) and `GET /scenarios.json` (the Live tab's game
 cards, from the server runner through the bets service) every 60 s while
 visible. Its one write is the Bets page's Remove / Restore.
 
+- **Layout** (UI pass, Cal 2026-11-09): one system font with tabular figures,
+  neutral grays with one blue accent (green / red mean P&L), one headline tile
+  per page (Net P&L, Analysis P&L). The date range shows only on Overview,
+  Analysis and Bot; $ / Units and Bot combos live in the header's display menu
+  (a dot on it while combos are hidden). On a phone (under 640px) the header
+  scrolls away, the pages are a bottom tab bar (Bets, Balances, Bot under More),
+  and the settled, bet-log and open-bet tables are two-line cards (`betCards`,
+  settled ones grouped by day while unsorted; the Bets page and Bot tables stay
+  tables). Breakdown's group-by is a dropdown at every width.
 - **Today's results stay hidden** (Cal, 2026-10-12): a bet settled on the
   current Pacific day leaves every page until midnight Pacific
   (`trackerstats.hideSettledFrom`, applied once where the tickets are
   built), so there is no running P&L to watch during the day; the first poll
   after midnight brings the day in. Ranges end yesterday (there is no Today
-  range), today's calendar cell reads "Tomorrow", and a bet a book grades
+  range), today's calendar cell stays blank (outlined), and a bet a book grades
   after midnight counts on that later day. Open bets, open EV and the Live
   tab are unaffected. No reveal switch: it's a hard lock in the tracker
   only, so the books' own sites still show results.
@@ -2888,10 +2971,10 @@ visible. Its one write is the Bets page's Remove / Restore.
   actual vs expected chart with daily bars; a 6-week calendar heatmap (click a
   day to filter the whole Overview to it as a one-day Custom range; click it
   again, or pick a range, to go back); daily
-  results; P&L by venue; and **Settled bets**: every bet settled in the
-  header range, newest first, 50 at a time with Show more, under the
-  range's P&L, record, expected and handle (Cal, 2026-10-07; briefly a
-  today-only panel). The Open risk tile links to the Open page.
+  results; P&L by venue; and **Settled bets**: the newest 10 settled in the
+  header range, then 50 more per Show more, with a link to Analysis's full
+  bet log, under the range's P&L, record, expected and handle (Cal,
+  2026-10-07; 10 rows since 2026-11-09). The Open risk tile links to the Open page.
 - **Live** (2026-10-08, Cal's "scenarios" idea): one card per game in
   progress holding open bets, cut into the results that change the money —
   "Chiefs by 2-3: +$410" — with each result's chance and P&L, one ladder
@@ -2944,6 +3027,18 @@ visible. Its one write is the Bets page's Remove / Restore.
   start, whether or not the board still lists it: a game already under way
   when the runner (re)starts gets its card with "—" for every chance. The
   nav tab carries the live bet count.
+  **Filters** (2026-11-09): an **All / Mine / Bot** switch (Mine is every
+  bet the two bots did not place, Place clicks included) and a **Filters**
+  button with Venue, League and Type chips, a summary of what is hidden
+  beside it; kept on the device (`betTracker.prefs`). The page sends the
+  hidden values as `not_origin` / `not_venue` / `not_league` / `not_kind`
+  on `/scenarios.json` and the runner rebuilds the cards from only the
+  bets left (`scenarios.liveFilterOf` / `recordsInFilter`, labels from
+  `trackerstats.buildTickets`), so every ladder, range, KPI and EV counts
+  just those; `coveredBetIds` stay every bet's, so the Open tab and the nav
+  count are unchanged. The page draws filtered cards only from a reply
+  marked `filtered: true`, so a runner older than the page says so instead of
+  showing every bet's cards under the filter.
 - **Open** (2026-10-07; was Overview's bottom panel): open-bet count, stake
   at risk and to win, open EV (bets with a saved fair) and stake in live
   games (links to Live), then the open bets that are not live with price,
@@ -2956,7 +3051,8 @@ visible. Its one write is the Bets page's Remove / Restore.
   fav / dog, odds, edge, timing, weekday, stake and the number itself under **More
   filters**, and an exact **Price** range in American odds: every value is a chip (on =
   solid with a check, with its bet count in the range), each row has All / None, and
-  Reset filters clears them all; choices last until reload. Clicking a breakdown row,
+  Reset filters clears them all; choices last until reload. The chip rows fold
+  behind a **Filters (N)** button (2026-11-09); the drill path stays on screen. Clicking a breakdown row,
   a pivot cell, or a pivot row or column header keeps only that value, and the
   **drill path** above the filters lists the active filters in the order they were
   set (click a crumb to back up to it, × to drop it, All bets to clear);
@@ -2993,7 +3089,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   `bets`) and it leaves every number on Overview and Analysis — a parlay or
   teaser goes as a whole; **Restore** counts it again. Only those two books
   (Cal, 2026-10-05); the service refuses any other venue's bet.
-- **Header**: range (Today, Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days), $ / units with the unit size
+- **Header**: range (Yesterday, 7D, 30D, 90D, YTD, All, Custom; Custom opens From/To date pickers on Pacific days; shown on Overview and Analysis only; Bot has its own), a display menu with $ / units, the unit size and Bot combos
   (default $100; range, units and unit size are remembered in the browser),
   and how many venues' last poll succeeded.
 - **Bot** (own tab, Cal 2026-11-04): one card per automated taker (Kalshi
@@ -3001,16 +3097,21 @@ visible. Its one write is the Bets page's Remove / Restore.
   key not proven locked), **Stopped** (a stop file), else **Running**, amber
   when the runner's last pass is over 2 min old, skipped for that venue, or
   Novig's location lapsed — money at risk (the desk's open cost against its
-  ceiling, $6,000 / $850), cash in its subaccount (`/balances.json`), open
-  orders and Kelly bankroll. **Activity** has its own range (Today, 7D, 30D,
-  All, Custom; it includes today, since these are orders, not results): orders
+  ceiling, $6,000 / $1,000), cash in its subaccount (`/balances.json`), open
+  orders and Kelly bankroll. The tab has its own range (Today, Yesterday, 7D, 30D,
+  All, Custom; the header range is hidden there) driving every panel.
+  **Activity** includes today, since these are orders, not results: orders
   sent, filled, rejected by the venue, unconfirmed (no definite answer or
   fills not read yet, full cost held), fill rate (over orders whose fills
   are read, a rejection counting as unfilled), staked and the
   cost-weighted live edge at fill, one row per bot (a Kalshi contract pays $1,
-  a Novig one 1c). **Results** are the bots' settled bets in the header range
-  (Bot origin, never the MLB bots' combos), the Overview math. **Why it didn't
-  bet** counts distinct lines per decision in the activity range — the log
+  a Novig one 1c). **Results** are the bots' settled bets (Bot origin,
+  never the MLB bots' combos) in that range, the Overview math, ending
+  yesterday since today's results stay hidden until midnight (Cal,
+  2026-11-09): 7D is today and the 6 days before, so its Results hold 6 days
+  where Overview's 7D holds 7, and Today shows none. The range is remembered
+  in the browser. **Why it didn't
+  bet** counts distinct lines per decision in the tab's range — the log
   holds a decision only when it changes, so it counts lines, not passes — with
   a bet split by the desk's answer (the money cap, the stop file, ... in
   amber). **Recent orders**: the newest 25 on either venue, the line named by
@@ -3067,8 +3168,8 @@ visible. Its one write is the Bets page's Remove / Restore.
   #139). Kalshi's
   multivariate combos (`KXMVECROSSCATEGORY`, the MLB bots' RFQ fills on the
   same account) are their own type, "Kalshi combo", and count in every total
-  by default (Cal, 2026-10-05); switching off the header's **Bot combos**
-  toggle hides them. **Market** is the record's `betType`; a record its
+  by default (Cal, 2026-10-05); setting **Kalshi bot combos** to Hidden in
+  the header's display menu hides them. **Market** is the record's `betType`; a record its
   source left as `other` (no scanner game to place it on: BFA college
   lines, Bet105 team totals, Kalshi futures, Wagerzon fectas, props) is typed
   off the venue's own text (`otherMarketName`: Team total, Player prop,
@@ -3261,16 +3362,18 @@ subaccount is set up on both pots (`taker_orders.BOT_SHARDS`). Since
 send stays a `rejected` row) does the desk read the market's pot (the runner's
 `exchangeIndex`) in the bot's subaccount, move exactly the shortfall from the
 subaccount's other pot with the bot's own key (`kalshi_shards.top_up_bot_pot`,
-ONE transfer, never re-sent: a subaccount transfer takes no idempotency id),
-wait up to 5 s for Kalshi to finish it, and send the order ONCE more as
+ONE transfer, never re-sent: a subaccount transfer takes no idempotency id; the
+other pot is not read first, since 2026-11-09, because Kalshi answered that
+second balance read with HTTP 429 and no money moved from 2026-11-06 on),
+pause 1 s (the locked key gets HTTP 403 from Kalshi's transfer status
+endpoint, so it cannot ask whether the move finished), and send the order ONCE more as
 `<id>-r` (`taker_orders.retry_order_id`), re-checking the decision's age and
 the start first; a second refusal is not resent.
 A locked key's transfer can only name its own subaccount on both ends, so no
 money ever comes in from the primary account. Any doubt refuses the resend as
-`pot_short` (no pot named, a pot the bot is not on, an unreadable balance, both
-pots together short, a pot that reads as covering it after Kalshi said it does
-not, a failed or unfinished move). The $6,000 ceiling covers
-both pots together. The key needs `write::transfer`, so the setup's key has
+`pot_short` (no pot named, a pot the bot is not on, an unreadable balance, a
+pot that reads as covering it after Kalshi said it does not, a move Kalshi
+does not accept, including one it refuses because the other pot is short too). The $6,000 ceiling covers both pots together. The key needs `write::transfer`, so the setup's key has
 scopes `read` + `write::trade` + `write::transfer`. `python -m unabated_ticket.bets_service.taker_subaccount_setup`
 (on the VM, `deploy/README.md` step 11, signed with a write-scoped key; a
 read-only one stops before anything changes at Kalshi) puts the stop file in place first,
@@ -3378,8 +3481,9 @@ The Kalshi rules above hold unless this table says otherwise.
 |---|---|
 | Lines | spreads and totals whose rung carries a Novig outcome id; a main number whose rung Unabated's ladder leaves out takes the one open market in Novig's catalog on its siblings' event and market type at its strike, the outcome by its name (refused when the rungs disagree, or zero or two markets or outcomes fit; the bot and Novig Place alike, 2026-10-17); moneylines never trade (Unabated lists no Novig moneyline rung; only Novig Place finds them in the catalog) |
 | Price | buying an outcome crosses the best resting order on the other outcome at 1 − its price, off the live book stream below (never a REST `/book`); no book in sync, a market gone live or not `OPEN` is `no_book`; fee 0 pregame; a market whose fee is `ALWAYS` is refused (`market_mismatch`) |
-| Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000, Kalshi's until 2026-10-28, its own parameter, separate from the $850 cap) |
-| Ceiling | open bot cost on Novig never above $850 (`OPEN_COST_CEILING`; $500 until 2026-11-04), its own budget beside Kalshi's |
+| Size | a Novig contract pays 1c: qty = floor(stake × 100 / price), cut to the depth; Kelly bankroll `NOVIG_KELLY_BANKROLL` ($2,000, Kalshi's until 2026-10-28, its own parameter, separate from the $1,000 cap) |
+| Ceiling | open bot cost on Novig never above $1,000 (`OPEN_COST_CEILING`; $850 from 2026-11-04, $500 before), its own budget beside Kalshi's |
+| Cash | after a 422 `INSUFFICIENT_BALANCE` the desk answers `no_cash` and sends nothing until a newer `novig_bot` balance read pays for a contract, then cuts qty to it (Out of cash, below) |
 | Market check | before every order the market and event are read (keyed, below): market `OPEN`, event `OPEN_PREGAME`, the row's market type, strike (a spread's is the home side's) and outcome, and the outcome's own name must be the row's side (a spread's last word its handicap, a pick'em refused; a total's first word Over / O or Under / U; unreadable fails closed) |
 | Order | one IOC limit (`POST /v3/orders`, NOVIG-V3 signed); a partial fill cancels the rest, a zero fill comes back rejected; an order still `OPEN` is cancelled. `clientId` is a UUID derived from the outcome and the pass (Novig does not dedupe it, so the desk never re-sends) |
 | Adds | `unseen_fill` across venues: a Novig order waits for any earlier bot fill on the game, Kalshi or Novig, to be held; a Kalshi order waits for an earlier Novig one the same way. One bets list sorted by live edge, so the better venue goes first |
@@ -3419,6 +3523,40 @@ and an update for an order the book never saw resyncs the market. A
 frame part the stream cannot read resyncs only that market, and the bets log
 prints it (`unreadable frame part ... part: {...}`, first 400 characters), so
 a new shape can be read off the log.
+
+**Private orders channel (`bets_service/novig_book_stream.py`, 2026-11-09).**
+The two sub-account reads (`novig_bot`, `novig_place`) used to re-read every
+fill of the last 14 days from `GET /v3/portfolio/fills` every 10 s. That read
+is on Novig's `history` throttle (512 tokens, 4 a second) at 8 tokens plus 1
+per 50 rows, so two sub-accounts holding ~870 fills cost ~42 tokens per 10 s
+against a refill of 40: the bucket sat at its floor and every extra read a
+Place made (its order status, its fills) was refused `HTTP 429` (2026-11-07,
+"the novig_place read is failing"). Now each socket also subscribes the
+`orders` private channel (`{"subscribe": {"private": ["orders"]}}`, 1 token;
+Novig pushes it only for the signing key's sub-account, so the bot's book
+socket carries the bot's and a **second socket on the Place key**
+(`novig-place-stream`, no market ever asked of it) carries Place's). The
+answer lists the sub-account's open orders (never a finished IOC) and every
+later frame is a delta: `open`, `fill` (fillId, orderId, outcomeId, price,
+qty, remaining; no fee, no marketId), `cancel`, `reject` (an unfilled IOC).
+A heartbeat every 15 s names the last seq; one past ours means a dropped
+frame, and the channel asks for a new snapshot and counts as not live until
+it comes. The channel is read two ways. The sub-account source merges the
+pushed fills into its 10 s pass (the market id from the order's stored line,
+else one `fills?order=` read) and reads REST's fills whole only on its
+first pass, whenever the channel was not live or re-snapshotted since the
+last pass (a fill during a gap is in no snapshot), and **hourly** (the
+exact fee, None on a pushed fill until then; Novig's REST fills are the
+record, the stream only the first word). REST's fills lag the stream by up
+to a minute, so after every whole read the pushed fills REST does not list
+yet are kept (one fill by `fillId` once it does). A REST fills read that
+Novig throttles is retried once 1.5 s later; an hourly read throttled twice
+while the channel is live does not fail the run (the stream's fills stand,
+REST is tried again a minute on), any other does. `/health` carries the channel under
+`novigStream.orders` and `novigPlaceStream.orders` (live, subscribed, synced,
+seq, snapshot epoch, version, error). Without a Place key there is no
+second socket and Place polls REST as before; without either channel live the
+source polls REST every pass as before.
 
 **Keyed catalog reads (`bets_service/novig_catalog_reads.py`, 2026-10-30).**
 The stream moved only the books. The market list (every 30 s while Novig rows
@@ -3484,7 +3622,7 @@ on the Mac's management key; a top-up is the same line with a new
 one does not).
 
 Desk statuses: `stopped`, `duplicate`, `env_mismatch`, `stale_decision`,
-`started`, `stale_holdings`, `unseen_fill`, `ceiling`, then the order's
+`started`, `stale_holdings`, `unseen_fill`, `ceiling`, `no_cash`, then the order's
 `sending`, `unknown` (no definite answer: full cost held, looked up by
 `clientId` a minute on), `sent` (an order Novig took but never shows final is
 settled off its listing by `clientId` a minute on), `resting`, `filled` /
@@ -3493,6 +3631,20 @@ market frees its orders' cost once it has left the bot's open positions
 (`GET /v3/portfolio/positions`, read at most every 5 min; Novig closes a
 position when its market settles); one still held 12 h after the start is
 logged once.
+
+**Out of cash (2026-11-09).** The Novig ceiling counts open cost only, so after
+a losing run the wallet can be empty with room left under it. Once Novig
+refuses an order `INSUFFICIENT_BALANCE` (answered `no_cash`; its row is
+`rejected`, cost 0), the desk sends nothing (`no_cash`, no row) until the bets
+service's own balance read of the bot subaccount (`/balances.json`
+`novig_bot`, every ~10 s poll), taken after that refusal, pays for a contract;
+that order's qty is cut to the cash and sending is back to normal. A failed or
+older read sends nothing. The state is in memory: after a restart the first
+order on an empty wallet is refused once. Before this the desk sent ~50
+refused orders a minute. The Bot tab shows it apart from the cap: the Novig
+card reads **Out of cash** (amber, `/bot.json` `cashShort`) while the desk
+waits, and the "why it passed" list has an **Out of cash** row next to **At
+the money cap**.
 
 ```sql
 -- taker.duckdb: the Novig bot's orders, newest first
@@ -3668,15 +3820,29 @@ answers 503 and the log names why. Setup: `deploy/README.md` step 13 with
    worse** than the Ticket's (a pregame take pays no fee); an open straight
    Novig bet is on the other outcome; a Novig read the stake counts (`novig`,
    `novig_place`, and `novig_bot` when it is read) is failing, has never run
-   or is over 5 minutes old; a Novig Place on the game may have filled after
+   or is over 5 minutes old (Place's own `novig_place` read Novig throttled,
+   `NovigRateLimited`, is a blip and not a failure while its last good read is
+   under 60 s old and came after the newest Novig Place send, so a fill the
+   blip could hide is in it; the app's and the bot's reads have no such rule,
+   nothing here knows when the bot last sent; 2026-11-09); a Novig Place on the game may have filled after
    `novigReadAt` (the oldest of those reads, `place.js readAtsOf`), or a
    Kalshi Place after `kalshiReadAt` (`manual_orders.unseen_manual_fill`,
    shared with Place on Kalshi); the click id was already sent.
 3. It buys `floor(stake x 100 / price)` contracts (a Novig contract pays 1c,
    not $1) with ONE immediate-or-cancel order at the live price, clientId the
    click's UUID, row `nman-<clickId>`, never re-sent (Novig does not dedupe
-   clientIds). It reads the order until final (about 10 reads a second
-   apart, none started after 12 s), then its fills; an order shown `OPEN` is
+   clientIds). While Place's private orders channel is live (above) it waits
+   for the order's pushed `fill` / `reject` / `cancel` frame (at most 12 s)
+   and then reads its fills once over REST for the fee; a REST read that
+   fails or lists fewer fills than the stream does not hold the answer: the
+   pushed fills are recorded, the fee from the quote's rate (0 pregame), and
+   the hourly REST read corrects them. A channel live to the end of the
+   window with no final frame reads the order once over REST (a resting one
+   is cancelled) and then its fills so far, the pushed ones standing when
+   REST lags them. Without the channel (no Place key, or
+   it is down or resyncing, even mid-wait) it reads the order over REST until
+   final as before (about 10 reads a second apart, none started after 12 s),
+   then its fills; an order shown `OPEN` is
    cancelled. An order never read final still has its fills read: every
    contract filled is `filled` (it cannot fill more); less stays `unknown`
    with what filled so far, and the `novig_place` read gives it its final
@@ -3696,7 +3862,10 @@ orders too; `/bets.json` serves such an order once, as the sub-account read's
 (`store._SELECT_WINDOW`; nothing is deleted). When the sub-account copy
 names no game (an order no desk placed, or a lost send not yet found), the
 app's copy is served instead. An `unknown` Place order is re-read by the
-`novig_place` read for 24 hours, then left `unknown`.
+`novig_place` read for 24 hours, then left `unknown`. A row left `sending`
+by a bets service that died mid-Place (2026-11-07: `nman-b2ec5517`, an order
+id and no status for a day) is re-read the same way once it is 2 minutes old:
+with an order id as an unconfirmed order, without one as a lost send.
 
 Its rows are in the same `manual_orders` table with `venue = 'novig'`
 (`ticker` = the outcome id, `novig_order_id`, and the board line Place's
@@ -3806,6 +3975,69 @@ once found, is kept until the game starts), so the gateway is
 left to Place. `/health` carries `polymarketStream` (connected, last frame
 age, subscriptions, subscribed, held and wanted markets, last error).
 
+**Kalshi live books (`bets_service/kalshi_book_stream.py`, 2026-11-10, Cal's
+option A).** The live price pass read Kalshi books off REST, at most 120 a
+pass, so an Edges Kalshi price could be up to 2 min old. Now the bets service
+keeps ONE websocket, `wss://api.elections.kalshi.com/trade-api/ws/v2`
+(`KALSHI_WS_URL`; the host the MLB maker streams from), signed with the
+**read-only** Kalshi key (`KALSHI_API_KEY_ID`, the one the Kalshi source polls
+with) over `GET /trade-api/ws/v2`, **reads only**; it runs whenever that key is
+set (and not when `KALSHI_BASE_URL` and `KALSHI_WS_URL` disagree on demo vs
+prod). The runner asks `POST /kalshi_books.json` (loopback only) for the
+tickers it needs: each is subscribed on the `orderbook_delta` channel on first
+ask (a reread's or Place quote's first, the live pass's last and at most 900),
+all on ONE subscription of at most 1,000 markets: the subscribe carries the
+first 50 and `update_subscription add_markets` adds the rest 50 at a time.
+Kalshi answers only the first `orderbook_delta` subscribe on a connection
+and ignores another (the first deploy, 2026-11-11, which had packed 50 a
+subscription and so streamed 50 markets and reconnected every minute), so a
+connection sends one subscribe and anything that would need a second
+reconnects instead (a new subscription after a refused subscribe or an
+emptied one waits a gap that doubles from 1 s to 60 s while it keeps
+happening; a refused delete reconnects too, since Kalshi still holds the
+market). Kalshi publishes no per-subscription limit: error 26
+lowers the cap, kept until the service restarts (half a refused subscribe,
+down to 5, below which its markets are refused for a minute; the size before
+a refused add), the best-placed markets keeping their seats (a reread's or
+Place's over the live pass's, then those already on). One
+command goes out at most every 0.2 s; Kalshi's rate-limit refusal (error 27)
+pauses commands 5 s, across a reconnect too, and asks the markets again.
+Kalshi sends each market's snapshot then every change; a book is served as
+the REST `/orderbook`'s `orderbook_fp` body while the line is up and the
+subscription has missed no `seq`. A gap (or a delta before its snapshot, or
+a level below zero) withholds every book and reconnects, after a gap that
+starts at 1 s and doubles while gaps keep coming (to 60 s) (a reread or
+Place waits for the fresh books only when they are due within its wait); a
+crossed book is never served; a snapshot whose sides come under other yes/no
+names drops the connection rather than serve an empty book. The connection
+is renewed every 10 min for fresh snapshots (a stream that quietly stopped
+sending would look like a still market); each reconnect leaves Kalshi reads
+on REST for the few seconds the subscribe and its adds take. A subscribe
+unanswered for 10 s drops the connection. The stream pings every
+15 s and reconnects after 45 s of silence; a market nobody asked about for
+10 min is deleted from its subscription; a market refused for another reason
+is asked again a minute later.
+
+The runner prices a stream book only while the stream says it is connected
+and its last frame is under 20 s old. Anything the stream lacks falls back to
+REST: the live pass reads at most 120 REST books a pass (the rest wait a pass,
+uncounted); a reread and the Place quote (`GET /kalshi_quote.json`) wait up to
+1.5 s for a market the stream was not watching, then read REST. A Place quote
+whose stream book has nothing on its side reads REST too. Each pass also reads
+2 stream books off REST and compares each side's best bid (round robin); a ticker whose
+two reads differ is priced off REST and logged. The Place quote's market check
+stays REST, and it logs `kalshi quote ...` with where its book came from.
+**The automated taker stays on REST** (its decisions are unchanged). `/health`
+on the bets service carries `kalshiStream` (url, connected, last frame age,
+subscriptions answered, subscribed, held, wanted and refused markets, the
+market cap, resyncs and the last one's cause, last error, disconnects with
+the last one's cause and age, and the stream's own planned reconnects and the
+last one's cause, kept across reconnects); the runner's
+`/health` `livePrices.byVenue.kalshi` counts `fromStream` / `fromRest` and
+`livePrices.kalshiStreamParity` the stream-vs-REST checks (checked, agreed,
+disagreed, failed, the last disagreement). Frame shapes are from Kalshi's docs;
+the first deploy (2026-11-11) saw the handshake, subscribe and snapshots work.
+
 ### ProphetX source and Place (`bets_service/sources/prophetx.py`, `prophetx_place.py`, `server/prophetx.js`, 2026-10-31)
 
 Cal, 2026-10-31 (option A): ProphetX's bets are read and its lines placed on
@@ -3845,7 +4077,10 @@ does not read fails closed with the reason.
   once (`prophetx_markets.py` reads a strike as a board line: the market's
   `type`, the period off its name, the side by the offer's competitor and its
   home/away `side`, the number off the offer's signed `display_strike`; a
-  spread whose two sides are not one number each way does not read). Only the
+  spread whose two sides are not one number each way does not read; player
+  props and team totals, typed `total` like the game total and named without
+  "player", are dropped by their `player_id` or a `sub_type` containing
+  `player` or `team_total`, 2026-11-10). Only the
   **matched** dollars are a bet (`prophetx:<order_id>`), priced off its fills
   (a fill can beat the limit); a resting remainder is a separate unmatchable
   `prophetx:<order_id>:order`. `void` / `invalid` void it; settled orders grade
@@ -3863,7 +4098,9 @@ does not read fails closed with the reason.
   Unabated team id — the runner's `GET /team_keys.json?venue=prophetx&league=..&away=..&home=..`
   resolves ProphetX's two names through teams.js and the crosswalk, as every
   bet record is, so "Sam Houston State" is the board's "Sam Houston St"
-  (2026-11-03); swapped, or a name nothing resolves, refuses — finds the one strike that reads as the line, and takes
+  (2026-11-03); swapped, or a name nothing resolves, refuses — finds the strike: Unabated's own strike id for
+  the line when it carries one (alt rungs), which must also read as the line,
+  else the one strike that reads as the line (main lines; 2026-11-10), and takes
   its best offer (the highest American price on that side's ladder). It
   refuses, sending nothing, on a started or unlisted game, a half moneyline
   (tie rule unchecked), an implied price more than **0.1c worse** than the
@@ -3940,6 +4177,41 @@ SELECT placed_at, label, ticker AS bfa_game_id, ticket_all_in, ask_price, stake,
 FROM manual_orders WHERE venue = 'bfa' ORDER BY placed_at DESC;
 ```
 
+### BFA free play on Place (`bets_service/bfa_free_play.py`, phone page, 2026-11-09)
+
+Cal, 2026-11-09: a **Use free play** switch on the phone's BFA Ticket and a
+**Free play** switch on each Teasers ticket bet the account's free play
+instead of cash. A free play pays only the to-win and costs no cash on a loss,
+so its worth per $1 is the fair chance to win times the net odds (more on plus
+prices and teasers); the switch shows it with the balance. With it on, the
+amount box (a teaser: the ticket's stake) takes the **normal stake capped at
+the free play balance and at BFA's most a free play may win**, rounded down
+(Cal's option A); Cal can edit the Ticket's box. Panel unchanged.
+
+- From BFA's site code and read-only GETs (2026-11-09): the wager is the cash
+  wager with `UseFreePlay true` on every pick, `RiskOrWinType` / `RiskWin` 2
+  and `Amount` the free play risked. The balance is `freePlayAmount` off
+  `GET api.bfagaming.com/balance/api/GetPlayerBalanceByPlayerId?playerId=`
+  (served held 30 s at the bets service's `GET /bfa_free_play.json`). Each
+  metadata `betType` row carries `freePlay`, `fpOddsLimit` (+800) and
+  `fpMaxPayout` ($1,000).
+- `POST /place_bfa.json` and `/place_teaser.json` take `freePlay: true`. Before
+  anything is sent the bets service refuses a type without free play, a
+  straight priced over the odds limit, a to-win over the cap, or a stake over
+  the balance **read at the click** (BFA never covers the rest with cash). BFA's
+  own server can still refuse one on a game already bet (`FREEPLAYDUPLICATES`,
+  `FREEPLAYBOTHSIDES`): that 4xx comes back as rejected (a straight) or
+  refused (a teaser), nothing placed.
+- Confirmation takes only a `(FP)` ticket for a free play and only a cash one
+  for cash; a free play's risk may read 0 or the stake (history shows 0, the
+  open list was unseen). The `manual_orders` row carries `free_play`, with
+  `cost_filled` 0. A held free play straight on the other side now refuses a
+  BFA Place too. A failed balance read never turns an armed free play into
+  cash: the switch stays on and the click is refused until BFA is read.
+- **Unverified until the first live click**: the open-bets risk on a free play
+  and whether `FREEPLAYDUPLICATES` counts cash bets. Held free play bets carry
+  stake 0, so the Kelly sizing still leaves them out (named as unpriceable).
+
 ### Open at Underdog on the phone Ticket (`server/phone/phoneview.js`, 2026-11-05)
 
 Underdog (book name `Underdog Prediction Market`) has no API Cal can use: its
@@ -3954,8 +4226,64 @@ spread, total and moneyline sit on one screen (Underdog has no per-game link):
 `https://app.underdogsports.com/pick-em/higher-lower/all/<NFL|CFB|NBA|CBB|MLB|NHL>`,
 every soccer league at `FIFA`, any other league at `featured`. Cal taps the
 price and types the stake shown above it. The link goes when the line leaves
-the Edges list. Phone page only; the panel and the bets service are unchanged,
-and Underdog bets are not read into `/bets.json`.
+the Edges list. Phone page only; the bet comes back into `/bets.json` through
+the Underdog source below.
+
+### Underdog source (`extension/underdog.js`, `underdogpage.js`, `bets_service/sources/underdog.py`; 2026-11-07, read from Chrome since 2026-11-09)
+
+Underdog has no API for its prediction markets, so Cal's slips are read off
+the private endpoints Underdog's own web app reads for its Live and Results
+pages. Cal chose this knowing Underdog's terms ban scripted access: reads
+only, his own account. Pushed like Bet105 and DraftKings: the VM cannot hold a
+login, because Underdog's login server (`login.underdogsports.com`) answers a
+script with a Cloudflare bot wall, token refreshes included (2026-11-09).
+
+- **What Cal keeps open:** Chrome on the Mac with the extension and one
+  `app.underdogsports.com` tab, logged in. The side panel need not be open:
+  the service worker (`background.js`) reads on an alarm every 2 minutes.
+  With no tab the Bets tab's Underdog row reads red with the fix.
+- **Login:** never touched. `underdogpage.js` (MAIN world, document_start on
+  the Underdog tab) keeps the read headers of the newest request the app sent
+  to `api.underdogfantasy.com`: `Authorization` (the app's 10-minute JWT),
+  `Client-Type`, `Client-Version` (an old one answers 426) and
+  `Client-Device-Id`; the app's location headers are not sent. The app
+  refreshes its own token only when it makes a request, so when the kept token
+  has under a minute left the worker reloads the tab (the app logs itself back
+  in on load), at most every 5 minutes and never while Cal is looking at it,
+  then reads again. The app's rotating refresh token is never used, so
+  nothing logs out.
+- **Reads:** in the tab, `GET /v10/user/active_entry_slips` and
+  `settled_entry_slips?page=N` (15 a page, newest made first) from page 1
+  until the list ends, a page reaches slips made over 31 days ago, or 20
+  pages. Each page is cut to its prediction slips and the options, lines,
+  markets, games and teams they name (a whole page is ~600 KB; Cal's push is
+  ~10 KB). One `POST /underdog.json` `{fetchedAt, active, settled, complete}`;
+  a failed read posts `{error}` (a failed run, the records stand). A held slip
+  the pages passed without seeing (every one, when the list ended) is
+  `closed` with no result, never guessed; one placed over 31 days ago stays
+  as it was. The pages "passed" are counted off the prediction slips they
+  carry, so a page of pick'em only closes nothing (conservative).
+- **When it cannot read:** a tab Chrome put to sleep, or one open before the
+  extension loaded, is revived like a lapsed login (reloaded unless Cal is
+  looking at it; an extension reload re-injects the reader first). With two
+  Underdog tabs the first that reads wins. A reload that brings no login back
+  reads "log in at app.underdogsports.com" — or, if Cal is logged in, the app
+  stopped calling its API by XMLHttpRequest, which is all the reader watches.
+- **Records:** prediction slips only (product `prediction_markets`; pick'em
+  is skipped). One record per slip, `underdog:<slip id>`: stake = the entry
+  fee, toWin = the contracts it holds ($1 each) less the fee, price the
+  American price of that (1.23x on $1 is -435). Moneyline, spread (its sign
+  read off the pick, checked against the line) and total (Higher = Over), full
+  game, NFL/CFB/NBA/CBB/WNBA/MLB/NHL. A combo, a prop, a period market or
+  another league is unmatchable; a game line that does not read is flagged
+  as a code fix.
+- **Grades:** off what the slip paid: nothing lost, its contracts won (Cal's
+  $1 49ers slip settled with payout 1.23 = its contracts, 2026-11-09), its fee
+  back void, anything else a cash-out (`closed`, `pnl` = payout less stake,
+  which the Tracker counts); no payout field is `unknown`. Anything on the
+  active list is open. A settled answer that leaves the game out keeps the
+  stored game fields.
+- **Bets tab / Tracker:** a venue row `underdog` and the name "Underdog".
 
 ### Open at BetOnline on the phone Ticket (`server/phone/phoneview.js`, 2026-11-06)
 

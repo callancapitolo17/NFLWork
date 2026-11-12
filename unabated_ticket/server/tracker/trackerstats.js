@@ -48,6 +48,7 @@
   const VENUE_NAMES = {
     kalshi: "Kalshi", novig: "Novig", betonline: "BetOnline", bfa: "BFA",
     wagerzon: "Wagerzon", polymarket_us: "Polymarket US", bet105: "Bet105", draftkings: "DraftKings", prophetx: "ProphetX",
+    underdog: "Underdog",
     // Balances rows only: each Novig and Kalshi subaccount is its own wallet (its bets keep the venue).
     novig_place: "Novig · Place", novig_bot: "Novig · Bot", kalshi_bot: "Kalshi · Bot",
   };
@@ -270,6 +271,9 @@
         const slugLeague = /^([a-z]+)-/.exec(String(raw.eventSlug || ""));
         return slugLeague && POLYMARKET_LEAGUES.has(slugLeague[1]) ? slugLeague[1] : null;
       }
+      case "underdog":
+        // raw.sportId: the game's own sport ("NFL") on a slip that does not place (a combo, a prop).
+        return raw.sportId ? String(raw.sportId).toLowerCase() : null;
       case "prophetx":
         // raw.league: the board's league path of a game ProphetX lists, kept on a market that does not read.
         return raw.league || null;
@@ -871,9 +875,9 @@
 
   // ---- Bot tab (tracker.js renderBot; /bot.json from bets_service/bot_report.py) ----
 
-  // The Kalshi bot went live 2026-10-14; a custom Activity range starts no earlier.
+  // The Kalshi bot went live 2026-10-14; a custom Bot tab range starts no earlier.
   const BOT_FIRST_DAY = "2026-10-14";
-  const BOT_ACTIVITY_RANGES = ["Today", "7D", "30D", "All", "Custom"];
+  const BOT_ACTIVITY_RANGES = ["Today", "Yesterday", "7D", "30D", "All", "Custom"];
 
   /** Epoch ms of 00:00 Pacific on `dayKey` (PDT is UTC-7, PST UTC-8; US midnight is never skipped by DST). */
   function pacificDayStartMs(dayKey) {
@@ -885,9 +889,10 @@
   }
 
   /**
-   * The Bot tab's Activity window: {first, last} Pacific days (null for All)
+   * The Bot tab's range window: {first, last} Pacific days (null for All)
    * and the /bot.json query for it, [start of first, start of the day after last).
-   * Unlike the header range it includes today: these are orders, not results.
+   * Unlike the header range it includes today: orders are not results
+   * (Results cap it at yesterday, botResultDays).
    * Custom days are clamped to [BOT_FIRST_DAY, today] and swapped when backwards.
    */
   function botActivityWindow(range, today, custom) {
@@ -895,7 +900,7 @@
     let first;
     let last = today;
     if (range === "Today") first = today;
-    else if (RANGE_DAYS[range]) first = addDays(today, 1 - RANGE_DAYS[range]);
+    else if (range === "Yesterday" || RANGE_DAYS[range]) ({ first, last } = rangeBounds(range, today));
     else if (range === "Custom") {
       const clamp = (day) => (day < BOT_FIRST_DAY ? BOT_FIRST_DAY : day > today ? today : day);
       first = clamp(custom && isDayKey(custom.first) ? custom.first : today);
@@ -909,6 +914,18 @@
     return { first, last, query: "?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end) };
   }
 
+  /**
+   * The settled-results days for a Bot tab range (Cal, 2026-11-09: Results
+   * follow the tab's one range picker, not the header's). Same window as
+   * Activity, but ending no later than lastShownDay, since a day's results
+   * stay hidden until the next Pacific day. {first, last, empty}: first null
+   * for All; empty when the window holds no shown day (Today).
+   */
+  function botResultDays(activityWindow, lastShownDay) {
+    const last = activityWindow.last === null || activityWindow.last > lastShownDay ? lastShownDay : activityWindow.last;
+    return { first: activityWindow.first, last, empty: activityWindow.first !== null && activityWindow.first > last };
+  }
+
   // taker.js REASONS, in Cal's words.
   const BOT_REASON_NAMES = {
     stale_feed: "Unabated feed stale", no_ticker: "No Kalshi contract", no_outcome: "No Novig outcome",
@@ -919,13 +936,13 @@
   // A bet decision's desk answer that means an order went to the venue.
   const BOT_ORDER_SENT = new Set(["sending", "sent", "unknown", "resting", "filled", "partial", "unfilled", "rejected"]);
   const BOT_DESK_REFUSALS = {
-    ceiling: "At the money cap", stopped: "Stop file on", off: "Desk off", pot_short: "Kalshi pot short",
+    ceiling: "At the money cap", no_cash: "Out of cash", stopped: "Stop file on", off: "Desk off", pot_short: "Kalshi pot short",
     geo_blocked: "Novig location lapsed", unseen_fill: "Waiting on an earlier fill", started: "Game started",
     stale_decision: "Decision too old", stale_holdings: "Held bets too old", env_mismatch: "Wrong Kalshi", duplicate: "Duplicate",
     error: "No answer from the desk", size_declined: "Held bets refused the size",
   };
   // Refusals Cal may want to act on: the cap, a stop, a desk that cannot trade.
-  const BOT_WARN_STATUSES = new Set(["ceiling", "stopped", "off", "pot_short", "geo_blocked", "error"]);
+  const BOT_WARN_STATUSES = new Set(["ceiling", "no_cash", "stopped", "off", "pot_short", "geo_blocked", "error"]);
 
   /**
    * /bot.json `activity.reasons` ({reason, orderStatus, lines}) as display rows
@@ -966,7 +983,7 @@
     americanToDecimal, decimalToAmerican,
     buildTickets, summarize, exclusions, untypedSummary, inDayRange, hideSettledFrom, dailySeries, firstSettledDay, groupBy, groupSections, pivot, calibration,
     venueName, originOf, leagueOf, splitOpenByStart, splitOpenForLive, sortRows,
-    BOT_ACTIVITY_RANGES, pacificDayStartMs, botActivityWindow, botReasonRows, botTicketsByVenue,
+    BOT_ACTIVITY_RANGES, pacificDayStartMs, botActivityWindow, botResultDays, botReasonRows, botTicketsByVenue,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.UnabatedTrackerStats = api;

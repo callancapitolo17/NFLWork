@@ -53,7 +53,8 @@
     [POLYMARKET_US_BOOK_ID]: { venue: "polymarket_us", name: "Polymarket US", path: "/place_polymarket.json", betTypeIds: [1, 2, 3], live: true },
     [PROPHETX_BOOK_ID]: { venue: "prophetx", name: "ProphetX", path: "/place_prophetx.json", betTypeIds: [1, 2, 3], live: true },
     // BFA takes whole dollars and books a straight whole or not at all.
-    [BFA_BOOK_ID]: { venue: "bfa", name: "BFA", path: "/place_bfa.json", betTypeIds: [1, 2, 3], wholeDollars: true, fullGameOnly: true, mainLinesOnly: true },
+    // freePlay: the Ticket may bet the account's free play instead of cash (Cal 2026-11-09).
+    [BFA_BOOK_ID]: { venue: "bfa", name: "BFA", path: "/place_bfa.json", betTypeIds: [1, 2, 3], wholeDollars: true, fullGameOnly: true, mainLinesOnly: true, freePlay: true },
   };
   // The bets service's Novig reads a stake counts: Cal's app account and
   // Place's own sub-account, both required, and the bot's sub-account when
@@ -129,12 +130,14 @@
   //   clickId   a fresh id per click (the server sends each id once)
   //   liveFairReadAtMs  a live Ticket only: when the Unabated tab last said
   //             its fair was ready (live.liveFairReadAtMs), null when it does not now
+  //   freePlay  true: bet the account's free play, not cash (a venue with freePlay only)
   // An order needs its own venue's read and sends the other venues' too, or
   // null when a venue was never read (the server checks for a Place at any
   // venue the stake has not seen).
-  function placeRequestOf({ line, stakeInput, readAts, clickId, liveFairReadAtMs = null }) {
+  function placeRequestOf({ line, stakeInput, readAts, clickId, liveFairReadAtMs = null, freePlay = false }) {
     const venue = venueOf(line.bookId);
     if (!venue) return { error: "this book has no Place button" };
+    if (freePlay && !venue.freePlay) return { error: `${venue.name} takes no free play from Place` };
     if (line.live && !placesLive(venue, line.betTypeId)) {
       return { error: `${venue.name} does not place live yet` };
     }
@@ -158,6 +161,7 @@
         ...body, kalshiReadAt: readAts.kalshi || null, novigReadAt: readAts.novig || null,
         polymarketReadAt: readAts.polymarket_us || null, prophetxReadAt: readAts.prophetx || null,
         bfaReadAt: readAts.bfa || null,
+        ...(freePlay ? { freePlay: true } : {}),
         ...(line.live ? { live: true, liveFairReadAt: new Date(liveFairReadAtMs).toISOString() } : {}),
       },
     };

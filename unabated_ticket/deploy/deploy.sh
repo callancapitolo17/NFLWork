@@ -5,8 +5,8 @@
 #   ~/NFLWork/unabated_ticket/deploy/deploy.sh --no-pull   # deploy the checkout as it is
 #
 # Inputs:  unabated_ticket/deploy/.env (from .env.example: BETS_EXTRA_ALLOWED_HOSTS,
-#          UNABATED_DATA_DIR, KALSHI_PEM_PATH, DEPLOY_UID/GID, NFL_SPECIALS_DK_PROXY):
-#          paths and names only.
+#          UNABATED_DATA_DIR, KALSHI_PEM_PATH, DEPLOY_UID/GID, NFL_SPECIALS_DK_PROXY,
+#          optional COMPOSE_PROFILES=parlay_quoter): paths and names only.
 # Effects: `git pull --ff-only origin main` in the repo (refuses any other branch
 #          unless --no-pull); creates UNABATED_DATA_DIR/logs (mode 700); rebuilds
 #          the images and recreates the containers (compose.yaml), so the
@@ -125,6 +125,16 @@ main() {
   check "fecta board"              /api/board  "$FECTAS_LOOPBACK_HOST" 200 "$FECTAS_URL" || failed=1
   check "fecta pricer on tailnet"  /           "${tailnet_host}:${FECTAS_TAILNET_PORT}" 200 "$FECTAS_URL" || failed=1
   check "fecta foreign Host"       /           "$FOREIGN_HOST"  403 "$FECTAS_URL" || failed=1
+  # The dry-run parlay quoter serves no HTTP, so "running" is its check. It
+  # deploys only when deploy/.env sets COMPOSE_PROFILES=parlay_quoter.
+  if [[ ",$(env_value "$env_file" COMPOSE_PROFILES)," == *",parlay_quoter,"* ]]; then
+    if "${compose[@]}" ps --status running --services 2>/dev/null | grep -qx parlay_quoter; then
+      echo "PASS  parlay quoter: container running"
+    else
+      echo "FAIL  parlay quoter: container not running" >&2
+      failed=1
+    fi
+  fi
 
   if [ "$failed" -ne 0 ]; then
     echo "deploy: FAIL — see: docker compose --project-directory ${deploy_dir} logs --tail 100" >&2

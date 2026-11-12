@@ -167,12 +167,14 @@ class KalshiOrderClient:
             self._private_key = serialization.load_pem_private_key(key_file.read(), password=None)
 
     def _signature(self, timestamp_ms: str, method: str, path: str) -> str:
+        # Kalshi signs the path without its query (kalshi_common/auth_client.py does the same, live).
+        return self._sign(f"{timestamp_ms}{method}{SIGNED_PATH_PREFIX}{path.split('?', 1)[0]}")
+
+    def _sign(self, message: str) -> str:
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import padding
-        # Kalshi signs the path without its query (kalshi_common/auth_client.py does the same, live).
-        message = f"{timestamp_ms}{method}{SIGNED_PATH_PREFIX}{path.split('?', 1)[0]}".encode()
         signature = self._private_key.sign(
-            message, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+            message.encode(), padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
             hashes.SHA256())
         return base64.b64encode(signature).decode()
 
@@ -198,6 +200,17 @@ class KalshiOrderClient:
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    @property
+    def key_id(self) -> str:
+        return self._api_key_id
+
+    def signed_ws_headers(self, ws_path: str) -> dict:
+        """The websocket handshake's headers: Kalshi signs it as a GET of the
+        websocket path itself, with no /trade-api/v2 prefix (kalshi_book_stream.py)."""
+        timestamp_ms = str(int(time.time() * 1000))
+        return {"KALSHI-ACCESS-KEY": self._api_key_id, "KALSHI-ACCESS-SIGNATURE": self._sign(f"{timestamp_ms}GET{ws_path}"),
+                "KALSHI-ACCESS-TIMESTAMP": timestamp_ms}
 
 
 def _parse(raw: bytes) -> object:
@@ -548,7 +561,7 @@ class TakerDesk:
         log.info("taker order %s %s: %s", request["client_order_id"], request["ticker"], top_up.note)
         if self._stop_path.exists():
             return {"status": "stopped", "detail": f"stop file {self._stop_path} is present; the pot was topped up, nothing resent"}
-        refused = self._refuse_unfit(request)  # the move can take seconds: the decision may have aged out
+        refused = self._refuse_unfit(request)  # the top-up takes time: the decision may have aged out
         if refused:
             return refused
         resend = {**request, "client_order_id": retry_order_id(request["client_order_id"])}

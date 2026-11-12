@@ -225,6 +225,11 @@ Run as `ubuntu` on the VM (`ssh -i ~/.ssh/oracle_mlb.key ubuntu@<public ip>`).
     on the main account. After a deploy the log must say "polymarket place:
     on, signing with key"; else it names why (key unset, or Polymarket US
     refusing the balance read). It has no stop file: every order is a click.
+15. **Underdog bets**: nothing to do on the VM. Underdog's login server
+    answers a script from the VM with a Cloudflare bot wall (2026-11-09), so
+    the extension reads the slips in Cal's Chrome and POSTs them to
+    `/underdog.json` (README § Underdog source). A `/data/underdog_token.json`
+    left from the first try is unused and can be deleted.
 
 12. **NFL fecta pricer** (`fectas`; its own README, Running on the VM):
     - On the Mac, install the DraftKings relay agent (`nfl_specials/README.md`,

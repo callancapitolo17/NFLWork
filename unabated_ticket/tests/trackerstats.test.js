@@ -493,16 +493,40 @@ test("pacificDayStartMs: midnight Pacific in both PDT and PST", () => {
   assert.equal(new Date(stats.pacificDayStartMs("2026-11-01")).toISOString(), "2026-11-01T07:00:00.000Z");
 });
 
-test("botActivityWindow: Today, 7D, All and a clamped, swapped Custom", () => {
+test("botActivityWindow: Today, Yesterday, 7D, All and a clamped, swapped Custom", () => {
   const today = "2026-11-04";
   const todayWin = stats.botActivityWindow("Today", today);
   assert.deepEqual([todayWin.first, todayWin.last], [today, today]);
   assert.equal(todayWin.query, "?start=" + encodeURIComponent("2026-11-04T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-05T08:00:00.000Z"));
-  assert.equal(stats.botActivityWindow("7D", today).first, "2026-10-29");
+  const yesterdayWin = stats.botActivityWindow("Yesterday", today);
+  assert.deepEqual([yesterdayWin.first, yesterdayWin.last], ["2026-11-03", "2026-11-03"]);
+  assert.equal(yesterdayWin.query, "?start=" + encodeURIComponent("2026-11-03T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-04T08:00:00.000Z"));
+  // DST: the fall-back day is 25 hours, the spring-forward day 23.
+  assert.equal(stats.botActivityWindow("Yesterday", "2026-11-02").query,
+    "?start=" + encodeURIComponent("2026-11-01T07:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-02T08:00:00.000Z"));
+  assert.equal(stats.botActivityWindow("Yesterday", "2026-03-09").query,
+    "?start=" + encodeURIComponent("2026-03-08T08:00:00.000Z") + "&end=" + encodeURIComponent("2026-03-09T07:00:00.000Z"));
+  assert.deepEqual(stats.botActivityWindow("7D", today), { first: "2026-10-29", last: today,
+    query: "?start=" + encodeURIComponent("2026-10-29T07:00:00.000Z") + "&end=" + encodeURIComponent("2026-11-05T08:00:00.000Z") });
+  assert.deepEqual([stats.botActivityWindow("30D", today).first, stats.botActivityWindow("30D", today).last], ["2026-10-06", today]);
   assert.deepEqual(stats.botActivityWindow("All", today), { first: null, last: null, query: "" });
   const custom = stats.botActivityWindow("Custom", today, { first: "2026-12-01", last: "2020-01-01" });
   assert.deepEqual([custom.first, custom.last], ["2026-10-14", today]);
   assert.throws(() => stats.botActivityWindow("YTD", today), /unknown bot activity range/);
+});
+
+test("botResultDays: the bot range, ending at the last shown day", () => {
+  const yesterday = "2026-11-08";
+  // 7D as the picker builds it on Nov 9: today and the 6 days before, so 6 days of results.
+  assert.deepEqual(stats.botResultDays(stats.botActivityWindow("7D", "2026-11-09"), yesterday),
+    { first: "2026-11-03", last: yesterday, empty: false });
+  assert.deepEqual(stats.botResultDays({ first: "2026-11-09", last: "2026-11-09" }, yesterday),
+    { first: "2026-11-09", last: yesterday, empty: true });
+  assert.deepEqual(stats.botResultDays({ first: yesterday, last: yesterday }, yesterday),
+    { first: yesterday, last: yesterday, empty: false });
+  assert.deepEqual(stats.botResultDays({ first: null, last: null }, yesterday), { first: null, last: yesterday, empty: false });
+  assert.deepEqual(stats.botResultDays({ first: "2026-11-01", last: "2026-11-03" }, yesterday),
+    { first: "2026-11-01", last: "2026-11-03", empty: false });
 });
 
 test("botReasonRows: names reasons, splits a bet by the desk's answer, merges labels", () => {
@@ -518,6 +542,17 @@ test("botReasonRows: names reasons, splits a bet by the desk's answer, merges la
     { label: "Bet", lines: 5, tone: "bet" },
     { label: "At the money cap", lines: 4, tone: "warn" },
     { label: "Edge over 20% (looks wrong)", lines: 1, tone: "plain" },
+  ]);
+});
+
+test("botReasonRows: out of cash is its own warning, apart from the money cap", () => {
+  const rows = stats.botReasonRows([
+    { reason: "bet", orderStatus: "ceiling", lines: 4 },
+    { reason: "bet", orderStatus: "no_cash", lines: 7 },
+  ]);
+  assert.deepEqual(rows, [
+    { label: "Out of cash", lines: 7, tone: "warn" },
+    { label: "At the money cap", lines: 4, tone: "warn" },
   ]);
 });
 

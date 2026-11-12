@@ -25,10 +25,16 @@
   <main>
     <section id="view-edges" class="view" aria-labelledby="tab-edges">
       <div id="edges-balances" class="balances-line" hidden></div>
-      <div id="edges-status" class="status-line"></div>
-      <div id="edges-books" class="status-line"></div>
-      <div id="edges-tailflex" class="status-line" hidden></div>
-      <div id="edges-pricecheck" class="status-line" hidden></div>
+      <!-- The status in one line; a tap opens the full lines under it. -->
+      <button type="button" id="edges-status-toggle" class="status-sum" aria-expanded="false" aria-controls="edges-status-more">
+        <span id="edges-status-summary" class="status-sum-text"></span><span class="status-sum-caret" aria-hidden="true">▾</span>
+      </button>
+      <div id="edges-status-more" class="status-more" hidden>
+        <div id="edges-status" class="status-line"></div>
+        <div id="edges-books" class="status-line"></div>
+        <div id="edges-tailflex" class="status-line" hidden></div>
+        <div id="edges-pricecheck" class="status-line" hidden></div>
+      </div>
       <ol id="edges-list" class="edges-list"></ol>
       <div id="edges-empty" class="pane-note" hidden></div>
     </section>
@@ -124,7 +130,7 @@
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false">Settings</button>
   </nav>
 
-  <!-- Place toasts (phone.js showToast): one per Place, above the tab bar and the Ticket. -->
+  <!-- Place toasts (phone.js showToast): one per Place, above the tab bar. -->
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <!-- The ticket: one line, read-only. Tapping a row opens it; Close, the
@@ -133,9 +139,15 @@
     <div class="sheet-backdrop" id="sheet-backdrop"></div>
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="ticket-side">
       <div class="sheet-grip" aria-hidden="true"></div>
-      <button type="button" id="sheet-close" class="sheet-close" aria-label="Close ticket">Close</button>
+      <!-- Sticky, so the Place toasts' chip (phone.js renderToastChip) and their drop-down stay in view on a scrolled Ticket. -->
+      <div class="sheet-top">
+        <button type="button" id="toast-chip" class="sheet-close toast-chip" aria-expanded="false" aria-controls="toasts" hidden></button>
+        <button type="button" id="sheet-close" class="sheet-close" aria-label="Close ticket">Close</button>
+      </div>
       <div id="ticket-gone" class="warning" hidden>No longer listed: this is the line as it was last shown.</div>
       <div id="ticket-moved" class="warning" hidden></div>
+      <!-- The 2 s live refresh: when the price was read, or why the Ticket is about to close. -->
+      <div id="ticket-live" class="ticket-live" hidden></div>
       <!-- The bet and what to stake on it in one card at the top, as on the panel's Ticket. -->
       <div class="bet-card">
         <div class="card-top">
@@ -172,6 +184,10 @@
             <a class="btn primary sm" id="ticket-venue-link-open" target="_blank" rel="noopener noreferrer"></a>
           </div>
           <div class="venue-place" id="ticket-venue-place" hidden>
+            <div class="fp-row" id="ticket-fp" hidden>
+              <label class="check fp-check"><input type="checkbox" id="ticket-fp-input"><span id="ticket-fp-label">Use free play</span></label>
+              <div class="fp-note" id="ticket-fp-note" hidden></div>
+            </div>
             <div class="kp-row" id="ticket-venue-row">
               <label class="kp-amount">$<input id="ticket-venue-stake" inputmode="decimal" autocomplete="off" aria-label="Amount to bet"></label>
               <span class="kp-buttons" id="ticket-venue-buttons"></span>

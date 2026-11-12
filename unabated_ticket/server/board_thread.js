@@ -12,11 +12,12 @@
 //       copy the board thread built, at once, when that copy is under
 //       PAYLOAD_SERVE_MAX_AGE_MS old, and asks for a new copy for the next
 //       request (so a page polling every 15 s reads a list at most one poll
-//       old); an older or missing copy, or ?fresh=1, waits for a build.
+//       old); an older or missing copy, or ?fresh=1, waits for a build
+//       (fresh asks that land while one fresh build runs share the next one).
 //   /health  from the health the board thread posts every HEALTH_POST_MS, plus
 //       the board thread's own state (running, restarting, restarts); ok is
 //       false while it restarts or has posted nothing for HEALTH_STALE_MS.
-//   /attach.json and the Place quotes (/kalshi_quote.json, /novig_quote.json,
+//   /attach.json, /ticket_line.json (the open Ticket's 2 s refresh) and the Place quotes (/kalshi_quote.json, /novig_quote.json,
 //   /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json)  one message to the
 //       board thread, answered when it is free (after the work in progress).
 // If the board thread dies, every waiting request answers 503, the copies are
@@ -83,6 +84,8 @@ function createBoardClient(options) {
   const copies = new Map();
   // payload name -> the build in flight (a Promise of its RawJson)
   const builds = new Map();
+  // payload name -> {running: the fresh build in flight, queued: {rereadKeys, rereading, promise} | null}
+  const freshBuilds = new Map();
   let workerHealth = null;
   let healthPostedAt = null;
 
@@ -125,6 +128,7 @@ function createBoardClient(options) {
     pending.clear();
     copies.clear();
     builds.clear();
+    freshBuilds.clear();
     workerHealth = null;
     healthPostedAt = null;
     if (stopped) return;
@@ -150,29 +154,78 @@ function createBoardClient(options) {
     });
   }
 
-  // A build of one page (fresh: the bets read first), kept as the page's copy.
-  // Concurrent asks for the same page share one build.
-  function build(name, fresh) {
-    if (!fresh && builds.has(name)) return builds.get(name);
+  // One build of a page on the board thread, kept as the page's copy.
+  function runBuild(name, fresh, reread) {
     const builtAt = now();
-    const promise = call("buildPayload", [name, fresh]).then((text) => {
+    return call("buildPayload", [name, fresh, reread]).then((text) => {
       copies.set(name, { text, builtAt });
       return new RawJson(text);
     });
-    const shared = promise.finally(() => { if (builds.get(name) === shared) builds.delete(name); });
-    if (!fresh) builds.set(name, shared);
+  }
+
+  // A build that is not fresh; concurrent asks for the same page share one.
+  function build(name) {
+    if (builds.has(name)) return builds.get(name);
+    const shared = runBuild(name, false, null).finally(() => { if (builds.get(name) === shared) builds.delete(name); });
+    builds.set(name, shared);
     return shared;
+  }
+
+  // A fresh build: one runs per page and one waits behind it. An ask while one
+  // runs, or while the waiting build waits on its rereads, joins the waiting
+  // build, which starts when the running one ends, so its bets read is sent
+  // after the ask. A joining ask's reread starts at once and the waiting build
+  // starts only once every such reread has landed.
+  function freshBuild(name, reread) {
+    let state = freshBuilds.get(name);
+    if (!state) {
+      state = { running: null, queued: null };
+      freshBuilds.set(name, state);
+    }
+    if (!state.running && !state.queued) {
+      state.running = startFreshBuild(name, state, reread);
+      return state.running;
+    }
+    if (!state.queued) {
+      const queued = { rereadKeys: new Set(), rereading: [], promise: null };
+      queued.promise = state.running.catch(() => {}).then(() => allRereadsLanded(queued.rereading)).then(() => {
+        state.queued = null;
+        state.running = startFreshBuild(name, state, null);
+        return state.running;
+      });
+      state.queued = queued;
+    }
+    if (reread && !state.queued.rereadKeys.has(reread)) {
+      state.queued.rereadKeys.add(reread);
+      state.queued.rereading.push(call("rereadLiveLine", [reread]).catch(() => {}));
+    }
+    return state.queued.promise;
+  }
+
+  // Waits for every reread in the list, including any pushed while it waits.
+  async function allRereadsLanded(rereading) {
+    let waitedFor = -1;
+    while (waitedFor !== rereading.length) {
+      waitedFor = rereading.length;
+      await Promise.all(rereading);
+    }
+  }
+
+  function startFreshBuild(name, state, reread) {
+    const running = runBuild(name, true, reread).finally(() => { if (state.running === running) state.running = null; });
+    return running;
   }
 
   // The page's copy when young enough (and a rebuild started for the next
   // ask), else the build it waits for.
-  function payload(name, { fresh = false } = {}) {
+  function payload(name, { fresh = false, reread = null } = {}) {
+    if (fresh) return freshBuild(name, reread);
     const copy = copies.get(name);
-    if (!fresh && copy && now() - copy.builtAt <= PAYLOAD_SERVE_MAX_AGE_MS) {
-      build(name, false).catch((error) => logWarning(`board thread: ${name} rebuild failed: ${error.message}`));
+    if (copy && now() - copy.builtAt <= PAYLOAD_SERVE_MAX_AGE_MS) {
+      build(name).catch((error) => logWarning(`board thread: ${name} rebuild failed: ${error.message}`));
       return Promise.resolve(new RawJson(copy.text));
     }
-    return build(name, fresh);
+    return build(name);
   }
 
   function health() {
@@ -195,15 +248,20 @@ function createBoardClient(options) {
 
   return {
     start, stop, health,
-    // The HTTP server reads the bets first on ?fresh=1; the fresh build below does that on the board thread.
+    // The HTTP server reads the bets (and a ?reread= line) first on ?fresh=1; the fresh build does that on the board thread.
     pollBets: () => Promise.resolve(),
+    rereadLiveLine: () => Promise.resolve(),
     edgesPayload: (opts) => payload("edges", opts),
     teasersPayload: (opts) => payload("teasers", opts),
-    scenariosPayload: () => payload("scenarios"),
+    // The Live tab's filtered cards are built on demand; the unfiltered page is served off its copy.
+    scenariosPayload: (params) => (params && [...params.keys()].length
+      ? call("scenariosFiltered", [params.toString()]).then((text) => new RawJson(text))
+      : payload("scenarios")),
     takerPayload: () => payload("taker"),
     tauPayload: () => payload("tau"),
     livePricesPayload: () => payload("livePrices"),
     attachPayload: (params) => call("attachPayload", [params.toString()]).then((text) => new RawJson(text)),
+    ticketLinePayload: (params) => call("ticketLinePayload", [params.toString()]).then((text) => new RawJson(text)),
     kalshiQuote: (params) => call("kalshiQuote", [params.toString()]).then((text) => new RawJson(text)),
     rfqPrice: (params) => call("rfqPrice", [params.toString()]).then((text) => new RawJson(text)),
     novigQuote: (params) => call("novigQuote", [params.toString()]).then((text) => new RawJson(text)),
@@ -219,13 +277,17 @@ function createBoardClient(options) {
 //   runner  createRunner's result (built by runBoardThread)
 function serveBoardCalls(port, runner, logWarning) {
   const methods = {
-    async buildPayload(name, fresh) {
+    async buildPayload(name, fresh, reread = null) {
       const method = PAYLOAD_METHODS[name];
       if (!method) throw httpError(404, `no page ${JSON.stringify(name)}`);
-      if (fresh) await runner.pollBets();
+      // Side by side, so the reread's wait does not stack on the bets read; it never throws.
+      if (fresh) await Promise.all([runner.pollBets(), reread && name === "edges" ? runner.rereadLiveLine(reread) : null]);
       return runner[method]();
     },
+    rereadLiveLine: (key) => runner.rereadLiveLine(key),
     attachPayload: (search) => runner.attachPayload(new URLSearchParams(search)),
+    ticketLinePayload: (search) => runner.ticketLinePayload(new URLSearchParams(search)),
+    scenariosFiltered: (search) => runner.scenariosPayload(new URLSearchParams(search)),
     kalshiQuote: (search) => runner.kalshiQuote(new URLSearchParams(search)),
     rfqPrice: (search) => runner.rfqPrice(new URLSearchParams(search)),
     novigQuote: (search) => runner.novigQuote(new URLSearchParams(search)),

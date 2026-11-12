@@ -24,7 +24,12 @@ Rules, in order, for every request (validate_bfa_place_request's shape):
      at the SAME number (bfa_teaser.match_leg's checks);
   5. BFA's price is at most PRICE_TOLERANCE (0.1c) worse than the Ticket's; a better one is
      taken (AcceptChanges 0: BFA refuses a price or number that moves after this read);
-  6. the other side of the line is not held at BFA (Place adds to a side, never hedges it);
+  5b. a free play request (freePlay true, Cal 2026-11-09): the straight type offers free play,
+     the price is within its odds limit, the balance read now covers the stake and the to-win
+     is within its cap (bfa_free_play.py); the pick then sends UseFreePlay true and the ticket
+     it confirms on is a "STRAIGHT BET (FP)" one;
+  6. the other side of the line is not held at BFA, cash or free play (Place adds to a side,
+     never hedges it);
   7. the BFA read the stake counted is ok and fresh, and no earlier Place on this game, at
      any venue, may have filled after the read of its venue the stake was sized on
      (manual_orders.unseen_manual_fill);
@@ -53,10 +58,11 @@ from datetime import datetime, timezone
 from unabated_ticket.bets_service.bfa_teaser import (
     CONTESTANT_SIDES, FULL_GAME_LABEL, FULL_GAME_PERIOD, HTTP_CLIENT_ERRORS, HTTP_TIMEOUT_SEC, MAIN_LINE_INDEX,
     MARKET_OPEN, MONEY_TOLERANCE, ODDS_OPEN, RISK_OR_WIN_RISK, START_WINDOW_SEC, TOTAL_SIDES, WAGER_URL,
-    games_with_rotation,
-    is_number, main_market, one_line, parse_iso, read_account_metadata, read_board, short_text, spread_side_problem,
-    ticket_of,
+    games_with_rotation, is_free_play,
+    is_number, main_market, one_line, parse_iso, read_account_metadata, read_board, risk_matches, short_text,
+    spread_side_problem, ticket_of,
 )
+from unabated_ticket.bets_service.bfa_free_play import FreePlayReader, free_play_refusal
 from unabated_ticket.bets_service.manual_orders import (
     CLICK_ID_PATTERN, PRICE_TOLERANCE, STATUS_FILLED, STATUS_REFUSED, STATUS_REJECTED, STATUS_UNKNOWN, VENUE_BFA,
     _cents, _iso_time, optional_read_at, unseen_manual_fill,
@@ -84,7 +90,6 @@ MARKET_MONEYLINE = 1
 BET_TYPE_MARKETS = {"moneyline": MARKET_MONEYLINE, "spread": 2, "total": 3}
 BET_TYPE_MONEYLINE = 1
 STRAIGHT_HEADER_PREFIX = "STRAIGHT BET"
-FREE_PLAY_TAG = "(FP)"
 
 BFA_READ_SOURCE = "bfa"
 BFA_READ_MAX_AGE_SEC = 5 * 60
@@ -100,7 +105,8 @@ OPPOSITE_SIDES = {"away": "home", "home": "away", "over": "under", "under": "ove
 def validate_bfa_place_request(body: object) -> dict | str:
     """A POST /place_bfa.json body, or what was expected and what was found.
     {clickId, eventId, periodTypeId, betTypeId (1|2|3), sideIndex, points (null on a
-    moneyline), stake (whole dollars: BFA takes no cents), ticketAllIn (the Ticket's BFA price
+    moneyline), stake (whole dollars: BFA takes no cents), freePlay (optional, default false:
+    bet the account's free play, not its cash), ticketAllIn (the Ticket's BFA price
     as a probability), bfaReadAt (the BFA read the stake was sized on, ISO), kalshiReadAt /
     novigReadAt / polymarketReadAt / prophetxReadAt (ISO, or null when never read)}"""
     if not isinstance(body, dict):
@@ -122,6 +128,9 @@ def validate_bfa_place_request(body: object) -> dict | str:
     stake = body.get("stake")
     if not isinstance(stake, int) or isinstance(stake, bool) or stake < MIN_STAKE_DOLLARS:
         return f"stake must be whole dollars, at least ${MIN_STAKE_DOLLARS} (BFA takes no cents), got {stake!r}"
+    free_play = body.get("freePlay", False)
+    if not isinstance(free_play, bool):
+        return f"freePlay must be true or false, got {free_play!r}"
     ticket_all_in = body.get("ticketAllIn")
     if not is_number(ticket_all_in) or not 0 < ticket_all_in < 1:
         return f"ticketAllIn must be a probability between 0 and 1, got {ticket_all_in!r}"
@@ -135,7 +144,7 @@ def validate_bfa_place_request(body: object) -> dict | str:
             return read_at
         read_ats[field] = read_at
     return {"click_id": click_id, **whole, "points": None if points is None else float(points), "stake": stake,
-            "ticket_all_in": float(ticket_all_in), "bfa_read_at": bfa_read_at,
+            "free_play": free_play, "ticket_all_in": float(ticket_all_in), "bfa_read_at": bfa_read_at,
             "kalshi_read_at": read_ats["kalshiReadAt"], "novig_read_at": read_ats["novigReadAt"],
             "polymarket_read_at": read_ats["polymarketReadAt"], "prophetx_read_at": read_ats["prophetxReadAt"]}
 
@@ -221,9 +230,9 @@ def match_straight(games: list[dict], line: dict, rotation: int, event_start: da
     return {"game": game, "fixture": fixture, "market": market, "odds": odds}
 
 
-def straight_pick_of(match: dict, stake: int) -> dict:
+def straight_pick_of(match: dict, stake: int, free_play: bool = False) -> dict:
     """The one Picks[] entry: the teaser's pick (bfa_teaser.pick_of) with no points bought,
-    risking `stake`."""
+    risking `stake` (of the account's free play when `free_play`)."""
     odds = match["odds"]
     return {
         "EventId": match["game"]["id"],
@@ -240,7 +249,7 @@ def straight_pick_of(match: dict, stake: int) -> dict:
         "PointsPurchased": 0.0,
         "PitcherAction": 0,
         "RoundRobinCombinations": 0,
-        "UseFreePlay": False,
+        "UseFreePlay": free_play,
         "RiskOrWinType": RISK_OR_WIN_RISK,
         "IdGameType": odds["dGtId"],
         "IdSport": odds["dSpId"],
@@ -268,8 +277,8 @@ def straight_wager_body(transaction_id: str, player_id: str, wager_type_id: int,
 # ---- the open bets ---------------------------------------------------------------------
 
 def is_straight(wager: dict) -> bool:
-    header = str(wager.get("headerDescription") or "").upper()
-    return header.startswith(STRAIGHT_HEADER_PREFIX) and FREE_PLAY_TAG not in header
+    """A straight bet, cash or free play ("STRAIGHT BET (FP)")."""
+    return str(wager.get("headerDescription") or "").upper().startswith(STRAIGHT_HEADER_PREFIX)
 
 
 def _straight_leg(wager: dict) -> dict | None:
@@ -292,15 +301,19 @@ def holds_other_side(open_wagers: list[dict], game_id: object, line: dict) -> bo
     return False
 
 
-def new_straights_on_game(open_wagers: list[dict], game_id: object, known_ids: set) -> list[dict]:
-    """The straights not open before the POST whose one leg is on this BFA game."""
+def new_straights_on_game(open_wagers: list[dict], game_id: object, known_ids: set,
+                          free_play: bool = False) -> list[dict]:
+    """The straights not open before the POST whose one leg is on this BFA game, bet with free
+    play when `free_play` and with cash when not."""
     return [wager for wager in open_wagers if wager.get("idWager") not in known_ids
-            and is_straight(wager) and [detail.get("idGame") for detail in wager.get("betDetails") or []] == [game_id]]
+            and is_straight(wager) and is_free_play(wager) == free_play
+            and [detail.get("idGame") for detail in wager.get("betDetails") or []] == [game_id]]
 
 
-def straight_mismatches(wager: dict, want: dict, stake: int) -> list[str]:
+def straight_mismatches(wager: dict, want: dict, stake: int, free_play: bool = False) -> list[str]:
     """Every way a placed straight differs from what was sent, in words; [] when it is exactly
-    it. `want` {rotations (the ones its leg may read as written), betType, side, points, price}."""
+    it. `want` {rotations (the ones its leg may read as written), betType, side, points, price}.
+    A free play's risk may read 0 (bfa_teaser.risk_matches)."""
     details = wager.get("betDetails") or []
     text = str(details[0].get("detailDescription") or "") if len(details) == 1 else ""
     got = parse_leg(text) if text else "no leg"
@@ -314,7 +327,7 @@ def straight_mismatches(wager: dict, want: dict, stake: int) -> list[str]:
     risk, to_win = wager.get("riskAmount"), wager.get("winAmount")
     expected_win = profit_at(stake, want["price"])
     # BFA rounds the to-win to the cent, so it may land a cent off profit_at's.
-    if (not is_number(risk) or not is_number(to_win) or abs(risk - stake) > MONEY_TOLERANCE
+    if (not risk_matches(risk, stake, free_play) or not is_number(to_win)
             or abs(to_win - expected_win) > 0.01 + MONEY_TOLERANCE):
         problems.append(f"BFA's ticket risks {risk} to win {to_win}, ${stake} to win ${expected_win:.2f} was sent")
     return problems
@@ -347,6 +360,15 @@ class BFAStraightPlacer:
         self._placing = threading.Lock()
         self._metadata: dict | None = None
         self._metadata_at = 0.0
+        self._free_play_reader = FreePlayReader(bfa_source, session_factory, self._account_metadata, clock)
+
+    def free_play(self) -> dict:
+        """GET /bfa_free_play.json's body (bfa_free_play.FreePlayReader.read). Never raises."""
+        return self._free_play_reader.read()
+
+    def forget_free_play(self) -> None:
+        """A free play (straight or teaser) just went out: the next GET /bfa_free_play.json reads BFA."""
+        self._free_play_reader.forget()
 
     def place(self, request: dict) -> dict:
         """One validated request (validate_bfa_place_request) -> {status, message, ...}."""
@@ -386,6 +408,12 @@ class BFAStraightPlacer:
         if probability > request["ticket_all_in"] + PRICE_TOLERANCE:
             return _refused(f"BFA is at {odds['price']:+g} now ({_cents(probability)}), more than 0.1¢ worse than the "
                             f"Ticket's {_cents(request['ticket_all_in'])}")
+        if request["free_play"]:
+            refusal = free_play_refusal(self._session_factory(), headers, player_id, metadata,
+                                        straight_type["wagerTypeId"], {SPORT_CODES[line["league"]]}, request["stake"],
+                                        profit_at(request["stake"], odds["price"]), odds["price"])
+            if refusal:
+                return _refused(refusal)
         open_before = self._bfa.open_wagers()
         if holds_other_side(open_before, odds["dGmId"], line):
             return _refused("you hold the other side of this line at BFA")
@@ -394,7 +422,7 @@ class BFAStraightPlacer:
             return _refused(refusal)
         transaction_id = self._new_transaction_id()
         body = straight_wager_body(transaction_id, player_id, straight_type["wagerTypeId"],
-                                   straight_pick_of(match, request["stake"]))
+                                   straight_pick_of(match, request["stake"], request["free_play"]))
         inserted = self._store.insert_manual_order({
             "client_order_id": client_order_id, "placed_at": self._now(), "venue": VENUE_BFA,
             "event_id": request["eventId"], "ticker": str(odds["dGmId"]), "contract_side": line["side"],
@@ -405,11 +433,13 @@ class BFAStraightPlacer:
             "period": line["period"], "side": line["side"], "points": line.get("points"),
             "away_team": line.get("awayTeam"), "home_team": line.get("homeTeam"),
             "away_team_id": line.get("awayTeamId"), "home_team_id": line.get("homeTeamId"),
+            "free_play": request["free_play"],
         })
         if not inserted:
             return _refused("this click was already sent")
-        log.info("bfa place %s: %s $%d at %+g (%s, Ticket %s), transaction %s", client_order_id, label,
-                 request["stake"], odds["price"], _cents(probability), _cents(request["ticket_all_in"]), transaction_id)
+        log.info("bfa place %s: %s $%d%s at %+g (%s, Ticket %s), transaction %s", client_order_id, label,
+                 request["stake"], " free play" if request["free_play"] else "", odds["price"], _cents(probability),
+                 _cents(request["ticket_all_in"]), transaction_id)
         try:
             posted = self._post_wager(body, headers, player_id)
         except Exception as error:  # noqa: BLE001 — a lost reply is not a refusal: the wager may stand
@@ -422,7 +452,7 @@ class BFAStraightPlacer:
         want = {"rotations": _rotations_of(board_line), "betType": line["betType"], "side": line["side"],
                 "points": line.get("points") if line["betType"] != "moneyline" else None, "price": odds["price"]}
         try:
-            return self._confirm(client_order_id, odds["dGmId"], want, request["stake"], label,
+            return self._confirm(client_order_id, odds["dGmId"], want, request["stake"], request["free_play"], label,
                                  {wager.get("idWager") for wager in open_before}, posted["note"])
         except Exception as error:  # noqa: BLE001 — the wager went out: never "Not placed" from here
             log.exception("bfa place %s: confirming failed", client_order_id)
@@ -468,8 +498,8 @@ class BFAStraightPlacer:
             return {"refused": None, "note": None}
         return {"refused": None, "note": f"BFA answered HTTP {response.status_code} {shown}"}
 
-    def _confirm(self, client_order_id: str, game_id: object, want: dict, stake: int, label: str, known_ids: set,
-                 note: str | None) -> dict:
+    def _confirm(self, client_order_id: str, game_id: object, want: dict, stake: int, free_play: bool, label: str,
+                 known_ids: set, note: str | None) -> dict:
         deadline = self._clock() + CONFIRM_TIMEOUT_SEC
         while True:
             self._sleep(CONFIRM_POLL_SEC)
@@ -478,9 +508,9 @@ class BFAStraightPlacer:
             except Exception as error:  # noqa: BLE001 — a failed read is one more try, not a failed wager
                 log.warning("bfa place %s: open bets read failed while confirming: %s", client_order_id, error)
                 open_wagers = []
-            candidates = new_straights_on_game(open_wagers, game_id, known_ids)
+            candidates = new_straights_on_game(open_wagers, game_id, known_ids, free_play)
             if candidates:
-                return self._placed(client_order_id, candidates, want, stake, label, open_wagers)
+                return self._placed(client_order_id, candidates, want, stake, free_play, label, open_wagers)
             if self._clock() >= deadline:
                 log.warning("bfa place %s: sent, no ticket after %.0f s (%s)", client_order_id, CONFIRM_TIMEOUT_SEC,
                             note or "BFA took it for processing")
@@ -491,20 +521,23 @@ class BFAStraightPlacer:
                                     "Check BFA's open bets before placing again."),
                         "openWagers": open_wagers}
 
-    def _placed(self, client_order_id: str, candidates: list[dict], want: dict, stake: int, label: str,
-                open_wagers: list[dict]) -> dict:
+    def _placed(self, client_order_id: str, candidates: list[dict], want: dict, stake: int, free_play: bool,
+                label: str, open_wagers: list[dict]) -> dict:
         """The filled result for the new ticket that reads exactly as sent, else the first new one
-        on the game with every difference named (a booked bet cannot be undone)."""
-        checked = [(wager, straight_mismatches(wager, want, stake)) for wager in candidates]
+        on the game with every difference named (a booked bet cannot be undone). A free play
+        costs no cash: its row's cost_filled is 0 and its count_filled the free play risked."""
+        checked = [(wager, straight_mismatches(wager, want, stake, free_play)) for wager in candidates]
         wager, problems = next(((wager, found) for wager, found in checked if not found), checked[0])
         ticket = ticket_of(wager)
         risk = wager.get("riskAmount") if is_number(wager.get("riskAmount")) else stake
         to_win = wager.get("winAmount") if is_number(wager.get("winAmount")) else profit_at(stake, want["price"])
-        self._update(client_order_id, {"status": STATUS_FILLED, "count_filled": risk, "cost_filled": risk,
-                                       "error": "; ".join(problems) or None})
+        risked = float(stake) if free_play else risk
+        self._update(client_order_id, {"status": STATUS_FILLED, "count_filled": risked,
+                                       "cost_filled": 0.0 if free_play else risk, "error": "; ".join(problems) or None})
         result = {"status": STATUS_FILLED, "ticket": ticket, "legsMatch": not problems, "legCheck": problems,
                   "openWagers": open_wagers}
-        bet = f"Bet ${risk:,.2f} on {label} at {want['price']:+g} to win ${to_win:,.2f}"
+        paid_with = " of free play" if free_play else ""
+        bet = f"Bet ${risked:,.2f}{paid_with} on {label} at {want['price']:+g} to win ${to_win:,.2f}"
         if problems:
             log.error("bfa place %s: placed as ticket %s BUT it differs from what was sent: %s", client_order_id,
                       ticket["ticketNumber"], " | ".join(problems))

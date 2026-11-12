@@ -69,6 +69,7 @@ test("the line view: other books untouched, a fresh read applied, a stale, missi
   const view = livePrices.createLineView(servedReads({
     [`m3:ms${NOVIG}:si1`]: { venue: "novig", points: 47.5, allIn: 0.52, depthDollars: 300, readAtMs: NOW - 30 * 1000 },
   }), NOW);
+  assert.deepEqual(view.readKeys, [`m3:ms${NOVIG}:si1`]);
   const novig = view(state.lines[`m3:ms${NOVIG}:si1`]);
   assert.equal(novig.liveCheck, "live");
   assert.equal(novig.line.sourcePrice, 0.52);

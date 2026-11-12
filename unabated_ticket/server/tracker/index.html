@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0e1218">
+  <meta name="theme-color" content="#0a0b0d">
   <title>Bet Tracker</title>
   <link rel="stylesheet" href="/tracker/tracker.css">
 </head>
@@ -14,10 +14,14 @@
        the Bets page's Remove / Restore (POST /exclusions.json). -->
   <header class="top">
     <div class="top-in">
-      <p class="brand">
-        <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true"><rect x="1" y="1" width="24" height="24" rx="6" stroke="#6EA8FE" stroke-width="1.6"/><path d="M6 17 L10.5 12.5 L14 15 L20 8.5" stroke="#3DD68C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-        Bet Tracker
-      </p>
+      <div class="brand-row">
+        <p class="brand">
+          <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-hidden="true"><rect x="1" y="1" width="24" height="24" rx="6" stroke="#6EA8FE" stroke-width="1.6"/><path d="M6 17 L10.5 12.5 L14 15 L20 8.5" stroke="#3DD68C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          Bet Tracker
+        </p>
+        <span class="sync" id="untyped" hidden><span class="dot bad"></span><span id="untyped-text"></span></span>
+        <span class="sync" id="sync"><span class="dot" id="sync-dot"></span><span id="sync-text">Loading…</span></span>
+      </div>
       <nav class="nav" aria-label="Pages">
         <button type="button" data-view="overview">Overview</button>
         <button type="button" data-view="live">Live<span class="badge num" id="live-count" hidden></span></button>
@@ -29,19 +33,28 @@
       </nav>
       <div class="spacer"></div>
       <div class="controls">
-        <div class="seg" id="ranges" role="group" aria-label="Date range"></div>
-        <div class="custom-range" id="custom-range" hidden>
-          <label>From <input id="custom-first" type="date"></label>
-          <label>To <input id="custom-last" type="date"></label>
-        </div>
-        <div class="seg" role="group" aria-label="Show money as">
-          <button type="button" id="show-dollars">$</button>
-          <button type="button" id="show-units">Units</button>
-        </div>
-        <button type="button" class="chip" id="bot-combos" aria-pressed="true" title="Include the Kalshi MLB bots' combo fills in every total">Bot combos</button>
-        <label class="unit-size" id="unit-size-label" hidden>1u = $<input id="unit-size" type="number" min="1" step="1" inputmode="numeric"></label>
-        <span class="sync" id="untyped" hidden><span class="dot bad"></span><span id="untyped-text"></span></span>
-        <span class="sync" id="sync"><span class="dot" id="sync-dot"></span><span id="sync-text">Loading…</span></span>
+        <div class="seg ranges" id="ranges" role="group" aria-label="Date range"></div>
+        <details class="menu" id="display-menu">
+          <summary aria-label="Display settings"><span id="display-summary">$</span><span class="dot exp" id="display-dot" hidden></span><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="2.3" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></summary>
+          <div class="menu-body">
+            <div class="menu-row">
+              <span class="lbl">Show money as</span>
+              <div class="seg" role="group" aria-label="Show money as">
+                <button type="button" id="show-dollars">$</button>
+                <button type="button" id="show-units">Units</button>
+              </div>
+            </div>
+            <label class="unit-size" id="unit-size-label" hidden>1u = $<input id="unit-size" type="number" min="1" step="1" inputmode="numeric"></label>
+            <div class="menu-row">
+              <span class="lbl">Kalshi bot combos</span>
+              <button type="button" class="chip" id="bot-combos" role="switch" aria-checked="true" title="Include the Kalshi MLB bots' combo fills in every total">Counted</button>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="custom-range" id="custom-range" hidden>
+        <label>From <input id="custom-first" type="date"></label>
+        <label>To <input id="custom-last" type="date"></label>
       </div>
     </div>
   </header>
@@ -88,12 +101,25 @@
         </div>
         <div class="settled-sum" id="settled-sum"></div>
         <div class="scroll" id="ov-settled"></div>
-        <button type="button" class="more" id="settled-more" hidden>Show more</button>
+        <div class="more-row">
+          <button type="button" class="more" id="settled-more" hidden>Show more</button>
+          <a class="see-all" href="#analysis">Every settled bet, with filters, in Analysis →</a>
+        </div>
       </section>
     </section>
 
     <section id="view-live" class="stack" aria-label="Live" hidden>
       <div class="title-row"><h1>Live</h1><span class="note" id="live-caption"></span></div>
+      <section class="panel filters" aria-label="Live filters">
+        <div class="filter-bar">
+          <div class="seg" id="lv-origin" role="group" aria-label="Who placed the bet"></div>
+          <button type="button" class="filters-toggle" id="lv-f-toggle" aria-expanded="false" aria-controls="lv-f-body">Filters</button>
+          <div class="crumbs" id="lv-f-summary"></div>
+        </div>
+        <div class="stack" id="lv-f-body" hidden>
+          <div id="lv-f-rows" class="stack"></div>
+        </div>
+      </section>
       <div class="kpis" id="lv-kpis"></div>
       <p class="note muted">Each game in progress, cut into the results that change your money. Chance is Unabated's fair before the start, not the live score. Parlay and teaser dollars stay out of a game's P&amp;L; a leg shows where it loses.</p>
       <div class="stack" id="lv-cards"></div>
@@ -124,9 +150,14 @@
     <section id="view-analysis" class="stack" aria-label="Analysis" hidden>
       <div class="title-row"><h1>Analysis</h1><span id="an-caption"></span></div>
       <section class="panel filters" aria-label="Filters">
-        <nav class="crumbs" id="f-crumbs" aria-label="Drill path"></nav>
-        <div id="f-rows" class="stack"></div>
-        <button type="button" class="reset" id="f-reset" hidden>Reset filters</button>
+        <div class="filter-bar">
+          <nav class="crumbs" id="f-crumbs" aria-label="Drill path"></nav>
+          <button type="button" class="filters-toggle" id="f-toggle" aria-expanded="false" aria-controls="f-body">Filters</button>
+        </div>
+        <div class="stack" id="f-body" hidden>
+          <div id="f-rows" class="stack"></div>
+          <button type="button" class="reset" id="f-reset" hidden>Reset filters</button>
+        </div>
       </section>
       <div class="kpis" id="an-kpis"></div>
       <section class="panel pad stack" aria-label="Cumulative profit for these filters">
@@ -145,7 +176,7 @@
             <span class="lbl">Breakdown</span>
             <span class="note">Click a row to drill into it. ROI bar is the 95% interval (scale ±30%); a group is only proven when the whole interval clears zero.</span>
           </div>
-          <span class="seg" id="group-tabs" role="group" aria-label="Group by"></span>
+          <label class="pivot-axis">Group by <select id="group-by" aria-label="Group by"></select></label>
         </div>
         <div class="scroll" id="an-groups"></div>
       </section>
@@ -234,7 +265,7 @@
             <span class="note" id="bot-activity-caption"></span>
           </div>
           <div class="controls">
-            <div class="seg" id="bot-ranges" role="group" aria-label="Activity range"></div>
+            <div class="seg" id="bot-ranges" role="group" aria-label="Bot tab range"></div>
             <div class="custom-range" id="bot-custom-range" hidden>
               <label>From <input id="bot-custom-first" type="date"></label>
               <label>To <input id="bot-custom-last" type="date"></label>
@@ -270,6 +301,20 @@
       </section>
     </section>
   </main>
+
+  <!-- Phone only (CSS): the page tabs as a bottom bar; More holds Bets, Balances and Bot. -->
+  <nav class="tabbar" aria-label="Pages">
+    <button type="button" data-view="overview"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 17l5-5 4 3 7-8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Overview</span></button>
+    <button type="button" data-view="live"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="currentColor"/><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.6"/></svg><span>Live</span><b class="tb-badge num" id="tb-live-count" hidden></b></button>
+    <button type="button" data-view="open"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="3" stroke="currentColor" stroke-width="1.6"/><path d="M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Open</span><b class="tb-badge num" id="tb-open-count" hidden></b></button>
+    <button type="button" data-view="analysis"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 19V11M12 19V5M19 19v-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Analysis</span></button>
+    <button type="button" id="tb-more" aria-haspopup="menu" aria-expanded="false" aria-controls="tb-more-menu"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></svg><span>More</span></button>
+    <div class="tb-more-menu" id="tb-more-menu" hidden>
+      <button type="button" data-view="bets">Bets</button>
+      <button type="button" data-view="balances">Balances</button>
+      <button type="button" data-view="bot">Bot</button>
+    </div>
+  </nav>
 
   <script src="/tracker/trackerstats.js"></script>
   <script src="/tracker/tracker.js"></script>
