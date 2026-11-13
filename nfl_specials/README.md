@@ -293,18 +293,18 @@ only 1st halves are read.
    at any book that priced the game; what that leaves unassigned is a state
    where every corner loses, so no corner's EV beats its worst book's. A pushed
    leg pays the other leg alone at its straight price (both pushed = stake
-   back). In the NFL, both teams' fectas in the game (placed bets and the
-   recommended stakes) are fixed bets in the same group, each team's fectas one
+   back). In the NFL, both teams' fectas in the game (placed bets and, see
+   below, the recommended stakes) are fixed bets in the same group, each team's fectas one
    nested chain as on the fecta board. A team's fectas win only where the team
    covers Wagerzon's 1H spread when every one of them needs at least that 1H
    margin (a 1H win leg on the 1H underdog; `fecta_min_h1_margin` vs
    `min_cover_margin`), spread over those cells in proportion; otherwise they
    are taken as unrelated to the 1H result. A fecta can hedge the other
    team's corners and so raise their stake; that is only trusted where sure:
-   each stake is capped at its smallest Kelly over the readings the boards
-   cannot tell apart (with and without fectas only recommended so far, and a
-   chain that need not cover both inside its cover and unrelated), and the
-   budget is then fitted once. A free play fecta loses no cash. Placed 1H parlays
+   each stake is cut to its smallest over the readings the boards cannot
+   tell apart (with and without fectas only recommended so far, and a chain
+   that need not cover both inside its cover and unrelated); the budget is
+   fitted once, on the reading with every fecta in its cover. A free play fecta loses no cash. Placed 1H parlays
    (`placed_half_parlays`, counting the ones that may have gone through) are
    fixed bets in their game's group; a placed bet the boards cannot price
    blocks its game. $20 minimum, $250 per parlay a week

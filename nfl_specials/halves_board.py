@@ -580,8 +580,8 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
     line), sized jointly with the 1H parlays already placed on it and, in
     the NFL, both teams' fectas in the game as fixed bets. A fecta can hedge
     a corner and so raise its stake; that is only trusted where it is sure,
-    so each stake is capped at its SMALLEST Kelly over the readings the
-    boards cannot tell apart: with and without the fectas only recommended
+    so each stake is cut to its SMALLEST over the readings the boards
+    cannot tell apart: with and without the fectas only recommended
     so far (they may never be placed), and, for a chain that need not cover,
     with it inside its team's cover and unrelated to the 1H. A held bet the boards cannot
     price blocks its game. No stake on a started game.
@@ -613,20 +613,14 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
                     not needs_the_cover(line.game, [bet for bet in fectas if bet.team == team])
                     for line, _corners, fectas in sizable for team in {bet.team for bet in fectas}) else [True])]
 
-    def groups_for(include_recommended: bool, in_cover: bool, caps: dict[tuple[int, str], float] | None = None):
+    def groups_for(include_recommended: bool, in_cover: bool):
         keys, groups = [], []
         for line, corners, fectas in sizable:
             kept = [bet for bet in fectas if include_recommended or not bet.recommended]
             group = game_outcome_group(line, corners, held_by_game.get(line.game.wz_game_id, []), kept, in_cover)
-            if group is None:
-                continue
-            group_keys = [(line.game.wz_game_id, corner) for corner in corners]
-            if caps is not None:
-                group = replace(group, candidates=tuple(
-                    replace(cand, max_stake=min(cand.max_stake, caps.get(key, 0.0)))
-                    for cand, key in zip(group.candidates, group_keys)))
-            keys.append(group_keys)
-            groups.append(group)
+            if group is not None:
+                keys.append([(line.game.wz_game_id, corner) for corner in corners])
+                groups.append(group)
         return keys, groups
 
     def by_key(keys, stakes) -> dict[tuple[int, str], float]:
@@ -634,18 +628,20 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
                 for key, stake in zip(group_keys, group_stakes)}
 
     # Without a budget each reading is sized on its own and the smallest stake
-    # stands. The budget is then fitted once, on the first reading (every
-    # fecta in, each inside its cover), with each stake capped at that
-    # smallest Kelly, so a hedge no reading is sure of never raises a stake.
+    # stands. The budget is fitted once, on the first reading (every fecta in,
+    # each inside its cover), and each fitted stake then cut to that smallest
+    # no-budget stake, so a hedge no reading is sure of never raises a stake
+    # (the cut leaves that money unspent rather than refitting).
     kelly: dict[tuple[int, str], float] = {}
     unlimited: dict[tuple[int, str], float] = {}
-    for reading in readings:
+    fitted: dict[tuple[int, str], float] = {}
+    for index, reading in enumerate(readings):
         keys, groups = groups_for(*reading)
         for target, min_stake in ((kelly, 0.0), (unlimited, config.WZ_MIN_STAKE)):
             for key, stake in by_key(keys, budgeted_stakes(groups, bankroll, kelly_fraction, None, min_stake)).items():
                 target[key] = min(target.get(key, stake), stake)
-    keys, groups = groups_for(*readings[0], caps=kelly)
-    fitted = by_key(keys, budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE))
+        if index == 0:
+            fitted = by_key(keys, budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE))
     stakes = {key: (min(fitted.get(key, 0.0), unlimited[key]), unlimited[key], kelly[key]) for key in kelly}
 
     sized = {}
