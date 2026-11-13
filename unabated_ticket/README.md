@@ -3334,7 +3334,8 @@ on another Kalshi API than its own (`env_mismatch`).
 logged, and every later pass waited behind it for 17 hours. Since then a
 pass still running after 5 minutes (`TAKER_PASS_STUCK_MS`) is abandoned: the
 runner logs it, the next 30 s tick starts a new pass, and the abandoned one
-decides, confirms and sends nothing if it resumes. `/health` shows
+decides, confirms and sends nothing more if it resumes (an order already on
+its way to the desk still lands; the desk's own guards cover it). `/health` shows
 `taker.runningSince` (the pass in progress) and `taker.stuck` (how many were
 abandoned, and the last one's start).
 

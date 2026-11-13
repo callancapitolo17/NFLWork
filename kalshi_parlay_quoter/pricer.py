@@ -122,7 +122,8 @@ def _get_legs(url: str, legs: list[tuple[str, str]], *, timeout: float, opener) 
 
 
 def _snapshot_times(value, where: str) -> dict[str, int]:
-    if not isinstance(value, dict) or not all(isinstance(v, int) for v in value.values()):
+    if not isinstance(value, dict) or not all(
+            isinstance(v, int) and not isinstance(v, bool) for v in value.values()):
         raise PricerError(f"expected {where} as {{league: ms}}, got {str(value)[:80]}")
     return value
 

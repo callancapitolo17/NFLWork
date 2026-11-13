@@ -6,12 +6,14 @@ NO ORDERS: nothing in this package can send a quote.
 Threads
   rfq-feed    feed.RFQFeed reads Kalshi's RFQ websocket; the door (scope rule
               + size floor) leaves only RFQs we could price, on a queue.
-  leg-table   legtable.Refresher re-prices every leg seen in the last 10 min
-              off the runner's /rfq_fairs.json, every 2 s.
+  leg-table   legtable.Refresher reads each league's snapshot time off the
+              runner's /health every 2 s and prices, off /rfq_fairs.json,
+              only legs that are new or whose league's snapshot changed.
   main        Quoter.step: takes RFQs off the queue and decides each from the
               leg table (memory only), then flushes the decision log.
-  confirm-*   a capped number of would-quote parlays a second are re-priced
-              through the runner's Kalshi-checked /rfq_price.json.
+  confirm-*   off by default (PARLAY_CONFIRMS_PER_SEC=0). When on, that many
+              would-quote parlays a second are re-priced through the
+              runner's Kalshi-checked /rfq_price.json.
 
 Side effects: appends to DB_PATH (db.DecisionLog: rfq_decisions, rfq_legs,
 minute_counts). Every frame and decision is counted per minute; confirmed

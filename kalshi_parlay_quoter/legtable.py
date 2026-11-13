@@ -15,16 +15,20 @@ no Kalshi read) only for:
   - legs with no fair yet (first, and between polls, so a new leg waits a
     fraction of a second),
   - legs whose league's snapshot changed since they were priced,
-  - legs priced over `max_reuse_sec` ago (a backstop for anything a snapshot
-    time does not show).
+  - legs priced over `max_reuse_sec` ago (a backstop for what a snapshot
+    time does not show: time to kickoff in sigma and tau, and the runner's
+    tail measurement, which can therefore be up to `max_reuse_sec` behind).
+A league the runner stops pricing (stale or failed snapshot, restart) drops
+out of its snapshot times, which counts as a change.
 The first version re-priced every leg every 2 s; ~97% of those calls
 returned the same number and they loaded the taker's thread (2026-11-13: the
 taker froze 40 minutes after the quoter went live).
 
 A fair is served only while (a) the runner's snapshot times were read under
 `max_age_sec` ago, (b) the leg was priced on its league's current snapshot,
-or that snapshot changed under `max_age_sec` ago and the re-price is on its
-way, and (c) the leg was priced under `max_reuse_sec + max_age_sec` ago.
+or the quoter saw that snapshot change under `max_age_sec` ago and the
+re-price is on its way (the quoter sees a change up to ~7 s after it lands:
+/health is posted every 5 s and read every 2 s), and (c) the leg was priced under `max_reuse_sec + max_age_sec` ago.
 Every served leg carries priced_at_ms (the runner's stamp) and cache_age_ms,
 and fair_age_ms grows by the cache age, so the log never shows a reused fair
 as fresh. Table legs are not Kalshi-checked (kalshi_* fields are null).
@@ -66,10 +70,14 @@ class LegTable:
         #         its league's snapshot time when it was priced)
         self._fairs: dict[LegKey, tuple[dict, int | None, float, int | None]] = {}
         self._rejected: dict[LegKey, float] = {}    # key -> when rejected
-        # league label -> the runner's snapshot time (ms), and when we first saw it.
-        self._versions: dict[str, int] = {}
+        # league label -> the newest snapshot time (ms) the runner has shown,
+        # the leagues it has since stopped showing, the leagues /health has
+        # shown, and when the quoter last saw each league change.
+        self._snapshot_at: dict[str, int] = {}
+        self._absent: set[str] = set()
+        self._health_seen: set[str] = set()
         self._changed_at: dict[str, float] = {}
-        self._versions_read_at: float | None = None
+        self._times_read_at: float | None = None
         self.generation = 0        # bumps on every store(); waiters retry on change
 
     def __len__(self) -> int:
@@ -82,18 +90,38 @@ class LegTable:
             for key in keys:
                 self._last_asked[key] = now
 
-    def note_versions(self, versions: dict[str, int], *, read: bool = True) -> None:
-        """The runner's snapshot time per league. A time only moves forward:
-        /health can be a few seconds behind a fairs answer.
-          read  True for a /health read (it also proves the runner is up)."""
+    def note_snapshot_times(self, times: dict[str, int], *, read: bool = True) -> None:
+        """The runner's snapshot time per league: every league it would price
+        now, so a league left out has gone stale, failed, or not loaded.
+          read  True for a /health read (it also proves the runner is up);
+                False for the times that came with a fairs answer.
+        /health can be a few seconds behind a fairs answer, so a time only
+        moves forward (a league that left comes back only with a newer time),
+        and a /health read drops only a league /health itself has shown."""
         now = self._clock()
         with self._lock:
-            for league, version in versions.items():
-                if version > self._versions.get(league, -1):
-                    self._versions[league] = version
+            for league, at in times.items():
+                if at > self._snapshot_at.get(league, -1):
+                    self._snapshot_at[league] = at
+                    self._absent.discard(league)
                     self._changed_at[league] = now
+                if read and league not in self._absent:
+                    self._health_seen.add(league)
+            for league in self._snapshot_at:
+                if league in times or league in self._absent:
+                    continue
+                if read and league not in self._health_seen:
+                    continue
+                # The runner no longer prices this league (restart, stale or
+                # failed snapshot): its fairs are not current any more.
+                self._absent.add(league)
+                self._health_seen.discard(league)
+                self._changed_at[league] = now
             if read:
-                self._versions_read_at = now
+                self._times_read_at = now
+
+    def _snapshot_of(self, league: str | None) -> int | None:
+        return None if league in self._absent else self._snapshot_at.get(league)
 
     def _forget_expired(self, now: float) -> None:
         cutoff = now - self._leg_ttl
@@ -109,7 +137,7 @@ class LegTable:
             self._fairs.pop(key, None)
 
     def _on_current_snapshot(self, key: LegKey, held) -> bool:
-        return held[3] == self._versions.get(self._league_of(key))
+        return held[3] == self._snapshot_of(self._league_of(key))
 
     def due(self) -> list[LegKey]:
         """Legs to price now, those with no fair first: asked for within
@@ -149,16 +177,18 @@ class LegTable:
             self.generation += 1
 
     def store(self, keys: list[LegKey], legs: list[dict], priced_at_ms: int | None,
-              sent_at: float, versions: dict[str, int] | None = None) -> None:
-        """Fairs the runner just answered, and the snapshot times they were
-        priced on (none given: the times already known)."""
-        if versions:
-            self.note_versions(versions, read=False)
+              sent_at: float, snapshot_times: dict[str, int] | None = None) -> None:
+        """Fairs the runner just answered, stamped with the snapshot times
+        that came with them (None: the times already known)."""
+        if snapshot_times is not None:
+            self.note_snapshot_times(snapshot_times, read=False)
         with self._lock:
             for key, leg in zip(keys, legs):
                 if key in self._last_asked and key not in self._rejected:
-                    self._fairs[key] = (leg, priced_at_ms, sent_at,
-                                        self._versions.get(self._league_of(key)))
+                    league = self._league_of(key)
+                    stamp = (self._snapshot_of(league) if snapshot_times is None
+                             else snapshot_times.get(league))
+                    self._fairs[key] = (leg, priced_at_ms, sent_at, stamp)
             self.generation += 1
 
     def _not_servable(self, key: LegKey, held, now: float) -> bool:
@@ -166,7 +196,7 @@ class LegTable:
             return True
         if key in self._rejected:
             return False
-        if self._versions_read_at is None or now - self._versions_read_at > self._max_age:
+        if self._times_read_at is None or now - self._times_read_at > self._max_age:
             return True     # the runner has not been heard from: nothing is known fresh
         if now - held[2] > self._max_reuse + self._max_age:
             return True
@@ -209,7 +239,7 @@ class Refresher:
     price the legs that are due (LegTable.due); between those passes, every
     NEW_LEG_POLL_SEC, price the legs that have no fair yet.
 
-    read_versions() -> {league: snapshot ms}, may raise PricerError.
+    read_snapshot_times() -> {league: snapshot ms}, may raise PricerError.
     fetch(keys) -> FairsResult for at most FAIRS_CHUNK_LEGS keys, may raise
     PricerError. A read or a chunk the runner could not answer (down, busy,
     timeout) ends the pass: the next pass retries, and fairs stop being
@@ -218,12 +248,12 @@ class Refresher:
     leg is rejected in the table, and the pass goes on."""
 
     def __init__(self, table: LegTable, fetch: Callable[[list[LegKey]], FairsResult],
-                 read_versions: Callable[[], dict[str, int]], *,
+                 read_snapshot_times: Callable[[], dict[str, int]], *,
                  interval_sec: float, clock: Callable[[], float] = time.monotonic,
                  chunk_pause_sec: float = CHUNK_PAUSE_SEC):
         self._table = table
         self._fetch = fetch
-        self._read_versions = read_versions
+        self._read_snapshot_times = read_snapshot_times
         self._interval = interval_sec
         self._clock = clock
         self._chunk_pause = chunk_pause_sec
@@ -275,7 +305,7 @@ class Refresher:
         ones first. True when the read and every chunk landed."""
         started = self._clock()
         try:
-            self._table.note_versions(self._read_versions())
+            self._table.note_snapshot_times(self._read_snapshot_times())
             ok = self._price(self._table.due())
         except PricerError as e:
             log.warning("[legtable] the runner's snapshot times were not read: %s", e)

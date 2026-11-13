@@ -115,17 +115,24 @@ FROM rfq_decisions WHERE confirmed AND decision = 'would_quote'
 A fair is priced on only while all three hold:
 
 - the runner's snapshot times were read under 15 s ago
-  (`PARLAY_TABLE_MAX_AGE_SEC`), so a runner that is down or stuck stops
-  every fair within 15 s;
-- the leg was priced on its league's current snapshot, or that snapshot
-  changed under 15 s ago and the re-price is on its way (the runner's board
-  thread is busy for 5-14 s at a time building Edges, and `/health` and a
-  re-price wait behind that);
+  (`PARLAY_TABLE_MAX_AGE_SEC`). A runner that is down stops every fair
+  within 15 s. A runner whose board thread is stuck keeps answering
+  `/health` ok for 15 s more (it says not ok after 15 s without a post from
+  that thread), so that case takes about 30-35 s;
+- the leg was priced on its league's current snapshot, or the quoter saw
+  that snapshot change under 15 s ago and the re-price is on its way. The
+  quoter sees a change up to ~7 s after it lands (`/health` is posted every
+  5 s and read every 2 s). A league the runner would decline (stale or
+  failed snapshot, not loaded, a restarted runner) is left out of the
+  snapshot times, which counts as a change;
 - the leg was priced under 105 s ago (`PARLAY_TABLE_MAX_REUSE_SEC` + 15).
 
-So a fair is at most one snapshot behind the runner's board for 15 s. Every
-leg row records `cache_age_ms` (now often 30-60 s, since an unchanged fair
-is reused), and `fair_age_ms` is the age of Unabated's snapshot plus that
+So a fair can be one snapshot behind the runner's board for about 22 s. What
+a snapshot time does not show is caught by the 90 s re-price and can lag
+that long: time to kickoff inside `sigma`/`tau`, and the runner's tail
+measurement. Every leg row records `cache_age_ms` (now often 30-60 s, since
+an unchanged fair is reused), and `fair_age_ms` is the age of Unabated's
+snapshot plus that
 reuse. A leg whose kickoff has passed since it was priced logs `started`.
 With the runner down, RFQs decline `pricer_error`.
 

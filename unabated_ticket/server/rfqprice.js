@@ -121,7 +121,7 @@ function eventsOfSuffix(board, leagueId, eventSuffix, lookup) {
 }
 
 // One board's lookup for resolveLeg: the same answers as the scans above,
-// read once. /rfq_fairs.json resolves thousands of legs every 2 s on the board
+// read once. /rfq_fairs.json resolves a league's few thousand legs at once on the board
 // thread, where a scan of every event per leg would cost a real share of the
 // thread that also builds Edges and runs the taker. Valid only for the board
 // it was built from: the runner drops it whenever the board changes.

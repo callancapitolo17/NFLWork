@@ -1557,7 +1557,7 @@ function createRunner(deps) {
   async function takerPass() {
     if (takerRunning) {
       if (now() - takerRunning.startedAt <= TAKER_PASS_STUCK_MS) return;
-      logWarning(`taker pass ${takerRunning.id} started ${new Date(takerRunning.startedAt).toISOString()} has not finished after ${Math.round((now() - takerRunning.startedAt) / 1000)} s: abandoned, it sends no orders if it resumes`);
+      logWarning(`taker pass ${takerRunning.id} started ${new Date(takerRunning.startedAt).toISOString()} has not finished after ${Math.round((now() - takerRunning.startedAt) / 1000)} s: abandoned, it sends no further orders if it resumes`);
       takerStuck = { count: takerStuck.count + 1, lastAt: now(), lastStartedAt: takerRunning.startedAt };
     }
     takerPassCount += 1;
@@ -2693,21 +2693,25 @@ function createRunner(deps) {
     return (scannerStatus && scannerStatus.leagueLoadedAt && scannerStatus.leagueLoadedAt[leagueId]) ?? null;
   }
 
-  // GET /rfq_price.json (#282; header above, server/rfqprice.js). Only a leg
-  // resolved to a game in a fresh league reads Kalshi (market, book, start).
-  //   params  URLSearchParams {legs: "TICKER:yes,TICKER:no", rfq_id?}
-  // When each RFQ league's snapshot last landed, by league label
-  // ({NFL: ms, ...}; a league not loaded is absent). A leg's fair changes only
-  // when its league's entry does, so the quoter re-prices a leg on that change
-  // (read off /health, which the main thread answers) and not every 2 s.
+  // When the snapshot of each RFQ league the runner would price now last
+  // landed, by league label ({NFL: ms, ...}). A league that is not loaded, or
+  // is stale or failed (staleSnapshotReason, so priceLeg declines its legs),
+  // is absent. A leg's fair changes only when its league's entry does, so the
+  // quoter re-prices a leg on that change (read off /health, which the main
+  // thread answers) and not on a clock.
   function rfqLeagueLoadedAt() {
-    const loadedAt = (scannerStatus && scannerStatus.leagueLoadedAt) || {};
     const byLabel = {};
+    if (!scannerStatus) return byLabel;
+    const at = now();
     for (const leagueId of rfqprice.RFQ_LEAGUE_IDS) {
-      if (typeof loadedAt[leagueId] === "number") byLabel[feedLib.LEAGUES[leagueId].label] = loadedAt[leagueId];
+      if (staleSnapshotReason(leagueId, at) === null) byLabel[feedLib.LEAGUES[leagueId].label] = scannerStatus.leagueLoadedAt[leagueId];
     }
     return byLabel;
   }
+
+  // GET /rfq_price.json (#282; header above, server/rfqprice.js). Only a leg
+  // resolved to a game in a fresh league reads Kalshi (market, book, start).
+  //   params  URLSearchParams {legs: "TICKER:yes,TICKER:no", rfq_id?}
   function rfqContextAt(pricedAt) {
     const board = feedState;
     return {
@@ -2739,10 +2743,10 @@ function createRunner(deps) {
   }
 
   // GET /rfq_fairs.json: up to MAX_FAIR_LEGS legs priced off the board alone,
-  // no Kalshi read (rfqprice.priceLeg, unchecked). The quoter refreshes every
-  // leg it has seen with these every couple of seconds and prices RFQs from
-  // memory, so this must stay pure compute: ~1,900 leg prices a second
-  // (2026-11-13) cannot each wait on Kalshi.
+  // no Kalshi read (rfqprice.priceLeg, unchecked). The quoter asks for a leg
+  // when it is new or its league's snapshot changed (league_loaded_at) and
+  // prices RFQs from memory, so this must stay pure compute: a whole league
+  // (a few thousand legs) is asked at once when its snapshot lands.
   function rfqFairsNow(params) {
     const legs = rfqprice.parseLegsParam(params.get("legs"), rfqprice.MAX_FAIR_LEGS);
     if (typeof legs === "string") throw httpError(400, legs);

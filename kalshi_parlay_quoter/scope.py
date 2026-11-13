@@ -69,10 +69,9 @@ def classify_leg(leg: dict) -> LegInfo:
 
 def league_of_leg(key: tuple[str, str]) -> str | None:
     """The league label of a (market_ticker, side) leg, e.g. "NFL"; None when
-    its series is not one of SERIES. The labels are the runner's own
+    it is not a leg classify_leg places. The labels are the runner's own
     (extension/feed.js LEAGUES), which keys its snapshot times by them."""
-    hit = SERIES.get(key[0].split("-")[0])
-    return hit[0] if hit else None
+    return classify_leg({"market_ticker": key[0], "side": key[1]}).league
 
 
 def evaluate(legs: list[dict] | None) -> ScopeVerdict:
