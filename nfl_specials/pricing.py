@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from scipy.optimize import brentq
 
 from kalshi_common.fair_value import _probit_devig_n as probit_devig_n
-from nfl_specials.books import BookGame, SgpBook
+from nfl_specials.books import BookGame, LegMarket, SgpBook
 from nfl_specials.special_parser import Fecta
 
 # A partition's implied sum must sit in [1, 1 + this x legs]; outside it a
@@ -71,8 +71,39 @@ def decimal_to_american(decimal: float) -> int:
     return int(round(-100.0 / (decimal - 1.0)))
 
 
+@dataclass(frozen=True)
+class PartitionFair:
+    """Every cell of a leg partition at one book, devigged."""
+    cells: tuple[tuple, ...]               # one Outcome per leg, in itertools.product order
+    cell_fairs: tuple[float, ...] | None   # devigged probability per cell; None when unpriced
+    implied: tuple[float, ...]             # 1 / the book's decimal per cell priced
+    overround: float | None
+    reason: str | None = None              # why cell_fairs is None
+
+
+def price_partition(book: SgpBook, game: BookGame, leg_markets: list[LegMarket]) -> PartitionFair:
+    """Price every cell of the legs' partition at `book` (one SGP call each)
+    and probit-devig across them. A declined cell or an implied sum outside
+    [1, 1 + PARTITION_OVERROUND_PER_LEG x legs] prices nothing."""
+    cells = tuple(itertools.product(*(m.group for m in leg_markets)))
+    implied = []
+    for cell in cells:
+        decimal = book.price(game, tuple(outcome.ref for outcome in cell))
+        if decimal is None:
+            labels = " + ".join(outcome.label for outcome in cell)
+            return PartitionFair(cells, None, tuple(implied), None, reason=f"declined cell: {labels}")
+        implied.append(1.0 / decimal)
+    overround = sum(implied)
+    max_overround = 1.0 + PARTITION_OVERROUND_PER_LEG * len(leg_markets)
+    if not 1.0 <= overround <= max_overround:
+        return PartitionFair(cells, None, tuple(implied), overround,
+                             reason=f"partition overround {overround:.3f} outside [1, {max_overround:.2f}]")
+    devigged = probit_devig_n(implied)
+    return PartitionFair(cells, tuple(float(p) for p in devigged), tuple(implied), overround)
+
+
 def price_fecta_at_book(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -> BookFair:
-    """Price every cell of the fecta's partition at `book` (one SGP call each)."""
+    """The fecta's fair at `book`: the devigged cells on which every leg wins."""
     leg_markets = []
     for leg in fecta.legs:
         market = book.leg_market(game, role, leg)
@@ -81,28 +112,21 @@ def price_fecta_at_book(book: SgpBook, game: BookGame, role: str, fecta: Fecta) 
                             reason=f"no SGP market for '{leg.describe(fecta.team)}'")
         leg_markets.append(market)
 
-    cells = list(itertools.product(*(m.group for m in leg_markets)))
-    winning_cells = [index for index, cell in enumerate(cells)
+    partition = price_partition(book, game, leg_markets)
+    winning_cells = [index for index, cell in enumerate(partition.cells)
                      if all(outcome in market.winning for outcome, market in zip(cell, leg_markets))]
-    implied = []
-    for cell in cells:
-        decimal = book.price(game, tuple(outcome.ref for outcome in cell))
-        if decimal is None:
-            labels = " + ".join(outcome.label for outcome in cell)
-            return BookFair(book.name, None, None, None, len(cells), reason=f"declined cell: {labels}")
-        implied.append(1.0 / decimal)
-
     # The book's own price for the special exists only when it is one cell
     # (a "+0.5 off a 3-way market" leg makes it a union of cells).
-    sgp_decimal = 1.0 / implied[winning_cells[0]] if len(winning_cells) == 1 else None
-    overround = sum(implied)
-    max_overround = 1.0 + PARTITION_OVERROUND_PER_LEG * len(fecta.legs)
-    if not 1.0 <= overround <= max_overround:
-        return BookFair(book.name, None, sgp_decimal, overround, len(cells),
-                        reason=f"partition overround {overround:.3f} outside [1, {max_overround:.2f}]")
-    devigged = probit_devig_n(implied)
-    fair = sum(devigged[index] for index in winning_cells)
-    return BookFair(book.name, float(fair), sgp_decimal, overround, len(cells))
+    sgp_decimal = None
+    if len(winning_cells) == 1 and winning_cells[0] < len(partition.implied):
+        sgp_decimal = 1.0 / partition.implied[winning_cells[0]]
+    if partition.cell_fairs is None:
+        if partition.overround is None:   # a declined cell: no own price either
+            sgp_decimal = None
+        return BookFair(book.name, None, sgp_decimal, partition.overround, len(partition.cells),
+                        reason=partition.reason)
+    fair = sum(partition.cell_fairs[index] for index in winning_cells)
+    return BookFair(book.name, float(fair), sgp_decimal, partition.overround, len(partition.cells))
 
 
 def worst_case_fair(book_fairs: list[BookFair]) -> float | None:

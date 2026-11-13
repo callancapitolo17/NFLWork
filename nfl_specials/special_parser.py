@@ -27,11 +27,13 @@ LEG_RE = re.compile(r"(1Q|1H|GM)(?: ([+-]\d+(?:\.\d+)?))?")
 
 @dataclass(frozen=True)
 class Leg:
-    kind: str                 # 'scores_first' | 'win' | 'spread'
+    kind: str                 # 'scores_first' | 'win' | 'spread' | 'total'
     period: str = "GM"        # 'Q1' | 'H1' | 'GM'
-    line: float | None = None  # team-perspective spread, spread legs only
+    line: float | None = None  # spread: the team's line; total: the points line (the leg is the Over)
 
     def describe(self, team: str) -> str:
+        if self.kind == "total":
+            return f"Over {self.line:g} {self.period}"
         if self.kind == "scores_first":
             return f"{team} scores first"
         if self.kind == "win":
