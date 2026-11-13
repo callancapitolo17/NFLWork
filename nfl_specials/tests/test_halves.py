@@ -470,36 +470,66 @@ def _cfb(game_id: int, kickoff: datetime) -> HalfLine:
                               game_start_time=kickoff), TRUE_CORNERS, EVEN_PRICES)
 
 
-def test_college_games_with_overlapping_first_halves_share_a_slate():
-    noon, three_thirty = KICKOFF, KICKOFF + timedelta(hours=3, minutes=30)
-    board = _half_board(_cfb(1, noon), _cfb(2, noon + timedelta(minutes=30)), _cfb(3, three_thirty),
-                        _cfb(4, three_thirty + timedelta(hours=1, minutes=59)), _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES))
-    slates = halves_board.cfb_slates(board)
-    assert [slate.wz_game_ids for slate in slates] == [(1, 2), (3, 4)]     # NFL left out; 4 chains onto 3
-    assert slates[0].halftime_by == noon + timedelta(minutes=30) + halves_board.CFB_FIRST_HALF_WINDOW
+def _fecta_kicking_off(kickoff: str, stake: float) -> tuple[Board, list[Sizing]]:
+    special = WzSpecial(wz_game_id=99, rotation=99, description="COMMANDERS TRIFECTA (1Q, 1H & GM)",
+                        wz_american=500, week_date=date(2098, 12, 31))
+    fecta = FectaLine(special, parse_fecta(special.description), "priced",
+                      game=BookGame("evt", home="NYG", away="WAS", game_start_time=kickoff),
+                      book_fairs={"FanDuel": BookFair("FanDuel", 0.2, None, 1.3, 8)})
+    return Board(datetime.now(timezone.utc), None, [fecta], {}), [Sizing(0.2, 0.2, stake, stake, None)]
 
 
-def test_each_college_slate_gets_the_whole_cash_and_nfl_keeps_the_cash_after_fectas():
+def test_a_slate_is_games_kicking_off_less_than_two_hours_after_its_first():
+    window = halves_board.CFB_FIRST_HALF_WINDOW
+    kickoffs = [KICKOFF, KICKOFF + timedelta(minutes=45), KICKOFF + window - timedelta(minutes=1),
+                KICKOFF + window, KICKOFF + window + timedelta(hours=1), KICKOFF + 2 * window + timedelta(minutes=30)]
+    board = _half_board(*(_cfb(n, kickoff) for n, kickoff in enumerate(kickoffs, start=1)),
+                        _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES))
+    slates = halves_board.cfb_slates(board, 500.0)
+    # Not chained: 2h gaps all day still split; exactly 2h after starts a new slate; NFL left out.
+    assert [slate.wz_game_ids for slate in slates] == [(1, 2, 3), (4, 5), (6,)]
+    assert slates[0].halftime_by == kickoffs[2] + window
+    assert [slate.budget for slate in slates] == [500.0, 500.0, 500.0]
+
+
+def test_started_games_are_in_no_slate_and_unknown_cash_budgets_nothing():
+    started = _cfb(1, datetime.now(timezone.utc) - timedelta(minutes=5))
+    slates = halves_board.cfb_slates(_half_board(started, _cfb(2, KICKOFF)), None)
+    assert [(slate.wz_game_ids, slate.budget) for slate in slates] == [((2,), 0.0)]
+
+
+def test_a_slate_holds_back_only_fectas_kicking_off_before_its_halftime():
+    # A later slate holds it back too while the page shows it; by the time that slate
+    # is bet the fecta has started (no recommendation) and the balance is net of it.
+    early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
+    inside = _fecta_kicking_off("2099-01-01T19:00:00Z", 120.0)      # during slate 1's half
+    after = _fecta_kicking_off("2099-01-02T03:00:00Z", 120.0)       # after both halftimes
+    assert [s.budget for s in halves_board.cfb_slates(_half_board(early, late), 500.0, *inside)] == [380.0, 380.0]
+    assert [s.budget for s in halves_board.cfb_slates(_half_board(early, late), 500.0, *after)] == [500.0, 500.0]
+
+
+def test_each_college_slate_gets_its_budget_and_nfl_keeps_the_cash_after_fectas():
     early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
     nfl = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
-    sized, slates = halves_board.size_half_board(_half_board(early, late, nfl), 20000, 0.25,
-                                                 nfl_budget=50.0, cfb_slate_budget=100.0)
-    assert len(slates) == 2
+    board = _half_board(early, late, nfl)
+    sized = halves_board.size_half_board(board, 20000, 0.25, 50.0, halves_board.cfb_slates(board, 100.0))
 
     def staked(line):
         return sum(sized[(line.game.wz_game_id, c)].recommended_stake for c in CORNERS)
-    assert staked(nfl) <= 50.0
-    assert staked(early) == pytest.approx(100.0, abs=1) and staked(late) == pytest.approx(100.0, abs=1)
-    # One slate of two games splits its 100 between them.
-    together = halves_board.size_half_board(_half_board(early, _cfb(3, KICKOFF + timedelta(minutes=10))),
-                                            20000, 0.25, nfl_budget=0.0, cfb_slate_budget=100.0)[0]
-    assert sum(s.recommended_stake for s in together.values()) <= 100.0
+    assert staked(nfl) == pytest.approx(50.0, abs=1)
+    assert staked(early) == pytest.approx(100.0, abs=3) and staked(late) == pytest.approx(100.0, abs=3)
+    # Two games in one slate split its 100.
+    pair = _half_board(early, _cfb(3, KICKOFF + timedelta(minutes=10)))
+    together = halves_board.size_half_board(pair, 20000, 0.25, 0.0, halves_board.cfb_slates(pair, 100.0))
+    assert sum(s.recommended_stake for s in together.values()) == pytest.approx(100.0, abs=3)
 
 
-def test_a_held_college_parlay_only_sizes_against_its_own_slate():
+def test_a_held_college_parlay_shrinks_only_its_own_side():
     early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
-    held = (HeldHalfParlay(1, "away_over", 200.0, 264),)
-    alone = halves_board.size_half_board(_half_board(early, late), 5000, 0.25, None, None)[0]
-    with_held = halves_board.size_half_board(_half_board(early, late), 5000, 0.25, None, None, held=held)[0]
-    assert with_held[(1, "away_over")].recommended_stake < alone[(1, "away_over")].recommended_stake
+    board = _half_board(early, late)
+    slates = halves_board.cfb_slates(board, 5000.0)
+    held = (HeldHalfParlay(1, "away_over", 30.0, 264),)
+    alone = halves_board.size_half_board(board, 20000, 0.25, 0.0, slates)
+    with_held = halves_board.size_half_board(board, 20000, 0.25, 0.0, slates, held=held)
+    assert 0 < with_held[(1, "away_over")].recommended_stake < alone[(1, "away_over")].recommended_stake
     assert with_held[(2, "away_over")] == alone[(2, "away_over")]

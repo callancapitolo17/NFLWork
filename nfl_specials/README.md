@@ -287,12 +287,16 @@ only 1st halves are read.
    is the cash available less the fectas' recommended stakes (cash only; with
    Use free play on, fectas draw on the free play balance and parlays keep the
    cash). **College** parlays are sized **by slate** (Cal, 2026-11-13): a slate
-   is the college games whose first halves overlap (`cfb_slates`; a game joins
-   when it kicks off within `CFB_FIRST_HALF_WINDOW` = 2 h of an earlier one's
-   kickoff, chained), and each slate splits the whole cash available, nothing
-   held back for fectas, because a 1H parlay settles at halftime, before the
-   next slate. A later slate's stakes are only final once the earlier slate
-   settles and Refresh reads the new balance. An NFL parlay sits in one group with
+   is the college games still to kick off whose first halves overlap its first
+   game's (`cfb_slates`: kickoff less than `CFB_FIRST_HALF_WINDOW` = 2 h after
+   the slate's first kickoff; not chained, so a day of 1-2 h gaps still
+   splits), and each slate splits the whole cash available, because a 1H
+   parlay settles at halftime, before the next slate. The only thing held back
+   is the recommended stake of a fecta on an NFL game kicking off before the
+   slate's halftime (never on a Saturday; Thursday/Friday night or late-season
+   Saturday NFL). A later slate's stakes are only final once the earlier slate
+   settles and Refresh reads the new balance, and the page's Recommended tile
+   adds every slate up, so it can show more than the cash. An NFL parlay sits in one group with
    that spread team's fectas in the game (the fectas' `board._team_key`): the
    fectas' placed bets and recommended stakes are fixed bets the parlay is sized
    around, as one nested chain, the maximum correlation the fairs allow, so a

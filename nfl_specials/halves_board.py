@@ -1,6 +1,6 @@
 """One refresh of the 1H parlay board (Wagerzon NFL + college 1st-half spread
 + total, every same-game pairing), and the pure sizing step that stakes it
-after the fectas.
+(NFL after the fectas, college by slate).
 
 Inputs:  wz_halves.fetch_half_games(); FanDuel, BetMGM and DraftKings SGPs
          (plain HTTP) for each league; Wagerzon previews of every pairing.
@@ -479,65 +479,72 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
 
 
 # A college first half usually ends 1h30m-1h50m after kickoff; 2h covers a
-# slow half (reviews, injuries), so two games only count as separate slates
-# when the later one kicks off after the earlier one's half is surely over.
-# Longer = more games share a slate = smaller stakes, never bigger.
+# slow half (reviews, injuries). Longer = more games per slate = smaller stakes.
 CFB_FIRST_HALF_WINDOW = timedelta(hours=2)
 
 
 @dataclass(frozen=True)
 class CfbSlate:
-    """College games whose first halves overlap: their 1H parlays are open at
-    the same time, so they share one balance. A game joins the slate when it
-    kicks off before every earlier game's half is over (chained: A overlaps B
-    and B overlaps C puts all three in one slate)."""
+    """College games still to kick off whose first halves overlap the slate's
+    first game's: each kicks off less than CFB_FIRST_HALF_WINDOW after
+    `first_kickoff`. Not chained (a chain of 2h gaps would make a whole
+    Saturday one slate). The next slate starts at the next kickoff; its games
+    may overlap this slate's last half, which is fine: it is bet later, on a
+    live balance that is then net of this slate's open bets."""
     first_kickoff: datetime
-    halftime_by: datetime               # latest kickoff + CFB_FIRST_HALF_WINDOW
+    halftime_by: datetime               # the slate's last kickoff + CFB_FIRST_HALF_WINDOW
     wz_game_ids: tuple[int, ...]
+    budget: float                       # whole cash less fectas on NFL games kicking off before halftime_by
 
 
-def cfb_slates(board: HalfBoard) -> list[CfbSlate]:
-    """The board's college games split into slates, earliest first."""
-    games = sorted((line.game for line in board.lines if line.game.league == CFB),
+def cfb_slates(board: HalfBoard, cash: float | None, fecta_board: Board | None = None,
+               fecta_sizing: list[Sizing] = (), now: datetime | None = None) -> list[CfbSlate]:
+    """The board's college games still to kick off, split into slates, earliest
+    first, each with its budget (Cal, 2026-11-13): the whole cash balance, as
+    a 1H parlay settles at halftime, less the recommended stakes of fectas on
+    NFL games kicking off before the slate's halftime (those must be bet while
+    the slate's money is still out; on a Saturday there are none). Pass no
+    fecta board when fectas draw on free play. Unknown cash = 0, no stakes."""
+    now = now or datetime.now(timezone.utc)
+    fecta_cash_by_kickoff = [(parse_start(line.game.game_start_time), sizing.recommended_stake)
+                             for line, sizing in zip(fecta_board.lines if fecta_board else [], fecta_sizing)
+                             if line.game is not None and sizing.recommended_stake > 0]
+    games = sorted((line.game for line in board.lines
+                    if line.game.league == CFB and line.game.game_start_time > now),
                    key=lambda game: game.game_start_time)
-    slates: list[CfbSlate] = []
+    groups: list[list[WzHalfGame]] = []
     for game in games:
-        halftime = game.game_start_time + CFB_FIRST_HALF_WINDOW
-        if slates and game.game_start_time < slates[-1].halftime_by:
-            last = slates[-1]
-            slates[-1] = CfbSlate(last.first_kickoff, max(last.halftime_by, halftime),
-                                  last.wz_game_ids + (game.wz_game_id,))
+        if groups and game.game_start_time < groups[-1][0].game_start_time + CFB_FIRST_HALF_WINDOW:
+            groups[-1].append(game)
         else:
-            slates.append(CfbSlate(game.game_start_time, halftime, (game.wz_game_id,)))
+            groups.append([game])
+    slates = []
+    for group in groups:
+        halftime_by = group[-1].game_start_time + CFB_FIRST_HALF_WINDOW
+        reserved = sum(stake for kickoff, stake in fecta_cash_by_kickoff if kickoff < halftime_by)
+        budget = 0.0 if cash is None else max(0.0, cash - reserved)
+        slates.append(CfbSlate(group[0].game_start_time, halftime_by,
+                               tuple(game.wz_game_id for game in group), budget))
     return slates
 
 
-def size_half_board(board: HalfBoard, bankroll: float, kelly_fraction: float,
-                    nfl_budget: float | None, cfb_slate_budget: float | None,
-                    fecta_board: Board | None = None, fecta_sizing: list[Sizing] = (),
+def size_half_board(board: HalfBoard, bankroll: float, kelly_fraction: float, nfl_budget: float,
+                    slates: list[CfbSlate], fecta_board: Board | None = None, fecta_sizing: list[Sizing] = (),
                     held_fectas: tuple[HeldPlacement, ...] = (),
-                    held: tuple[HeldHalfParlay, ...] = ()) -> tuple[dict[tuple[int, str], HalfSizing], list[CfbSlate]]:
-    """size_halves with each league on its own budget (Cal, 2026-11-13).
-
-    NFL 1H parlays: one size_halves over every NFL game on `nfl_budget`, the
-    cash the fectas leave (fectas first; a Monday fecta is often bet on Sunday,
-    so NFL halves never get the fecta money).
-    College 1H parlays: one size_halves per slate (cfb_slates), each on the
-    full `cfb_slate_budget` (the live cash balance, nothing held back for
-    fectas). A 1H parlay settles at halftime, so the next slate's money is the
-    balance read after this one settles; until then the live balance is
-    already net of this slate's open bets. No college fectas exist, so the
-    fecta inputs do nothing for a college slate.
-    Returns the sizing per (wz_game_id, corner) for every line, and the slates.
-    """
+                    held: tuple[HeldHalfParlay, ...] = ()) -> dict[tuple[int, str], HalfSizing]:
+    """size_halves with NFL on `nfl_budget` (the cash the fectas leave; NFL
+    halves never get fecta money, since a Monday fecta is often bet on Sunday)
+    and each college slate (cfb_slates) on its own budget. College games in no
+    slate (started) are sized on 0. Returns sizing per (wz_game_id, corner)."""
+    slate_ids = {game_id for slate in slates for game_id in slate.wz_game_ids}
     nfl_lines = [line for line in board.lines if line.game.league != CFB]
+    unslated = [line for line in board.lines if line.game.league == CFB and line.game.wz_game_id not in slate_ids]
     sized = size_halves(replace(board, lines=nfl_lines), bankroll, kelly_fraction, nfl_budget,
                         fecta_board, fecta_sizing, held_fectas=held_fectas, held=held)
-    slates = cfb_slates(board)
+    sized.update(size_halves(replace(board, lines=unslated), bankroll, kelly_fraction, 0.0, held=held))
     line_by_id = {line.game.wz_game_id: line for line in board.lines}
     for slate in slates:
         slate_lines = [line_by_id[game_id] for game_id in slate.wz_game_ids]
-        slate_held = tuple(bet for bet in held if bet.wz_game_id in slate.wz_game_ids)
         sized.update(size_halves(replace(board, lines=slate_lines), bankroll, kelly_fraction,
-                                 cfb_slate_budget, held=slate_held))
-    return sized, slates
+                                 slate.budget, held=held))
+    return sized
