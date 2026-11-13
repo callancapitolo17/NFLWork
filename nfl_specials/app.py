@@ -35,7 +35,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from nfl_specials import config, wz, wz_halves
-from nfl_specials.board import Board, HeldPlacement, new_book_turns, refresh_board, size_board
+from nfl_specials.board import (Board, HeldPlacement, new_book_turns, new_fd_price_window, refresh_board,
+                                size_board)
 from nfl_specials.books import parse_start
 from nfl_specials.halves_board import (CfbSlate, HalfBoard, HeldHalfParlay, cfb_slates, conservative_american,
                                        refresh_halves, size_half_board)
@@ -79,6 +80,9 @@ class SpecialsApp:
         # Wagerzon account -> free play balance (the budget with Use free play
         # on), read and lowered the same way by free play placements.
         self._free_play: dict[str, float | None] = {}
+        # FanDuel's implyBets budget (fd_book.FD_PRICE_CALLS_PER_WINDOW): its
+        # WAF window spans refreshes, so the app keeps it.
+        self.fd_price_window = new_fd_price_window()
 
     # --- refresh -----------------------------------------------------------
     def publish(self, board: Board) -> None:
@@ -111,7 +115,7 @@ class SpecialsApp:
         across both; one board failing does not stop the other."""
         try:
             self._read_balances()
-            turns = new_book_turns()
+            turns = new_book_turns(self.fd_price_window)
             errors: dict[str, str] = {}
 
             def run_board(name: str, run: Callable[[], object]) -> None:

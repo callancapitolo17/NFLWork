@@ -150,7 +150,7 @@ def _patch_refresh(monkeypatch, descriptions: list[str]) -> None:
 def test_refresh_prices_every_book_in_its_own_lane(monkeypatch):
     _patch_refresh(monkeypatch, ["CHARGERS TRIFECTA (1Q, 1H & GM)", "SEAHAWKS TRIFECTA (1Q, 1H & GM)"])
     store = _FakeStore()
-    board = refresh_board(store, lambda snapshot: None, board_module.new_book_turns())
+    board = refresh_board(store, lambda snapshot: None, board_module.new_book_turns(board_module.new_fd_price_window()))
     assert board.progress_done == board.progress_total == 4
     assert sorted((row["book"], row["rotation"]) for row in store.rows) == [
         ("BetMGM", 1), ("BetMGM", 2), ("FanDuel", 1), ("FanDuel", 2)]
@@ -160,7 +160,7 @@ def test_refresh_prices_every_book_in_its_own_lane(monkeypatch):
 def test_a_crashed_lane_fails_the_refresh(monkeypatch):
     _patch_refresh(monkeypatch, ["CHARGERS TRIFECTA (1Q, 1H & GM)"])
     with pytest.raises(RuntimeError, match="BetMGM pricing lane crashed"):
-        refresh_board(_FakeStore(fail_for_book="BetMGM"), lambda snapshot: None, board_module.new_book_turns())
+        refresh_board(_FakeStore(fail_for_book="BetMGM"), lambda snapshot: None, board_module.new_book_turns(board_module.new_fd_price_window()))
 
 
 def test_refresh_counts_progress_per_book(monkeypatch):
@@ -181,7 +181,7 @@ def test_refresh_counts_progress_per_book(monkeypatch):
             pass
 
     published = []
-    board_module.refresh_board(NoStore(), published.append, board_module.new_book_turns())
+    board_module.refresh_board(NoStore(), published.append, board_module.new_book_turns(board_module.new_fd_price_window()))
     # Trifecta at FD + MGM; superfecta's partition + scores-first share at DK.
     assert published[0].book_progress == {"FanDuel": {"done": 0, "total": 1}, "BetMGM": {"done": 0, "total": 1},
                                            "DraftKings": {"done": 0, "total": 2}}
@@ -214,7 +214,7 @@ def _refresh_with_draftkings_down(monkeypatch, books: dict, fairs: dict[str, flo
 
     monkeypatch.setattr(board_module, "_price_partition", price_partition)
     store = _FakeStore()
-    return refresh_board(store, lambda snapshot: None, board_module.new_book_turns()), store
+    return refresh_board(store, lambda snapshot: None, board_module.new_book_turns(board_module.new_fd_price_window())), store
 
 
 def _expected_row(board, *, book, quote_kind, fair_prob=None, overround=None, n_cells, sf_share=None, reason=None):
@@ -332,7 +332,7 @@ def test_books_open_with_draftkings_through_the_configured_proxy(monkeypatch):
     monkeypatch.setattr(board_module, "BetMgmBook", fake("BetMGM"))
     monkeypatch.setattr(board_module, "DraftKingsBook", fake("DraftKings"))
     monkeypatch.setattr(board_module.config, "DK_PROXY_URL", "http://100.120.136.59:8097")
-    turns = board_module.new_book_turns()
+    turns = board_module.new_book_turns(board_module.new_fd_price_window())
     books, status = board_module.open_books(turns)
     assert books == {"FanDuel": "FanDuel", "BetMGM": "BetMGM", "DraftKings": "DraftKings"}
     assert status == {"FanDuel": "ok", "BetMGM": "ok", "DraftKings": "ok"}

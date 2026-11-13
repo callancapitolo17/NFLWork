@@ -8,7 +8,7 @@ import pytest
 from scipy.stats import norm
 
 from nfl_specials import halves_board
-from nfl_specials.board import new_book_turns
+from nfl_specials.board import new_book_turns, new_fd_price_window
 from nfl_specials.board import Board, FectaLine, Sizing
 from nfl_specials.books import BookGame, LegMarket, Outcome
 from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
@@ -311,7 +311,7 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
             self.rows += rows
 
     store = MemoryStore()
-    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns())
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns(new_fd_price_window()))
     assert [(l.game.wz_game_id, l.status, l.note) for l in board.lines] == [
         (6118382, "priced", None), (2, "unpriced", "whole-number line priced by FanDuel only; needs 2 books")]
     assert board.lines[1].fair_prob("home_under") is None
@@ -356,7 +356,7 @@ def test_wagerzon_previews_run_with_the_books_for_listed_games_only(monkeypatch)
     store = MemoryStore()
     book = SlowListedBook("FanDuel", TRUE_CORNERS)
     monkeypatch.setattr(halves_board, "open_books", lambda _turns: ({("FanDuel", "NFL"): book}, {"FanDuel NFL": "ok"}))
-    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns())
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns(new_fd_price_window()))
     assert previewed == [listed.wz_game_id]
     assert [line.status for line in board.lines] == ["priced", "unpriced"]
     wz_rows = [r for r in store.rows if r["book"] == "Wagerzon"]
@@ -384,7 +384,7 @@ def test_a_failed_wagerzon_preview_fails_the_1h_board(monkeypatch):
             pass
 
     with pytest.raises(ConnectionError, match="preview timed out"):
-        halves_board.refresh_halves(MemoryStore(), lambda _board: None, new_book_turns())
+        halves_board.refresh_halves(MemoryStore(), lambda _board: None, new_book_turns(new_fd_price_window()))
 
 
 def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
@@ -394,7 +394,7 @@ def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
     import threading
     import time as time_module
     from nfl_specials import board as board_module
-    turns = new_book_turns()
+    turns = new_book_turns(new_fd_price_window())
     inside = {name: 0 for name in turns.locks}
     most_inside = {name: 0 for name in turns.locks}
     count_lock = threading.Lock()

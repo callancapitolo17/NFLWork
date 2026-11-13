@@ -32,7 +32,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable
 
 from nfl_specials import config, dk_book, fd_book, mgm_book, wz
-from nfl_specials.books import BookGame, RequestPacer, SgpBook, parse_start
+from nfl_specials.books import BookGame, CallWindow, RequestPacer, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
@@ -140,8 +140,13 @@ class BookTurns:
     pacers: dict[str, RequestPacer]
 
 
-def new_book_turns() -> BookTurns:
-    pacers = {"FanDuel": RequestPacer("FanDuel", fd_book.MIN_SECONDS_BETWEEN_PRICE_CALLS),
+def new_fd_price_window() -> CallWindow:
+    return CallWindow(fd_book.FD_PRICE_CALLS_PER_WINDOW, fd_book.FD_PRICE_WINDOW_SECONDS)
+
+
+def new_book_turns(fd_price_window: CallWindow) -> BookTurns:
+    """`fd_price_window`: the app's FanDuel budget, kept across refreshes."""
+    pacers = {"FanDuel": RequestPacer("FanDuel", fd_book.MIN_SECONDS_BETWEEN_PRICE_CALLS, fd_price_window),
               "BetMGM": RequestPacer("BetMGM", mgm_book.MIN_SECONDS_BETWEEN_PRICE_CALLS),
               "DraftKings": RequestPacer("DraftKings", dk_book.MIN_SECONDS_BETWEEN_PRICE_CALLS)}
     return BookTurns({name: threading.Lock() for name in BOOK_ORDER}, pacers)

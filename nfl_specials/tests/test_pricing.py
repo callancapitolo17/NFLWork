@@ -264,3 +264,33 @@ def test_request_pacer_keeps_the_gap_and_stops_after_halt():
     with pytest.raises(BookBlocked):
         pacer.guard(lambda: stamps.append("sent"), "event page")
     assert "sent" not in stamps
+
+
+def test_call_window_holds_the_budget_across_any_trailing_window():
+    from nfl_specials.books import CallWindow
+    clock = {"now": 0.0}
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock["now"] += seconds
+
+    window = CallWindow(3, 300.0, clock=lambda: clock["now"], sleep=sleep)
+    for at in (0.0, 10.0, 20.0):
+        clock["now"] = at
+        window.wait_turn()
+    assert slept == []
+    clock["now"] = 30.0
+    window.wait_turn()                 # 4th waits until the one at 0 s ages out
+    assert slept == [270.0] and clock["now"] == 300.0
+    window.wait_turn()                 # 5th waits for the one at 10 s
+    assert clock["now"] == 310.0
+
+
+def test_fanduel_pacer_shares_the_apps_window_across_refreshes():
+    from nfl_specials import board as board_module
+    window = board_module.new_fd_price_window()
+    first, second = board_module.new_book_turns(window), board_module.new_book_turns(window)
+    assert first.pacers["FanDuel"].window is window is second.pacers["FanDuel"].window
+    assert first.pacers["FanDuel"] is not second.pacers["FanDuel"]   # a block lasts one refresh
+    assert (window.max_calls, window.window_seconds) == (90, 300.0)

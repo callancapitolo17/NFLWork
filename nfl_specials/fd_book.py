@@ -45,10 +45,15 @@ SPREAD_ALT = {"GM": "Alternate Spread", "H1": "1st Half Alternate Spread"}
 THREE_WAY_WIN = {"Q1": "1st Quarter Winner (3-Way)", "H1": "1st Half Winner (3-Way)"}
 TOTAL_MAIN = {"H1": "1st Half Total"}
 ALT_RUNNER_RE = re.compile(r"^(.+?) \(([+-]\d+(?:\.\d+)?)\)$")
-# FanDuel's CloudFront blocks the VM's address for ~40 min once implyBets runs
-# near 6 a second (2026-11-13: ~234 calls in 40 s, then 403 on every call).
-# 1 s after each answer is a safe guess until the real ceiling is measured.
-MIN_SECONDS_BETWEEN_PRICE_CALLS = 1.0
+# FanDuel's WAF blocks an address for ~5 min after 100 implyBets in a
+# trailing 5 min (VM probe 2026-11-13: 163 calls at 1.5/s, the 164th 403,
+# unblocked as the window fell under 100; a burst of 234 in 40 s got through
+# first only because the WAF counts with a lag). So FanDuel prices to a
+# window budget, with margin, not a gap; its scan and event pages are other
+# hosts and do not count.
+MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.0
+FD_PRICE_CALLS_PER_WINDOW = 90
+FD_PRICE_WINDOW_SECONDS = 300.0
 
 
 class FanDuelBook:
