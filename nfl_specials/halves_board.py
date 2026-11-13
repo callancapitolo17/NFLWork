@@ -1,6 +1,6 @@
 """One refresh of the 1H parlay board (Wagerzon NFL + college 1st-half spread
 + total, every same-game pairing), and the pure sizing step that stakes it
-after the fectas.
+(NFL after the fectas, college by slate).
 
 Inputs:  wz_halves.fetch_half_games(); FanDuel, BetMGM and DraftKings SGPs
          (plain HTTP) for each league; Wagerzon previews of every pairing.
@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from nfl_specials import config, push_grid, wz_halves
-from nfl_specials.board import BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE
+from nfl_specials.board import BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE, Board, Sizing
 from nfl_specials.books import CFB, NFL, BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
@@ -450,7 +450,8 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
                 held: tuple[HeldHalfParlay, ...] = ()) -> dict[tuple[int, str], HalfSizing]:
     """Fair, EV and stakes per (wz_game_id, corner).
 
-    `budget` is what the fectas left of the Wagerzon balance (None = no cap).
+    `budget` is the cash these games may use (NFL: what the fectas left; a
+    college slate: its slate budget; None = no cap).
     Each game is ONE group (game_outcome_group): its corners are exclusive
     outcomes of the 1H, sized jointly with the 1H parlays already placed on
     it. Fectas are not in the groups (Cal, 2026-11-13); they only take their
@@ -491,4 +492,74 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
             ev = expected_value(fair, american) if fair is not None and american is not None else None
             rec, unl, kelly = stakes.get((line.game.wz_game_id, corner), (0.0, 0.0, 0.0))
             sized[(line.game.wz_game_id, corner)] = HalfSizing(fair, ev, kelly, rec, unl)
+    return sized
+
+
+# A college first half usually ends 1h30m-1h50m after kickoff; 2h covers a
+# slow half (reviews, injuries). Longer = more games per slate = smaller stakes.
+CFB_FIRST_HALF_WINDOW = timedelta(hours=2)
+
+
+@dataclass(frozen=True)
+class CfbSlate:
+    """College games still to kick off whose first halves overlap the slate's
+    first game's: each kicks off less than CFB_FIRST_HALF_WINDOW after
+    `first_kickoff`. Not chained (a chain of 2h gaps would make a whole
+    Saturday one slate). The next slate starts at the next kickoff; its games
+    may overlap this slate's last half, which is fine: it is bet later, on a
+    live balance that is then net of this slate's open bets."""
+    first_kickoff: datetime
+    halftime_by: datetime               # the slate's last kickoff + CFB_FIRST_HALF_WINDOW
+    wz_game_ids: tuple[int, ...]
+    budget: float                       # whole cash less fectas on NFL games kicking off before halftime_by
+
+
+def cfb_slates(board: HalfBoard, cash: float | None, fecta_board: Board | None = None,
+               fecta_sizing: list[Sizing] = (), now: datetime | None = None) -> list[CfbSlate]:
+    """The board's college games still to kick off, split into slates, earliest
+    first, each with its budget (Cal, 2026-11-13): the whole cash balance, as
+    a 1H parlay settles at halftime, less the recommended stakes of fectas on
+    NFL games kicking off before the slate's halftime (those must be bet while
+    the slate's money is still out; on a Saturday there are none). Pass no
+    fecta board when fectas draw on free play. Unknown cash = 0, no stakes."""
+    now = now or datetime.now(timezone.utc)
+    fecta_cash_by_kickoff = [(parse_start(line.game.game_start_time), sizing.recommended_stake)
+                             for line, sizing in zip(fecta_board.lines if fecta_board else [], fecta_sizing)
+                             if line.game is not None and sizing.recommended_stake > 0]
+    games = sorted((line.game for line in board.lines
+                    if line.game.league == CFB and line.game.game_start_time > now),
+                   key=lambda game: game.game_start_time)
+    groups: list[list[WzHalfGame]] = []
+    for game in games:
+        if groups and game.game_start_time < groups[-1][0].game_start_time + CFB_FIRST_HALF_WINDOW:
+            groups[-1].append(game)
+        else:
+            groups.append([game])
+    slates = []
+    for group in groups:
+        halftime_by = group[-1].game_start_time + CFB_FIRST_HALF_WINDOW
+        reserved = sum(stake for kickoff, stake in fecta_cash_by_kickoff if kickoff < halftime_by)
+        budget = 0.0 if cash is None else max(0.0, cash - reserved)
+        slates.append(CfbSlate(group[0].game_start_time, halftime_by,
+                               tuple(game.wz_game_id for game in group), budget))
+    return slates
+
+
+def size_half_board(board: HalfBoard, bankroll: float, kelly_fraction: float, nfl_budget: float,
+                    slates: list[CfbSlate],
+                    held: tuple[HeldHalfParlay, ...] = ()) -> dict[tuple[int, str], HalfSizing]:
+    """size_halves with NFL on `nfl_budget` (the cash the fectas leave; NFL
+    halves never get fecta money, since a Monday fecta is often bet on Sunday)
+    and each college slate (cfb_slates) on its own budget. College games in no
+    slate (started) are sized on 0. Returns sizing per (wz_game_id, corner)."""
+    slate_ids = {game_id for slate in slates for game_id in slate.wz_game_ids}
+    nfl_lines = [line for line in board.lines if line.game.league != CFB]
+    unslated = [line for line in board.lines if line.game.league == CFB and line.game.wz_game_id not in slate_ids]
+    sized = size_halves(replace(board, lines=nfl_lines), bankroll, kelly_fraction, nfl_budget, held=held)
+    sized.update(size_halves(replace(board, lines=unslated), bankroll, kelly_fraction, 0.0, held=held))
+    line_by_id = {line.game.wz_game_id: line for line in board.lines}
+    for slate in slates:
+        slate_lines = [line_by_id[game_id] for game_id in slate.wz_game_ids]
+        sized.update(size_halves(replace(board, lines=slate_lines), bankroll, kelly_fraction,
+                                 slate.budget, held=held))
     return sized

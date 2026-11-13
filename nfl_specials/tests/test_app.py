@@ -271,3 +271,52 @@ def test_a_single_book_whole_number_1h_parlay_is_refused_and_nothing_placed(app,
         app.place_half({"wz_game_id": 42, "corner": "away_over", "risk": 40, "wz_decimal": 3.59,
                         "account": "Wagerzon"})
     assert sent == []
+
+
+def _publish_one_college_game(app, kickoff=datetime(2098, 12, 31, 12, tzinfo=timezone.utc)):
+    # Its half is over before the fixture's fecta kicks off (2099-01-01 00:00), so nothing is held back.
+    from nfl_specials.halves_board import HalfBoard, HalfBookFair, HalfLine
+    from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
+    game = WzHalfGame(league="CFB", wz_game_id=77, away="OREGON", home="USC", game_start_time=kickoff,
+                      away_spread=-3.5, away_spread_american=-110, home_spread_american=-110, total=27.5,
+                      over_american=-110, under_american=-110)
+    fairs = {"away_over": 0.40, "away_under": 0.21, "home_over": 0.20, "home_under": 0.19}
+    line = HalfLine(game, "priced", book_fairs={"FanDuel": HalfBookFair("FanDuel", fairs, 1.2)},
+                    wz_prices={c: WzParlayPrice(3.64) for c in CORNERS})
+    app.publish_halves(HalfBoard(datetime.now(timezone.utc), datetime.now(timezone.utc), [line], {}))
+
+
+def test_a_college_slate_sizes_on_the_whole_cash_not_the_cash_after_fectas(app):
+    # Kelly wants the $250 cap on the parlay; the cash after the fecta is less than that.
+    app.store.save_settings(10000.0, 0.25, False)
+    app._balances = {"Wagerzon": 260.0}
+    _publish_one_college_game(app)
+    payload = app.board_payload("Wagerzon")
+    fecta_stake = payload["board"]["lines"][0]["recommended_stake"]
+    halves = payload["halves"]
+    assert fecta_stake > 0 and halves["budget"] == pytest.approx(260.0 - fecta_stake)
+    assert halves["cfb_slates"] == [{"first_kickoff": "2098-12-31T12:00:00+00:00", "budget": 260.0}]
+    corner = halves["lines"][0]["corners"]["away_over"]
+    assert corner["recommended_stake"] == 250.0 > halves["budget"]      # more than the NFL budget would allow
+    assert halves["lines"][0]["slate_kickoff"] == "2098-12-31T12:00:00+00:00"
+
+
+def test_an_unread_balance_stakes_no_college_parlay(app, monkeypatch):
+    sent = []
+    monkeypatch.setattr(app_module.wz_halves, "place_half_parlay", lambda *args: sent.append(args))
+    app._balances = {}
+    _publish_one_college_game(app)
+    halves = app.board_payload("Wagerzon")["halves"]
+    assert all(c["recommended_stake"] == 0 for c in halves["lines"][0]["corners"].values())
+    assert halves["cfb_slates"][0]["budget"] == 0.0
+
+
+def test_a_fecta_kicking_off_during_the_slate_is_held_back_unless_it_is_on_free_play(app):
+    app.store.save_settings(10000.0, 0.25, False)
+    _publish_one_college_game(app, kickoff=datetime(2098, 12, 31, 23, tzinfo=timezone.utc))   # fecta at 00:00
+    payload = app.board_payload("Wagerzon")
+    fecta_stake = payload["board"]["lines"][0]["recommended_stake"]
+    assert fecta_stake > 0
+    assert payload["halves"]["cfb_slates"][0]["budget"] == pytest.approx(500.0 - fecta_stake)
+    app.store.save_settings(10000.0, 0.25, True)
+    assert app.board_payload("Wagerzon")["halves"]["cfb_slates"][0]["budget"] == 500.0

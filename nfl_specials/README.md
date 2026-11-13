@@ -282,10 +282,21 @@ only 1st halves are read.
    `ConfirmWagerHelper` RiskWin=2 (nothing placed) at $500, else $100
    (`parlay_pricer.get_combined_parlay_price`). Sizing uses the whole American
    odds at or under that decimal (`halves_board.conservative_american`).
-5. **Stake** (`halves_board.size_halves`): quarter Kelly on the page's bankroll,
-   **after the fectas**: the budget is the cash available less the fectas'
-   recommended stakes (cash only; with Use free play on, fectas draw on the free
-   play balance and parlays keep the cash). **Each game is one group**
+5. **Stake** (`halves_board.size_half_board` -> `size_halves`): quarter Kelly on
+   the page's bankroll. **NFL** parlays come **after the fectas**: their budget
+   is the cash available less the fectas' recommended stakes (cash only; with
+   Use free play on, fectas draw on the free play balance and parlays keep the
+   cash). **College** parlays are sized **by slate** (Cal, 2026-11-13): a slate
+   is the college games still to kick off whose first halves overlap its first
+   game's (`cfb_slates`: kickoff less than `CFB_FIRST_HALF_WINDOW` = 2 h after
+   the slate's first kickoff; not chained, so a day of 1-2 h gaps still
+   splits), and each slate splits the whole cash available, because a 1H
+   parlay settles at halftime, before the next slate. The only thing held back
+   is the recommended stake of a fecta on an NFL game kicking off before the
+   slate's halftime (never on a Saturday; Thursday/Friday night or late-season
+   Saturday NFL). A later slate's stakes are only final once the earlier slate
+   settles and Refresh reads the new balance, and the page's Recommended tile
+   adds every slate up, so it can show more than the cash. **Each game is one group**
    (`halves_board.game_outcome_group`, `pricing.OutcomeGroup`): the 1H results
    (the four corners, plus the push results on a whole-number line) are the
    outcome states, so the corners hedge each other (exactly one wins on
@@ -332,7 +343,7 @@ The sort, layout, league and +EV only choices are remembered in the browser.
 |---|---|
 | `wz.py` | scrape the week's fectas; place one |
 | `wz_halves.py` | read Wagerzon's NFL and college 1H lines, preview every pairing, place a 1H parlay |
-| `halves_board.py` | one 1H refresh (book matching, 2 x 2 partition fairs); sizing after the fectas |
+| `halves_board.py` | one 1H refresh (book matching, 2 x 2 partition fairs); NFL sizing after the fectas, college by slate |
 | `special_parser.py` | description -> legs (anything unrecognized is refused, never guessed) |
 | `books.py` | adapter interface: a leg = an exhaustive outcome group |
 | `fd_book.py`, `mgm_book.py`, `dk_book.py` | per-book market lookup + SGP price |
