@@ -176,7 +176,7 @@ class SpecialsApp:
         if halves is not None:
             half_budget = self.half_budget(account, sized)
             slates = self.cfb_slates_for(halves, board, sized, account)
-            half_sized = self.size_halves_for(halves, board, sized, settings, account, placements, half_placements)
+            half_sized = self.size_halves_for(halves, board, sized, settings, account, half_placements)
             slate_kickoff = {game_id: slate.first_kickoff for slate in slates for game_id in slate.wz_game_ids}
             payload["halves"] = {
                 "started_at": halves.started_at.isoformat(),
@@ -223,17 +223,14 @@ class SpecialsApp:
                           fecta_sizing if fectas_use_cash else [])
 
     def size_halves_for(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list,
-                        settings: dict, account: str | None,
-                        placements: list[dict], half_placements: list[dict]) -> dict:
-        """size_half_board on this account's bets: NFL on the cash after
+                        settings: dict, account: str | None, half_placements: list[dict]) -> dict:
+        """size_half_board on this account's 1H parlays: NFL on the cash after
         fectas, each college slate on its own budget. An unknown balance
         recommends nothing."""
         nfl_budget = self.half_budget(account, fecta_sizing)
         return size_half_board(halves, settings["bankroll"], settings["kelly_fraction"],
                                0.0 if nfl_budget is None else nfl_budget,
                                self.cfb_slates_for(halves, fecta_board, fecta_sizing, account),
-                               fecta_board, fecta_sizing,
-                               held_fectas=_held_placements(placements, account),
                                held=_held_half_parlays(half_placements, account))
 
     # --- write -------------------------------------------------------------
@@ -375,7 +372,7 @@ class SpecialsApp:
                                        held=_held_placements(placements, account))
                             if fecta_board is not None else [])
             sizing = self.size_halves_for(halves, fecta_board, fecta_sizing, settings, account,
-                                          placements, half_placements)[(wz_game_id, corner)]
+                                          half_placements)[(wz_game_id, corner)]
             if sizing.fair_prob is None:
                 # e.g. a whole-number line only one book priced (halves_board.MIN_BOOKS_WHOLE_NUMBER)
                 raise ValueError(f"1H {corner} on game {wz_game_id} has no fair price: "

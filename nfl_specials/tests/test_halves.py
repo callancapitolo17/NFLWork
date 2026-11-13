@@ -1,13 +1,14 @@
 """1H parlays: Wagerzon parsing, game matching, the
-2 x 2 partition fair, worst case across books, and sizing after the fectas.
+2 x 2 partition fair, worst case across books, and sizing each game as one group.
 No network."""
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from scipy.stats import norm
 
 from nfl_specials import halves_board
-from nfl_specials.board import Board, FectaLine, HeldPlacement, Sizing
+from nfl_specials.board import Board, FectaLine, Sizing
 from nfl_specials.books import BookGame, LegMarket, Outcome
 from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
                                        college_names_match, conservative_american, match_book_game,
@@ -29,6 +30,58 @@ def _game(**overrides) -> WzHalfGame:
 
 
 # --- Wagerzon ------------------------------------------------------------------
+class _ScheduleSession:
+    """Answers NewScheduleHelper with `games_by_league` (league id -> raw games)."""
+
+    def __init__(self, games_by_league: dict[int, list[dict]]):
+        self.games_by_league, self.leagues_read = games_by_league, []
+
+    def get(self, url, timeout, headers):
+        league_id = int(url.rsplit("lg=", 1)[1])
+        self.leagues_read.append(league_id)
+        body = {"result": {"listLeagues": [[{"Games": self.games_by_league[league_id]}]]}}
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+
+
+_CFB_RAW = {"idgm": 7001, "idgmtyp": 15, "vtm": "1H MEMPHIS", "htm": "1H SOUTH FLORIDA",
+            "gmdt": "20991231", "gmtm": "12:00:00",
+            "GameLines": [{"vsprdt": "-3.5", "vsprdoddst": "-110", "hsprdoddst": "-110",
+                           "unt": "30.5", "ovoddst": "-110", "unoddst": "-110"}]}
+
+
+def _catalog(monkeypatch, session, catalog):
+    from nfl_specials import wz_halves
+    monkeypatch.setattr(wz_halves.wz, "_session", lambda account_label=None: session)
+    monkeypatch.setattr(wz_halves.wz, "fetch_active_leagues", lambda _session: catalog)
+    return wz_halves
+
+
+def test_no_1h_league_posted_is_an_empty_board_not_a_failure(monkeypatch):
+    session = _ScheduleSession({})
+    wz_halves = _catalog(monkeypatch, session, [{"IdLeague": 4017, "Description": "NFL - THURSDAY NIGHT FOOTBALL"}])
+    assert wz_halves.fetch_half_games() == []
+    assert session.leagues_read == []
+
+
+def test_only_the_posted_1h_league_is_read(monkeypatch):
+    # College 1H posted, NFL's not yet: the usual early-week catalog.
+    session = _ScheduleSession({540: [_CFB_RAW]})
+    wz_halves = _catalog(monkeypatch, session, [{"IdLeague": 540, "Description": "NCAA FOOTBALL - 1ST HALVES"},
+                                                {"IdLeague": 4017, "Description": "NFL - THURSDAY NIGHT FOOTBALL"}])
+    assert [(g.league, g.wz_game_id, g.away, g.home) for g in wz_halves.fetch_half_games()] == \
+        [("CFB", 7001, "MEMPHIS", "SOUTH FLORIDA")]
+    assert session.leagues_read == [540]
+
+
+def test_a_catalog_that_never_loads_fails_the_1h_read_loudly(monkeypatch):
+    wz_halves = _catalog(monkeypatch, _ScheduleSession({}), None)
+    monkeypatch.setattr(wz_halves.wz.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(wz_halves.wz, "_account", lambda account_label=None: SimpleNamespace(label="Wagerzon"))
+    monkeypatch.setattr(wz_halves.wz.wagerzon_auth, "clear_session_cache", lambda label=None: None)
+    with pytest.raises(wz_halves.wz.CatalogUnavailable):
+        wz_halves.fetch_half_games()
+
+
 def test_parses_a_wagerzon_nfl_first_half_game():
     raw = {"idgm": 6118382, "idgmtyp": 15, "vtm": "1H WAS COMMANDERS", "htm": "1H NY GIANTS",
            "gmdt": "20261112", "gmtm": "20:15:00",
@@ -216,35 +269,6 @@ def test_only_positive_ev_corners_get_a_stake():
     assert away_over.fair_prob == 0.29 and away_over.ev == pytest.approx(0.29 * 3.64 - 1)
 
 
-def test_a_parlay_next_to_the_teams_fecta_is_sized_smaller():
-    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
-    special = WzSpecial(wz_game_id=99, rotation=99, description="COMMANDERS TRIFECTA (1Q, 1H & GM)",
-                        wz_american=500, week_date=date(2098, 12, 31))
-    fecta_game = BookGame("evt", home="NYG", away="WAS", game_start_time="2099-01-01T18:00:00Z")
-    fecta = FectaLine(special, parse_fecta(special.description), "priced", game=fecta_game,
-                      book_fairs={"FanDuel": BookFair("FanDuel", 0.2, None, 1.3, 8)})
-    fecta_board = Board(datetime.now(timezone.utc), None, [fecta], {})
-    fecta_sizing = [Sizing(0.2, 0.2, 10.0, 10.0, None)]
-    alone = size_halves(_half_board(line), 20000, 0.25, None)
-    beside = size_halves(_half_board(line), 20000, 0.25, None, fecta_board, fecta_sizing)
-    key, other_team = (line.game.wz_game_id, "away_over"), (line.game.wz_game_id, "home_under")
-    assert 0 < beside[key].recommended_stake < alone[key].recommended_stake
-    assert beside[other_team].recommended_stake == alone[other_team].recommended_stake
-
-
-def test_a_held_fecta_the_board_cannot_price_blocks_that_team():
-    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
-    special = WzSpecial(wz_game_id=99, rotation=99, description="COMMANDERS TRIFECTA (1Q, 1H & GM)",
-                        wz_american=500, week_date=date(2098, 12, 31))
-    fecta_game = BookGame("evt", home="NYG", away="WAS", game_start_time="2099-01-01T18:00:00Z")
-    fecta = FectaLine(special, parse_fecta(special.description), "unpriced", game=fecta_game)
-    fecta_board = Board(datetime.now(timezone.utc), None, [fecta], {})
-    sized = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(None, None, 0.0, 0.0, None)],
-                        held_fectas=(HeldPlacement(99, 50.0, 500),))
-    assert sized[(line.game.wz_game_id, "away_over")].recommended_stake == 0
-    assert sized[(line.game.wz_game_id, "home_under")].recommended_stake > 0
-
-
 def test_a_placed_parlay_shrinks_the_next_stake_on_that_side():
     line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
     key = (line.game.wz_game_id, "away_over")
@@ -421,12 +445,12 @@ def test_a_failed_1h_refresh_clears_the_board(half_app, monkeypatch):
     monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
 
     def broken(store, publish):
-        raise RuntimeError("no 1H league in Wagerzon's catalog")
+        raise app_module.wz.CatalogUnavailable("catalog did not load")
 
     monkeypatch.setattr(app_module, "refresh_halves", broken)
     half_app._run_refresh()
     assert half_app._halves is None
-    assert half_app._last_error == "1H parlays: RuntimeError: no 1H league in Wagerzon's catalog"
+    assert half_app._last_error == "1H parlays: CatalogUnavailable: catalog did not load"
 
 
 def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatch):
@@ -440,7 +464,7 @@ def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatc
         "rejected", None, error="preflight failed: KeyError")
 
     def offline():
-        raise RuntimeError("no 1H league")
+        raise RuntimeError("1H read failed")
 
     monkeypatch.setattr(wz_halves, "fetch_half_games", offline)
     assert wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638).status == "rejected"
@@ -533,3 +557,51 @@ def test_a_held_college_parlay_shrinks_only_its_own_side():
     with_held = halves_board.size_half_board(board, 20000, 0.25, 0.0, slates, held=held)
     assert 0 < with_held[(1, "away_over")].recommended_stake < alone[(1, "away_over")].recommended_stake
     assert with_held[(2, "away_over")] == alone[(2, "away_over")]
+# --- one group per game -------------------------------------------------------------
+def test_both_teams_corners_in_a_game_hedge_each_other():
+    from nfl_specials.pricing import kelly_stake
+    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    sized = size_halves(_half_board(line), 5000, 0.25, None)
+    for corner in ("away_over", "home_under"):     # exactly one corner wins: bigger than each alone
+        alone = kelly_stake(TRUE_CORNERS[corner], line.wz_american(corner), 5000, 0.25)
+        assert sized[(line.game.wz_game_id, corner)].kelly_stake > alone + 1
+
+
+def test_the_worst_book_sets_each_result_and_the_rest_loses_every_corner():
+    from nfl_specials.halves_board import UNASSIGNED, game_outcome_group
+    lower = {c: f - 0.02 if c == "away_over" else f for c, f in TRUE_CORNERS.items()}
+    line = HalfLine(_game(), "priced",
+                    book_fairs={"FanDuel": HalfBookFair("FanDuel", TRUE_CORNERS, 1.2),
+                                "BetMGM": HalfBookFair("BetMGM", lower, 1.2)},
+                    wz_prices={c: WzParlayPrice(3.64) for c in CORNERS})
+    cells = line.worst_case_cells()
+    assert cells[("away", "over")] == pytest.approx(0.27) and sum(cells.values()) == pytest.approx(0.98)
+    group = game_outcome_group(line, list(CORNERS), [])
+    assert len(group.state_probs) == 5 and group.state_probs[-1] == pytest.approx(0.02)
+    assert all(c.payoffs[-1] == -1.0 for c in group.candidates)
+    assert UNASSIGNED not in cells
+
+
+def test_a_pushed_leg_pays_the_other_leg_alone():
+    from nfl_specials.halves_board import UNASSIGNED
+    from nfl_specials.push_grid import cell_payout
+    game = _game(away_spread=3.0, total=24.0)
+    assert cell_payout(game, "away_over", 3.6, ("away", "over")) == pytest.approx(3.6)
+    assert cell_payout(game, "away_over", 3.6, ("push", "over")) == pytest.approx(1 + 100 / 102)
+    assert cell_payout(game, "away_over", 3.6, ("away", "push")) == pytest.approx(1 + 100 / 118)
+    assert cell_payout(game, "away_over", 3.6, ("push", "push")) == 1.0
+    assert cell_payout(game, "away_over", 3.6, ("home", "push")) == 0.0
+    assert cell_payout(game, "away_over", 3.6, UNASSIGNED) == 0.0
+    assert cell_payout(game, "home_under", 3.6, ("push", "under")) == pytest.approx(1 + 100 / 118)
+    assert cell_payout(game, "home_under", 3.6, ("home", "push")) == pytest.approx(1 + 100 / 102)
+
+
+def test_a_hedging_held_parlay_still_fits_a_small_budget():
+    """A held bet the others hedge lifts their marginal growth past their own
+    EV, so the hurdle must climb past it (the doubling step)."""
+    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    held = (HeldHalfParlay(line.game.wz_game_id, "away_under", 200.0, 264),)
+    sized = size_halves(_half_board(line), 5000, 0.25, 30.0, held=held)
+    total = sum(s.recommended_stake for s in sized.values())
+    assert 20 <= total <= 30
+
