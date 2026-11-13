@@ -224,21 +224,28 @@ def test_a_parlay_next_to_the_teams_fecta_is_sized_smaller():
     fecta = FectaLine(special, parse_fecta(special.description), "priced", game=fecta_game,
                       book_fairs={"FanDuel": BookFair("FanDuel", 0.2, None, 1.3, 8)})
     fecta_board = Board(datetime.now(timezone.utc), None, [fecta], {})
-    fecta_sizing = [Sizing(0.2, 0.2, 10.0, 10.0, None)]
-    alone = size_halves(_half_board(line), 20000, 0.25, None)
-    beside = size_halves(_half_board(line), 20000, 0.25, None, fecta_board, fecta_sizing)
+    alone = size_halves(_half_board(line), 5000, 0.25, None)
+    beside = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(0.2, 0.2, 100.0, 100.0, None)])
+    placed = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(0.2, 0.2, 0.0, 0.0, None)],
+                         held_fectas=(HeldPlacement(99, 100.0, 500),))
     key, other_team = (line.game.wz_game_id, "away_over"), (line.game.wz_game_id, "home_under")
+    assert all(0 < s[other_team].recommended_stake < 250 for s in (alone, beside, placed))   # off the cap
     assert 0 < beside[key].recommended_stake < alone[key].recommended_stake
-    # The fecta is only recommended: it may never be placed, so it cannot
-    # raise the NYG corner that would hedge it.
+    # Only recommended, the fecta may never be placed: it cannot raise the
+    # NYG corner that would hedge it.
     assert beside[other_team].recommended_stake == alone[other_team].recommended_stake
     # Placed, it does: it needs WAS to win the 1H, so it only wins where
     # WAS +0.5 covers, and the NYG corner hedges it.
-    small_alone = size_halves(_half_board(line), 5000, 0.25, None)
-    placed = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(0.2, 0.2, 0.0, 0.0, None)],
-                         held_fectas=(HeldPlacement(99, 100.0, 500),))
-    assert placed[other_team].recommended_stake > small_alone[other_team].recommended_stake
-    assert placed[key].recommended_stake < small_alone[key].recommended_stake
+    assert placed[other_team].recommended_stake > alone[other_team].recommended_stake
+    assert placed[key].recommended_stake == beside[key].recommended_stake
+    # A free play fecta costs no cash when it loses (app passes free_play through).
+    from nfl_specials.app import _held_placements
+    free = _held_placements([{"wz_game_id": 99, "risk": 100.0, "wz_american": 500, "account": "a",
+                              "status": "placed", "free_play": True}], "a")
+    assert free[0].free_play
+    on_free_play = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(0.2, 0.2, 0.0, 0.0, None)],
+                               held_fectas=free)
+    assert on_free_play[key].recommended_stake != placed[key].recommended_stake
 
 
 def test_a_held_fecta_the_board_cannot_price_blocks_the_game():
@@ -504,8 +511,8 @@ def test_a_fecta_looser_than_the_1h_line_is_unrelated_to_it():
     from nfl_specials.halves_board import game_outcome_group
     line = _priced_line(_game(away_spread=-3.5), TRUE_CORNERS, EVEN_PRICES)   # a 1H win need not cover -3.5
     fectas = [_fecta("COMMANDERS", "1Q, 1H & GM", 0.2)]
-    for in_cover, expected in ((False, 0.2 * TRUE_CORNERS["home_under"]), (True, 0.0)):
-        group = game_outcome_group(line, ["home_under"], [], fectas, fectas_in_cover=in_cover)
+    for unrelated, expected in (({"WAS"}, 0.2 * TRUE_CORNERS["home_under"]), (set(), 0.0)):
+        group = game_outcome_group(line, ["home_under"], [], fectas, frozenset(unrelated))
         fecta, home_under = group.held[0], group.candidates[0]
         both = sum(p for p, r, c in zip(group.state_probs, fecta.payoffs, home_under.payoffs) if r > 0 and c > 0)
         assert both == pytest.approx(expected)
@@ -525,7 +532,8 @@ def test_a_stake_is_the_smaller_of_the_fecta_readings():
     corners = ["away_over", "home_under"]
     from dataclasses import replace
     fectas = [replace(_fecta("COMMANDERS", "1Q, 1H & GM", 0.2), risk=250.0)]
-    groups = [game_outcome_group(line, corners, [], fectas, in_cover) for in_cover in (True, False)]
+    groups = [game_outcome_group(line, corners, [], fectas, unrelated)
+              for unrelated in (frozenset(), frozenset({"WAS"}))]
     kelly = [budgeted_stakes([g], 20000, 0.25, None, 0)[0] for g in groups]
     unlimited = [budgeted_stakes([g], 20000, 0.25, None, 20)[0] for g in groups]
     assert kelly[0] != kelly[1]
@@ -649,3 +657,40 @@ def test_a_hedging_held_parlay_still_fits_a_small_budget():
     sized = size_halves(_half_board(line), 5000, 0.25, 30.0, held=held)
     total = sum(s.recommended_stake for s in sized.values())
     assert 20 <= total <= 30
+
+
+def _two_fecta_board(was_legs: str, nyg_legs: str, was_sizing: Sizing, nyg_sizing: Sizing):
+    specials = [WzSpecial(wz_game_id=91, rotation=91, description=f"COMMANDERS TRIFECTA ({was_legs})",
+                          wz_american=500, week_date=date(2098, 12, 31)),
+                WzSpecial(wz_game_id=92, rotation=92, description=f"GIANTS TRIFECTA ({nyg_legs})",
+                          wz_american=500, week_date=date(2098, 12, 31))]
+    fecta_game = BookGame("evt", home="NYG", away="WAS", game_start_time="2099-01-01T18:00:00Z")
+    lines = [FectaLine(s, parse_fecta(s.description), "priced", game=fecta_game) for s in specials]
+    return Board(datetime.now(timezone.utc), None, lines, {}), [was_sizing, nyg_sizing]
+
+
+@pytest.mark.parametrize("away_spread, was_legs, nyg_legs, recommended, budget", [
+    (0.5, "1Q, 1H & GM", "1Q, 1H & GM", 250.0, None),        # both only recommended
+    (-3.5, "1Q, 1H & GM", "SCR 1ST, 1Q & GM", 0.0, None),    # both placed, neither needs the cover
+    (-3.5, "1Q, 1H & GM", "SCR 1ST, 1Q & GM", 0.0, 120.0),
+])
+def test_no_stake_passes_its_kelly_in_any_fecta_reading(away_spread, was_legs, nyg_legs, recommended, budget):
+    """The cautious reading for a corner mixes the teams: its own team's fecta
+    in, the other team's hedge left out. Every mix is a reading."""
+    from nfl_specials.halves_board import _fecta_board_bets, fecta_readings, game_outcome_group
+    from nfl_specials.pricing import budgeted_stakes
+    line = _priced_line(_game(away_spread=away_spread), TRUE_CORNERS, EVEN_PRICES)
+    sizing = Sizing(0.19, 0.19, recommended, recommended, None)
+    fecta_board, fecta_sizing = _two_fecta_board(was_legs, nyg_legs, sizing, sizing)
+    held_fectas = () if recommended else (HeldPlacement(91, 250.0, 500), HeldPlacement(92, 250.0, 500))
+    sized = size_halves(_half_board(line), 20000, 0.25, budget, fecta_board, fecta_sizing, held_fectas)
+    fectas = _fecta_board_bets(fecta_board, fecta_sizing, held_fectas)[0][("NYG", "WAS")]
+    corners = [c for c in CORNERS if sized[(line.game.wz_game_id, c)].ev > 0]
+    readings = fecta_readings(line.game, fectas)
+    assert len(readings) == 4
+    for kept, unrelated in readings:
+        kelly = budgeted_stakes([game_outcome_group(line, corners, [], kept, unrelated)], 20000, 0.25, None, 0)[0]
+        for corner, stake in zip(corners, kelly):
+            assert sized[(line.game.wz_game_id, corner)].recommended_stake <= stake
+    if budget is not None:
+        assert sum(s.recommended_stake for s in sized.values()) <= budget

@@ -301,10 +301,11 @@ only 1st halves are read.
    `min_cover_margin`), spread over those cells in proportion; otherwise they
    are taken as unrelated to the 1H result. A fecta can hedge the other
    team's corners and so raise their stake; that is only trusted where sure:
-   each stake is cut to its smallest over the readings the boards cannot
-   tell apart (with and without fectas only recommended so far, and a chain
-   that need not cover both inside its cover and unrelated); the budget is
-   fitted once, on the reading with every fecta in its cover. A free play fecta loses no cash. Placed 1H parlays
+   each stake is cut to its smallest over its game's readings the boards
+   cannot tell apart, every mix of, per team, its recommended (unplaced)
+   fectas in or out and, for a chain that need not cover, inside its cover or
+   unrelated (`fecta_readings`); the budget is fitted once, on the reading
+   with every fecta in its cover. A free play fecta loses no cash. Placed 1H parlays
    (`placed_half_parlays`, counting the ones that may have gone through) are
    fixed bets in their game's group; a placed bet the boards cannot price
    blocks its game. $20 minimum, $250 per parlay a week

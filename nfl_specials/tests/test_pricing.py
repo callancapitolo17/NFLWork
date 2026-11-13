@@ -211,3 +211,8 @@ def test_outcome_group_refuses_probabilities_that_do_not_sum_to_one():
         OutcomeGroup((0.5, 0.4), (OutcomeBet((1.0, -1.0)),))
     with pytest.raises(ValueError, match="payoffs per bet"):
         OutcomeGroup((0.5, 0.5), (OutcomeBet((1.0,)),))
+
+
+def test_a_stake_a_hair_under_a_dollar_is_that_dollar():
+    from nfl_specials.pricing import _whole_dollars
+    assert _whole_dollars(49.9999999) == 50 and _whole_dollars(49.99) == 49 and _whole_dollars(50.0) == 50

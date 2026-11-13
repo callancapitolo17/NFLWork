@@ -26,6 +26,7 @@ results, with the real push payouts and both teams' fectas as fixed bets.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 import re
@@ -484,7 +485,8 @@ def _fecta_levels(game: WzHalfGame, cells: dict[tuple[str, str], float], chain: 
 
 
 def game_outcome_group(line: HalfLine, corners: list[str], held_parlays: list[HeldHalfParlay],
-                       fectas: list[GameFecta], fectas_in_cover: bool = True) -> OutcomeGroup | None:
+                       fectas: list[GameFecta], unrelated_teams: frozenset[str] = frozenset()
+                       ) -> OutcomeGroup | None:
     """One game's 1H corners (candidates), the 1H parlays already placed on it
     and both teams' fectas (held), as one OutcomeGroup over the game's 1H
     results x how many of each team's fectas win. None when no 1H result
@@ -492,7 +494,8 @@ def game_outcome_group(line: HalfLine, corners: list[str], held_parlays: list[He
 
     A team's fectas are one nested chain, as on the fecta board. A chain that
     needs_the_cover always wins only in the team's covering cells; any other
-    chain does too when `fectas_in_cover`, else it is unrelated to the 1H."""
+    chain does too unless its team is in `unrelated_teams`, which leaves it
+    unrelated to the 1H."""
     cells = line.worst_case_cells()
     if cells is None:
         return None
@@ -512,7 +515,7 @@ def game_outcome_group(line: HalfLine, corners: list[str], held_parlays: list[He
         chains.setdefault(bet.team, []).append(bet)
     for team, chain in chains.items():
         chain.sort(key=lambda bet: -bet.fair_prob)
-        levels = _fecta_levels(game, cells, chain, fectas_in_cover or needs_the_cover(game, chain))
+        levels = _fecta_levels(game, cells, chain, team not in unrelated_teams or needs_the_cover(game, chain))
         states = [(cell, {**winners_by_team, team: winners}, p * share)
                   for cell, winners_by_team, p in states
                   for winners, share in levels(cell) if p * share > 0]
@@ -538,7 +541,7 @@ def game_outcome_group(line: HalfLine, corners: list[str], held_parlays: list[He
     return OutcomeGroup(tuple(p for _cell, _winners, p in states), candidates, tuple(held))
 
 
-def _game_fectas(fecta_board: Board | None, fecta_sizing: list[Sizing], held_fectas: tuple[HeldPlacement, ...],
+def _fecta_board_bets(fecta_board: Board | None, fecta_sizing: list[Sizing], held_fectas: tuple[HeldPlacement, ...],
                  ) -> tuple[dict[tuple, list[GameFecta]], set[tuple]]:
     """Each NFL game's fecta stakes, placed and recommended, keyed (home,
     away); and the games holding a placed fecta the board cannot price."""
@@ -568,6 +571,26 @@ def _game_fectas(fecta_board: Board | None, fecta_sizing: list[Sizing], held_fec
     return fectas_by_game, blocked
 
 
+def fecta_readings(game: WzHalfGame, fectas: list[GameFecta]) -> list[tuple[list[GameFecta], frozenset[str]]]:
+    """Every way the game's fectas could stand that the boards cannot tell
+    apart, per team: its recommended (unplaced) fectas in or out, and a chain
+    that does not need the cover inside the team's cover or unrelated to the
+    1H. Each reading is (the fectas kept, the teams read as unrelated); the
+    first keeps every fecta, each inside its cover."""
+    options = []
+    for team in sorted({bet.team for bet in fectas}):
+        chain = [bet for bet in fectas if bet.team == team]
+        keep_recommended = [True, False] if any(bet.recommended for bet in chain) else [True]
+        unrelated = [False, True] if not needs_the_cover(game, chain) else [False]
+        options.append([(team, keep, loose) for keep in keep_recommended for loose in unrelated])
+    readings = []
+    for combo in itertools.product(*options):
+        dropped = {team for team, keep, _loose in combo if not keep}
+        kept = [bet for bet in fectas if not (bet.recommended and bet.team in dropped)]
+        readings.append((kept, frozenset(team for team, _keep, loose in combo if loose)))
+    return readings
+
+
 def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget: float | None,
                 fecta_board: Board | None = None, fecta_sizing: list[Sizing] = (),
                 held_fectas: tuple[HeldPlacement, ...] = (),
@@ -587,7 +610,7 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
     price blocks its game. No stake on a started game.
     """
     now = datetime.now(timezone.utc)
-    fectas_by_game, blocked = _game_fectas(fecta_board, fecta_sizing, held_fectas)
+    fectas_by_game, blocked = _fecta_board_bets(fecta_board, fecta_sizing, held_fectas)
 
     line_by_id = {line.game.wz_game_id: line for line in board.lines}
     held_by_game: dict[int, list[HeldHalfParlay]] = {}
@@ -606,49 +629,40 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
         if corners:
             sizable.append((line, corners, fectas_by_game.get(_game_key(line.game), [])))
 
-    all_fectas = [bet for _line, _corners, fectas in sizable for bet in fectas]
-    readings = [(include_recommended, in_cover)
-                for include_recommended in ([True, False] if any(bet.recommended for bet in all_fectas) else [True])
-                for in_cover in ([True, False] if any(
-                    not needs_the_cover(line.game, [bet for bet in fectas if bet.team == team])
-                    for line, _corners, fectas in sizable for team in {bet.team for bet in fectas}) else [True])]
-
-    def groups_for(include_recommended: bool, in_cover: bool):
-        keys, groups = [], []
-        for line, corners, fectas in sizable:
-            kept = [bet for bet in fectas if include_recommended or not bet.recommended]
-            group = game_outcome_group(line, corners, held_by_game.get(line.game.wz_game_id, []), kept, in_cover)
-            if group is not None:
-                keys.append([(line.game.wz_game_id, corner) for corner in corners])
-                groups.append(group)
-        return keys, groups
-
-    def by_key(keys, stakes) -> dict[tuple[int, str], float]:
-        return {key: stake for group_keys, group_stakes in zip(keys, stakes)
-                for key, stake in zip(group_keys, group_stakes)}
-
-    # Without a budget each reading is sized on its own and the smallest stake
-    # stands. The budget is fitted once, on the first reading (every fecta in,
-    # each inside its cover), and each fitted stake then cut to that smallest
-    # no-budget stake, so a hedge no reading is sure of never raises a stake
-    # (the cut leaves that money unspent rather than refitting).
+    # Without a budget, games are sized apart and each corner gets its
+    # smallest stake over its game's fecta readings. The budget is fitted
+    # once, on the first reading of every game (every fecta in, each inside
+    # its cover), and each fitted stake then cut to that smallest no-budget
+    # stake, so a hedge no reading is sure of never raises a stake (the cut
+    # leaves that money unspent rather than refitting).
     kelly: dict[tuple[int, str], float] = {}
     unlimited: dict[tuple[int, str], float] = {}
-    fitted: dict[tuple[int, str], float] = {}
-    for index, reading in enumerate(readings):
-        keys, groups = groups_for(*reading)
-        for target, min_stake in ((kelly, 0.0), (unlimited, config.WZ_MIN_STAKE)):
-            for key, stake in by_key(keys, budgeted_stakes(groups, bankroll, kelly_fraction, None, min_stake)).items():
-                target[key] = min(target.get(key, stake), stake)
-        if index == 0:
-            fitted = by_key(keys, budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE))
-    stakes = {key: (min(fitted.get(key, 0.0), unlimited[key]), unlimited[key], kelly[key]) for key in kelly}
+    first_keys, first_groups = [], []
+    for line, corners, fectas in sizable:
+        keys = [(line.game.wz_game_id, corner) for corner in corners]
+        held_here = held_by_game.get(line.game.wz_game_id, [])
+        for index, (kept, unrelated_teams) in enumerate(fecta_readings(line.game, fectas)):
+            group = game_outcome_group(line, corners, held_here, kept, unrelated_teams)
+            if group is None:
+                break
+            if index == 0:
+                first_keys.append(keys)
+                first_groups.append(group)
+            for target, min_stake in ((kelly, 0.0), (unlimited, config.WZ_MIN_STAKE)):
+                reading = budgeted_stakes([group], bankroll, kelly_fraction, None, min_stake)[0]
+                for key, stake in zip(keys, reading):
+                    target[key] = min(target.get(key, stake), stake)
+    fitted = {key: stake
+              for keys, stakes in zip(first_keys, budgeted_stakes(first_groups, bankroll, kelly_fraction, budget,
+                                                                  config.WZ_MIN_STAKE))
+              for key, stake in zip(keys, stakes)}
+    stakes = {key: (min(fitted.get(key, 0.0), unlimited[key]), unlimited[key], kelly[key]) for key in fitted}
 
     sized = {}
     for line in board.lines:
         for corner in CORNERS:
             fair, american = line.fair_prob(corner), line.wz_american(corner)
             ev = expected_value(fair, american) if fair is not None and american is not None else None
-            rec, unl, kelly = stakes.get((line.game.wz_game_id, corner), (0.0, 0.0, 0.0))
-            sized[(line.game.wz_game_id, corner)] = HalfSizing(fair, ev, kelly, rec, unl)
+            rec, unl, joint = stakes.get((line.game.wz_game_id, corner), (0.0, 0.0, 0.0))
+            sized[(line.game.wz_game_id, corner)] = HalfSizing(fair, ev, joint, rec, unl)
     return sized
