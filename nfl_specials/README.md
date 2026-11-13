@@ -22,8 +22,14 @@ nfl_specials/run.sh         # http://127.0.0.1:8096
 The board prices only when you click **Refresh** (no auto-refresh). The three
 books price side by side, one thread each (`board.py::_price_lane`), so the
 refresh takes about as long as the slowest book. Measured 2026-10-02 (17
-specials): BetMGM done in 0.5 min, FanDuel in 0.9 min; DraftKings' six
-superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
+specials, unpaced FanDuel): BetMGM done in 0.5 min, FanDuel in 0.9 min;
+DraftKings' six superfectas (7-10 requests each then, 0.5 s apart) took ~40 s.
+Since 2026-11-13 FanDuel prices to a budget of 90 implyBets per trailing 5 min
+(see below), so on a full slate (~400 FanDuel calls across fectas and 1H) its
+lane is by far the slowest, ~20 min. A fecta gets a fair and a stake only once
+every one of its books has answered; 1H games stay unplaceable until the 1H
+board finishes, and 1H stakes wait for the fecta board. The budget lives in the
+app's memory, so a restart (a deploy) starts it from zero.
 
 ## Running on the VM
 
@@ -326,8 +332,28 @@ only 1st halves are read.
    attempt past the server's own checks is recorded (those refusals are not). A failed 1H refresh clears the 1H board, so its old fairs
    cannot be placed.
 
-Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
-2026-11-12), one after the other so each book's pacing holds.
+Refresh prices the fectas and the 1H board side by side. Each book still
+answers one request at a time across both boards (`board.BookTurns`: a lock
+per book, held while it opens and for one special or one 1H game, plus one
+`books.RequestPacer` per book: DraftKings 0.5 s after each answer, BetMGM no
+gap, FanDuel at most `FD_PRICE_CALLS_PER_WINDOW` = 90 implyBets in any trailing
+`FD_PRICE_WINDOW_SECONDS` = 300 s, counted across refreshes by the app's
+`books.CallWindow`), so no book sees more traffic than when the boards ran one
+after the other. FanDuel's WAF blocks an address for ~5 min after 100 implyBets
+in a trailing 5 min (measured from the VM 2026-11-13; the ~40 min block that
+night came from 165 calls sent into it after the first 403). A 403 or 429 on any call to a book (a listing, a game's
+market page or a price) stops it for the rest of the refresh (its later specials and games read "blocked this refresh"):
+FanDuel's CloudFront blocked the VM for ~40 min on 2026-11-13 after ~6
+calls/s, and every extra call into a block extends it.
+
+A book stopped by a block leaves its specials and games to the books still
+pricing, the same as any book error. Wagerzon's 1H previews run while the books
+price (games some book lists; rows stamped when the previews came back).
+While the fecta board is still pricing, 1H
+parlays get no stake (fectas get first call on the cash). DraftKings prices
+each partition with the leg of most outcomes last (one request prices all of
+that leg's outcomes), so a superfecta's 3 x 3 x 2 trifecta part is 6
+requests, not 9.
 
 The tab lists every corner in one list sorted by edge, best first; chips sort
 by edge, stake, kickoff, fair or Wagerzon price (a second tap reverses), and

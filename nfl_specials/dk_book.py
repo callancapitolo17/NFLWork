@@ -24,14 +24,14 @@ Leg -> DK market:
 from __future__ import annotations
 
 import logging
-import time
 from typing import Hashable
 from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException
 
-from nfl_specials.books import NFL, BookGame, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
+from nfl_specials.books import (NFL, BookGame, LegMarket, Outcome, RequestPacer, is_half_point, next_game,
+                                widen_with_tie)
 from nfl_specials.special_parser import Leg
 from nfl_specials.teams import NICKNAME_TO_ABBR
 
@@ -75,18 +75,19 @@ def dk_team_to_abbr(dk_name: str) -> str | None:
 class DraftKingsBook:
     name = "DraftKings"
 
-    def __init__(self, proxy_url: str | None, league: str = NFL) -> None:
+    def __init__(self, proxy_url: str | None, league: str = NFL, pacer: RequestPacer | None = None) -> None:
+        """`pacer`: shared by every DraftKingsBook of one refresh; None = its own."""
         self.league = league
+        self.pacer = pacer if pacer is not None else RequestPacer(self.name, MIN_SECONDS_BETWEEN_PRICE_CALLS)
         self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
         self._unreachable: RequestException | None = None
-        self._get(DK_WARMUP_URL, timeout=30)
+        self.pacer.guard(lambda: self._get(DK_WARMUP_URL, timeout=30), "warm-up page")
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
         self._market_of_selection: dict[str, str] = {}
         # (event id, base selection ids, candidate market id) -> decimal odds of
         # base + each candidate selection DK can combine with it
         self._added_leg_odds: dict[tuple[str, frozenset[str], str], dict[str, float]] = {}
-        self._last_price_call_at = 0.0
 
     # --- discovery ---------------------------------------------------------
     def _get(self, url: str, *, timeout: float, **kwargs):
@@ -113,7 +114,7 @@ class DraftKingsBook:
             "include": "Events",
             "entity": "events",
         }
-        resp = self._get(DK_LEAGUE_URL, params=params, timeout=30)
+        resp = self.pacer.guard(lambda: self._get(DK_LEAGUE_URL, params=params, timeout=30), "event listing")
         if resp.status_code != 200:
             raise RuntimeError(f"DK event listing returned HTTP {resp.status_code}")
         games = []
@@ -142,7 +143,7 @@ class DraftKingsBook:
     def _event_markets(self, game: BookGame) -> dict[str, dict]:
         if game.book_event_id not in self._markets:
             url = DK_SGP_EVENT_URL.format(event_id=game.book_event_id)
-            resp = self._get(url, timeout=60)
+            resp = self.pacer.guard(lambda: self._get(url, timeout=60), "SGP event payload")
             if resp.status_code != 200:
                 raise RuntimeError(f"DK SGP payload for event {game.book_event_id} "
                                    f"returned HTTP {resp.status_code}")
@@ -193,7 +194,7 @@ class DraftKingsBook:
         """DK's SGP price for `refs`, or None when DK will not combine them.
 
         The last ref is priced as an addition to the others, so cells that
-        share every leg but the last (consecutive cells of a partition) cost
+        share every leg but the last cost
         one request between them.
         """
         if len(refs) < 2:
@@ -209,17 +210,10 @@ class DraftKingsBook:
                               candidate_market_id: str) -> dict[str, float]:
         """One GET: decimal odds of base + each selection of the candidate
         market that DK can combine with the base. Raises on HTTP failure."""
-        wait = MIN_SECONDS_BETWEEN_PRICE_CALLS - (time.monotonic() - self._last_price_call_at)
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            resp = self._get(DK_SGP_PRICE_URL, timeout=30,
-                                    headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
-                                    params={"eventId": event_id, "selections": ",".join(sorted(base)),
-                                            "marketCandidates": candidate_market_id,
-                                            "oddsStyle": "american"})
-        finally:
-            self._last_price_call_at = time.monotonic()
+        resp = self.pacer.call(lambda: self._get(
+            DK_SGP_PRICE_URL, timeout=30, headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
+            params={"eventId": event_id, "selections": ",".join(sorted(base)),
+                    "marketCandidates": candidate_market_id, "oddsStyle": "american"}), "SGP price")
         if resp.status_code != 200:
             raise RuntimeError(f"DK SGP price for event {event_id} returned HTTP "
                                f"{resp.status_code}: {resp.text[:200]}")

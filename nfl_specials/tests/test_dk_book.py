@@ -3,7 +3,7 @@ import pytest
 from curl_cffi.requests.exceptions import RequestException
 
 from nfl_specials import dk_book
-from nfl_specials.books import BookGame
+from nfl_specials.books import BookGame, RequestPacer
 from nfl_specials.dk_book import DraftKingsBook, parse_added_leg_odds
 
 GAME = BookGame("evt1", home="SEA", away="LAC", game_start_time="2099-01-01T00:00:00Z")
@@ -114,3 +114,51 @@ def test_http_failure_raises(monkeypatch):
     book = _book(monkeypatch, FakeSession({"message": "nope"}, price_status=404))
     with pytest.raises(RuntimeError, match="HTTP 404"):
         book.price(GAME, ("q1_sea", "ml_sea"))
+
+
+def test_two_books_sharing_a_pacer_keep_its_gap_between_them(monkeypatch):
+    """The fecta and 1H boards price at once on two DraftKingsBooks; together
+    they must still go no faster than one price call per gap."""
+    import threading
+    import time
+    pacer = RequestPacer("DraftKings", 0.05)
+    sessions = [FakeSession(_price_answer(["q1_sea"], {"ml_sea": 2.4})) for _ in range(2)]
+    books = []
+    for session in sessions:
+        monkeypatch.setattr(dk_book.cffi_requests, "Session", lambda impersonate, proxy, s=session: s)
+        books.append(DraftKingsBook(proxy_url=None, pacer=pacer))
+    stamps = []
+    for session in sessions:
+        real_get = session.get
+
+        def get(url, params=None, headers=None, timeout=None, real_get=real_get):
+            if url == dk_book.DK_SGP_PRICE_URL:
+                stamps.append(time.monotonic())
+            return real_get(url, params=params, headers=headers, timeout=timeout)
+        session.get = get
+
+    def price_three(book, offset):
+        for n in range(3):
+            book._fetch_added_leg_odds("evt1", frozenset([f"q1_{offset}_{n}"]), "m_ml")
+
+    threads = [threading.Thread(target=price_three, args=(book, i)) for i, book in enumerate(books)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    stamps.sort()
+    assert len(stamps) == 6
+    assert min(later - earlier for earlier, later in zip(stamps, stamps[1:])) >= 0.045
+
+
+def test_a_403_stops_every_later_draftkings_call_this_refresh(monkeypatch):
+    """Piling more calls into a block only extends it: after the first 403
+    the book raises BookBlocked without sending anything."""
+    from nfl_specials.books import BookBlocked
+    session = FakeSession({"message": "Forbidden"}, price_status=403)
+    book = _book(monkeypatch, session)
+    with pytest.raises(RuntimeError, match="HTTP 403"):
+        book.price(GAME, ("q1_sea", "ml_sea"))
+    with pytest.raises(BookBlocked, match="SGP price HTTP 403"):
+        book.price(GAME, ("q1_lac", "ml_sea"))
+    assert len(session.price_calls) == 1

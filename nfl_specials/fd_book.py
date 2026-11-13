@@ -26,7 +26,8 @@ from typing import Hashable
 
 from curl_cffi import requests as cffi_requests
 
-from nfl_specials.books import NFL, BookGame, TeamKey, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
+from nfl_specials.books import (NFL, BookGame, LegMarket, Outcome, RequestPacer, TeamKey, is_half_point,
+                                next_game, widen_with_tie)
 from nfl_specials.config import REPO_ROOT
 from nfl_specials.special_parser import Leg
 from nfl_specials.teams import ODDS_API_NAME_TO_ABBR
@@ -44,13 +45,25 @@ SPREAD_ALT = {"GM": "Alternate Spread", "H1": "1st Half Alternate Spread"}
 THREE_WAY_WIN = {"Q1": "1st Quarter Winner (3-Way)", "H1": "1st Half Winner (3-Way)"}
 TOTAL_MAIN = {"H1": "1st Half Total"}
 ALT_RUNNER_RE = re.compile(r"^(.+?) \(([+-]\d+(?:\.\d+)?)\)$")
+# FanDuel's WAF blocks an address for ~5 min after 100 implyBets in a
+# trailing 5 min (VM probe 2026-11-13: 163 calls at 1.5/s, the 164th 403,
+# unblocked as the window fell under 100; a burst of 234 in 40 s got through
+# first only because the WAF counts with a lag). So FanDuel prices to a
+# window budget, with margin; its scan and event pages are other hosts and do
+# not count. The 1 s gap keeps a full budget under the probe's 1.5/s and
+# costs nothing (90 s of sends in a 300 s window).
+MIN_SECONDS_BETWEEN_PRICE_CALLS = 1.0
+FD_PRICE_CALLS_PER_WINDOW = 90
+FD_PRICE_WINDOW_SECONDS = 300.0
 
 
 class FanDuelBook:
     name = "FanDuel"
 
-    def __init__(self, league: str = NFL) -> None:
+    def __init__(self, league: str = NFL, pacer: RequestPacer | None = None) -> None:
+        """`pacer`: shared by every FanDuelBook of one refresh; None = its own."""
         self.league = league
+        self.pacer = pacer if pacer is not None else RequestPacer(self.name, MIN_SECONDS_BETWEEN_PRICE_CALLS)
         self.session = cffi_requests.Session(impersonate="chrome")
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
@@ -62,8 +75,9 @@ class FanDuelBook:
                            "marketLevels": ["AVB_EVENT"], "maxResults": 100,
                            "productTypes": ["SPORTSBOOK"], "selectBy": "FIRST_TO_START"},
                 "facets": [{"type": "EVENT"}], "currencyCode": "USD"}
-        resp = self.session.post(FD_SCAN_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
-                                 data=json.dumps(body), timeout=30)
+        resp = self.pacer.guard(lambda: self.session.post(
+            FD_SCAN_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body), timeout=30), "event scan")
         if resp.status_code != 200:
             raise RuntimeError(f"FanDuel event scan returned HTTP {resp.status_code}")
         games = []
@@ -90,7 +104,7 @@ class FanDuelBook:
         if game.book_event_id not in self._markets:
             url = (f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={game.book_event_id}"
                    f"&tab={FD_SGP_TAB}&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true")
-            resp = self.session.get(url, headers=FD_HEADERS, timeout=30)
+            resp = self.pacer.guard(lambda: self.session.get(url, headers=FD_HEADERS, timeout=30), "event page")
             if resp.status_code != 200:
                 raise RuntimeError(f"FanDuel event page {game.book_event_id} returned HTTP {resp.status_code}")
             markets = {}
@@ -129,8 +143,9 @@ class FanDuelBook:
         body = {"betLegs": [{"legType": "SIMPLE_SELECTION",
                              "betRunners": [{"runner": {"marketId": market_id, "selectionId": selection_id}}]}
                             for market_id, selection_id in refs]}
-        resp = self.session.post(FD_IMPLY_BETS_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
-                                 data=json.dumps(body), timeout=20)
+        resp = self.pacer.call(lambda: self.session.post(
+            FD_IMPLY_BETS_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body), timeout=20), "implyBets")
         if resp.status_code != 200:
             raise RuntimeError(f"FanDuel implyBets returned HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()

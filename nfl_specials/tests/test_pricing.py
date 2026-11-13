@@ -216,3 +216,81 @@ def test_outcome_group_refuses_probabilities_that_do_not_sum_to_one():
 def test_a_stake_a_hair_under_a_dollar_is_that_dollar():
     from nfl_specials.pricing import _whole_dollars
     assert _whole_dollars(49.9999999) == 50 and _whole_dollars(49.99) == 49 and _whole_dollars(50.0) == 50
+
+
+def test_the_leg_with_the_most_outcomes_goes_last_in_every_request():
+    """DraftKings prices every outcome of the LAST leg in one request, so a
+    3 x 3 x 2 partition with a 3-way leg last needs 6 distinct bases, not 9."""
+    from nfl_specials.pricing import price_partition
+
+    def market(name, size):
+        outcomes = tuple(Outcome((name, i), f"{name}{i}") for i in range(size))
+        return LegMarket.single(outcomes[0], outcomes)
+
+    class RecordingBook:
+        name = "Recorder"
+
+        def __init__(self):
+            self.requests = []
+
+        def price(self, game, refs):
+            self.requests.append(refs)
+            return 1.0 / (1.05 / 18)
+
+    book = RecordingBook()
+    partition = price_partition(book, GAME, [market("q1", 3), market("h1", 3), market("ml", 2)])
+    assert len(partition.cells) == 18 and partition.cell_fairs is not None
+    assert all(refs[-1][0] == "h1" for refs in book.requests)
+    assert len({frozenset(refs[:-1]) for refs in book.requests}) == 6
+    # The cells keep the legs' own order.
+    assert [outcome.ref[0] for outcome in partition.cells[0]] == ["q1", "h1", "ml"]
+
+
+# --- RequestPacer ---------------------------------------------------------------------
+def test_request_pacer_keeps_the_gap_and_stops_after_halt():
+    import time
+    from nfl_specials.books import BookBlocked, RequestPacer
+    pacer = RequestPacer("FanDuel", 0.05)
+    stamps = []
+    for _ in range(3):
+        pacer.call(lambda: stamps.append(time.monotonic()), "implyBets")
+    assert min(b - a for a, b in zip(stamps, stamps[1:])) >= 0.045
+
+    class Answer:
+        status_code = 403
+    pacer.guard(lambda: Answer(), "event page")          # the blocked answer itself comes back
+    with pytest.raises(BookBlocked, match="FanDuel blocked this refresh: event page HTTP 403"):
+        pacer.call(lambda: stamps.append("sent"), "implyBets")
+    with pytest.raises(BookBlocked):
+        pacer.guard(lambda: stamps.append("sent"), "event page")
+    assert "sent" not in stamps
+
+
+def test_call_window_holds_the_budget_across_any_trailing_window():
+    from nfl_specials.books import CallWindow
+    clock = {"now": 0.0}
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock["now"] += seconds
+
+    window = CallWindow(3, 300.0, clock=lambda: clock["now"], sleep=sleep)
+    for at in (0.0, 10.0, 20.0):
+        clock["now"] = at
+        window.wait_turn()
+    assert slept == []
+    clock["now"] = 30.0
+    window.wait_turn()                 # 4th waits until the one at 0 s ages out
+    assert slept == [270.0] and clock["now"] == 300.0
+    window.wait_turn()                 # 5th waits for the one at 10 s
+    assert clock["now"] == 310.0
+
+
+def test_fanduel_pacer_shares_the_apps_window_across_refreshes():
+    from nfl_specials import board as board_module
+    window = board_module.new_fd_price_window()
+    first, second = board_module.new_book_turns(window), board_module.new_book_turns(window)
+    assert first.pacers["FanDuel"].window is window is second.pacers["FanDuel"].window
+    assert first.pacers["FanDuel"] is not second.pacers["FanDuel"]   # a block lasts one refresh
+    assert (window.max_calls, window.window_seconds) == (90, 300.0)

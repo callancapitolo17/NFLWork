@@ -1,6 +1,7 @@
 import http.client
 import json
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 
@@ -320,3 +321,41 @@ def test_a_fecta_kicking_off_during_the_slate_is_held_back_unless_it_is_on_free_
     assert payload["halves"]["cfb_slates"][0]["budget"] == pytest.approx(500.0 - fecta_stake)
     app.store.save_settings(10000.0, 0.25, True)
     assert app.board_payload("Wagerzon")["halves"]["cfb_slates"][0]["budget"] == 500.0
+
+
+def test_no_1h_stake_while_the_fecta_board_is_still_pricing(app):
+    """The boards price side by side: a 1H board that finishes first must not
+    take cash the fectas, not yet priced, get first call on. The flag is up
+    from the refresh's start, so last refresh's fecta board does not count."""
+    app.store.save_settings(10000.0, 0.25, False)
+    _publish_one_college_game(app)
+    app._fectas_pricing = True
+    halves = app.board_payload("Wagerzon")["halves"]
+    assert halves["budget"] == 0.0 and halves["cfb_slates"][0]["budget"] == 0.0
+    assert halves["lines"][0]["corners"]["away_over"]["recommended_stake"] == 0.0
+    app.store.save_settings(10000.0, 0.25, True)     # fectas on free play take no cash
+    assert app.board_payload("Wagerzon")["halves"]["cfb_slates"][0]["budget"] == 500.0
+    app.store.save_settings(10000.0, 0.25, False)
+    app._fectas_pricing = False                      # fectas done (or failed), 1H may still price
+    assert app.board_payload("Wagerzon")["halves"]["lines"][0]["corners"]["away_over"]["recommended_stake"] > 0
+
+
+def test_the_fecta_flag_is_up_from_the_refresh_start_and_drops_when_fectas_fail(app, monkeypatch):
+    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
+    fectas_may_fail = threading.Event()
+
+    def fectas(store, publish, turns):
+        fectas_may_fail.wait(timeout=5)
+        raise RuntimeError("Wagerzon down")
+
+    monkeypatch.setattr(app_module, "refresh_board", fectas)
+    monkeypatch.setattr(app_module, "refresh_halves", lambda store, publish, turns: None)
+    assert app.start_refresh()
+    assert app._fectas_pricing           # raised before either board has published anything
+    fectas_may_fail.set()
+    for _ in range(200):
+        if not app._refreshing:
+            break
+        time.sleep(0.01)
+    assert not app._refreshing and not app._fectas_pricing
+    assert app._last_error == "fectas: RuntimeError: Wagerzon down"
