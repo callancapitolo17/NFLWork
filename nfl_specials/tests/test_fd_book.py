@@ -63,3 +63,19 @@ def test_an_event_page_403_stops_fanduel_too(monkeypatch):
     with pytest.raises(BookBlocked, match="event page HTTP 403"):
         book.price(GAME, (("m1", 11), ("m2", 21)))
     assert len(session.sent) == sent
+
+
+def test_a_blocked_scan_stops_the_next_fanduel_open(monkeypatch):
+    """The fecta board opens FanDuel first; the 1H board's two opens must not scan into the block."""
+    class BlockedScan(FakeSession):
+        def post(self, url, headers=None, data=None, timeout=None):
+            self.sent.append(url)
+            return FakeResponse(403, {})
+    session = BlockedScan()
+    monkeypatch.setattr(fd_book.cffi_requests, "Session", lambda impersonate: session)
+    pacer = RequestPacer("FanDuel", 0.0)
+    with pytest.raises(RuntimeError, match="event scan returned HTTP 403"):
+        FanDuelBook(pacer=pacer)
+    with pytest.raises(BookBlocked, match="event scan HTTP 403"):
+        FanDuelBook(league="CFB", pacer=pacer)
+    assert len(session.sent) == 1

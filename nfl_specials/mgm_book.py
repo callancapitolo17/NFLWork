@@ -59,7 +59,7 @@ class BetMgmBook:
                f"&fixtureTypes=Standard&state=Latest&offerMapping=Filtered"
                f"&offerCategories=Gridable&fixtureCategories=Gridable"
                f"&sportIds={MGM_FOOTBALL_SPORT_ID}&skip=0&take=200&sortBy=Tags")
-        resp = self.client.session.get(url, timeout=60)
+        resp = self.pacer.guard(lambda: self.client.session.get(url, timeout=60), "fixture listing")
         if resp.status_code != 200:
             raise RuntimeError(f"BetMGM fixture listing returned HTTP {resp.status_code}")
         games = []

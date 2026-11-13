@@ -81,7 +81,7 @@ class DraftKingsBook:
         self.pacer = pacer if pacer is not None else RequestPacer(self.name, MIN_SECONDS_BETWEEN_PRICE_CALLS)
         self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
         self._unreachable: RequestException | None = None
-        self._get(DK_WARMUP_URL, timeout=30)
+        self.pacer.guard(lambda: self._get(DK_WARMUP_URL, timeout=30), "warm-up page")
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
         self._market_of_selection: dict[str, str] = {}
@@ -114,7 +114,7 @@ class DraftKingsBook:
             "include": "Events",
             "entity": "events",
         }
-        resp = self._get(DK_LEAGUE_URL, params=params, timeout=30)
+        resp = self.pacer.guard(lambda: self._get(DK_LEAGUE_URL, params=params, timeout=30), "event listing")
         if resp.status_code != 200:
             raise RuntimeError(f"DK event listing returned HTTP {resp.status_code}")
         games = []

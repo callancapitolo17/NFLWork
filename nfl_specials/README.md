@@ -22,8 +22,10 @@ nfl_specials/run.sh         # http://127.0.0.1:8096
 The board prices only when you click **Refresh** (no auto-refresh). The three
 books price side by side, one thread each (`board.py::_price_lane`), so the
 refresh takes about as long as the slowest book. Measured 2026-10-02 (17
-specials): BetMGM done in 0.5 min, FanDuel in 0.9 min; DraftKings' six
-superfectas (7-10 requests each then, 0.5 s apart) took ~40 s over plain HTTP.
+specials, unpaced FanDuel): BetMGM done in 0.5 min, FanDuel in 0.9 min;
+DraftKings' six superfectas (7-10 requests each then, 0.5 s apart) took ~40 s.
+Since 2026-11-13 FanDuel waits 1 s after each price (see below), so its lane,
+fectas plus 1H, is the slowest: a few minutes on a full slate.
 
 ## Running on the VM
 
@@ -331,8 +333,8 @@ answers one request at a time across both boards (`board.BookTurns`: a lock
 per book, held while it opens and for one special or one 1H game, plus one
 `books.RequestPacer` per book: DraftKings 0.5 s after each answer, FanDuel
 1 s, BetMGM none), so no book sees more traffic than when the boards ran one
-after the other. A 403 or 429 on any call to a book (a price or a game's market page) stops it for the rest of
-the refresh (its later specials and games read "blocked this refresh"):
+after the other. A 403 or 429 on any call to a book (a listing, a game's
+market page or a price) stops it for the rest of the refresh (its later specials and games read "blocked this refresh"):
 FanDuel's CloudFront blocked the VM for ~40 min on 2026-11-13 after ~6
 calls/s, and every extra call into a block extends it.
 

@@ -418,9 +418,8 @@ def refresh_board(store: Store, publish: Callable[[Board], None], turns: BookTur
     publish(board.snapshot())
 
     # One lane per book, run side by side: each book's calls stay sequential
-    # (DK paces itself 0.5 s apart; FD/MGM sessions are single-threaded), but
-    # the books no longer wait for each other, so the refresh takes about as
-    # long as the slowest book (DraftKings) instead of the sum of all three.
+    # (paced by its RequestPacer), but the books do not wait for each other,
+    # so the refresh takes about as long as the slowest book's lane.
     lanes: dict[str, list[tuple[str, FectaLine]]] = {name: [] for name in books}
     for task, name, line in work:
         lanes[name].append((task, line))

@@ -69,8 +69,9 @@ class FanDuelBook:
                            "marketLevels": ["AVB_EVENT"], "maxResults": 100,
                            "productTypes": ["SPORTSBOOK"], "selectBy": "FIRST_TO_START"},
                 "facets": [{"type": "EVENT"}], "currencyCode": "USD"}
-        resp = self.session.post(FD_SCAN_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
-                                 data=json.dumps(body), timeout=30)
+        resp = self.pacer.guard(lambda: self.session.post(
+            FD_SCAN_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body), timeout=30), "event scan")
         if resp.status_code != 200:
             raise RuntimeError(f"FanDuel event scan returned HTTP {resp.status_code}")
         games = []
