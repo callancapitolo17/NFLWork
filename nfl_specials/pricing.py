@@ -194,7 +194,7 @@ class ExposureGroup:
         bets = ([(h.fair_prob, h.wz_american) for h in self.held] +
                 [(c.fair_prob, c.wz_american) for c in self.candidates])
         order = sorted(range(len(bets)), key=lambda i: -bets[i][0])   # likeliest first
-        states = chain_states([bets[i][0] for i in order])
+        states = _chain_states([bets[i][0] for i in order])
         rank = {bet: position for position, bet in enumerate(order)}
         payoffs = []
         for i, (_fair, american) in enumerate(bets):
@@ -238,7 +238,7 @@ class OutcomeGroup:
         return sum(p * r for p, r in zip(self.state_probs, self.candidates[candidate].payoffs))
 
 
-def chain_states(fair_probs: list[float]) -> list[tuple[float, int]]:
+def _chain_states(fair_probs: list[float]) -> list[tuple[float, int]]:
     """(probability, number of winners) per outcome of a nested chain whose
     bets are sorted by fair, likeliest first: state k = the first k win."""
     states = []

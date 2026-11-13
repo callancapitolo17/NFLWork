@@ -125,7 +125,6 @@ class HeldPlacement:
     wz_game_id: int
     risk: float
     wz_american: int
-    free_play: bool = False         # risked the free play balance, not cash
 
 
 def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
