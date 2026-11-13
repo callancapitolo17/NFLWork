@@ -27,3 +27,19 @@ def test_threads_reading_and_writing_at_once_all_succeed(tmp_path):
         thread.join()
     assert errors == []
     assert store.settings()["bankroll"] == 5000.0
+
+
+def test_a_file_from_before_priced_at_gains_the_column(tmp_path):
+    import duckdb
+    path = tmp_path / "old.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE fecta_quotes (quoted_at TIMESTAMPTZ, book VARCHAR)")
+    con.execute("INSERT INTO fecta_quotes VALUES ('2026-11-01 00:00:00+00', 'FanDuel')")
+    con.close()
+    Store(path)
+    con = duckdb.connect(str(path))
+    try:
+        rows = con.execute("SELECT book, priced_at FROM fecta_quotes").fetchall()
+    finally:
+        con.close()
+    assert rows == [("FanDuel", None)]

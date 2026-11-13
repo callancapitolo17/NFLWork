@@ -89,6 +89,10 @@ def next_game(games: list[BookGame], team: str) -> BookGame | None:
 T = TypeVar("T")
 
 
+# Statuses that mean "the book refuses us", as opposed to "won't price this".
+BLOCKED_STATUSES = frozenset({403, 429})
+
+
 class BookBlocked(RuntimeError):
     """The book refused us (HTTP 403/429): no more calls to it this refresh."""
 
@@ -97,9 +101,11 @@ class RequestPacer:
     """One price call at a time to one book, each sent at least
     `min_gap_seconds` after the previous one's answer, across every adapter
     of that book in one refresh (the fecta and 1H boards price side by
-    side). After `halt` (the book answered 403/429) every later call raises
-    BookBlocked at once: piling more calls into a block only extends it
-    (FanDuel 2026-11-13: one 403, then 164 more)."""
+    side). Once any call through it (paced or `guard`ed) answers 403/429,
+    every later call raises BookBlocked without sending: piling more calls
+    into a block only extends it (FanDuel 2026-11-13: one 403, then 164
+    more). Unlike mlb_sgp.dk_client.PriceLane it never gives up on a wait
+    and caches nothing; the adapters keep their own caches."""
 
     def __init__(self, book: str, min_gap_seconds: float) -> None:
         self.book = book
@@ -108,21 +114,34 @@ class RequestPacer:
         self._last_call_done_at = float("-inf")
         self._halted: str | None = None
 
-    def call(self, send: Callable[[], T]) -> T:
-        """Run `send()` (one price request) once the gap has passed; returns its result."""
+    def call(self, send: Callable[[], T], what: str) -> T:
+        """Run `send()` (one price request, `what` names it) once the gap has
+        passed; returns its response."""
         with self._lock:
-            if self._halted is not None:
-                raise BookBlocked(f"{self.book} blocked this refresh: {self._halted}")
+            self._raise_if_halted()
             wait = self.min_gap_seconds - (time.monotonic() - self._last_call_done_at)
             if wait > 0:
                 time.sleep(wait)
             try:
-                return send()
+                return self._note_status(send(), what)
             finally:
                 self._last_call_done_at = time.monotonic()
 
-    def halt(self, reason: str) -> None:
-        self._halted = reason
+    def guard(self, send: Callable[[], T], what: str) -> T:
+        """Run `send()` (a non-price request, e.g. a game's market page)
+        unpaced, but not after a block, and halt on a blocked answer."""
+        self._raise_if_halted()
+        return self._note_status(send(), what)
+
+    def _raise_if_halted(self) -> None:
+        if self._halted is not None:
+            raise BookBlocked(f"{self.book} blocked this refresh: {self._halted}")
+
+    def _note_status(self, response: T, what: str) -> T:
+        status = getattr(response, "status_code", None)
+        if status in BLOCKED_STATUSES:
+            self._halted = f"{what} HTTP {status}"
+        return response
 
 
 class SgpBook(Protocol):
@@ -149,4 +168,4 @@ class SgpBook(Protocol):
     def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
         """Each ref's own single price as the book's game payload shows it
         (already loaded by leg_market, so no request), or None when any is
-        missing. PartitionMemory reuses a partition only while these match."""
+        missing. PriceMemory reuses a partition only while these match."""

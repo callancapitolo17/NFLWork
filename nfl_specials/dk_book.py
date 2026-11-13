@@ -56,8 +56,6 @@ DK_FOOTBALL_SPORT_ID = "3"
 # DK's own SGP widget throttles its price requests to one per 500 ms; never
 # go faster than a person clicking legs.
 MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.5
-# DK statuses that mean "DK refuses us", as opposed to "DK won't price this".
-BLOCKED_PRICE_STATUSES = frozenset({403, 429})
 
 SPREAD_MAIN = {"GM": "Spread", "Q1": "Spread 1st Quarter", "H1": "Spread 1st Half"}
 SPREAD_ALT = {"GM": "Spread Alternate", "Q1": "Spread Alternate - 1st Quarter",
@@ -66,7 +64,6 @@ THREE_WAY_WIN = {"Q1": "1st Quarter (3 Way)", "H1": "1st Half (3 Way)"}
 TOTAL_MAIN = {"H1": "Total 1st Half"}
 TOTAL_ALT = {"H1": "Total Alternate - 1st Half"}
 ROLE_TO_DK = {"home": "Home", "away": "Away"}
-
 
 
 def dk_team_to_abbr(dk_name: str) -> str | None:
@@ -147,7 +144,7 @@ class DraftKingsBook:
     def _event_markets(self, game: BookGame) -> dict[str, dict]:
         if game.book_event_id not in self._markets:
             url = DK_SGP_EVENT_URL.format(event_id=game.book_event_id)
-            resp = self._get(url, timeout=60)
+            resp = self.pacer.guard(lambda: self._get(url, timeout=60), "SGP event payload")
             if resp.status_code != 200:
                 raise RuntimeError(f"DK SGP payload for event {game.book_event_id} "
                                    f"returned HTTP {resp.status_code}")
@@ -225,9 +222,7 @@ class DraftKingsBook:
         resp = self.pacer.call(lambda: self._get(
             DK_SGP_PRICE_URL, timeout=30, headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
             params={"eventId": event_id, "selections": ",".join(sorted(base)),
-                    "marketCandidates": candidate_market_id, "oddsStyle": "american"}))
-        if resp.status_code in BLOCKED_PRICE_STATUSES:
-            self.pacer.halt(f"SGP price HTTP {resp.status_code}")
+                    "marketCandidates": candidate_market_id, "oddsStyle": "american"}), "SGP price")
         if resp.status_code != 200:
             raise RuntimeError(f"DK SGP price for event {event_id} returned HTTP "
                                f"{resp.status_code}: {resp.text[:200]}")

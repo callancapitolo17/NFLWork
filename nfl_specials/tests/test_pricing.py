@@ -1,3 +1,5 @@
+import itertools
+
 import pytest
 from scipy.stats import norm
 
@@ -341,9 +343,46 @@ def test_request_pacer_keeps_the_gap_and_stops_after_halt():
     pacer = RequestPacer("FanDuel", 0.05)
     stamps = []
     for _ in range(3):
-        pacer.call(lambda: stamps.append(time.monotonic()))
+        pacer.call(lambda: stamps.append(time.monotonic()), "implyBets")
     assert min(b - a for a, b in zip(stamps, stamps[1:])) >= 0.045
-    pacer.halt("implyBets HTTP 403")
-    with pytest.raises(BookBlocked, match="FanDuel blocked this refresh: implyBets HTTP 403"):
-        pacer.call(lambda: stamps.append("sent"))
+
+    class Answer:
+        status_code = 403
+    pacer.guard(lambda: Answer(), "event page")          # the blocked answer itself comes back
+    with pytest.raises(BookBlocked, match="FanDuel blocked this refresh: event page HTTP 403"):
+        pacer.call(lambda: stamps.append("sent"), "implyBets")
+    with pytest.raises(BookBlocked):
+        pacer.guard(lambda: stamps.append("sent"), "event page")
     assert "sent" not in stamps
+
+
+def test_a_line_moved_under_the_same_ids_and_prices_is_priced_again():
+    """FanDuel re-centres a main spread under the same market and selection
+    ids at the same price: only the label carries the line, so the label is
+    part of what is remembered."""
+    from nfl_specials.pricing import PriceMemory, price_partition
+
+    def markets(spread_line):
+        away = Outcome(("m1", "away"), f"away {spread_line:+g}")
+        home = Outcome(("m1", "home"), f"home {-spread_line:+g}")
+        over, under = Outcome(("m2", "over"), "Over 23.5"), Outcome(("m2", "under"), "Under 23.5")
+        return [LegMarket.single(away, (away, home)), LegMarket.single(over, (over, under))]
+
+    class SameIdsBook:
+        name = "FanDuel"
+        calls = 0
+
+        def price(self, game, refs):
+            self.calls += 1
+            return 3.6
+
+        def single_odds(self, game, refs):
+            return tuple(1.909 for _ in refs)
+
+    memory = PriceMemory()
+    book = SameIdsBook()
+    first = price_partition(book, GAME, markets(-2.5), memory)
+    moved = price_partition(book, GAME, markets(-3.5), memory)
+    assert book.calls == 8
+    assert moved.cells == tuple(itertools.product(*(m.group for m in markets(-3.5))))
+    assert first.cells != moved.cells

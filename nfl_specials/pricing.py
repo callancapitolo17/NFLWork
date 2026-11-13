@@ -31,19 +31,21 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Hashable
+from typing import Callable, Hashable, TypeVar
 
 import numpy as np
 from scipy.optimize import brentq
 
 from kalshi_common.fair_value import _probit_devig_n as probit_devig_n
-from nfl_specials.books import BookGame, LegMarket, SgpBook
+from nfl_specials.books import BookGame, LegMarket, Outcome, SgpBook
 from nfl_specials.special_parser import Fecta
 
 # A partition's implied sum must sit in [1, 1 + this x legs]; outside it a
 # cell is stale or mispriced and the devig would be garbage (same envelope as
 # kalshi_common.fair_value.PARTITION_OVERROUND_PER_LEG).
 PARTITION_OVERROUND_PER_LEG = 0.25
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -112,32 +114,40 @@ class PriceMemory:
         self._lock = threading.Lock()
         self._entries: dict[Hashable, tuple[tuple, object, float]] = {}
 
-    def recall(self, key: Hashable, fingerprint: tuple | None):
-        """The value kept under `key` when its fingerprint matches and it is fresh, else None."""
-        if fingerprint is None:
-            return None
-        with self._lock:
-            entry = self._entries.get(key)
-        if entry is None:
-            return None
-        kept_fingerprint, value, kept_at = entry
-        if kept_fingerprint != fingerprint or self._clock() - kept_at > self.max_age_seconds:
-            return None
+    def reuse_or_price(self, book: SgpBook, game: BookGame, outcomes_key: tuple, price: Callable[[], T],
+                       priced: Callable[[T], bool]) -> T:
+        """The value kept for (book, game, outcomes_key) when the book's single
+        prices of those outcomes are unchanged and it is fresh; else `price()`,
+        kept when `priced(value)`. `outcomes_key` holds whole Outcomes (ref AND
+        label), so a market whose line moved under the same ids (a FanDuel
+        main spread re-centred at the same price) is a different entry."""
+        key = (book.name, game.book_event_id, outcomes_key)
+        refs = tuple({outcome.ref: None for outcome in _flatten_outcomes(outcomes_key)})
+        fingerprint = book.single_odds(game, refs)
+        if fingerprint is not None:
+            with self._lock:
+                entry = self._entries.get(key)
+            if entry is not None:
+                kept_fingerprint, value, kept_at = entry
+                if kept_fingerprint == fingerprint and self._clock() - kept_at <= self.max_age_seconds:
+                    return value
+        value = price()
+        if fingerprint is not None and priced(value):
+            now = self._clock()
+            with self._lock:
+                self._entries = {k: entry for k, entry in self._entries.items()
+                                 if now - entry[2] <= self.max_age_seconds}
+                self._entries[key] = (fingerprint, value, now)
         return value
 
-    def keep(self, key: Hashable, fingerprint: tuple | None, value: object) -> None:
-        """Keep `value`, priced now, under `key`; drops entries past the age limit."""
-        if fingerprint is None:
-            return
-        now = self._clock()
-        with self._lock:
-            self._entries = {k: entry for k, entry in self._entries.items()
-                             if now - entry[2] <= self.max_age_seconds}
-            self._entries[key] = (fingerprint, value, now)
 
-
-def _partition_refs(leg_markets: list[LegMarket]) -> tuple[tuple, ...]:
-    return tuple(tuple(outcome.ref for outcome in market.group) for market in leg_markets)
+def _flatten_outcomes(node) -> list[Outcome]:
+    """Every Outcome in a nested tuple key (its string tags hold none)."""
+    if isinstance(node, Outcome):
+        return [node]
+    if isinstance(node, tuple):
+        return [outcome for child in node for outcome in _flatten_outcomes(child)]
+    return []
 
 
 def price_partition(book: SgpBook, game: BookGame, leg_markets: list[LegMarket],
@@ -149,16 +159,9 @@ def price_partition(book: SgpBook, game: BookGame, leg_markets: list[LegMarket],
     reused instead (PriceMemory); its priced_at says when it was priced."""
     if memory is None:
         return _price_partition_cells(book, game, leg_markets)
-    refs = _partition_refs(leg_markets)
-    key = ("partition", book.name, game.book_event_id, refs)
-    fingerprint = book.single_odds(game, tuple(ref for group in refs for ref in group))
-    kept = memory.recall(key, fingerprint)
-    if kept is not None:
-        return kept
-    partition = _price_partition_cells(book, game, leg_markets)
-    if partition.cell_fairs is not None:
-        memory.keep(key, fingerprint, partition)
-    return partition
+    groups = ("partition",) + tuple(market.group for market in leg_markets)
+    return memory.reuse_or_price(book, game, groups, lambda: _price_partition_cells(book, game, leg_markets),
+                                 lambda partition: partition.cell_fairs is not None)
 
 
 def _price_partition_cells(book: SgpBook, game: BookGame, leg_markets: list[LegMarket]) -> PartitionFair:
@@ -503,20 +506,12 @@ def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta,
         rest_markets.append(market)
     rest_cells = list(itertools.product(*(sorted(m.winning, key=lambda o: o.label) for m in rest_markets)))
 
-    if memory is None:
+    def price() -> ScoresFirstShare:
         return _price_scores_first_cells(book, game, team_scores_first, opponent_scores_first, rest_cells)
-    refs = (team_scores_first.ref, opponent_scores_first.ref) + tuple(
-        tuple(outcome.ref for outcome in cell) for cell in rest_cells)
-    key = ("scores_first", book.name, game.book_event_id, refs)
-    fingerprint = book.single_odds(game, (team_scores_first.ref, opponent_scores_first.ref) + tuple(
-        {outcome.ref: None for cell in rest_cells for outcome in cell}))
-    kept = memory.recall(key, fingerprint)
-    if kept is not None:
-        return kept
-    share = _price_scores_first_cells(book, game, team_scores_first, opponent_scores_first, rest_cells)
-    if share.share is not None:
-        memory.keep(key, fingerprint, share)
-    return share
+    if memory is None:
+        return price()
+    outcomes = ("scores_first", (team_scores_first, opponent_scores_first), tuple(rest_cells))
+    return memory.reuse_or_price(book, game, outcomes, price, lambda share: share.share is not None)
 
 
 def _price_scores_first_cells(book: SgpBook, game: BookGame, team_scores_first, opponent_scores_first,

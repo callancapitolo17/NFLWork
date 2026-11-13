@@ -51,7 +51,7 @@ SCHEMA = [
         fair_prob       DOUBLE,      -- fair of what quote_kind names
         sgp_decimal     DOUBLE,
         overround       DOUBLE,
-        n_cells         INTEGER,     -- SGP calls made
+        n_cells         INTEGER,     -- SGP calls made (by the refresh that priced it; see priced_at)
         sf_share        DOUBLE,      -- P(scores first | trifecta part), DK rows and the 'fixed' DK-down rows
         reason          VARCHAR
     )""",
@@ -93,7 +93,7 @@ SCHEMA = [
     "ALTER TABLE half_parlay_quotes ADD COLUMN IF NOT EXISTS push_return DOUBLE",
     # Added 2026-11-13 with PriceMemory: when the book's prices behind a row
     # were read; earlier than quoted_at when a refresh reused them. NULL on
-    # rows written before it (priced at quoted_at).
+    # rows written before it (priced at quoted_at) and where nothing was priced.
     "ALTER TABLE fecta_quotes ADD COLUMN IF NOT EXISTS priced_at TIMESTAMPTZ",
     "ALTER TABLE half_parlay_quotes ADD COLUMN IF NOT EXISTS priced_at TIMESTAMPTZ",
     """CREATE TABLE IF NOT EXISTS placed_half_parlays (

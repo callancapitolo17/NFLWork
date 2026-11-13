@@ -49,7 +49,6 @@ ALT_RUNNER_RE = re.compile(r"^(.+?) \(([+-]\d+(?:\.\d+)?)\)$")
 # near 6 a second (2026-11-13: ~234 calls in 40 s, then 403 on every call).
 # 1 s after each answer is a safe guess until the real ceiling is measured.
 MIN_SECONDS_BETWEEN_PRICE_CALLS = 1.0
-BLOCKED_PRICE_STATUSES = frozenset({403, 429})
 
 
 class FanDuelBook:
@@ -99,7 +98,7 @@ class FanDuelBook:
         if game.book_event_id not in self._markets:
             url = (f"{FD_EVENT_PAGE_URL}?_ak={FD_AK}&eventId={game.book_event_id}"
                    f"&tab={FD_SGP_TAB}&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true")
-            resp = self.session.get(url, headers=FD_HEADERS, timeout=30)
+            resp = self.pacer.guard(lambda: self.session.get(url, headers=FD_HEADERS, timeout=30), "event page")
             if resp.status_code != 200:
                 raise RuntimeError(f"FanDuel event page {game.book_event_id} returned HTTP {resp.status_code}")
             markets = {}
@@ -149,9 +148,7 @@ class FanDuelBook:
                             for market_id, selection_id in refs]}
         resp = self.pacer.call(lambda: self.session.post(
             FD_IMPLY_BETS_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
-            data=json.dumps(body), timeout=20))
-        if resp.status_code in BLOCKED_PRICE_STATUSES:
-            self.pacer.halt(f"implyBets HTTP {resp.status_code}")
+            data=json.dumps(body), timeout=20), "implyBets")
         if resp.status_code != 200:
             raise RuntimeError(f"FanDuel implyBets returned HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()

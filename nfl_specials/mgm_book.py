@@ -37,10 +37,9 @@ TOTAL_OPTION_RE = re.compile(r"^(Over|Under) (\d+(?:\.\d+)?)$")
 # "Seattle Seahawks -7.5" / "Los Angeles Chargers (+6)"
 OPTION_RE = re.compile(r"^(.+?)\s*\(?([+-]\d+(?:\.\d+)?)\)?\s*$")
 PRICED_STATE = "MarketUnsuspended"
-# No BetMGM limit has shown up at our volume, so no gap: its pacer only keeps
-# one call at a time across both boards and stops on a block.
+# No BetMGM limit has shown up at our volume, so no gap: its pacer only
+# stops it after a block.
 MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.0
-BLOCKED_PRICE_STATUSES = frozenset({403, 429})
 
 
 class BetMgmBook:
@@ -91,7 +90,7 @@ class BetMgmBook:
         if game.book_event_id not in self._markets:
             url = (f"{self.client._base}/bettingoffer/fixtures?{self.client._common_q()}"
                    f"&fixtureIds={game.book_event_id}&offerMapping=All&state=Latest")
-            resp = self.client.session.get(url, timeout=60)
+            resp = self.pacer.guard(lambda: self.client.session.get(url, timeout=60), "market tree")
             if resp.status_code != 200:
                 raise RuntimeError(f"BetMGM market tree {game.book_event_id} returned HTTP {resp.status_code}")
             fixtures = resp.json().get("fixtures") or [{}]
@@ -135,9 +134,7 @@ class BetMgmBook:
              "useLiveFallback": False, "pickGroupId": pick_group}
             for market_id, option_id in refs]}
         url = f"{self.client._base}/bettingoffer/picks?{self.client._common_q()}"
-        resp = self.pacer.call(lambda: self.client.session.post(url, json=body, timeout=30))
-        if resp.status_code in BLOCKED_PRICE_STATUSES:
-            self.pacer.halt(f"picks HTTP {resp.status_code}")
+        resp = self.pacer.call(lambda: self.client.session.post(url, json=body, timeout=30), "picks")
         if resp.status_code != 200:
             raise RuntimeError(f"BetMGM picks returned HTTP {resp.status_code}: {resp.text[:200]}")
         groups = resp.json().get("betBuilderPricingGroups") or {}
