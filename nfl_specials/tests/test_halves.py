@@ -462,3 +462,44 @@ def test_a_held_parlay_lowers_what_the_next_stake_may_reach():
     held = size_halves(_half_board(line), 1_000_000, 0.25, None,
                        held=(HeldHalfParlay(line.game.wz_game_id, "away_over", 200.0, 264),))[key]
     assert held.recommended_stake == 50
+
+
+# --- College slates --------------------------------------------------------------
+def _cfb(game_id: int, kickoff: datetime) -> HalfLine:
+    return _priced_line(_game(league="CFB", wz_game_id=game_id, away=f"AWAY {game_id}", home=f"HOME {game_id}",
+                              game_start_time=kickoff), TRUE_CORNERS, EVEN_PRICES)
+
+
+def test_college_games_with_overlapping_first_halves_share_a_slate():
+    noon, three_thirty = KICKOFF, KICKOFF + timedelta(hours=3, minutes=30)
+    board = _half_board(_cfb(1, noon), _cfb(2, noon + timedelta(minutes=30)), _cfb(3, three_thirty),
+                        _cfb(4, three_thirty + timedelta(hours=1, minutes=59)), _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES))
+    slates = halves_board.cfb_slates(board)
+    assert [slate.wz_game_ids for slate in slates] == [(1, 2), (3, 4)]     # NFL left out; 4 chains onto 3
+    assert slates[0].halftime_by == noon + timedelta(minutes=30) + halves_board.CFB_FIRST_HALF_WINDOW
+
+
+def test_each_college_slate_gets_the_whole_cash_and_nfl_keeps_the_cash_after_fectas():
+    early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
+    nfl = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    sized, slates = halves_board.size_half_board(_half_board(early, late, nfl), 20000, 0.25,
+                                                 nfl_budget=50.0, cfb_slate_budget=100.0)
+    assert len(slates) == 2
+
+    def staked(line):
+        return sum(sized[(line.game.wz_game_id, c)].recommended_stake for c in CORNERS)
+    assert staked(nfl) <= 50.0
+    assert staked(early) == pytest.approx(100.0, abs=1) and staked(late) == pytest.approx(100.0, abs=1)
+    # One slate of two games splits its 100 between them.
+    together = halves_board.size_half_board(_half_board(early, _cfb(3, KICKOFF + timedelta(minutes=10))),
+                                            20000, 0.25, nfl_budget=0.0, cfb_slate_budget=100.0)[0]
+    assert sum(s.recommended_stake for s in together.values()) <= 100.0
+
+
+def test_a_held_college_parlay_only_sizes_against_its_own_slate():
+    early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
+    held = (HeldHalfParlay(1, "away_over", 200.0, 264),)
+    alone = halves_board.size_half_board(_half_board(early, late), 5000, 0.25, None, None)[0]
+    with_held = halves_board.size_half_board(_half_board(early, late), 5000, 0.25, None, None, held=held)[0]
+    assert with_held[(1, "away_over")].recommended_stake < alone[(1, "away_over")].recommended_stake
+    assert with_held[(2, "away_over")] == alone[(2, "away_over")]

@@ -1070,9 +1070,12 @@ function renderHalves(p) {
   const total = live.reduce((s, x) => s + x.c.recommended_stake, 0);
   const profit = live.reduce((s, x) => s + x.c.recommended_stake * x.c.ev, 0);
   tiles.replaceChildren(
-    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Cash after fectas" }),
+    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "NFL: cash after fectas" }),
       el("div", { class: "tile-value num", text: h.budget == null ? "Unknown" : money(h.budget) }),
       el("div", { class: "tile-sub keep", text: h.budget == null ? "No stakes until Refresh reads it" : "fectas get first call" })]),
+    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "College: cash per slate" }),
+      el("div", { class: "tile-value num", text: h.cfb_slate_budget == null ? "Unknown" : money(h.cfb_slate_budget) }),
+      el("div", { class: "tile-sub keep", text: `${h.cfb_slates.length} slate${h.cfb_slates.length === 1 ? "" : "s"}, each the whole balance` })]),
     el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Recommended" }),
       el("div", { class: "tile-value num", text: money(total) }),
       el("div", { class: "tile-sub", text: `${live.length} parlay${live.length === 1 ? "" : "s"}` })]),
@@ -1096,7 +1099,7 @@ function renderHalves(p) {
     parts.push(el("div", { class: "group" }, [
       el("div", { class: "group-head" }, [
         el("span", {}, [el("span", { class: "matchup", text: `${line.away} @ ${line.home}` }),
-          el("span", { class: "muted small num", text: ` · ${LEAGUE_LABEL[line.league]} · 1H ${line.away} ${halfPoints(line.away_spread)}, total ${halfPoints(line.total).slice(1)}` })]),
+          el("span", { class: "muted small num", text: ` · ${LEAGUE_LABEL[line.league]}${line.slate ? ` slate ${line.slate}` : ""} · 1H ${line.away} ${halfPoints(line.away_spread)}, total ${halfPoints(line.total).slice(1)}` })]),
         el("span", { class: "muted small num", text: `${dayClock(start)} · ${untilKickoff(start)}` }),
       ]),
       ...shown.map(corner => halfRow(line, corner, p)),

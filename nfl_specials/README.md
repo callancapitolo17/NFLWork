@@ -282,10 +282,17 @@ only 1st halves are read.
    `ConfirmWagerHelper` RiskWin=2 (nothing placed) at $500, else $100
    (`parlay_pricer.get_combined_parlay_price`). Sizing uses the whole American
    odds at or under that decimal (`halves_board.conservative_american`).
-5. **Stake** (`halves_board.size_halves`): quarter Kelly on the page's bankroll,
-   **after the fectas**: the budget is the cash available less the fectas'
-   recommended stakes (cash only; with Use free play on, fectas draw on the free
-   play balance and parlays keep the cash). An NFL parlay sits in one group with
+5. **Stake** (`halves_board.size_half_board` -> `size_halves`): quarter Kelly on
+   the page's bankroll. **NFL** parlays come **after the fectas**: their budget
+   is the cash available less the fectas' recommended stakes (cash only; with
+   Use free play on, fectas draw on the free play balance and parlays keep the
+   cash). **College** parlays are sized **by slate** (Cal, 2026-11-13): a slate
+   is the college games whose first halves overlap (`cfb_slates`; a game joins
+   when it kicks off within `CFB_FIRST_HALF_WINDOW` = 2 h of an earlier one's
+   kickoff, chained), and each slate splits the whole cash available, nothing
+   held back for fectas, because a 1H parlay settles at halftime, before the
+   next slate. A later slate's stakes are only final once the earlier slate
+   settles and Refresh reads the new balance. An NFL parlay sits in one group with
    that spread team's fectas in the game (the fectas' `board._team_key`): the
    fectas' placed bets and recommended stakes are fixed bets the parlay is sized
    around, as one nested chain, the maximum correlation the fairs allow, so a
@@ -321,7 +328,7 @@ Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
 |---|---|
 | `wz.py` | scrape the week's fectas; place one |
 | `wz_halves.py` | read Wagerzon's NFL and college 1H lines, preview every pairing, place a 1H parlay |
-| `halves_board.py` | one 1H refresh (book matching, 2 x 2 partition fairs); sizing after the fectas |
+| `halves_board.py` | one 1H refresh (book matching, 2 x 2 partition fairs); NFL sizing after the fectas, college by slate |
 | `special_parser.py` | description -> legs (anything unrecognized is refused, never guessed) |
 | `books.py` | adapter interface: a leg = an exhaustive outcome group |
 | `fd_book.py`, `mgm_book.py`, `dk_book.py` | per-book market lookup + SGP price |

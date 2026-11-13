@@ -36,8 +36,8 @@ from urllib.parse import parse_qs, urlparse
 from nfl_specials import config, wz, wz_halves
 from nfl_specials.board import Board, HeldPlacement, refresh_board, size_board
 from nfl_specials.books import parse_start
-from nfl_specials.halves_board import (HalfBoard, HeldHalfParlay, conservative_american,
-                                       refresh_halves, size_halves)
+from nfl_specials.halves_board import (CfbSlate, HalfBoard, HeldHalfParlay, conservative_american,
+                                       refresh_halves, size_half_board)
 from nfl_specials.pricing import decimal_to_american, free_play_value
 from nfl_specials.store import Store
 
@@ -175,8 +175,10 @@ class SpecialsApp:
                                held=_held_placements(placements, account))
         if halves is not None:
             half_budget = self.half_budget(account, sized)
-            half_sized = self.size_halves_for(halves, board, sized, half_budget, settings, account,
-                                              placements, half_placements)
+            half_sized, slates = self.size_halves_for(halves, board, sized, half_budget, settings, account,
+                                                      placements, half_placements)
+            slate_of_game = {game_id: number for number, slate in enumerate(slates, start=1)
+                             for game_id in slate.wz_game_ids}
             payload["halves"] = {
                 "started_at": halves.started_at.isoformat(),
                 "finished_at": halves.finished_at.isoformat() if halves.finished_at else None,
@@ -184,7 +186,10 @@ class SpecialsApp:
                 "progress_total": halves.progress_total,
                 "book_status": halves.book_status,
                 "budget": half_budget,
-                "lines": [_half_line_json(line, half_sized) for line in halves.lines],
+                "cfb_slate_budget": self.budget(account),
+                "cfb_slates": [_slate_json(slate) for slate in slates],
+                "lines": [_half_line_json(line, half_sized, slate_of_game.get(line.game.wz_game_id))
+                          for line in halves.lines],
             }
         if board is None:
             return payload
@@ -200,9 +205,11 @@ class SpecialsApp:
         return payload
 
     def half_budget(self, account: str, fecta_sizing: list) -> float | None:
-        """Cash left for 1H parlays: the account's cash 'available' less the
+        """Cash left for NFL 1H parlays: the account's cash 'available' less the
         fectas' recommended stakes (fectas get first call; with Use free play
-        on they draw on the free play balance, not this one). None = unknown."""
+        on they draw on the free play balance, not this one). None = unknown.
+        College 1H parlays don't use it: each slate gets the whole cash balance
+        (halves_board.size_half_board)."""
         cash = self.budget(account)
         if cash is None:
             return None
@@ -211,12 +218,16 @@ class SpecialsApp:
 
     def size_halves_for(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list,
                         budget: float | None, settings: dict, account: str | None,
-                        placements: list[dict], half_placements: list[dict]) -> dict:
-        """size_halves on this account's bets; an unknown budget recommends nothing."""
-        return size_halves(halves, settings["bankroll"], settings["kelly_fraction"],
-                           0.0 if budget is None else budget, fecta_board, fecta_sizing,
-                           held_fectas=_held_placements(placements, account),
-                           held=_held_half_parlays(half_placements, account))
+                        placements: list[dict], half_placements: list[dict]) -> tuple[dict, list[CfbSlate]]:
+        """size_half_board on this account's bets: NFL on `budget` (cash after
+        fectas), each college slate on the whole cash balance. An unknown
+        balance recommends nothing."""
+        cash = self.budget(account)
+        return size_half_board(halves, settings["bankroll"], settings["kelly_fraction"],
+                               0.0 if budget is None else budget, 0.0 if cash is None else cash,
+                               fecta_board, fecta_sizing,
+                               held_fectas=_held_placements(placements, account),
+                               held=_held_half_parlays(half_placements, account))
 
     # --- write -------------------------------------------------------------
     def save_settings(self, body: dict) -> dict:
@@ -357,7 +368,7 @@ class SpecialsApp:
                                        held=_held_placements(placements, account))
                             if fecta_board is not None else [])
             sizing = self.size_halves_for(halves, fecta_board, fecta_sizing, self.half_budget(account, fecta_sizing),
-                                          settings, account, placements, half_placements)[(wz_game_id, corner)]
+                                          settings, account, placements, half_placements)[0][(wz_game_id, corner)]
             if sizing.fair_prob is None:
                 # e.g. a whole-number line only one book priced (halves_board.MIN_BOOKS_WHOLE_NUMBER)
                 raise ValueError(f"1H {corner} on game {wz_game_id} has no fair price: "
@@ -470,7 +481,12 @@ def _line_json(line, sizing) -> dict:
     }
 
 
-def _half_line_json(line, sized: dict) -> dict:
+def _slate_json(slate: CfbSlate) -> dict:
+    return {"first_kickoff": slate.first_kickoff.isoformat(), "halftime_by": slate.halftime_by.isoformat(),
+            "wz_game_ids": list(slate.wz_game_ids)}
+
+
+def _half_line_json(line, sized: dict, slate: int | None = None) -> dict:
     game = line.game
     corners = {}
     for corner in wz_halves.CORNERS:
@@ -497,6 +513,7 @@ def _half_line_json(line, sized: dict) -> dict:
         "status": line.status, "note": line.note,
         "book_reasons": {name: fair.reason for name, fair in line.book_fairs.items() if fair.reason},
         "corners": corners,
+        "slate": slate,                 # college: 1-based slate number; NFL: None
     }
 
 

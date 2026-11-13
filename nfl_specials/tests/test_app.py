@@ -271,3 +271,19 @@ def test_a_single_book_whole_number_1h_parlay_is_refused_and_nothing_placed(app,
         app.place_half({"wz_game_id": 42, "corner": "away_over", "risk": 40, "wz_decimal": 3.59,
                         "account": "Wagerzon"})
     assert sent == []
+
+
+def test_a_college_slate_sizes_on_the_whole_cash_not_the_cash_after_fectas(app):
+    from nfl_specials.halves_board import HalfBoard, HalfBookFair, HalfLine
+    from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
+    game = WzHalfGame(league="CFB", wz_game_id=77, away="OREGON", home="USC",
+                      game_start_time=datetime(2099, 1, 1, tzinfo=timezone.utc), away_spread=-3.5,
+                      away_spread_american=-110, home_spread_american=-110, total=27.5,
+                      over_american=-110, under_american=-110)
+    fairs = {"away_over": 0.29, "away_under": 0.21, "home_over": 0.20, "home_under": 0.30}
+    line = HalfLine(game, "priced", book_fairs={"FanDuel": HalfBookFair("FanDuel", fairs, 1.2)},
+                    wz_prices={c: WzParlayPrice(3.64) for c in CORNERS})
+    app.publish_halves(HalfBoard(datetime.now(timezone.utc), datetime.now(timezone.utc), [line], {}))
+    halves = app.board_payload("Wagerzon")["halves"]
+    assert halves["cfb_slate_budget"] == 500.0
+    assert halves["cfb_slates"][0]["wz_game_ids"] == [77] and halves["lines"][0]["slate"] == 1
