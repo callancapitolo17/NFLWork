@@ -1080,7 +1080,7 @@ function renderHalves(p) {
         : `${slates.length} slate${slates.length === 1 ? "" : "s"}; each bet on the balance after the last one settles` })]),
     el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Recommended" }),
       el("div", { class: "tile-value num", text: money(total) }),
-      el("div", { class: "tile-sub", text: `${live.length} parlay${live.length === 1 ? "" : "s"}${slates.length > 1 ? ", every slate added up" : ""}` })]),
+      el("div", { class: "tile-sub", text: `${live.length} parlay${live.length === 1 ? "" : "s"}${slates.length ? ", NFL and every slate added up" : ""}` })]),
     el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Expected profit" }),
       el("div", { class: "tile-value num", style: profit > 0 ? "color:var(--good)" : null, text: (profit > 0 ? "+" : "") + money(profit) }),
       el("div", { class: "tile-sub", text: "at worst-case fair" })]),

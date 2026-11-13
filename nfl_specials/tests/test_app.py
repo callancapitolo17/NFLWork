@@ -309,3 +309,14 @@ def test_an_unread_balance_stakes_no_college_parlay(app, monkeypatch):
     halves = app.board_payload("Wagerzon")["halves"]
     assert all(c["recommended_stake"] == 0 for c in halves["lines"][0]["corners"].values())
     assert halves["cfb_slates"][0]["budget"] == 0.0
+
+
+def test_a_fecta_kicking_off_during_the_slate_is_held_back_unless_it_is_on_free_play(app):
+    app.store.save_settings(10000.0, 0.25, False)
+    _publish_one_college_game(app, kickoff=datetime(2098, 12, 31, 23, tzinfo=timezone.utc))   # fecta at 00:00
+    payload = app.board_payload("Wagerzon")
+    fecta_stake = payload["board"]["lines"][0]["recommended_stake"]
+    assert fecta_stake > 0
+    assert payload["halves"]["cfb_slates"][0]["budget"] == pytest.approx(500.0 - fecta_stake)
+    app.store.save_settings(10000.0, 0.25, True)
+    assert app.board_payload("Wagerzon")["halves"]["cfb_slates"][0]["budget"] == 500.0
