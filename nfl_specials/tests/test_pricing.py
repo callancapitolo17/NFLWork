@@ -229,7 +229,9 @@ def test_the_leg_with_the_most_outcomes_goes_last_in_every_request():
 
     class RecordingBook:
         name = "Recorder"
-        requests: list = []
+
+        def __init__(self):
+            self.requests = []
 
         def price(self, game, refs):
             self.requests.append(refs)

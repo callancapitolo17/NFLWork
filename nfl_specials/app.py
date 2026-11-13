@@ -68,6 +68,9 @@ class SpecialsApp:
         self._board: Board | None = None
         self._halves: HalfBoard | None = None
         self._refreshing = False
+        # True from a refresh's start until its fecta board is done (or failed):
+        # 1H stakes wait for it (_cash_for_halves).
+        self._fectas_pricing = False
         self._last_error: str | None = None
         self._place_lock = threading.Lock()   # one Wagerzon submission at a time
         # Wagerzon account -> cash 'available' (the budget), read when a
@@ -92,6 +95,7 @@ class SpecialsApp:
             if self._refreshing:
                 return False
             self._refreshing = True
+            self._fectas_pricing = True
         threading.Thread(target=self._run_refresh, name="refresh", daemon=True).start()
         return True
 
@@ -120,6 +124,10 @@ class SpecialsApp:
                         # Its old fairs must not stay placeable after a failed refresh.
                         with self._lock:
                             self._halves = None
+                finally:
+                    if name == "fectas":
+                        with self._lock:
+                            self._fectas_pricing = False
 
             boards = (("fectas", lambda: refresh_board(self.store, self.publish, turns)),
                       ("1H parlays", lambda: refresh_halves(self.store, self.publish_halves, turns)))
@@ -137,6 +145,7 @@ class SpecialsApp:
         finally:
             with self._lock:
                 self._refreshing = False
+                self._fectas_pricing = False
 
     # --- read --------------------------------------------------------------
     def budget(self, account: str, use_free_play: bool = False) -> float | None:
@@ -215,15 +224,15 @@ class SpecialsApp:
         }
         return payload
 
-    def _cash_for_halves(self, account: str | None, fecta_board: Board | None) -> float | None:
+    def _cash_for_halves(self, account: str | None) -> float | None:
         """The cash 1H parlays are fitted to: the account's cash 'available',
-        or 0 while this refresh's fecta board is still pricing and fectas draw
-        on cash. The two boards price side by side, so the 1H board can finish
-        first, and a fecta not priced yet has no stake to set aside: sized
-        then, 1H stakes would take cash the fectas get first call on."""
+        or 0 while this refresh's fecta board is still pricing (from the
+        refresh's start, before its first publish) and fectas draw on cash.
+        The two boards price side by side, so the 1H board can finish first,
+        and a fecta not priced yet has no stake to set aside: sized then, 1H
+        stakes would take cash the fectas get first call on."""
         with self._lock:
-            refreshing = self._refreshing
-        fectas_pricing = refreshing and fecta_board is not None and fecta_board.finished_at is None
+            fectas_pricing = self._fectas_pricing
         if fectas_pricing and not self.store.settings()["use_free_play"]:
             return 0.0
         return self.budget(account)
@@ -233,7 +242,7 @@ class SpecialsApp:
         fectas' recommended stakes (fectas get first call; with Use free play
         on they draw on the free play balance, not this one). None = unknown.
         College 1H parlays don't use it (cfb_slates_for)."""
-        cash = self._cash_for_halves(account, fecta_board)
+        cash = self._cash_for_halves(account)
         if cash is None:
             return None
         fecta_cash = 0.0 if self.store.settings()["use_free_play"] else sum(s.recommended_stake for s in fecta_sizing)
@@ -244,7 +253,7 @@ class SpecialsApp:
         """This account's college slates, each on the whole cash less fectas
         due before its halftime (none when fectas draw on free play)."""
         fectas_use_cash = not self.store.settings()["use_free_play"]
-        return cfb_slates(halves, self._cash_for_halves(account, fecta_board),
+        return cfb_slates(halves, self._cash_for_halves(account),
                           fecta_board if fectas_use_cash else None,
                           fecta_sizing if fectas_use_cash else [])
 

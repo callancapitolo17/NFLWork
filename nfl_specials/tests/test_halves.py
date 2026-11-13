@@ -364,6 +364,109 @@ def test_wagerzon_previews_run_with_the_books_for_listed_games_only(monkeypatch)
     assert all(r["wz_decimal"] == 3.64 for r in wz_rows)
 
 
+def test_a_failed_wagerzon_preview_fails_the_1h_board(monkeypatch):
+    monkeypatch.setattr(halves_board.wz_halves, "fetch_half_games", lambda: [_game()])
+
+    def preview_down(games):
+        raise ConnectionError("Wagerzon preview timed out")
+
+    monkeypatch.setattr(halves_board.wz_halves, "price_corners", preview_down)
+
+    class ListedBook(CorrelatedBook):
+        def games(self):
+            return [BOOK_GAME]
+
+    monkeypatch.setattr(halves_board, "open_books", lambda _turns: (
+        {("FanDuel", "NFL"): ListedBook("FanDuel", TRUE_CORNERS)}, {"FanDuel NFL": "ok"}))
+
+    class MemoryStore:
+        def append_half_quotes(self, rows):
+            pass
+
+    with pytest.raises(ConnectionError, match="preview timed out"):
+        halves_board.refresh_halves(MemoryStore(), lambda _board: None, new_book_turns())
+
+
+def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
+    """The fecta and 1H boards price at once; a book's lock keeps its work
+    one game or special at a time across both, and both boards' DraftKings
+    books get the refresh's one pacer."""
+    import threading
+    import time as time_module
+    from nfl_specials import board as board_module
+    turns = new_book_turns()
+    inside = {name: 0 for name in turns.locks}
+    most_inside = {name: 0 for name in turns.locks}
+    count_lock = threading.Lock()
+
+    def busy(name):
+        with count_lock:
+            inside[name] += 1
+            most_inside[name] = max(most_inside[name], inside[name])
+        time_module.sleep(0.01)
+        with count_lock:
+            inside[name] -= 1
+
+    def fecta_lane_task(book, line):
+        busy(book.name)
+        return board_module.BookFair(book.name, None, None, None, 0, reason="test")
+
+    class Named:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(halves_board, "price_half_at_book",
+                        lambda book, book_game, game: (busy(book.name), HalfBookFair(book.name, None, None, "t"))[1])
+    monkeypatch.setattr(board_module, "_price_partition", fecta_lane_task)
+    half_lines = [halves_board.HalfLine(_game(wz_game_id=i), "pricing") for i in range(6)]
+    fecta_lines = [object() for _ in range(6)]
+
+    class NoStore:
+        def append_quotes(self, rows):
+            pass
+
+        def append_half_quotes(self, rows):
+            pass
+
+    monkeypatch.setattr(board_module, "_quote_row", lambda *args, **kwargs: {})
+    fake_fecta_board = board_module.Board(datetime.now(timezone.utc), None, [], {})
+    fake_fecta_board.book_progress = {name: {"done": 0, "total": 6} for name in turns.locks}
+    fake_half_board = halves_board.HalfBoard(datetime.now(timezone.utc), None, half_lines, {})
+
+    class FectaLineStub:
+        book_fairs: dict
+
+        def __init__(self):
+            self.book_fairs = {}
+
+        def is_superfecta(self):
+            return False
+
+    stubs = [FectaLineStub() for _ in fecta_lines]
+    threads = []
+    for name in turns.locks:
+        book = Named(name)
+        threads.append(threading.Thread(target=board_module._price_lane, args=(
+            name, book, [("partition", stub) for stub in stubs], fake_fecta_board, threading.Lock(),
+            turns.locks[name], NoStore(), lambda _b: None)))
+        threads.append(threading.Thread(target=halves_board._price_lane, args=(
+            name, [(book, BOOK_GAME, line) for line in half_lines], fake_half_board, threading.Lock(),
+            turns.locks[name], NoStore(), lambda _b: None)))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert most_inside == {name: 1 for name in turns.locks}
+
+    opened = {}
+    monkeypatch.setattr(halves_board, "DraftKingsBook", lambda **kwargs: opened.setdefault(kwargs["league"], kwargs))
+    monkeypatch.setattr(halves_board, "FanDuelBook", lambda league: None)
+    monkeypatch.setattr(halves_board, "BetMgmBook", lambda league: None)
+    halves_board.open_books(turns)
+    assert {league: kwargs["pacer"] for league, kwargs in opened.items()} == {
+        "NFL": turns.dk_pacer, "CFB": turns.dk_pacer}
+
+
 # --- placing -----------------------------------------------------------------------
 from nfl_specials import app as app_module  # noqa: E402
 from nfl_specials import wz_halves  # noqa: E402

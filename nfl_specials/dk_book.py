@@ -220,7 +220,7 @@ class DraftKingsBook:
         """DK's SGP price for `refs`, or None when DK will not combine them.
 
         The last ref is priced as an addition to the others, so cells that
-        share every leg but the last (consecutive cells of a partition) cost
+        share every leg but the last cost
         one request between them.
         """
         if len(refs) < 2:

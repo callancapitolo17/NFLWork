@@ -23,7 +23,7 @@ The board prices only when you click **Refresh** (no auto-refresh). The three
 books price side by side, one thread each (`board.py::_price_lane`), so the
 refresh takes about as long as the slowest book. Measured 2026-10-02 (17
 specials): BetMGM done in 0.5 min, FanDuel in 0.9 min; DraftKings' six
-superfectas (7-10 requests each, 0.5 s apart) took ~40 s over plain HTTP.
+superfectas (7-10 requests each then, 0.5 s apart) took ~40 s over plain HTTP.
 
 ## Running on the VM
 
