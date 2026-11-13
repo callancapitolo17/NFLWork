@@ -24,15 +24,14 @@ Leg -> DK market:
 from __future__ import annotations
 
 import logging
-import threading
-import time
 from typing import Hashable
 from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException
 
-from nfl_specials.books import NFL, BookGame, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
+from nfl_specials.books import (NFL, BookGame, LegMarket, Outcome, RequestPacer, is_half_point, next_game,
+                                widen_with_tie)
 from nfl_specials.special_parser import Leg
 from nfl_specials.teams import NICKNAME_TO_ABBR
 
@@ -57,31 +56,8 @@ DK_FOOTBALL_SPORT_ID = "3"
 # DK's own SGP widget throttles its price requests to one per 500 ms; never
 # go faster than a person clicking legs.
 MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.5
-
-
-class PriceCallPacer:
-    """One DraftKings price call at a time, each sent at least
-    MIN_SECONDS_BETWEEN_PRICE_CALLS after the previous one's answer, across
-    every DraftKingsBook that shares it: one refresh prices the fecta and 1H
-    boards side by side, and together they must still go no faster than one
-    person clicking. (mlb_sgp.dk_client.PriceLane gates the same endpoint
-    but gives up after a max wait and caches answers; here every call waits
-    its turn and DraftKingsBook keeps its own cache.)"""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._last_call_done_at = float("-inf")
-
-    def call(self, send):
-        """Run `send()` (one price request) once the gap has passed; returns its result."""
-        with self._lock:
-            wait = MIN_SECONDS_BETWEEN_PRICE_CALLS - (time.monotonic() - self._last_call_done_at)
-            if wait > 0:
-                time.sleep(wait)
-            try:
-                return send()
-            finally:
-                self._last_call_done_at = time.monotonic()
+# DK statuses that mean "DK refuses us", as opposed to "DK won't price this".
+BLOCKED_PRICE_STATUSES = frozenset({403, 429})
 
 SPREAD_MAIN = {"GM": "Spread", "Q1": "Spread 1st Quarter", "H1": "Spread 1st Half"}
 SPREAD_ALT = {"GM": "Spread Alternate", "Q1": "Spread Alternate - 1st Quarter",
@@ -90,6 +66,7 @@ THREE_WAY_WIN = {"Q1": "1st Quarter (3 Way)", "H1": "1st Half (3 Way)"}
 TOTAL_MAIN = {"H1": "Total 1st Half"}
 TOTAL_ALT = {"H1": "Total Alternate - 1st Half"}
 ROLE_TO_DK = {"home": "Home", "away": "Away"}
+
 
 
 def dk_team_to_abbr(dk_name: str) -> str | None:
@@ -101,16 +78,17 @@ def dk_team_to_abbr(dk_name: str) -> str | None:
 class DraftKingsBook:
     name = "DraftKings"
 
-    def __init__(self, proxy_url: str | None, league: str = NFL, pacer: PriceCallPacer | None = None) -> None:
+    def __init__(self, proxy_url: str | None, league: str = NFL, pacer: RequestPacer | None = None) -> None:
         """`pacer`: shared by every DraftKingsBook of one refresh; None = its own."""
         self.league = league
-        self.pacer = pacer if pacer is not None else PriceCallPacer()
+        self.pacer = pacer if pacer is not None else RequestPacer(self.name, MIN_SECONDS_BETWEEN_PRICE_CALLS)
         self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
         self._unreachable: RequestException | None = None
         self._get(DK_WARMUP_URL, timeout=30)
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
         self._market_of_selection: dict[str, str] = {}
+        self._american_of_selection: dict[str, str] = {}
         # (event id, base selection ids, candidate market id) -> decimal odds of
         # base + each candidate selection DK can combine with it
         self._added_leg_odds: dict[tuple[str, frozenset[str], str], dict[str, float]] = {}
@@ -180,6 +158,9 @@ class DraftKingsBook:
             for market in self._markets[game.book_event_id].values():
                 for selection in market["selections"]:
                     self._market_of_selection[selection["id"]] = market["id"]
+                    american = (selection.get("displayOdds") or {}).get("american")
+                    if american and not selection.get("isDisabled"):
+                        self._american_of_selection[selection["id"]] = american
         return self._markets[game.book_event_id]
 
     # --- legs --------------------------------------------------------------
@@ -232,6 +213,11 @@ class DraftKingsBook:
             self._added_leg_odds[key] = self._fetch_added_leg_odds(*key)
         return self._added_leg_odds[key].get(last)
 
+    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
+        self._event_markets(game)
+        odds = tuple(self._american_of_selection.get(ref) for ref in refs)
+        return None if None in odds else odds
+
     def _fetch_added_leg_odds(self, event_id: str, base: frozenset[str],
                               candidate_market_id: str) -> dict[str, float]:
         """One GET: decimal odds of base + each selection of the candidate
@@ -240,6 +226,8 @@ class DraftKingsBook:
             DK_SGP_PRICE_URL, timeout=30, headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
             params={"eventId": event_id, "selections": ",".join(sorted(base)),
                     "marketCandidates": candidate_market_id, "oddsStyle": "american"}))
+        if resp.status_code in BLOCKED_PRICE_STATUSES:
+            self.pacer.halt(f"SGP price HTTP {resp.status_code}")
         if resp.status_code != 200:
             raise RuntimeError(f"DK SGP price for event {event_id} returned HTTP "
                                f"{resp.status_code}: {resp.text[:200]}")

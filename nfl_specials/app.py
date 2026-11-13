@@ -39,7 +39,7 @@ from nfl_specials.board import Board, HeldPlacement, new_book_turns, refresh_boa
 from nfl_specials.books import parse_start
 from nfl_specials.halves_board import (CfbSlate, HalfBoard, HeldHalfParlay, cfb_slates, conservative_american,
                                        refresh_halves, size_half_board)
-from nfl_specials.pricing import decimal_to_american, free_play_value
+from nfl_specials.pricing import PriceMemory, decimal_to_american, free_play_value
 from nfl_specials.store import Store
 
 log = logging.getLogger("nfl_specials.app")
@@ -79,6 +79,8 @@ class SpecialsApp:
         # Wagerzon account -> free play balance (the budget with Use free play
         # on), read and lowered the same way by free play placements.
         self._free_play: dict[str, float | None] = {}
+        # Partitions priced by earlier refreshes, reused while unchanged (pricing.PriceMemory).
+        self.price_memory = PriceMemory()
 
     # --- refresh -----------------------------------------------------------
     def publish(self, board: Board) -> None:
@@ -111,7 +113,7 @@ class SpecialsApp:
         across both; one board failing does not stop the other."""
         try:
             self._read_balances()
-            turns = new_book_turns()
+            turns = new_book_turns(self.price_memory)
             errors: dict[str, str] = {}
 
             def run_board(name: str, run: Callable[[], object]) -> None:

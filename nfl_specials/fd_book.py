@@ -26,7 +26,8 @@ from typing import Hashable
 
 from curl_cffi import requests as cffi_requests
 
-from nfl_specials.books import NFL, BookGame, TeamKey, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
+from nfl_specials.books import (NFL, BookGame, LegMarket, Outcome, RequestPacer, TeamKey, is_half_point,
+                                next_game, widen_with_tie)
 from nfl_specials.config import REPO_ROOT
 from nfl_specials.special_parser import Leg
 from nfl_specials.teams import ODDS_API_NAME_TO_ABBR
@@ -44,16 +45,24 @@ SPREAD_ALT = {"GM": "Alternate Spread", "H1": "1st Half Alternate Spread"}
 THREE_WAY_WIN = {"Q1": "1st Quarter Winner (3-Way)", "H1": "1st Half Winner (3-Way)"}
 TOTAL_MAIN = {"H1": "1st Half Total"}
 ALT_RUNNER_RE = re.compile(r"^(.+?) \(([+-]\d+(?:\.\d+)?)\)$")
+# FanDuel's CloudFront blocks the VM's address for ~40 min once implyBets runs
+# near 6 a second (2026-11-13: ~234 calls in 40 s, then 403 on every call).
+# 1 s after each answer is a safe guess until the real ceiling is measured.
+MIN_SECONDS_BETWEEN_PRICE_CALLS = 1.0
+BLOCKED_PRICE_STATUSES = frozenset({403, 429})
 
 
 class FanDuelBook:
     name = "FanDuel"
 
-    def __init__(self, league: str = NFL) -> None:
+    def __init__(self, league: str = NFL, pacer: RequestPacer | None = None) -> None:
+        """`pacer`: shared by every FanDuelBook of one refresh; None = its own."""
         self.league = league
+        self.pacer = pacer if pacer is not None else RequestPacer(self.name, MIN_SECONDS_BETWEEN_PRICE_CALLS)
         self.session = cffi_requests.Session(impersonate="chrome")
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
+        self._decimal_of_runner: dict[tuple, float] = {}
 
     # --- discovery ---------------------------------------------------------
     def _list_games(self) -> list[BookGame]:
@@ -97,6 +106,10 @@ class FanDuelBook:
             for market in _walk_dicts(resp.json(), lambda d: "marketId" in d and "runners" in d and "marketName" in d):
                 if market.get("sgmMarket") and market.get("marketStatus") == "OPEN":
                     markets.setdefault(market["marketName"], market)
+                    for runner in market.get("runners", []):
+                        decimal = _runner_decimal(runner)
+                        if decimal is not None:
+                            self._decimal_of_runner[(market["marketId"], runner["selectionId"])] = decimal
             self._markets[game.book_event_id] = markets
         return self._markets[game.book_event_id]
 
@@ -125,12 +138,20 @@ class FanDuelBook:
         raise ValueError(f"unknown leg kind {leg.kind!r}")
 
     # --- pricing -----------------------------------------------------------
+    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
+        self._event_markets(game)
+        odds = tuple(self._decimal_of_runner.get(ref) for ref in refs)
+        return None if None in odds else odds
+
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
         body = {"betLegs": [{"legType": "SIMPLE_SELECTION",
                              "betRunners": [{"runner": {"marketId": market_id, "selectionId": selection_id}}]}
                             for market_id, selection_id in refs]}
-        resp = self.session.post(FD_IMPLY_BETS_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
-                                 data=json.dumps(body), timeout=20)
+        resp = self.pacer.call(lambda: self.session.post(
+            FD_IMPLY_BETS_URL, headers={**FD_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps(body), timeout=20))
+        if resp.status_code in BLOCKED_PRICE_STATUSES:
+            self.pacer.halt(f"implyBets HTTP {resp.status_code}")
         if resp.status_code != 200:
             raise RuntimeError(f"FanDuel implyBets returned HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
@@ -140,6 +161,13 @@ class FanDuelBook:
         # INVALID_SGM_COMBINATION = FD will not build this parlay (a decline);
         # INVALID_COMBINATION rides on every same-game request and means nothing.
         return None
+
+
+def _runner_decimal(runner: dict) -> float | None:
+    """A runner's single decimal odds (winRunnerOdds.trueOdds.decimalOdds.decimalOdds), or None."""
+    odds = ((runner.get("winRunnerOdds") or {}).get("trueOdds") or {}).get("decimalOdds") or {}
+    decimal = odds.get("decimalOdds")
+    return float(decimal) if isinstance(decimal, (int, float)) else None
 
 
 def _walk_dicts(node, keep) -> list[dict]:

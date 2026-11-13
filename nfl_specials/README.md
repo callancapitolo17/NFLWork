@@ -328,9 +328,22 @@ only 1st halves are read.
 
 Refresh prices the fectas and the 1H board side by side. Each book still
 answers one request at a time across both boards (`board.BookTurns`: a lock
-per book, held while it opens and for one special or one 1H game, plus
-DraftKings' shared 0.5 s pacer), so no book sees more traffic than when the
-boards ran one after the other. Wagerzon's 1H previews run while the books
+per book, held while it opens and for one special or one 1H game, plus one
+`books.RequestPacer` per book: DraftKings 0.5 s after each answer, FanDuel
+1 s, BetMGM none), so no book sees more traffic than when the boards ran one
+after the other. A 403 or 429 on a price call stops that book for the rest of
+the refresh (its later specials and games read "blocked this refresh"):
+FanDuel's CloudFront blocked the VM for ~40 min on 2026-11-13 after ~6
+calls/s, and every extra call into a block extends it.
+
+Prices are reused across refreshes (`pricing.PriceMemory`, held by the app): a
+partition (or a superfecta's scores-first share) priced in the last 10 min
+(`MAX_REUSE_AGE_SECONDS`) is not re-sent while the book's own single price of
+every outcome in it, read off the game payload the refresh loads anyway, is
+unchanged. A moved line, a moved price or an older entry prices afresh; a
+declined cell or a bad overround is never kept. Quote rows carry `priced_at`,
+when the book's prices behind them were read (earlier than `quoted_at` on a
+reused row; NULL on rows from before 2026-11-13). Wagerzon's 1H previews run while the books
 price (games some book lists; rows stamped when the previews came back).
 While the fecta board is still pricing, 1H
 parlays get no stake (fectas get first call on the cash). DraftKings prices

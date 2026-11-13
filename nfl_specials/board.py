@@ -31,12 +31,12 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable
 
-from nfl_specials import config, wz
-from nfl_specials.books import BookGame, SgpBook, parse_start
-from nfl_specials.dk_book import DraftKingsBook, PriceCallPacer
+from nfl_specials import config, dk_book, fd_book, mgm_book, wz
+from nfl_specials.books import BookGame, RequestPacer, SgpBook, parse_start
+from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (BookFair, Candidate, ExposureGroup, HeldBet, ScoresFirstShare,
+from nfl_specials.pricing import (BookFair, Candidate, ExposureGroup, HeldBet, PriceMemory, ScoresFirstShare,
                                   budgeted_stakes, expected_value, kelly_stake, price_fecta_at_book,
                                   scores_first_share, trifecta_part, worst_case_fair)
 from nfl_specials.special_parser import Fecta, ParseFailure, parse_fecta
@@ -134,20 +134,28 @@ class BookTurns:
     """What one refresh's fecta and 1H boards share, so they can price side by
     side while each book still sees one request at a time, as when the boards
     ran one after the other: a lock per book name, held while the book opens
-    and for one special (or one 1H game) at a time, and DraftKings' pacer."""
+    and for one special (or one 1H game) at a time; a request pacer per book
+    (its gap between price calls, and its stop after a 403/429); and the
+    app's PriceMemory, which outlives the refresh."""
     locks: dict[str, threading.Lock]
-    dk_pacer: PriceCallPacer
+    pacers: dict[str, RequestPacer]
+    memory: PriceMemory
 
 
-def new_book_turns() -> BookTurns:
-    return BookTurns({name: threading.Lock() for name in BOOK_ORDER}, PriceCallPacer())
+def new_book_turns(memory: PriceMemory) -> BookTurns:
+    pacers = {"FanDuel": RequestPacer("FanDuel", fd_book.MIN_SECONDS_BETWEEN_PRICE_CALLS),
+              "BetMGM": RequestPacer("BetMGM", mgm_book.MIN_SECONDS_BETWEEN_PRICE_CALLS),
+              "DraftKings": RequestPacer("DraftKings", dk_book.MIN_SECONDS_BETWEEN_PRICE_CALLS)}
+    return BookTurns({name: threading.Lock() for name in BOOK_ORDER}, pacers, memory)
 
 
 def open_books(turns: BookTurns) -> tuple[dict[str, SgpBook], dict[str, str]]:
     books: dict[str, SgpBook] = {}
     status: dict[str, str] = {}
-    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook,
-                    "DraftKings": lambda: DraftKingsBook(proxy_url=config.DK_PROXY_URL, pacer=turns.dk_pacer)}
+    constructors = {"FanDuel": lambda: FanDuelBook(pacer=turns.pacers["FanDuel"]),
+                    "BetMGM": lambda: BetMgmBook(pacer=turns.pacers["BetMGM"]),
+                    "DraftKings": lambda: DraftKingsBook(proxy_url=config.DK_PROXY_URL,
+                                                         pacer=turns.pacers["DraftKings"])}
     for name in BOOK_ORDER:
         try:
             with turns.locks[name]:
@@ -310,29 +318,30 @@ def _quote_row(line: FectaLine, quoted_at: datetime, *, book: str, quote_kind: s
         "n_cells": fair.n_cells if fair else (share.n_calls if share else None),
         "sf_share": share.share if share else None,
         "reason": (fair.reason if fair else share.reason if share else None),
+        "priced_at": fair.priced_at if fair else (share.priced_at if share else None),
     }
 
 
-def _price_partition(book: SgpBook, line: FectaLine) -> BookFair:
+def _price_partition(book: SgpBook, line: FectaLine, memory: PriceMemory) -> BookFair:
     """The special's fair at `book` — for a superfecta, its trifecta part's."""
     target = trifecta_part(line.fecta) if line.is_superfecta() else line.fecta
     game = book_game(book, line)
     if game is None:
         return BookFair(book.name, None, None, None, 0, reason="this game is not listed")
     role = "home" if game.home == target.team else "away"
-    return price_fecta_at_book(book, game, role, target)
+    return price_fecta_at_book(book, game, role, target, memory)
 
 
-def _price_scores_first(book: SgpBook, line: FectaLine) -> ScoresFirstShare:
+def _price_scores_first(book: SgpBook, line: FectaLine, memory: PriceMemory) -> ScoresFirstShare:
     game = book_game(book, line)
     if game is None:
         return ScoresFirstShare(book.name, None, 0, reason="this game is not listed")
     role = "home" if game.home == line.fecta.team else "away"
-    return scores_first_share(book, game, role, line.fecta)
+    return scores_first_share(book, game, role, line.fecta, memory)
 
 
 def _price_lane(name: str, book: SgpBook, tasks: list[tuple[str, FectaLine]], board: Board,
-                board_lock: threading.Lock, book_lock: threading.Lock, store: Store,
+                board_lock: threading.Lock, book_lock: threading.Lock, memory: PriceMemory, store: Store,
                 publish: Callable[[Board], None]) -> None:
     """Price one book's tasks in order, each holding `book_lock` (the book's
     turn, shared with the 1H board). Network calls run outside `board_lock`;
@@ -343,9 +352,9 @@ def _price_lane(name: str, book: SgpBook, tasks: list[tuple[str, FectaLine]], bo
         try:
             with book_lock:
                 if task == "scores_first":
-                    result = _price_scores_first(book, line)
+                    result = _price_scores_first(book, line, memory)
                 else:
-                    result = _price_partition(book, line)
+                    result = _price_partition(book, line, memory)
         except Exception as exc:  # transport failure on one book/special
             log.warning("%s pricing %s failed: %s", name, line.special.description, exc)
             error = f"error: {exc}"[:200]
@@ -423,7 +432,8 @@ def refresh_board(store: Store, publish: Callable[[Board], None], turns: BookTur
 
     def run_lane(name: str, tasks: list[tuple[str, FectaLine]]) -> None:
         try:
-            _price_lane(name, books[name], tasks, board, board_lock, turns.locks[name], store, publish)
+            _price_lane(name, books[name], tasks, board, board_lock, turns.locks[name], turns.memory, store,
+                        publish)
         except Exception as exc:  # e.g. the quote append failed: surface it, never swallow
             log.exception("%s pricing lane crashed", name)
             lane_crashes.append((name, exc))

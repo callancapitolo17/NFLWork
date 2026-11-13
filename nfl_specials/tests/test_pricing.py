@@ -244,3 +244,106 @@ def test_the_leg_with_the_most_outcomes_goes_last_in_every_request():
     assert len({frozenset(refs[:-1]) for refs in book.requests}) == 6
     # The cells keep the legs' own order.
     assert [outcome.ref[0] for outcome in partition.cells[0]] == ["q1", "h1", "ml"]
+
+
+# --- PriceMemory: reuse across refreshes -------------------------------------------
+class SinglesBook(FakeBook):
+    """FakeBook that counts SGP calls and shows each outcome's single price."""
+
+    def __init__(self, leg_probs, singles: dict | None = None, **kwargs):
+        super().__init__(leg_probs, **kwargs)
+        self.singles = singles if singles is not None else {}
+        self.calls = 0
+
+    def price(self, game, refs):
+        self.calls += 1
+        return super().price(game, refs)
+
+    def single_odds(self, game, refs):
+        odds = tuple(self.singles.get(ref, "-110") for ref in refs)
+        return None if None in odds else odds
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_an_unchanged_partition_is_reused_with_its_priced_at():
+    from nfl_specials.pricing import PriceMemory
+    memory = PriceMemory()
+    first_book, second_book = SinglesBook([0.6, 0.55, 0.7]), SinglesBook([0.6, 0.55, 0.7])
+    first = price_fecta_at_book(first_book, GAME, "home", TRIFECTA, memory)
+    second = price_fecta_at_book(second_book, GAME, "home", TRIFECTA, memory)
+    assert first_book.calls == 8 and second_book.calls == 0
+    assert second == first and second.priced_at is not None
+
+
+def test_a_moved_single_price_prices_the_partition_again():
+    from nfl_specials.pricing import PriceMemory
+    memory = PriceMemory()
+    price_fecta_at_book(SinglesBook([0.6, 0.55, 0.7]), GAME, "home", TRIFECTA, memory)
+    moved = SinglesBook([0.6, 0.55, 0.72], singles={(2, "win"): "-125"})
+    fair = price_fecta_at_book(moved, GAME, "home", TRIFECTA, memory)
+    assert moved.calls == 8
+    assert fair.fair_prob == pytest.approx(0.6 * 0.55 * 0.72, abs=1e-6)
+
+
+def test_a_partition_older_than_the_age_limit_prices_again():
+    from nfl_specials.pricing import MAX_REUSE_AGE_SECONDS, PriceMemory
+    clock = FakeClock()
+    memory = PriceMemory(clock=clock)
+    price_fecta_at_book(SinglesBook([0.6, 0.55, 0.7]), GAME, "home", TRIFECTA, memory)
+    clock.now = MAX_REUSE_AGE_SECONDS - 1
+    fresh = SinglesBook([0.6, 0.55, 0.7])
+    price_fecta_at_book(fresh, GAME, "home", TRIFECTA, memory)
+    clock.now = MAX_REUSE_AGE_SECONDS + 1    # age counts from the first pricing, not the reuse
+    stale = SinglesBook([0.6, 0.55, 0.7])
+    price_fecta_at_book(stale, GAME, "home", TRIFECTA, memory)
+    assert (fresh.calls, stale.calls) == (0, 8)
+
+
+def test_no_single_prices_or_a_declined_cell_is_never_reused():
+    from nfl_specials.pricing import PriceMemory
+    memory = PriceMemory()
+    declined = SinglesBook([0.6, 0.55, 0.7], declined={((0, "win"), (1, "win"), (2, "win"))})
+    assert price_fecta_at_book(declined, GAME, "home", TRIFECTA, memory).fair_prob is None
+    again = SinglesBook([0.6, 0.55, 0.7])
+    assert price_fecta_at_book(again, GAME, "home", TRIFECTA, memory).fair_prob is not None
+    assert again.calls == 8
+    unknown = SinglesBook([0.6, 0.55, 0.7], singles={(0, "win"): None})
+    price_fecta_at_book(unknown, GAME, "home", TRIFECTA, memory)
+    assert unknown.calls == 8
+
+
+def test_an_unchanged_scores_first_share_is_reused():
+    from nfl_specials.pricing import PriceMemory, scores_first_share
+
+    class SinglesScoresFirstBook(ScoresFirstBook):
+        def single_odds(self, game, refs):
+            return tuple("-110" for _ in refs)
+
+    memory = PriceMemory()
+    superfecta = Fecta("SEA", "SUPERFECTA", (Leg("scores_first"),) + TRIFECTA.legs)
+    first_book, second_book = SinglesScoresFirstBook(), SinglesScoresFirstBook()
+    first = scores_first_share(first_book, GAME, "home", superfecta, memory)
+    second = scores_first_share(second_book, GAME, "home", superfecta, memory)
+    assert (len(first_book.priced), len(second_book.priced)) == (2, 0)
+    assert second == first
+
+
+def test_request_pacer_keeps_the_gap_and_stops_after_halt():
+    import time
+    from nfl_specials.books import BookBlocked, RequestPacer
+    pacer = RequestPacer("FanDuel", 0.05)
+    stamps = []
+    for _ in range(3):
+        pacer.call(lambda: stamps.append(time.monotonic()))
+    assert min(b - a for a, b in zip(stamps, stamps[1:])) >= 0.045
+    pacer.halt("implyBets HTTP 403")
+    with pytest.raises(BookBlocked, match="FanDuel blocked this refresh: implyBets HTTP 403"):
+        pacer.call(lambda: stamps.append("sent"))
+    assert "sent" not in stamps

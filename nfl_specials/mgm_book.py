@@ -25,7 +25,7 @@ import uuid
 from typing import Hashable
 
 from mlb_sgp.betmgm_client import BetMGMClient
-from nfl_specials.books import NFL, BookGame, LegMarket, Outcome, TeamKey, next_game
+from nfl_specials.books import NFL, BookGame, LegMarket, Outcome, RequestPacer, TeamKey, next_game
 from nfl_specials.special_parser import Leg
 from nfl_specials.teams import ODDS_API_NAME_TO_ABBR
 
@@ -37,16 +37,23 @@ TOTAL_OPTION_RE = re.compile(r"^(Over|Under) (\d+(?:\.\d+)?)$")
 # "Seattle Seahawks -7.5" / "Los Angeles Chargers (+6)"
 OPTION_RE = re.compile(r"^(.+?)\s*\(?([+-]\d+(?:\.\d+)?)\)?\s*$")
 PRICED_STATE = "MarketUnsuspended"
+# No BetMGM limit has shown up at our volume, so no gap: its pacer only keeps
+# one call at a time across both boards and stops on a block.
+MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.0
+BLOCKED_PRICE_STATUSES = frozenset({403, 429})
 
 
 class BetMgmBook:
     name = "BetMGM"
 
-    def __init__(self, league: str = NFL) -> None:
+    def __init__(self, league: str = NFL, pacer: RequestPacer | None = None) -> None:
+        """`pacer`: shared by every BetMgmBook of one refresh; None = its own."""
         self.league = league
+        self.pacer = pacer if pacer is not None else RequestPacer(self.name, MIN_SECONDS_BETWEEN_PRICE_CALLS)
         self.client = BetMGMClient()
         self._games = self._list_games()
         self._markets: dict[str, list[dict]] = {}
+        self._decimal_of_option: dict[tuple, float] = {}
 
     # --- discovery ---------------------------------------------------------
     def _list_games(self) -> list[BookGame]:
@@ -91,6 +98,11 @@ class BetMgmBook:
             self._markets[game.book_event_id] = [
                 m for m in fixtures[0].get("optionMarkets", [])
                 if m.get("isBetBuilder") and m.get("status") == "Visible"]
+            for market in self._markets[game.book_event_id]:
+                for option in market.get("options", []):
+                    decimal = (option.get("price") or {}).get("odds")
+                    if isinstance(decimal, (int, float)):
+                        self._decimal_of_option[(market["id"], option["id"])] = float(decimal)
         return self._markets[game.book_event_id]
 
     # --- legs --------------------------------------------------------------
@@ -111,6 +123,11 @@ class BetMgmBook:
         raise ValueError(f"unknown leg kind {leg.kind!r}")
 
     # --- pricing -----------------------------------------------------------
+    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
+        self._option_markets(game)
+        odds = tuple(self._decimal_of_option.get(ref) for ref in refs)
+        return None if None in odds else odds
+
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
         pick_group = str(uuid.uuid4())
         body = {"tv1Picks": [], "tv2Picks": [
@@ -118,7 +135,9 @@ class BetMgmBook:
              "useLiveFallback": False, "pickGroupId": pick_group}
             for market_id, option_id in refs]}
         url = f"{self.client._base}/bettingoffer/picks?{self.client._common_q()}"
-        resp = self.client.session.post(url, json=body, timeout=30)
+        resp = self.pacer.call(lambda: self.client.session.post(url, json=body, timeout=30))
+        if resp.status_code in BLOCKED_PRICE_STATUSES:
+            self.pacer.halt(f"picks HTTP {resp.status_code}")
         if resp.status_code != 200:
             raise RuntimeError(f"BetMGM picks returned HTTP {resp.status_code}: {resp.text[:200]}")
         groups = resp.json().get("betBuilderPricingGroups") or {}

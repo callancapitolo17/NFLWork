@@ -9,9 +9,11 @@ vig (pricing.py).
 """
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Hashable, Protocol
+from typing import Callable, Hashable, Protocol, TypeVar
 
 from nfl_specials.special_parser import Leg
 
@@ -84,6 +86,45 @@ def next_game(games: list[BookGame], team: str) -> BookGame | None:
     return min(upcoming, key=lambda g: parse_start(g.game_start_time), default=None)
 
 
+T = TypeVar("T")
+
+
+class BookBlocked(RuntimeError):
+    """The book refused us (HTTP 403/429): no more calls to it this refresh."""
+
+
+class RequestPacer:
+    """One price call at a time to one book, each sent at least
+    `min_gap_seconds` after the previous one's answer, across every adapter
+    of that book in one refresh (the fecta and 1H boards price side by
+    side). After `halt` (the book answered 403/429) every later call raises
+    BookBlocked at once: piling more calls into a block only extends it
+    (FanDuel 2026-11-13: one 403, then 164 more)."""
+
+    def __init__(self, book: str, min_gap_seconds: float) -> None:
+        self.book = book
+        self.min_gap_seconds = min_gap_seconds
+        self._lock = threading.Lock()
+        self._last_call_done_at = float("-inf")
+        self._halted: str | None = None
+
+    def call(self, send: Callable[[], T]) -> T:
+        """Run `send()` (one price request) once the gap has passed; returns its result."""
+        with self._lock:
+            if self._halted is not None:
+                raise BookBlocked(f"{self.book} blocked this refresh: {self._halted}")
+            wait = self.min_gap_seconds - (time.monotonic() - self._last_call_done_at)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                return send()
+            finally:
+                self._last_call_done_at = time.monotonic()
+
+    def halt(self, reason: str) -> None:
+        self._halted = reason
+
+
 class SgpBook(Protocol):
     """One refresh's view of one book. Adapters cache event listings and
     market payloads on the instance, so build a fresh one per refresh."""
@@ -104,3 +145,8 @@ class SgpBook(Protocol):
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
         """Decimal odds of the same-game parlay of `refs`, or None when the
         book declines the combination. Raises on transport failure."""
+
+    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
+        """Each ref's own single price as the book's game payload shows it
+        (already loaded by leg_market, so no request), or None when any is
+        missing. PartitionMemory reuses a partition only while these match."""

@@ -27,7 +27,11 @@ from __future__ import annotations
 
 import itertools
 import math
+import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Callable, Hashable
 
 import numpy as np
 from scipy.optimize import brentq
@@ -48,6 +52,7 @@ class ScoresFirstShare:
     share: float | None            # P(team scores first | the special's other legs)
     n_calls: int
     reason: str | None = None      # why share is None, or why a fixed share stands in
+    priced_at: datetime | None = None   # when the book's prices behind it were read (earlier when reused)
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class BookFair:
     overround: float | None
     n_cells: int
     reason: str | None = None      # why fair_prob is None
+    priced_at: datetime | None = None   # when the book's prices behind it were read (earlier when reused)
 
 
 def american_to_decimal(american: int) -> float:
@@ -80,12 +86,82 @@ class PartitionFair:
     implied: tuple[float, ...]             # 1 / the book's decimal per cell priced
     overround: float | None
     reason: str | None = None              # why cell_fairs is None
+    priced_at: datetime | None = None      # when its cells were priced
 
 
-def price_partition(book: SgpBook, game: BookGame, leg_markets: list[LegMarket]) -> PartitionFair:
+# A price kept from an earlier refresh is reused only this long after it was
+# priced, and only while the book's single prices of every leg outcome are
+# what they were then (PriceMemory).
+MAX_REUSE_AGE_SECONDS = 600.0
+
+
+class PriceMemory:
+    """Priced partitions (and scores-first shares) kept across refreshes, so
+    a refresh re-sends only what moved: an entry is reused while the book's
+    own single prices of every outcome involved (book.single_odds, read off
+    the game payload the refresh loads anyway, no extra request) are
+    unchanged and it is at most MAX_REUSE_AGE_SECONDS old. A changed single
+    price, or an older entry, prices afresh. Only successes are kept: a
+    declined cell or a bad overround is asked again next time.
+    Shared by the app's refreshes and both boards' threads."""
+
+    def __init__(self, max_age_seconds: float = MAX_REUSE_AGE_SECONDS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.max_age_seconds = max_age_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._entries: dict[Hashable, tuple[tuple, object, float]] = {}
+
+    def recall(self, key: Hashable, fingerprint: tuple | None):
+        """The value kept under `key` when its fingerprint matches and it is fresh, else None."""
+        if fingerprint is None:
+            return None
+        with self._lock:
+            entry = self._entries.get(key)
+        if entry is None:
+            return None
+        kept_fingerprint, value, kept_at = entry
+        if kept_fingerprint != fingerprint or self._clock() - kept_at > self.max_age_seconds:
+            return None
+        return value
+
+    def keep(self, key: Hashable, fingerprint: tuple | None, value: object) -> None:
+        """Keep `value`, priced now, under `key`; drops entries past the age limit."""
+        if fingerprint is None:
+            return
+        now = self._clock()
+        with self._lock:
+            self._entries = {k: entry for k, entry in self._entries.items()
+                             if now - entry[2] <= self.max_age_seconds}
+            self._entries[key] = (fingerprint, value, now)
+
+
+def _partition_refs(leg_markets: list[LegMarket]) -> tuple[tuple, ...]:
+    return tuple(tuple(outcome.ref for outcome in market.group) for market in leg_markets)
+
+
+def price_partition(book: SgpBook, game: BookGame, leg_markets: list[LegMarket],
+                    memory: PriceMemory | None = None) -> PartitionFair:
     """Price every cell of the legs' partition at `book` (one SGP call each)
     and probit-devig across them. A declined cell or an implied sum outside
-    [1, 1 + PARTITION_OVERROUND_PER_LEG x legs] prices nothing."""
+    [1, 1 + PARTITION_OVERROUND_PER_LEG x legs] prices nothing. With
+    `memory`, an unchanged partition priced in the last few minutes is
+    reused instead (PriceMemory); its priced_at says when it was priced."""
+    if memory is None:
+        return _price_partition_cells(book, game, leg_markets)
+    refs = _partition_refs(leg_markets)
+    key = ("partition", book.name, game.book_event_id, refs)
+    fingerprint = book.single_odds(game, tuple(ref for group in refs for ref in group))
+    kept = memory.recall(key, fingerprint)
+    if kept is not None:
+        return kept
+    partition = _price_partition_cells(book, game, leg_markets)
+    if partition.cell_fairs is not None:
+        memory.keep(key, fingerprint, partition)
+    return partition
+
+
+def _price_partition_cells(book: SgpBook, game: BookGame, leg_markets: list[LegMarket]) -> PartitionFair:
     cells = tuple(itertools.product(*(m.group for m in leg_markets)))
     # The leg with the most outcomes goes LAST in each request: DraftKings
     # prices every outcome of the last leg in one request, so a 3 x 3 x 2
@@ -97,18 +173,22 @@ def price_partition(book: SgpBook, game: BookGame, leg_markets: list[LegMarket])
         decimal = book.price(game, tuple(cell[index].ref for index in request_order))
         if decimal is None:
             labels = " + ".join(outcome.label for outcome in cell)
-            return PartitionFair(cells, None, tuple(implied), None, reason=f"declined cell: {labels}")
+            return PartitionFair(cells, None, tuple(implied), None, reason=f"declined cell: {labels}",
+                                 priced_at=datetime.now(timezone.utc))
         implied.append(1.0 / decimal)
     overround = sum(implied)
     max_overround = 1.0 + PARTITION_OVERROUND_PER_LEG * len(leg_markets)
     if not 1.0 <= overround <= max_overround:
         return PartitionFair(cells, None, tuple(implied), overround,
-                             reason=f"partition overround {overround:.3f} outside [1, {max_overround:.2f}]")
+                             reason=f"partition overround {overround:.3f} outside [1, {max_overround:.2f}]",
+                             priced_at=datetime.now(timezone.utc))
     devigged = probit_devig_n(implied)
-    return PartitionFair(cells, tuple(float(p) for p in devigged), tuple(implied), overround)
+    return PartitionFair(cells, tuple(float(p) for p in devigged), tuple(implied), overround,
+                         priced_at=datetime.now(timezone.utc))
 
 
-def price_fecta_at_book(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -> BookFair:
+def price_fecta_at_book(book: SgpBook, game: BookGame, role: str, fecta: Fecta,
+                        memory: PriceMemory | None = None) -> BookFair:
     """The fecta's fair at `book`: the devigged cells on which every leg wins."""
     leg_markets = []
     for leg in fecta.legs:
@@ -118,7 +198,7 @@ def price_fecta_at_book(book: SgpBook, game: BookGame, role: str, fecta: Fecta) 
                             reason=f"no SGP market for '{leg.describe(fecta.team)}'")
         leg_markets.append(market)
 
-    partition = price_partition(book, game, leg_markets)
+    partition = price_partition(book, game, leg_markets, memory)
     winning_cells = [index for index, cell in enumerate(partition.cells)
                      if all(outcome in market.winning for outcome, market in zip(cell, leg_markets))]
     # The book's own price for the special exists only when it is one cell
@@ -130,9 +210,10 @@ def price_fecta_at_book(book: SgpBook, game: BookGame, role: str, fecta: Fecta) 
         if partition.overround is None:   # a declined cell: no own price either
             sgp_decimal = None
         return BookFair(book.name, None, sgp_decimal, partition.overround, len(partition.cells),
-                        reason=partition.reason)
+                        reason=partition.reason, priced_at=partition.priced_at)
     fair = sum(partition.cell_fairs[index] for index in winning_cells)
-    return BookFair(book.name, float(fair), sgp_decimal, partition.overround, len(partition.cells))
+    return BookFair(book.name, float(fair), sgp_decimal, partition.overround, len(partition.cells),
+                    priced_at=partition.priced_at)
 
 
 def worst_case_fair(book_fairs: list[BookFair]) -> float | None:
@@ -398,7 +479,8 @@ def trifecta_part(fecta: Fecta) -> Fecta:
     return Fecta(team=fecta.team, prop_type="TRIFECTA", legs=fecta.legs[1:])
 
 
-def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -> ScoresFirstShare:
+def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta,
+                       memory: PriceMemory | None = None) -> ScoresFirstShare:
     """P(team scores first | the superfecta's other legs) from `book`'s SGPs.
 
     Prices (team scores first + rest) and (opponent scores first + rest);
@@ -421,6 +503,24 @@ def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -
         rest_markets.append(market)
     rest_cells = list(itertools.product(*(sorted(m.winning, key=lambda o: o.label) for m in rest_markets)))
 
+    if memory is None:
+        return _price_scores_first_cells(book, game, team_scores_first, opponent_scores_first, rest_cells)
+    refs = (team_scores_first.ref, opponent_scores_first.ref) + tuple(
+        tuple(outcome.ref for outcome in cell) for cell in rest_cells)
+    key = ("scores_first", book.name, game.book_event_id, refs)
+    fingerprint = book.single_odds(game, (team_scores_first.ref, opponent_scores_first.ref) + tuple(
+        {outcome.ref: None for cell in rest_cells for outcome in cell}))
+    kept = memory.recall(key, fingerprint)
+    if kept is not None:
+        return kept
+    share = _price_scores_first_cells(book, game, team_scores_first, opponent_scores_first, rest_cells)
+    if share.share is not None:
+        memory.keep(key, fingerprint, share)
+    return share
+
+
+def _price_scores_first_cells(book: SgpBook, game: BookGame, team_scores_first, opponent_scores_first,
+                              rest_cells: list[tuple]) -> ScoresFirstShare:
     implied = {team_scores_first: 0.0, opponent_scores_first: 0.0}
     calls = 0
     for first in (team_scores_first, opponent_scores_first):
@@ -431,7 +531,8 @@ def scores_first_share(book: SgpBook, game: BookGame, role: str, fecta: Fecta) -
             calls += 1
             if decimal is None:
                 labels = " + ".join([first.label] + [outcome.label for outcome in cell])
-                return ScoresFirstShare(book.name, None, calls, reason=f"declined: {labels}")
+                return ScoresFirstShare(book.name, None, calls, reason=f"declined: {labels}",
+                                        priced_at=datetime.now(timezone.utc))
             implied[first] += 1.0 / decimal
     share = implied[team_scores_first] / (implied[team_scores_first] + implied[opponent_scores_first])
-    return ScoresFirstShare(book.name, share, calls)
+    return ScoresFirstShare(book.name, share, calls, priced_at=datetime.now(timezone.utc))

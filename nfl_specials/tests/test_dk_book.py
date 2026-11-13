@@ -3,7 +3,7 @@ import pytest
 from curl_cffi.requests.exceptions import RequestException
 
 from nfl_specials import dk_book
-from nfl_specials.books import BookGame
+from nfl_specials.books import BookGame, RequestPacer
 from nfl_specials.dk_book import DraftKingsBook, parse_added_leg_odds
 
 GAME = BookGame("evt1", home="SEA", away="LAC", game_start_time="2099-01-01T00:00:00Z")
@@ -121,14 +121,12 @@ def test_two_books_sharing_a_pacer_keep_its_gap_between_them(monkeypatch):
     they must still go no faster than one price call per gap."""
     import threading
     import time
-    monkeypatch.setattr(dk_book, "MIN_SECONDS_BETWEEN_PRICE_CALLS", 0.0)
-    pacer = dk_book.PriceCallPacer()
+    pacer = RequestPacer("DraftKings", 0.05)
     sessions = [FakeSession(_price_answer(["q1_sea"], {"ml_sea": 2.4})) for _ in range(2)]
     books = []
     for session in sessions:
         monkeypatch.setattr(dk_book.cffi_requests, "Session", lambda impersonate, proxy, s=session: s)
         books.append(DraftKingsBook(proxy_url=None, pacer=pacer))
-    monkeypatch.setattr(dk_book, "MIN_SECONDS_BETWEEN_PRICE_CALLS", 0.05)
     stamps = []
     for session in sessions:
         real_get = session.get
@@ -151,3 +149,28 @@ def test_two_books_sharing_a_pacer_keep_its_gap_between_them(monkeypatch):
     stamps.sort()
     assert len(stamps) == 6
     assert min(later - earlier for earlier, later in zip(stamps, stamps[1:])) >= 0.045
+
+
+def test_a_403_stops_every_later_draftkings_call_this_refresh(monkeypatch):
+    """Piling more calls into a block only extends it: after the first 403
+    the book raises BookBlocked without sending anything."""
+    from nfl_specials.books import BookBlocked
+    session = FakeSession({"message": "Forbidden"}, price_status=403)
+    book = _book(monkeypatch, session)
+    with pytest.raises(RuntimeError, match="HTTP 403"):
+        book.price(GAME, ("q1_sea", "ml_sea"))
+    with pytest.raises(BookBlocked, match="SGP price HTTP 403"):
+        book.price(GAME, ("q1_lac", "ml_sea"))
+    assert len(session.price_calls) == 1
+
+
+def test_single_odds_read_off_the_event_payload_without_a_request(monkeypatch):
+    priced = [{"id": "m_ml", "name": "Moneyline", "tags": ["SGP"],
+               "selections": [{"id": "ml_sea", "displayOdds": {"american": "-150"}},
+                              {"id": "ml_lac", "displayOdds": {"american": "+130"}, "isDisabled": True}]}]
+    monkeypatch.setattr("nfl_specials.tests.test_dk_book.MARKETS", priced)
+    session = FakeSession(_price_answer(["q1_sea"], {}))
+    book = _book(monkeypatch, session)
+    assert book.single_odds(GAME, ("ml_sea",)) == ("-150",)
+    assert book.single_odds(GAME, ("ml_sea", "ml_lac")) is None   # a disabled outcome: nothing to compare
+    assert session.price_calls == []

@@ -40,8 +40,8 @@ from nfl_specials.books import CFB, NFL, BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (OutcomeBet, OutcomeGroup, american_to_decimal, budgeted_stakes, expected_value,
-                                  price_partition)
+from nfl_specials.pricing import (OutcomeBet, OutcomeGroup, PriceMemory, american_to_decimal, budgeted_stakes,
+                                  expected_value, price_partition)
 from nfl_specials.special_parser import Leg
 from nfl_specials.store import Store
 from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
@@ -73,6 +73,7 @@ class HalfBookFair:
     reason: str | None = None
     push_returns: dict[str, float] | None = None   # whole-number line: corner -> $ back per $1 from pushes
     push_cells: dict[tuple[str, str], float] | None = None   # whole-number line: the fitted grid's cells
+    priced_at: datetime | None = None       # when the book's prices behind it were read (earlier when reused)
 
     def outcome_cells(self) -> dict[tuple[str, str], float] | None:
         """(spread result, total result) -> chance, for every 1H result this
@@ -232,29 +233,34 @@ def match_book_game(game: WzHalfGame, book_games: list[BookGame]) -> BookGame | 
 
 
 # --- pricing -----------------------------------------------------------------
-def price_half_at_book(book: SgpBook, book_game: BookGame, game: WzHalfGame) -> HalfBookFair:
+def price_half_at_book(book: SgpBook, book_game: BookGame, game: WzHalfGame,
+                       memory: PriceMemory | None = None) -> HalfBookFair:
     """All four corner fairs of `game` at `book`: one 2 x 2 partition on
     half-point lines; on a whole-number line, the partitions either side
     fitted into the push grid (push_grid.fit_push_grid)."""
-    partitions, overrounds = {}, []
+    partitions, overrounds, priced_ats = {}, [], []
     for away_line, total_line in push_grid.corner_bracket_pairs(game):
-        priced = price_partition_at(book, book_game, away_line, total_line)
+        priced = price_partition_at(book, book_game, away_line, total_line, memory)
         if priced.corner_fairs is None:
             return priced
         partitions[(away_line, total_line)] = priced.corner_fairs
         overrounds.append(priced.overround)
+        priced_ats.append(priced.priced_at)
+    # The oldest partition behind it: a reused one makes the whole fair that old.
+    priced_at = min(priced_ats)
     if len(partitions) == 1:
-        return HalfBookFair(book.name, next(iter(partitions.values())), overrounds[0])
+        return HalfBookFair(book.name, next(iter(partitions.values())), overrounds[0], priced_at=priced_at)
     fit = push_grid.fit_push_grid(partitions, game.away_spread, game.total)
     if fit.grid is None:
-        return HalfBookFair(book.name, None, max(overrounds), reason=fit.reason)
+        return HalfBookFair(book.name, None, max(overrounds), reason=fit.reason, priced_at=priced_at)
     both_win = {corner: fit.grid.prob(*corner.split("_")) for corner in CORNERS}
     returns = {corner: push_grid.push_return(fit.grid, corner, game) for corner in CORNERS}
     return HalfBookFair(book.name, both_win, max(overrounds), push_returns=returns,
-                        push_cells=dict(fit.grid.cells))
+                        push_cells=dict(fit.grid.cells), priced_at=priced_at)
 
 
-def price_partition_at(book: SgpBook, book_game: BookGame, away_line: float, total_line: float) -> HalfBookFair:
+def price_partition_at(book: SgpBook, book_game: BookGame, away_line: float, total_line: float,
+                       memory: PriceMemory | None = None) -> HalfBookFair:
     """The four corner fairs of one 2 x 2 partition at these (half-point) lines."""
     spread = book.leg_market(book_game, "away", Leg("spread", "H1", away_line))
     if spread is None:
@@ -262,23 +268,25 @@ def price_partition_at(book: SgpBook, book_game: BookGame, away_line: float, tot
     total = book.leg_market(book_game, "away", Leg("total", "H1", total_line))
     if total is None:
         return HalfBookFair(book.name, None, None, reason=f"no SGP 1H total at {total_line:g}")
-    partition = price_partition(book, book_game, [spread, total])
+    partition = price_partition(book, book_game, [spread, total], memory)
     if partition.cell_fairs is None:
-        return HalfBookFair(book.name, None, partition.overround, reason=partition.reason)
+        return HalfBookFair(book.name, None, partition.overround, reason=partition.reason,
+                            priced_at=partition.priced_at)
     fairs = {}
     for (spread_outcome, total_outcome), fair in zip(partition.cells, partition.cell_fairs):
         side = "away" if spread_outcome in spread.winning else "home"
         side_total = "over" if total_outcome in total.winning else "under"
         key = f"{side}_{side_total}"
         fairs[key] = fairs.get(key, 0.0) + fair
-    return HalfBookFair(book.name, fairs, partition.overround)
+    return HalfBookFair(book.name, fairs, partition.overround, priced_at=partition.priced_at)
 
 
 def open_books(turns: BookTurns) -> tuple[dict[tuple[str, str], SgpBook], dict[str, str]]:
     """One adapter per (book, league); a book that fails to open is skipped."""
-    constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook,
+    constructors = {"FanDuel": lambda league: FanDuelBook(league=league, pacer=turns.pacers["FanDuel"]),
+                    "BetMGM": lambda league: BetMgmBook(league=league, pacer=turns.pacers["BetMGM"]),
                     "DraftKings": lambda league: DraftKingsBook(proxy_url=config.DK_PROXY_URL, league=league,
-                                                                pacer=turns.dk_pacer)}
+                                                                pacer=turns.pacers["DraftKings"])}
     books, status = {}, {}
     for name in BOOK_ORDER:
         for league in LEAGUES:
@@ -305,16 +313,18 @@ def _quote_rows(line: HalfLine, quoted_at: datetime, book: str, fair: HalfBookFa
             rows.append({**base, "corner": corner, "overround": fair.overround, "wz_decimal": None,
                          "fair_prob": fair.corner_fairs[corner] if fair.corner_fairs else None,
                          "reason": fair.reason,
-                         "push_return": fair.push_returns[corner] if fair.push_returns else None})
+                         "push_return": fair.push_returns[corner] if fair.push_returns else None,
+                         "priced_at": fair.priced_at})
         else:
             price = wz_prices[corner]
             rows.append({**base, "corner": corner, "overround": None, "fair_prob": None,
-                         "wz_decimal": price.decimal, "reason": price.error, "push_return": None})
+                         "wz_decimal": price.decimal, "reason": price.error, "push_return": None,
+                         "priced_at": quoted_at})
     return rows
 
 
 def _price_lane(name: str, tasks: list[tuple[SgpBook, BookGame, HalfLine]], board: HalfBoard,
-                board_lock: threading.Lock, book_lock: threading.Lock, store: Store,
+                board_lock: threading.Lock, book_lock: threading.Lock, memory: PriceMemory, store: Store,
                 publish: Callable[[HalfBoard], None]) -> None:
     """One book's games in order, each holding `book_lock` (the book's turn,
     shared with the fecta board); network calls outside `board_lock`. The
@@ -324,7 +334,7 @@ def _price_lane(name: str, tasks: list[tuple[SgpBook, BookGame, HalfLine]], boar
         now = datetime.now(timezone.utc)
         try:
             with book_lock:
-                result = price_half_at_book(book, book_game, line.game)
+                result = price_half_at_book(book, book_game, line.game, memory)
         except Exception as exc:  # transport failure on one book/game
             log.warning("%s pricing 1H %s @ %s failed: %s", name, line.game.away, line.game.home, exc)
             result = HalfBookFair(name, None, None, reason=f"error: {exc}"[:200])
@@ -371,7 +381,7 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None], turns: Bo
 
     def run_lane(name: str, tasks) -> None:
         try:
-            _price_lane(name, tasks, board, board_lock, turns.locks[name], store, publish)
+            _price_lane(name, tasks, board, board_lock, turns.locks[name], turns.memory, store, publish)
         except Exception as exc:  # e.g. the quote append failed: surface it, never swallow
             log.exception("%s 1H pricing lane crashed", name)
             lane_crashes.append((name, exc))
