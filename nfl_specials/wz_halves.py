@@ -102,8 +102,8 @@ def _fetch_half_games_once() -> list[WzHalfGame]:
                     for row in wz.fetch_catalog(session)
                     if (row.get("Description") or "").strip() in WZ_HALF_LEAGUES and row.get("IdLeague")}
     if not league_of_id:
-        # The catalog loaded, so neither league is posted now (between slates).
-        log.warning("none of %s in Wagerzon's catalog; no 1H lines to price", sorted(WZ_HALF_LEAGUES))
+        log.warning("none of %s in Wagerzon's catalog (not posted now); no 1H lines to price",
+                    sorted(WZ_HALF_LEAGUES))
         return []
     games: dict[int, WzHalfGame] = {}
     # One request per league: a combined lg=430,540 answers only the first sport (2026-11-12).

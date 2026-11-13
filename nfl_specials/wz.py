@@ -68,10 +68,9 @@ T = TypeVar("T")
 
 
 class CatalogUnavailable(RuntimeError):
-    """Wagerzon's league catalog did not load (non-200, non-JSON, or a
-    logged-out reply). Retried on a fresh login: an empty catalog read as
-    'no such league' failed the 1H refresh on 2026-11-12 while both leagues
-    were posted."""
+    """Wagerzon's league catalog did not load or came back empty (any failed
+    read, a logged-out reply included). 2026-11-12: a failed read reported as
+    'no such league' failed the 1H refresh while both leagues were posted."""
 
 
 @dataclass(frozen=True)
@@ -113,12 +112,16 @@ def read_balances() -> dict[str, WzBalances]:
             for snapshot in wagerzon_balance.fetch_all(list_accounts())}
 
 
-def _session(account_label: str | None = None):
+def _account(account_label: str | None = None):
+    """The account labelled `account_label`, else the first (the one reads use)."""
     accounts = list_accounts()
     if not accounts:
         raise RuntimeError("no Wagerzon accounts configured (WAGERZON_USERNAME / _PASSWORD)")
-    account = next((a for a in accounts if a.label == account_label), accounts[0])
-    return wagerzon_auth.get_session(account)
+    return next((a for a in accounts if a.label == account_label), accounts[0])
+
+
+def _session(account_label: str | None = None):
+    return wagerzon_auth.get_session(_account(account_label))
 
 
 def specials_league_ids(catalog: list[dict]) -> list[int]:
@@ -133,17 +136,18 @@ def specials_league_ids(catalog: list[dict]) -> list[int]:
 
 
 def fetch_catalog(session) -> list[dict]:
-    """Wagerzon's active-league catalog; raises CatalogUnavailable when it
-    does not load, so a failed read is never mistaken for a missing league."""
+    """Wagerzon's active-league catalog. A zero-league catalog is never real,
+    so an empty one is a failed read too."""
     catalog = fetch_active_leagues(session)
-    if catalog is None:
+    if not catalog:
         raise CatalogUnavailable("Wagerzon's league catalog (ActiveLeaguesHelper) did not load")
     return catalog
 
 
 def _retry_reads(read: Callable[[], T]) -> T:
     """Retry a READ on timeouts / dropped connections, and on a catalog that
-    did not load (after dropping the cached login, which may have expired).
+    did not load (after dropping the read account's cached login, which may
+    have expired; other accounts keep theirs).
     Never wrap a placement: a retried submission can place the bet twice."""
     for attempt in range(1, READ_ATTEMPTS + 1):
         try:
@@ -152,7 +156,7 @@ def _retry_reads(read: Callable[[], T]) -> T:
             if attempt == READ_ATTEMPTS:
                 raise
             if isinstance(exc, CatalogUnavailable):
-                wagerzon_auth.clear_session_cache()
+                wagerzon_auth.clear_session_cache(_account().label)
             log.warning("Wagerzon read failed (%s), attempt %d/%d; retrying in %ds",
                         type(exc).__name__, attempt, READ_ATTEMPTS, READ_RETRY_PAUSE_SECONDS)
             time.sleep(READ_RETRY_PAUSE_SECONDS)

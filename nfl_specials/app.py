@@ -113,10 +113,12 @@ class SpecialsApp:
                 except Exception as exc:
                     log.exception("%s refresh failed", name)
                     errors.append(f"{name}: {type(exc).__name__}: {exc}")
-                    if name == "1H parlays":
-                        # Its old fairs must not stay placeable after a failed refresh.
-                        with self._lock:
+                    # Its old fairs must not stay placeable after a failed refresh.
+                    with self._lock:
+                        if name == "1H parlays":
                             self._halves = None
+                        else:
+                            self._board = None
             self._read_balances()   # bets may have settled while it priced
             self._last_error = "; ".join(errors)[:300] or None
         except Exception as exc:

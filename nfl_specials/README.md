@@ -360,10 +360,10 @@ Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
   tunnel failed, response 403" means the relay refused the host: a new DraftKings host
   belongs in `DK_HOSTS`.
 - **1H Parlays tab empty, no error** — neither "NFL - 1ST HALVES" nor "NCAA FOOTBALL -
-  1ST HALVES" is in Wagerzon's catalog now (between slates). A catalog that does not
-  load at all is retried on a fresh login, then fails the refresh as
-  `CatalogUnavailable` (2026-11-12: an empty catalog read had been reported as "none of
-  [...] in Wagerzon's catalog" while both leagues were posted).
+  1ST HALVES" is in Wagerzon's catalog now (between slates, or Wagerzon renamed one:
+  the app log names the missing leagues), or every posted game has started. A catalog
+  that does not load is retried on a fresh login, then fails the refresh as
+  `CatalogUnavailable` and blanks that board.
 - **"Available: unknown"** — the Wagerzon balance read failed, so no stakes are
   recommended; click Refresh.
 

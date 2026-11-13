@@ -2,6 +2,7 @@
 2 x 2 partition fair, worst case across books, and sizing after the fectas.
 No network."""
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from scipy.stats import norm
@@ -29,12 +30,56 @@ def _game(**overrides) -> WzHalfGame:
 
 
 # --- Wagerzon ------------------------------------------------------------------
-def test_no_1h_league_posted_is_an_empty_board_not_a_failure(monkeypatch):
+class _ScheduleSession:
+    """Answers NewScheduleHelper with `games_by_league` (league id -> raw games)."""
+
+    def __init__(self, games_by_league: dict[int, list[dict]]):
+        self.games_by_league, self.leagues_read = games_by_league, []
+
+    def get(self, url, timeout, headers):
+        league_id = int(url.rsplit("lg=", 1)[1])
+        self.leagues_read.append(league_id)
+        body = {"result": {"listLeagues": [[{"Games": self.games_by_league[league_id]}]]}}
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+
+
+_CFB_RAW = {"idgm": 7001, "idgmtyp": 15, "vtm": "1H MEMPHIS", "htm": "1H SOUTH FLORIDA",
+            "gmdt": "20991231", "gmtm": "12:00:00",
+            "GameLines": [{"vsprdt": "-3.5", "vsprdoddst": "-110", "hsprdoddst": "-110",
+                           "unt": "30.5", "ovoddst": "-110", "unoddst": "-110"}]}
+
+
+def _catalog(monkeypatch, session, catalog):
     from nfl_specials import wz_halves
-    monkeypatch.setattr(wz_halves.wz, "_session", lambda: object())
-    monkeypatch.setattr(wz_halves.wz, "fetch_active_leagues",
-                        lambda session: [{"IdLeague": 4017, "Description": "NFL - THURSDAY NIGHT FOOTBALL"}])
+    monkeypatch.setattr(wz_halves.wz, "_session", lambda account_label=None: session)
+    monkeypatch.setattr(wz_halves.wz, "fetch_active_leagues", lambda _session: catalog)
+    return wz_halves
+
+
+def test_no_1h_league_posted_is_an_empty_board_not_a_failure(monkeypatch):
+    session = _ScheduleSession({})
+    wz_halves = _catalog(monkeypatch, session, [{"IdLeague": 4017, "Description": "NFL - THURSDAY NIGHT FOOTBALL"}])
     assert wz_halves.fetch_half_games() == []
+    assert session.leagues_read == []
+
+
+def test_only_the_posted_1h_league_is_read(monkeypatch):
+    # College 1H posted, NFL's not yet: the usual early-week catalog.
+    session = _ScheduleSession({540: [_CFB_RAW]})
+    wz_halves = _catalog(monkeypatch, session, [{"IdLeague": 540, "Description": "NCAA FOOTBALL - 1ST HALVES"},
+                                                {"IdLeague": 4017, "Description": "NFL - THURSDAY NIGHT FOOTBALL"}])
+    assert [(g.league, g.wz_game_id, g.away, g.home) for g in wz_halves.fetch_half_games()] == \
+        [("CFB", 7001, "MEMPHIS", "SOUTH FLORIDA")]
+    assert session.leagues_read == [540]
+
+
+def test_a_catalog_that_never_loads_fails_the_1h_read_loudly(monkeypatch):
+    wz_halves = _catalog(monkeypatch, _ScheduleSession({}), None)
+    monkeypatch.setattr(wz_halves.wz.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(wz_halves.wz, "_account", lambda account_label=None: SimpleNamespace(label="Wagerzon"))
+    monkeypatch.setattr(wz_halves.wz.wagerzon_auth, "clear_session_cache", lambda label=None: None)
+    with pytest.raises(wz_halves.wz.CatalogUnavailable):
+        wz_halves.fetch_half_games()
 
 
 def test_parses_a_wagerzon_nfl_first_half_game():
@@ -429,12 +474,28 @@ def test_a_failed_1h_refresh_clears_the_board(half_app, monkeypatch):
     monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
 
     def broken(store, publish):
-        raise RuntimeError("no 1H league in Wagerzon's catalog")
+        raise app_module.wz.CatalogUnavailable("catalog did not load")
 
     monkeypatch.setattr(app_module, "refresh_halves", broken)
     half_app._run_refresh()
     assert half_app._halves is None
-    assert half_app._last_error == "1H parlays: RuntimeError: no 1H league in Wagerzon's catalog"
+    assert half_app._last_error == "1H parlays: CatalogUnavailable: catalog did not load"
+
+
+def test_a_failed_fecta_refresh_clears_the_fecta_board_and_still_runs_the_1h(half_app, monkeypatch):
+    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
+    half_app._board = object()          # last refresh's board, fairs now stale
+    halves_ran = []
+
+    def broken(store, publish):
+        raise app_module.wz.CatalogUnavailable("catalog did not load")
+
+    monkeypatch.setattr(app_module, "refresh_board", broken)
+    monkeypatch.setattr(app_module, "refresh_halves", lambda store, publish: halves_ran.append(1))
+    half_app._run_refresh()
+    assert half_app._board is None
+    assert halves_ran == [1]
+    assert half_app._last_error == "fectas: CatalogUnavailable: catalog did not load"
 
 
 def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatch):
