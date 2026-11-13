@@ -114,3 +114,40 @@ def test_http_failure_raises(monkeypatch):
     book = _book(monkeypatch, FakeSession({"message": "nope"}, price_status=404))
     with pytest.raises(RuntimeError, match="HTTP 404"):
         book.price(GAME, ("q1_sea", "ml_sea"))
+
+
+def test_two_books_sharing_a_pacer_keep_its_gap_between_them(monkeypatch):
+    """The fecta and 1H boards price at once on two DraftKingsBooks; together
+    they must still go no faster than one price call per gap."""
+    import threading
+    import time
+    monkeypatch.setattr(dk_book, "MIN_SECONDS_BETWEEN_PRICE_CALLS", 0.0)
+    pacer = dk_book.PriceCallPacer()
+    sessions = [FakeSession(_price_answer(["q1_sea"], {"ml_sea": 2.4})) for _ in range(2)]
+    books = []
+    for session in sessions:
+        monkeypatch.setattr(dk_book.cffi_requests, "Session", lambda impersonate, proxy, s=session: s)
+        books.append(DraftKingsBook(proxy_url=None, pacer=pacer))
+    monkeypatch.setattr(dk_book, "MIN_SECONDS_BETWEEN_PRICE_CALLS", 0.05)
+    stamps = []
+    for session in sessions:
+        real_get = session.get
+
+        def get(url, params=None, headers=None, timeout=None, real_get=real_get):
+            if url == dk_book.DK_SGP_PRICE_URL:
+                stamps.append(time.monotonic())
+            return real_get(url, params=params, headers=headers, timeout=timeout)
+        session.get = get
+
+    def price_three(book, offset):
+        for n in range(3):
+            book._fetch_added_leg_odds("evt1", frozenset([f"q1_{offset}_{n}"]), "m_ml")
+
+    threads = [threading.Thread(target=price_three, args=(book, i)) for i, book in enumerate(books)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    stamps.sort()
+    assert len(stamps) == 6
+    assert min(later - earlier for earlier, later in zip(stamps, stamps[1:])) >= 0.045

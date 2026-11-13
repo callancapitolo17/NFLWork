@@ -219,7 +219,9 @@ class ThreeWayBook:
         return LegMarket.single(over, (over, under))
 
     def price(self, game, refs):
-        return 1.0 / norm.cdf(norm.ppf(self.TRUE[refs]) + 0.1)
+        # A parlay is a set of legs: price_partition may send the spread last.
+        spread_first = refs if refs[0] in ("away", "tie", "home") else refs[::-1]
+        return 1.0 / norm.cdf(norm.ppf(self.TRUE[spread_first]) + 0.1)
 
 
 def test_a_three_way_widened_spread_puts_the_tie_on_the_plus_half_side():
@@ -298,7 +300,7 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
         def games(self):
             return [BOOK_GAME]
 
-    monkeypatch.setattr(halves_board, "open_books", lambda: (
+    monkeypatch.setattr(halves_board, "open_books", lambda _turns: (
         {("FanDuel", "NFL"): ListedBook("FanDuel", TRUE_CORNERS)}, {"FanDuel NFL": "ok"}))
 
     class MemoryStore:
@@ -441,16 +443,39 @@ def test_place_refuses_a_changed_price_a_big_stake_and_too_much_cash(half_app):
 
 
 def test_a_failed_1h_refresh_clears_the_board(half_app, monkeypatch):
-    monkeypatch.setattr(app_module, "refresh_board", lambda store, publish: None)
+    monkeypatch.setattr(app_module, "refresh_board", lambda store, publish, turns: None)
     monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
 
-    def broken(store, publish):
+    def broken(store, publish, turns):
         raise app_module.wz.CatalogUnavailable("catalog did not load")
 
     monkeypatch.setattr(app_module, "refresh_halves", broken)
     half_app._run_refresh()
     assert half_app._halves is None
     assert half_app._last_error == "1H parlays: CatalogUnavailable: catalog did not load"
+
+
+def test_refresh_prices_both_boards_at_once_on_shared_turns(half_app, monkeypatch):
+    """Each board waits for the other to start: run one after the other, this
+    would time out. Both get the same BookTurns, so a book stays one request at a time."""
+    import threading
+    started = {"fectas": threading.Event(), "1H parlays": threading.Event()}
+    turns_seen = []
+
+    def board(name, other):
+        def run(store, publish, turns):
+            turns_seen.append(turns)
+            started[name].set()
+            if not started[other].wait(timeout=5):
+                raise TimeoutError(f"{other} never started while {name} ran")
+        return run
+
+    monkeypatch.setattr(app_module, "refresh_board", board("fectas", "1H parlays"))
+    monkeypatch.setattr(app_module, "refresh_halves", board("1H parlays", "fectas"))
+    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
+    half_app._run_refresh()
+    assert half_app._last_error is None
+    assert len(turns_seen) == 2 and turns_seen[0] is turns_seen[1]
 
 
 def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatch):

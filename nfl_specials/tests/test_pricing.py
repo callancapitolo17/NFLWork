@@ -216,3 +216,29 @@ def test_outcome_group_refuses_probabilities_that_do_not_sum_to_one():
 def test_a_stake_a_hair_under_a_dollar_is_that_dollar():
     from nfl_specials.pricing import _whole_dollars
     assert _whole_dollars(49.9999999) == 50 and _whole_dollars(49.99) == 49 and _whole_dollars(50.0) == 50
+
+
+def test_the_leg_with_the_most_outcomes_goes_last_in_every_request():
+    """DraftKings prices every outcome of the LAST leg in one request, so a
+    3 x 3 x 2 partition with a 3-way leg last needs 6 distinct bases, not 9."""
+    from nfl_specials.pricing import price_partition
+
+    def market(name, size):
+        outcomes = tuple(Outcome((name, i), f"{name}{i}") for i in range(size))
+        return LegMarket.single(outcomes[0], outcomes)
+
+    class RecordingBook:
+        name = "Recorder"
+        requests: list = []
+
+        def price(self, game, refs):
+            self.requests.append(refs)
+            return 1.0 / (1.05 / 18)
+
+    book = RecordingBook()
+    partition = price_partition(book, GAME, [market("q1", 3), market("h1", 3), market("ml", 2)])
+    assert len(partition.cells) == 18 and partition.cell_fairs is not None
+    assert all(refs[-1][0] == "h1" for refs in book.requests)
+    assert len({frozenset(refs[:-1]) for refs in book.requests}) == 6
+    # The cells keep the legs' own order.
+    assert [outcome.ref[0] for outcome in partition.cells[0]] == ["q1", "h1", "ml"]

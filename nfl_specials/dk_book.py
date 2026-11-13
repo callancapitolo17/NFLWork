@@ -24,6 +24,7 @@ Leg -> DK market:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Hashable
 from urllib.parse import urlsplit
@@ -57,6 +58,29 @@ DK_FOOTBALL_SPORT_ID = "3"
 # go faster than a person clicking legs.
 MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.5
 
+
+class PriceCallPacer:
+    """One DraftKings price call at a time, each starting at least
+    MIN_SECONDS_BETWEEN_PRICE_CALLS after the previous one started (the
+    widget's own rule), across every DraftKingsBook that shares it: one
+    refresh prices the fecta and 1H boards side by side, and together they
+    must still go no faster than one person clicking. Until 2026-11-13 the
+    gap ran from the previous call's ANSWER, so each call also waited out
+    the last one's round trip."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_call_started_at = float("-inf")
+
+    def call(self, send):
+        """Run `send()` (one price request) once the gap has passed; returns its result."""
+        with self._lock:
+            wait = MIN_SECONDS_BETWEEN_PRICE_CALLS - (time.monotonic() - self._last_call_started_at)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call_started_at = time.monotonic()
+            return send()
+
 SPREAD_MAIN = {"GM": "Spread", "Q1": "Spread 1st Quarter", "H1": "Spread 1st Half"}
 SPREAD_ALT = {"GM": "Spread Alternate", "Q1": "Spread Alternate - 1st Quarter",
               "H1": "Spread Alternate - 1st Half"}
@@ -75,8 +99,10 @@ def dk_team_to_abbr(dk_name: str) -> str | None:
 class DraftKingsBook:
     name = "DraftKings"
 
-    def __init__(self, proxy_url: str | None, league: str = NFL) -> None:
+    def __init__(self, proxy_url: str | None, league: str = NFL, pacer: PriceCallPacer | None = None) -> None:
+        """`pacer`: shared by every DraftKingsBook of one refresh; None = its own."""
         self.league = league
+        self.pacer = pacer if pacer is not None else PriceCallPacer()
         self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
         self._unreachable: RequestException | None = None
         self._get(DK_WARMUP_URL, timeout=30)
@@ -86,7 +112,6 @@ class DraftKingsBook:
         # (event id, base selection ids, candidate market id) -> decimal odds of
         # base + each candidate selection DK can combine with it
         self._added_leg_odds: dict[tuple[str, frozenset[str], str], dict[str, float]] = {}
-        self._last_price_call_at = 0.0
 
     # --- discovery ---------------------------------------------------------
     def _get(self, url: str, *, timeout: float, **kwargs):
@@ -209,17 +234,10 @@ class DraftKingsBook:
                               candidate_market_id: str) -> dict[str, float]:
         """One GET: decimal odds of base + each selection of the candidate
         market that DK can combine with the base. Raises on HTTP failure."""
-        wait = MIN_SECONDS_BETWEEN_PRICE_CALLS - (time.monotonic() - self._last_price_call_at)
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            resp = self._get(DK_SGP_PRICE_URL, timeout=30,
-                                    headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
-                                    params={"eventId": event_id, "selections": ",".join(sorted(base)),
-                                            "marketCandidates": candidate_market_id,
-                                            "oddsStyle": "american"})
-        finally:
-            self._last_price_call_at = time.monotonic()
+        resp = self.pacer.call(lambda: self._get(
+            DK_SGP_PRICE_URL, timeout=30, headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
+            params={"eventId": event_id, "selections": ",".join(sorted(base)),
+                    "marketCandidates": candidate_market_id, "oddsStyle": "american"}))
         if resp.status_code != 200:
             raise RuntimeError(f"DK SGP price for event {event_id} returned HTTP "
                                f"{resp.status_code}: {resp.text[:200]}")

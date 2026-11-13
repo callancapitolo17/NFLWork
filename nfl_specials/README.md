@@ -326,8 +326,16 @@ only 1st halves are read.
    attempt past the server's own checks is recorded (those refusals are not). A failed 1H refresh clears the 1H board, so its old fairs
    cannot be placed.
 
-Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
-2026-11-12), one after the other so each book's pacing holds.
+Refresh prices the fectas and the 1H board side by side (2026-11-13). Each
+book still answers one request at a time across both boards (`board.BookTurns`:
+a lock per book, held while it opens and for one special or one 1H game, plus
+DraftKings' shared 0.5 s pacer), so no book sees more traffic than before;
+the books and the boards just stop waiting on each other. Wagerzon's 1H
+previews run while the books price. DraftKings prices each partition with the
+leg of most outcomes last (one request prices all of that leg's outcomes), so
+a superfecta's 3 x 3 x 2 trifecta part is 6 requests instead of 9. Measured on
+the VM 2026-11-13 before this: about 2.6 min (fectas ~1 min, then 1H ~1.2 min
+of DraftKings pacing for 57 games, then ~20 s of Wagerzon previews).
 
 The tab lists every corner in one list sorted by edge, best first; chips sort
 by edge, stake, kickoff, fair or Wagerzon price (a second tap reverses), and

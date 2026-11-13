@@ -30,11 +30,12 @@ import json
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from nfl_specials import config, wz, wz_halves
-from nfl_specials.board import Board, HeldPlacement, refresh_board, size_board
+from nfl_specials.board import Board, HeldPlacement, new_book_turns, refresh_board, size_board
 from nfl_specials.books import parse_start
 from nfl_specials.halves_board import (CfbSlate, HalfBoard, HeldHalfParlay, cfb_slates, conservative_american,
                                        refresh_halves, size_half_board)
@@ -101,24 +102,35 @@ class SpecialsApp:
             self._free_play = {label: pots.free_play for label, pots in balances.items()}
 
     def _run_refresh(self) -> None:
-        """Fectas, then 1H parlays (one after the other, so each book's
-        request pacing holds); one board failing does not stop the other."""
+        """Fectas and 1H parlays side by side, on one BookTurns so each book
+        still answers one request at a time (and DraftKings' pacing holds)
+        across both; one board failing does not stop the other."""
         try:
             self._read_balances()
-            errors = []
-            for name, run in (("fectas", lambda: refresh_board(self.store, self.publish)),
-                              ("1H parlays", lambda: refresh_halves(self.store, self.publish_halves))):
+            turns = new_book_turns()
+            errors: dict[str, str] = {}
+
+            def run_board(name: str, run: Callable[[], object]) -> None:
                 try:
                     run()
                 except Exception as exc:
                     log.exception("%s refresh failed", name)
-                    errors.append(f"{name}: {type(exc).__name__}: {exc}")
+                    errors[name] = f"{name}: {type(exc).__name__}: {exc}"
                     if name == "1H parlays":
                         # Its old fairs must not stay placeable after a failed refresh.
                         with self._lock:
                             self._halves = None
+
+            boards = (("fectas", lambda: refresh_board(self.store, self.publish, turns)),
+                      ("1H parlays", lambda: refresh_halves(self.store, self.publish_halves, turns)))
+            threads = [threading.Thread(target=run_board, args=board, name=f"refresh-{board[0]}", daemon=True)
+                       for board in boards]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
             self._read_balances()   # bets may have settled while it priced
-            self._last_error = "; ".join(errors)[:300] or None
+            self._last_error = "; ".join(errors[name] for name, _run in boards if name in errors)[:300] or None
         except Exception as exc:
             log.exception("refresh failed")
             self._last_error = f"{type(exc).__name__}: {exc}"[:300]

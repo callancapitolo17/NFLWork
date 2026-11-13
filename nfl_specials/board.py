@@ -17,7 +17,9 @@ then its scores-first share. When DraftKings is down (it failed to open this
 refresh), a superfecta's trifecta part prices at FanDuel + BetMGM like a
 trifecta and takes a fixed scores-first share instead (user decision
 2026-10-22). The books price in parallel, one thread per book; each book's own
-calls stay sequential, so DK's 0.5 s pacing holds.
+calls stay sequential, so DK's 0.5 s pacing holds. The 1H board
+(halves_board) prices at the same time on the same BookTurns, so each book
+still answers one request at a time across both boards.
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ from typing import Callable
 
 from nfl_specials import config, wz
 from nfl_specials.books import BookGame, SgpBook, parse_start
-from nfl_specials.dk_book import DraftKingsBook
+from nfl_specials.dk_book import DraftKingsBook, PriceCallPacer
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
 from nfl_specials.pricing import (BookFair, Candidate, ExposureGroup, HeldBet, ScoresFirstShare,
@@ -127,14 +129,29 @@ class HeldPlacement:
     wz_american: int
 
 
-def open_books() -> tuple[dict[str, SgpBook], dict[str, str]]:
+@dataclass(frozen=True)
+class BookTurns:
+    """What one refresh's fecta and 1H boards share, so they can price side by
+    side while each book still sees one request at a time, as when the boards
+    ran one after the other: a lock per book name, held while the book opens
+    and for one special (or one 1H game) at a time, and DraftKings' pacer."""
+    locks: dict[str, threading.Lock]
+    dk_pacer: PriceCallPacer
+
+
+def new_book_turns() -> BookTurns:
+    return BookTurns({name: threading.Lock() for name in BOOK_ORDER}, PriceCallPacer())
+
+
+def open_books(turns: BookTurns) -> tuple[dict[str, SgpBook], dict[str, str]]:
     books: dict[str, SgpBook] = {}
     status: dict[str, str] = {}
     constructors = {"FanDuel": FanDuelBook, "BetMGM": BetMgmBook,
-                    "DraftKings": lambda: DraftKingsBook(proxy_url=config.DK_PROXY_URL)}
+                    "DraftKings": lambda: DraftKingsBook(proxy_url=config.DK_PROXY_URL, pacer=turns.dk_pacer)}
     for name in BOOK_ORDER:
         try:
-            books[name] = constructors[name]()
+            with turns.locks[name]:
+                books[name] = constructors[name]()
             status[name] = "ok"
         except Exception as exc:  # one dark book must not blank the board
             log.exception("%s failed to open", name)
@@ -315,17 +332,20 @@ def _price_scores_first(book: SgpBook, line: FectaLine) -> ScoresFirstShare:
 
 
 def _price_lane(name: str, book: SgpBook, tasks: list[tuple[str, FectaLine]], board: Board,
-                board_lock: threading.Lock, store: Store, publish: Callable[[Board], None]) -> None:
-    """Price one book's tasks in order. Network calls run outside the lock;
+                board_lock: threading.Lock, book_lock: threading.Lock, store: Store,
+                publish: Callable[[Board], None]) -> None:
+    """Price one book's tasks in order, each holding `book_lock` (the book's
+    turn, shared with the 1H board). Network calls run outside `board_lock`;
     every board mutation, quote append and publish happens inside it."""
     for task, line in tasks:
         now = datetime.now(timezone.utc)
         error: str | None = None
         try:
-            if task == "scores_first":
-                result = _price_scores_first(book, line)
-            else:
-                result = _price_partition(book, line)
+            with book_lock:
+                if task == "scores_first":
+                    result = _price_scores_first(book, line)
+                else:
+                    result = _price_partition(book, line)
         except Exception as exc:  # transport failure on one book/special
             log.warning("%s pricing %s failed: %s", name, line.special.description, exc)
             error = f"error: {exc}"[:200]
@@ -349,9 +369,11 @@ def _price_lane(name: str, book: SgpBook, tasks: list[tuple[str, FectaLine]], bo
             publish(board.snapshot())
 
 
-def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
+def refresh_board(store: Store, publish: Callable[[Board], None], turns: BookTurns | None = None) -> Board:
+    """`turns`: shared with the 1H board pricing at the same time; None = this board's own."""
+    turns = turns if turns is not None else new_book_turns()
     started_at = datetime.now(timezone.utc)
-    books, book_status = open_books()
+    books, book_status = open_books(turns)
 
     lines = []
     for special in wz.fetch_fecta_specials():
@@ -402,7 +424,7 @@ def refresh_board(store: Store, publish: Callable[[Board], None]) -> Board:
 
     def run_lane(name: str, tasks: list[tuple[str, FectaLine]]) -> None:
         try:
-            _price_lane(name, books[name], tasks, board, board_lock, store, publish)
+            _price_lane(name, books[name], tasks, board, board_lock, turns.locks[name], store, publish)
         except Exception as exc:  # e.g. the quote append failed: surface it, never swallow
             log.exception("%s pricing lane crashed", name)
             lane_crashes.append((name, exc))

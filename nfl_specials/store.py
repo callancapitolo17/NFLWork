@@ -15,12 +15,18 @@ Tables:
                    checks, whatever happened (placed, refused, or may be placed).
 Each call opens and closes its own read-write connection: the app's threads
 share one process, and DuckDB refuses a read-only connection to a file this
-process already holds read-write.
+process already holds read-write. One lock holds those calls to one at a
+time: two threads attaching the file at once fail with "Unique file handle
+conflict" (2026-11-13, a fecta pricing lane appending while the page read
+placements killed that refresh's fecta board).
 """
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 import duckdb
 
@@ -127,23 +133,28 @@ PLACEMENT_COLUMNS = ("placed_at", "account", "wz_game_id", "rotation", "descript
 class Store:
     def __init__(self, db_path: Path = config.STATE_DB_PATH) -> None:
         self.db_path = db_path
-        con = duckdb.connect(str(db_path))
-        try:
+        self._lock = threading.Lock()
+        with self._connect() as con:
             for statement in SCHEMA:
                 con.execute(statement)
-        finally:
-            con.close()
+
+    @contextmanager
+    def _connect(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        """A read-write connection, one at a time across the app's threads."""
+        with self._lock:
+            con = duckdb.connect(str(self.db_path))
+            try:
+                yield con
+            finally:
+                con.close()
 
     def _insert(self, table: str, columns: tuple[str, ...], rows: list[dict]) -> None:
         if not rows:
             return
         placeholders = ", ".join("?" for _ in columns)
-        con = duckdb.connect(str(self.db_path))
-        try:
+        with self._connect() as con:
             con.executemany(f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
                             [tuple(row[c] for c in columns) for row in rows])
-        finally:
-            con.close()
 
     def append_quotes(self, rows: list[dict]) -> None:
         self._insert("fecta_quotes", QUOTE_COLUMNS, rows)
@@ -152,38 +163,29 @@ class Store:
         self._insert("placed_fectas", PLACEMENT_COLUMNS, [row])
 
     def placements_since(self, since: datetime) -> list[dict]:
-        con = duckdb.connect(str(self.db_path))
-        try:
+        with self._connect() as con:
             cursor = con.execute(
                 f"SELECT {', '.join(PLACEMENT_COLUMNS)} FROM placed_fectas "
                 "WHERE placed_at >= ? ORDER BY placed_at DESC", [since])
             return [dict(zip(PLACEMENT_COLUMNS, row)) for row in cursor.fetchall()]
-        finally:
-            con.close()
 
     def last_placed(self, account: str, wz_game_id: int, since: datetime) -> dict | None:
         """The newest successful placement on this special by `account` since `since`."""
-        con = duckdb.connect(str(self.db_path))
-        try:
+        with self._connect() as con:
             row = con.execute(
                 f"SELECT {', '.join(PLACEMENT_COLUMNS)} FROM placed_fectas "
                 "WHERE account = ? AND wz_game_id = ? AND status = 'placed' AND placed_at >= ? "
                 "ORDER BY placed_at DESC LIMIT 1", [account, wz_game_id, since]).fetchone()
             return dict(zip(PLACEMENT_COLUMNS, row)) if row else None
-        finally:
-            con.close()
 
     def placed_risk(self, account: str, wz_game_id: int, since: datetime) -> float:
         """Dollars `account` has placed on this special since `since` (Wagerzon took them)."""
-        con = duckdb.connect(str(self.db_path))
-        try:
+        with self._connect() as con:
             total = con.execute(
                 "SELECT COALESCE(SUM(risk), 0) FROM placed_fectas "
                 "WHERE account = ? AND wz_game_id = ? AND status = 'placed' AND placed_at >= ?",
                 [account, wz_game_id, since]).fetchone()[0]
             return float(total)
-        finally:
-            con.close()
 
     def append_half_quotes(self, rows: list[dict]) -> None:
         self._insert("half_parlay_quotes", HALF_QUOTE_COLUMNS, rows)
@@ -192,35 +194,26 @@ class Store:
         self._insert("placed_half_parlays", HALF_PLACEMENT_COLUMNS, [row])
 
     def half_placements_since(self, since: datetime) -> list[dict]:
-        con = duckdb.connect(str(self.db_path))
-        try:
+        with self._connect() as con:
             cursor = con.execute(
                 f"SELECT {', '.join(HALF_PLACEMENT_COLUMNS)} FROM placed_half_parlays "
                 "WHERE placed_at >= ? ORDER BY placed_at DESC", [since])
             return [dict(zip(HALF_PLACEMENT_COLUMNS, row)) for row in cursor.fetchall()]
-        finally:
-            con.close()
 
     def settings(self) -> dict:
         """{bankroll, kelly_fraction, use_free_play (bool)}; defaults for keys never saved."""
         values = {"bankroll": config.DEFAULT_BANKROLL, "kelly_fraction": config.DEFAULT_KELLY_FRACTION,
                   "use_free_play": 0.0}
-        con = duckdb.connect(str(self.db_path))
-        try:
+        with self._connect() as con:
             for key, value in con.execute("SELECT key, value FROM settings").fetchall():
                 values[key] = value
-        finally:
-            con.close()
         values["use_free_play"] = values["use_free_play"] == 1.0
         return values
 
     def save_settings(self, bankroll: float, kelly_fraction: float, use_free_play: bool) -> None:
-        con = duckdb.connect(str(self.db_path))
-        try:
+        with self._connect() as con:
             con.executemany(
                 "INSERT INTO settings (key, value) VALUES (?, ?) "
                 "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 [("bankroll", bankroll), ("kelly_fraction", kelly_fraction),
                  ("use_free_play", 1.0 if use_free_play else 0.0)])
-        finally:
-            con.close()
