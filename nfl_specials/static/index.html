@@ -99,6 +99,10 @@
   .tabs button { height: 34px; padding: 0 16px; }
   .skipped-list { font-size: 12px; color: var(--muted); padding: 10px 14px; }
   .skipped-list div { padding: 2px 0; overflow-wrap: anywhere; }
+  .sort-bar { margin-top: -2px; }
+  .sort-bar .seg { max-width: 100%; overflow-x: auto; }
+  .row.plus { box-shadow: inset 3px 0 0 var(--good); }
+  .game-meta { font-size: 12px; color: var(--muted); margin-top: 1px; overflow-wrap: anywhere; }
 
   /* --- board --- */
   .group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
@@ -195,6 +199,10 @@
     .stake-form button { min-width: 112px; justify-content: center; }
     .to-win { flex-basis: 100%; }
     .toolbar .spacer { display: none; }
+    .sort-bar .seg button { height: 36px; padding: 0 10px; }
+    .tabs button, .toolbar > .seg button, .toggle { height: 38px; }
+    .row.dim.half .stake-none { display: none; }
+    .row.dim.half { gap: 4px; padding: 10px 12px; }
     .placed-row { grid-template-columns: 18px minmax(0, 1fr) auto; }
     .placed-row .placed-when { display: none; }
     dialog { margin: auto auto 0; width: 100vw; max-width: 100vw; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
@@ -254,6 +262,12 @@
     <div class="toolbar" id="half-toolbar" hidden>
       <div class="seg" role="group" aria-label="League" id="league-seg"></div>
       <button class="toggle" id="half-ev-only" aria-pressed="false">+EV only</button>
+      <span class="spacer"></span>
+      <div class="seg" role="group" aria-label="Layout" id="half-view-seg"></div>
+    </div>
+    <div class="toolbar sort-bar" id="half-sort-bar" hidden>
+      <span class="muted small">Sort</span>
+      <div class="seg" role="group" aria-label="Sort 1H parlays" id="half-sort-seg"></div>
     </div>
     <div id="half-board"></div>
     <div class="section-head">
@@ -362,7 +376,8 @@ function el(tag, attrs = {}, children = []) {
 }
 
 function loadPrefs() {
-  const defaults = { type: "all", evOnly: false, view: "game", tab: "fectas", league: "all", halfEvOnly: false };
+  const defaults = { type: "all", evOnly: false, view: "game", tab: "fectas", league: "all", halfEvOnly: false,
+                     halfView: "flat", halfSort: "ev", halfSortDir: "desc" };
   try { return { ...defaults, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") }; }
   catch (e) { return defaults; }
 }
@@ -426,7 +441,14 @@ function renderHeader(p) {
     : ["Refresh"]));
 
   let summary = "Not priced yet";
-  if (b) {
+  const h = p.halves;
+  if (prefs.tab === "halves") {
+    if (h) {
+      const games = h.lines.filter(l => l.status === "priced").length;
+      summary = `${games} game${games === 1 ? "" : "s"} · ` +
+        (h.finished_at ? "updated " + clock(parseTime(h.finished_at)) : "pricing since " + clock(parseTime(h.started_at)));
+    }
+  } else if (b) {
     const n = b.lines.length;
     summary = `${n} special${n === 1 ? "" : "s"} · ` +
       (b.finished_at ? "updated " + clock(parseTime(b.finished_at)) : "pricing since " + clock(parseTime(b.started_at)));
@@ -1035,13 +1057,21 @@ function halfStakeCell(line, corner, c, p) {
   return el("div", { class: "stake-col" }, children);
 }
 
-function halfRow(line, corner, p) {
+function gameMeta(line) {
+  const start = parseTime(line.game_start_time);
+  return el("div", { class: "game-meta num" }, [`${line.away} @ ${line.home} · ${LEAGUE_LABEL[line.league]} · ${dayClock(start)}`,
+    el("span", { class: "wide-only", text: ` · ${untilKickoff(start)}` })]);
+}
+
+// `showGame` adds the matchup under the title, for the list with no game headers.
+function halfRow(line, corner, p, showGame) {
   const c = line.corners[corner];
   const dim = c.fair_prob == null || !(c.ev > 0) || hasStarted(line);
-  return el("div", { class: "row" + (dim ? " dim" : "") }, [
+  return el("div", { class: "row half" + (dim ? " dim" : " plus") }, [
     el("div", { class: "info-col" }, [
       el("div", { class: "title-line" }, [el("span", { class: "title", text: cornerTitle(line, corner) }),
         el("span", { class: "faint small num", text: cornerLegs(line, corner) })]),
+      showGame ? gameMeta(line) : null,
       halfBooksLine(line, c),
       c.wz_error ? el("div", { class: "note", text: c.wz_error }) : null,
     ]),
@@ -1055,10 +1085,48 @@ function halfRow(line, corner, p) {
   ]);
 }
 
+// key -> [label, value of a row, direction a first click sorts]; a null value sorts last.
+const HALF_SORTS = {
+  ev: ["Edge", x => x.c.ev, "desc"],
+  stake: ["Stake", x => x.c.recommended_stake, "desc"],
+  kickoff: ["Kickoff", x => parseTime(x.line.game_start_time).getTime(), "asc"],
+  fair: ["Fair", x => x.c.fair_prob, "desc"],
+  wz: ["WZ price", x => x.c.wz_decimal, "desc"],
+};
+
+// The chosen sort, then edge, then the board's own order; a started game
+// can't be bet, so its corners sort last whatever the sort.
+function compareHalfRows(a, b) {
+  const [, value] = HALF_SORTS[prefs.halfSort] || HALF_SORTS.ev;
+  const sign = prefs.halfSortDir === "asc" ? 1 : -1;
+  const byValue = (va, vb) => va == null ? (vb == null ? 0 : 1) : vb == null ? -1 : sign * (va - vb);
+  return hasStarted(a.line) - hasStarted(b.line)
+    || byValue(value(a), value(b))
+    || (b.c.ev ?? -Infinity) - (a.c.ev ?? -Infinity)
+    || a.line.wz_game_id - b.line.wz_game_id
+    || CORNER_ORDER.indexOf(a.corner) - CORNER_ORDER.indexOf(b.corner);
+}
+
+function setHalfSort(key) {
+  if (prefs.halfSort === key) prefs.halfSortDir = prefs.halfSortDir === "asc" ? "desc" : "asc";
+  else { prefs.halfSort = key; prefs.halfSortDir = HALF_SORTS[key][2]; }
+  savePrefs();
+  render();
+}
+
+function renderHalfSortBar() {
+  document.getElementById("half-sort-seg").replaceChildren(...Object.entries(HALF_SORTS).map(([key, [label]]) => {
+    const active = prefs.halfSort === key;
+    const arrow = active ? (prefs.halfSortDir === "asc" ? " ↑" : " ↓") : "";
+    return el("button", { "aria-pressed": String(active), title: active ? "Click to reverse" : `Sort by ${label.toLowerCase()}`,
+                          text: label + arrow, onclick: () => setHalfSort(key) });
+  }));
+}
+
 function renderHalves(p) {
   const h = p.halves, root = document.getElementById("half-board");
   const tiles = document.getElementById("half-tiles"), bar = document.getElementById("half-toolbar");
-  tiles.hidden = bar.hidden = !h;
+  tiles.hidden = bar.hidden = document.getElementById("half-sort-bar").hidden = !h;
   renderHalfPlaced(p);
   if (!h) {
     root.replaceChildren(isBusy(p) ? "" : emptyState("Price the 1H parlays",
@@ -1072,7 +1140,8 @@ function renderHalves(p) {
   tiles.replaceChildren(
     el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Cash after fectas" }),
       el("div", { class: "tile-value num", text: h.budget == null ? "Unknown" : money(h.budget) }),
-      el("div", { class: "tile-sub keep", text: h.budget == null ? "No stakes until Refresh reads it" : "fectas get first call" })]),
+      h.budget == null ? el("div", { class: "tile-sub keep", text: "No stakes until Refresh reads it" })
+        : el("div", { class: "tile-sub", text: "fectas get first call" })]),
     el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Recommended" }),
       el("div", { class: "tile-value num", text: money(total) }),
       el("div", { class: "tile-sub", text: `${live.length} parlay${live.length === 1 ? "" : "s"}` })]),
@@ -1086,24 +1155,47 @@ function renderHalves(p) {
       [label, el("span", { class: "count", text: counts[key] })])));
   document.getElementById("half-ev-only").setAttribute("aria-pressed", String(prefs.halfEvOnly));
 
+  document.getElementById("half-view-seg").replaceChildren(...[["flat", "All by sort"], ["game", "By game"]].map(([key, label]) =>
+    el("button", { "aria-pressed": String(prefs.halfView === key), text: label, onclick: () => setPref("halfView", key) })));
+  renderHalfSortBar();
+
   const inLeague = h.lines.filter(l => prefs.league === "all" || l.league === prefs.league);
   const priced = inLeague.filter(l => l.status === "priced" || l.status === "pricing");
+  const allRows = priced.flatMap(line => CORNER_ORDER.map(corner => ({ line, corner, c: line.corners[corner] })));
+  const shownRows = allRows.filter(x => !prefs.halfEvOnly || (x.c.ev > 0 && !hasStarted(x.line))).sort(compareHalfRows);
   const parts = [];
-  for (const line of priced) {
-    const shown = CORNER_ORDER.filter(corner => !prefs.halfEvOnly || (line.corners[corner].ev > 0 && !hasStarted(line)));
-    if (!shown.length) continue;
-    const start = parseTime(line.game_start_time);
-    parts.push(el("div", { class: "group" }, [
-      el("div", { class: "group-head" }, [
-        el("span", {}, [el("span", { class: "matchup", text: `${line.away} @ ${line.home}` }),
-          el("span", { class: "muted small num", text: ` · ${LEAGUE_LABEL[line.league]} · 1H ${line.away} ${halfPoints(line.away_spread)}, total ${halfPoints(line.total).slice(1)}` })]),
-        el("span", { class: "muted small num", text: `${dayClock(start)} · ${untilKickoff(start)}` }),
-      ]),
-      ...shown.map(corner => halfRow(line, corner, p)),
-    ]));
+  if (prefs.halfView === "flat") {
+    if (shownRows.length) parts.push(el("div", { class: "group" }, shownRows.map(x => halfRow(x.line, x.corner, p, true))));
+  } else {
+    // A game sits where its best-sorted corner does.
+    const games = new Map();
+    for (const x of shownRows) {
+      if (!games.has(x.line.wz_game_id)) games.set(x.line.wz_game_id, { line: x.line, rows: [] });
+      games.get(x.line.wz_game_id).rows.push(x);
+    }
+    for (const { line, rows } of games.values()) {
+      const start = parseTime(line.game_start_time);
+      parts.push(el("div", { class: "group" }, [
+        el("div", { class: "group-head" }, [
+          el("span", {}, [el("span", { class: "matchup", text: `${line.away} @ ${line.home}` }),
+            el("span", { class: "muted small num", text: ` · ${LEAGUE_LABEL[line.league]} · 1H ${line.away} ${halfPoints(line.away_spread)}, total ${halfPoints(line.total).slice(1)}` })]),
+          el("span", { class: "muted small num", text: `${dayClock(start)} · ${untilKickoff(start)}` }),
+        ]),
+        ...rows.map(x => halfRow(x.line, x.corner, p, false)),
+      ]));
+    }
+  }
+  const hiddenCount = allRows.length - shownRows.length;
+  const showAllHalves = () => { prefs.halfEvOnly = false; savePrefs(); render(); };
+  if (!parts.length) {
+    parts.push(el("div", { class: "card empty" }, [
+      el("h2", { text: !priced.length ? "No priced 1H parlays" : "No +EV 1H parlays" }),
+      hiddenCount ? el("button", { text: `Show all ${allRows.length}`, onclick: showAllHalves }) : null]));
+  } else if (hiddenCount > 0) {
+    parts.push(el("div", { class: "hidden-note" }, [`${hiddenCount} -EV or started hidden · `,
+      el("button", { class: "linkish", text: "Show all", onclick: showAllHalves })]));
   }
   const rest = inLeague.filter(l => l.status === "skipped" || l.status === "unpriced");
-  if (!parts.length) parts.push(el("div", { class: "card empty" }, [el("h2", { text: prefs.halfEvOnly ? "No +EV 1H parlays" : "No priced 1H parlays" })]));
   if (rest.length) {
     parts.push(el("div", { class: "group" }, [
       el("div", { class: "group-head" }, [el("span", { class: "matchup", text: `${rest.length} game${rest.length === 1 ? "" : "s"} not priced` })]),
