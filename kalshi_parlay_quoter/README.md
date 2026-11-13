@@ -20,26 +20,38 @@ sends no quotes and no orders**; nothing in this package can.
    Period markets (1H, F5) and props fall out as `unsupported_leg`. About
    475 RFQs a second pass. The rest are counted, never stored.
 3. **Leg table** (`legtable.py`). Every leg seen in the last 10 minutes is
-   re-priced every 2 s by `GET 127.0.0.1:8095/rfq_fairs.json` (200 legs a
-   call, board only, no Kalshi read). An RFQ is priced from that table in
-   memory, so the work grows with distinct legs (thousands), not with RFQs.
+   held in memory with its fair from `GET 127.0.0.1:8095/rfq_fairs.json`
+   (200 legs a call, board only, no Kalshi read), and an RFQ is priced from
+   that table, so the work grows with distinct legs (thousands), not with
+   RFQs. **A leg is priced when it changes, not on a clock**: its fair moves
+   only when Unabated's snapshot for its league lands on the runner, about
+   once a minute. Every 2 s the quoter reads each league's snapshot time off
+   the runner's `/health` (answered by the runner's main thread, at no cost
+   to the thread its taker runs on) and re-prices only the legs of a league
+   whose time moved, and any leg priced over 90 s ago. The first version
+   re-priced every leg every 2 s: 30 times the runner calls for the same
+   numbers, on the taker's thread (2026-11-13, the taker froze 40 minutes
+   after the quoter went live).
    Per leg: Unabated fair for that side, `fair_lo`/`fair_hi` bracket, `sigma`
    (with `c`, `tau`), the resolved Unabated line, kickoff and fair age. A leg
-   seen for the first time is priced within ~0.25 s, ahead of the next full
-   pass (while a pass takes under 2 s; otherwise first in the next pass); its RFQ waits for that, at most 5 s. A leg the runner refuses (HTTP
+   seen for the first time is priced within ~0.25 s; its RFQ waits for
+   that, at most 5 s. A leg the runner refuses (HTTP
    400) is isolated by halving its chunk, declines `runner_rejected`, and is
    asked again after 5 minutes (so a ticker that stays bad counts in
    `table_legs_rejected` 12 times an hour).
 4. **Decision** (`decide.py`). `would_quote` when every leg is priced (parlay
    fair = product of leg fairs, since legs are on different games), otherwise
    `decline` with a reason.
-5. **Confirm.** Up to 1 would-quote parlay a second is re-priced through
-   `GET /rfq_price.json`, where the runner also reads Kalshi's market (status,
+5. **Confirm (off by default since 2026-11-13).** With
+   `PARLAY_CONFIRMS_PER_SEC` above 0, that many would-quote parlays a second
+   are re-priced through `GET /rfq_price.json`, where the runner also reads Kalshi's market (status,
    strike), book and start for each leg. Those rows are `confirmed` and carry
    Kalshi's prices. The cap exists because those reads share Kalshi's 20
    reads/s limit with the taker bot. The others are counted
    `would_quote_unconfirmed`. A confirm that fails with `pricer_error` stops
-   confirms for 30 s.
+   confirms for 30 s. On the VM most confirms timed out (16 confirmed, 288
+   timed out in 80 minutes) and their Kalshi reads run on the taker's
+   thread, so they stay off until they read the runner's Kalshi book stream.
 
 Python never sends keys to the runner; the runner never sees an RFQ beyond
 its legs. The margin formula is #284; a confirmed row logs everything it
@@ -71,7 +83,9 @@ needs.
   `dropped_on_pause`, `handle_crashed`, `confirm_crashed`.
 - `stored`: rows written to `rfq_decisions`. It is on top of the decision
   keys, not one of them.
-- Health: `table_refresh_failed`, `table_legs_rejected`, `gauge_table_legs`,
+- Health: `table_refresh_failed`, `table_legs_rejected`, `table_legs_priced`
+  (leg prices asked of the runner: about one per table leg a minute),
+  `gauge_table_legs`,
   `gauge_table_refresh_ms`, `gauge_pending`, `gauge_queue` (gauges are the
   value at the minute's end, not a count).
 
@@ -98,13 +112,29 @@ FROM rfq_decisions WHERE confirmed AND decision = 'would_quote'
 
 ## Freshness
 
-A fair is priced on only while its refresh call was sent under 15 s ago
-(`PARLAY_TABLE_MAX_AGE_SEC`). The refresh runs every 2 s, but the runner's
-board thread is busy for 5-14 s at a time building Edges, and a refresh
-waits behind that. Every leg row records `cache_age_ms`, and `fair_age_ms`
-is the age of Unabated's snapshot plus that reuse. A leg whose kickoff has
-passed since it was priced logs `started`. With the runner down, fairs age
-out and RFQs decline `pricer_error`.
+A fair is priced on only while all three hold:
+
+- the runner's snapshot times were read under 15 s ago
+  (`PARLAY_TABLE_MAX_AGE_SEC`). A runner that is down stops every fair
+  within 15 s. A runner whose board thread is stuck keeps answering
+  `/health` ok for 15 s more (it says not ok after 15 s without a post from
+  that thread), so that case takes about 30-35 s;
+- the leg was priced on its league's current snapshot, or the quoter saw
+  that snapshot change under 15 s ago and the re-price is on its way. The
+  quoter sees a change up to ~7 s after it lands (`/health` is posted every
+  5 s and read every 2 s). A league the runner would decline (stale or
+  failed snapshot, not loaded, a restarted runner) is left out of the
+  snapshot times: its fairs stop at once and its legs are asked again;
+- the leg was priced under 105 s ago (`PARLAY_TABLE_MAX_REUSE_SEC` + 15).
+
+So a fair can be one snapshot behind the runner's board for about 22 s. What
+a snapshot time does not show is caught by the 90 s re-price and can lag
+that long: time to kickoff inside `sigma`/`tau`, and the runner's tail
+measurement. Every leg row records `cache_age_ms` (now often 30-60 s, since
+an unchanged fair is reused), and `fair_age_ms` is the age of Unabated's
+snapshot plus that reuse. A leg whose kickoff has passed since it was priced
+logs `started`.
+With the runner down, RFQs decline `pricer_error`.
 
 ## Running
 
@@ -117,13 +147,14 @@ then builds it, restarts it and checks it is running. Remove the line (and
 ```
 cd ~/NFLWork/unabated_ticket/deploy
 docker compose logs -f parlay_quoter          # one counts line a minute
-touch ~/unabated-data/parlay_quoter.stop      # close the feed, drop waiting RFQs, idle (rm to resume)
+touch ~/unabated-data/parlay_quoter.stop      # close the feed, stop all runner calls, drop waiting RFQs (rm to resume)
 ```
 
 Load, measured locally 2026-11-13 against a fake feed at 9,900 frames a
-second with 475 kept RFQs a second and 9,400 table legs: 36% of one core in
+second with 475 kept RFQs a second and 9,400 table legs: 31% of one core in
 total, no queue, no reconnects (no TLS; a live read-only run of the reader
-alone cost 42% of a core with TLS). The log grows ~190 MB a day at 3.4
+alone cost 42% of a core with TLS), and 9,360 leg prices asked of the runner
+a minute (`table_legs_priced`; the every-2-s version asked ~280,000). The log grows ~190 MB a day at 3.4
 stored decisions a second. Rows are inserted in multi-row statements
 (DuckDB's `executemany` goes row by row and was the first VM run's CPU sink)
 and the file is checkpointed each minute.
@@ -140,14 +171,16 @@ Locally: `KALSHI_API_KEY_ID=… KALSHI_PRIVATE_KEY_PATH=… python -m kalshi_par
 | `UNABATED_RUNNER_URL` | `http://127.0.0.1:8095` | leg pricers |
 | `KALSHI_WS_URL` | Kalshi production | RFQ feed |
 | `PARLAY_MIN_RFQ_TARGET_COST_USD` | 50 | size floor at the door; 0 keeps every size |
-| `PARLAY_TABLE_REFRESH_SEC` | 2 | leg table refresh |
-| `PARLAY_TABLE_MAX_AGE_SEC` | 15 | oldest fair priced on |
+| `PARLAY_TABLE_REFRESH_SEC` | 2 | how often the runner's snapshot times are read off `/health` |
+| `PARLAY_TABLE_HEALTH_TIMEOUT_SEC` | 3 | one `/health` read |
+| `PARLAY_TABLE_MAX_REUSE_SEC` | 90 | a leg is re-priced at the latest this long after it was priced |
+| `PARLAY_TABLE_MAX_AGE_SEC` | 15 | how old the snapshot times may be, and how long an old fair is served after its league changed |
 | `PARLAY_TABLE_LEG_TTL_SEC` | 600 | how long a leg stays in the table after it was last asked |
 | `PARLAY_TABLE_FETCH_TIMEOUT_SEC` | 15 | one refresh call |
 | `PARLAY_PENDING_MAX_WAIT_SEC` | 5 | wait for a leg's first fair, then `pricer_error` |
 | `PARLAY_MAX_RFQ_AGE_SEC` | 15 | an RFQ that waited longer in the queue is counted `expired_in_queue`, not decided |
 | `PARLAY_MAX_BACKLOG` | 2000 | RFQs waiting that way; beyond it `pricer_backlog` |
-| `PARLAY_CONFIRMS_PER_SEC` | 1 | Kalshi-checked confirms; 0 turns them off |
+| `PARLAY_CONFIRMS_PER_SEC` | 0 | Kalshi-checked confirms a second; 0 is off |
 | `PARLAY_CONFIRM_WORKERS` | 2 | confirms in flight |
 | `PARLAY_CONFIRM_TIMEOUT_SEC` | 3 | slower = `confirm_pricer_error` (detail `timeout`) |
 | `PARLAY_CONFIRM_BACKOFF_SEC` | 30 | no confirms for this long after one fails with `pricer_error` |

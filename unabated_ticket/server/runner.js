@@ -207,10 +207,14 @@
 //   GET /rfq_fairs.json?legs=TICKER:yes,TICKER:no   (at most 200 legs)
 //                    the same legs priced off the board alone, no Kalshi read:
 //                    ok says Unabated has a fair for a game not seen started,
-//                    the Kalshi fields stay null. The quoter refreshes its
-//                    in-memory leg table with these and confirms a sample of
-//                    would-quote parlays through /rfq_price.json.
-//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices, taker}
+//                    the Kalshi fields stay null; league_loaded_at says when
+//                    the snapshot of each RFQ league priced now landed (a
+//                    stale or failed league is absent). The quoter holds these
+//                    in memory and asks again only for the legs of a league
+//                    whose snapshot time on /health (rfq.leagueLoadedAt) moved.
+//   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices, rfq, taker}
+//                    taker.runningSince is the start of the pass in progress and
+//                    taker.stuck counts the passes abandoned after TAKER_PASS_STUCK_MS.
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Threads: main() runs createRunner on a worker thread (server/board_thread.js)
@@ -286,6 +290,10 @@ const NOVIG_LEAGUE_OF = { nfl: "NFL", cfb: "NCAAF", nba: "NBA", cbb: "NCAAB", wn
 const NOVIG_HOLDINGS_SOURCES = ["novig", "novig_bot"];
 // The taker decides on every Kalshi row this often; Kalshi's public reads allow far more.
 const TAKER_PASS_MS = 30 * 1000;
+// A pass still running after this is abandoned and the next tick starts a new
+// one. Every read in a pass has a timeout, and the slowest pass seen under
+// load took ~2.5 min (2026-11-13), so 5 min means a wait that will not return.
+const TAKER_PASS_STUCK_MS = 5 * 60 * 1000;
 // Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
 const KALSHI_BOOK_READS_AT_ONCE = 2;
 // How long a Kalshi book ask for one line (a Place quote, a reread) may wait
@@ -695,7 +703,12 @@ function createRunner(deps) {
   // The automated taker (server/taker.js): the last pass's decisions, each
   // row's last logged signature (a row logs again only when its decision
   // changes), and the decisions the bets service has not taken yet.
-  let takerBusy = false;
+  // The pass in progress, {id, startedAt}, or null. A pass still running after
+  // TAKER_PASS_STUCK_MS is abandoned (takerPass): 2026-11-13 one pass never
+  // finished and the busy flag it held stopped every pass for 17 hours.
+  let takerRunning = null;
+  let takerPassCount = 0;
+  let takerStuck = { count: 0, lastAt: null, lastStartedAt: null };
   let takerPostBusy = false;
   // `skipped` is the Kalshi side's (as before Novig), `novigSkipped` the Novig side's.
   let takerLastPass = { startedAt: null, finishedAt: null, skipped: "not run yet", novigSkipped: "not run yet", rows: 0, byReason: {}, coverage: {} };
@@ -1543,9 +1556,18 @@ function createRunner(deps) {
   // desk. The decisions that changed since they were last logged are queued
   // for the bets service.
   async function takerPass() {
-    if (takerBusy) return;
-    takerBusy = true;
+    if (takerRunning) {
+      if (now() - takerRunning.startedAt <= TAKER_PASS_STUCK_MS) return;
+      logWarning(`taker pass ${takerRunning.id} started ${new Date(takerRunning.startedAt).toISOString()} has not finished after ${Math.round((now() - takerRunning.startedAt) / 1000)} s: abandoned, it sends no further orders if it resumes`);
+      takerStuck = { count: takerStuck.count + 1, lastAt: now(), lastStartedAt: takerRunning.startedAt };
+    }
+    takerPassCount += 1;
+    const passId = takerPassCount;
     const startedAt = now();
+    takerRunning = { id: passId, startedAt };
+    // False once a later pass has replaced this one: an abandoned pass that
+    // resumes must not decide, send, or write the pass state.
+    const isCurrent = () => takerRunning !== null && takerRunning.id === passId;
     try {
       const blocker = takerBlocker();
       // A Novig stake is sized on every held bet, Cal's Kalshi bets included: it needs the Kalshi poll fresh too.
@@ -1562,10 +1584,14 @@ function createRunner(deps) {
         heldRecords: held.records.filter((record) => !excludedBetIds.has(record.id)), teasers: openTeasersNow(),
       };
       const kalshiPart = blocker ? { rows: [], decisions: [] } : await kalshiDecisions(pass);
+      if (!isCurrent()) return;
       const novigPart = novigSkip ? { rows: [], decisions: [] } : await novigDecisions(pass);
-      takerDecisions = kalshiPart.decisions.concat(novigPart.decisions);
+      if (!isCurrent()) return;
+      const decisions = kalshiPart.decisions.concat(novigPart.decisions);
+      takerDecisions = decisions;
       const rows = kalshiPart.rows.concat(novigPart.rows);
-      await sendTakerOrders(takerDecisions, rows, startedAt);
+      await sendTakerOrders(decisions, rows, startedAt, isCurrent);
+      if (!isCurrent()) return;
       queueChangedDecisions(takerDecisions);
       takerLastPass = {
         startedAt, finishedAt: now(), skipped: blocker, novigSkipped: novigSkip, rows: rows.length,
@@ -1573,10 +1599,10 @@ function createRunner(deps) {
         coverage: takerCoverage(takerDecisions),
       };
     } catch (error) {
-      logWarning(`taker pass failed: ${error.stack || error.message}`);
-      takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}`, novigSkipped: `the pass failed: ${error.message}` };
+      logWarning(`taker pass${isCurrent() ? "" : " (abandoned)"} failed: ${error.stack || error.message}`);
+      if (isCurrent()) takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}`, novigSkipped: `the pass failed: ${error.message}` };
     } finally {
-      takerBusy = false;
+      if (isCurrent()) takerRunning = null;
     }
     await postTakerDecisions();
   }
@@ -2668,6 +2694,23 @@ function createRunner(deps) {
     return (scannerStatus && scannerStatus.leagueLoadedAt && scannerStatus.leagueLoadedAt[leagueId]) ?? null;
   }
 
+  // When the snapshot of each RFQ league the runner would price now last
+  // landed, by league label ({NFL: ms, ...}). A league that is not loaded, or
+  // is stale or failed (staleSnapshotReason, so priceLeg declines its legs),
+  // is absent. A leg's fair changes only when its league's entry does, so the
+  // quoter re-prices a leg on that change (read off /health, which the main
+  // thread answers) and not on a clock.
+  //   at  the time the answer it rides on was priced at: a league is listed
+  //       exactly when a leg priced at `at` would not decline stale_feed
+  function rfqLeagueLoadedAt(at) {
+    const byLabel = {};
+    if (!scannerStatus) return byLabel;
+    for (const leagueId of rfqprice.RFQ_LEAGUE_IDS) {
+      if (staleSnapshotReason(leagueId, at) === null) byLabel[feedLib.LEAGUES[leagueId].label] = scannerStatus.leagueLoadedAt[leagueId];
+    }
+    return byLabel;
+  }
+
   // GET /rfq_price.json (#282; header above, server/rfqprice.js). Only a leg
   // resolved to a game in a fresh league reads Kalshi (market, book, start).
   //   params  URLSearchParams {legs: "TICKER:yes,TICKER:no", rfq_id?}
@@ -2702,10 +2745,10 @@ function createRunner(deps) {
   }
 
   // GET /rfq_fairs.json: up to MAX_FAIR_LEGS legs priced off the board alone,
-  // no Kalshi read (rfqprice.priceLeg, unchecked). The quoter refreshes every
-  // leg it has seen with these every couple of seconds and prices RFQs from
-  // memory, so this must stay pure compute: ~1,900 leg prices a second
-  // (2026-11-13) cannot each wait on Kalshi.
+  // no Kalshi read (rfqprice.priceLeg, unchecked). The quoter asks for a leg
+  // when it is new or its league's snapshot changed (league_loaded_at) and
+  // prices RFQs from memory, so this must stay pure compute: a whole league
+  // (a few thousand legs) is asked at once when its snapshot lands.
   function rfqFairsNow(params) {
     const legs = rfqprice.parseLegsParam(params.get("legs"), rfqprice.MAX_FAIR_LEGS);
     if (typeof legs === "string") throw httpError(400, legs);
@@ -2714,7 +2757,7 @@ function createRunner(deps) {
     const { board } = context;
     if (board && !rfqBoardLookup) rfqBoardLookup = rfqprice.boardLookupOf(board);
     const priced = legs.map((leg) => rfqprice.priceLeg(leg, rfqprice.resolveLeg(leg.marketTicker, board, board ? rfqBoardLookup : null), context, { unchecked: true }));
-    return { priced_at_ms: pricedAt, legs: priced };
+    return { priced_at_ms: pricedAt, league_loaded_at: rfqLeagueLoadedAt(pricedAt), legs: priced };
   }
 
   // The Kalshi contract Place buys: the bot's own reading of the rungs, and
@@ -3107,18 +3150,22 @@ function createRunner(deps) {
   // price first): a number both books trade at a tie sends the better live
   // edge first, and the other waits on the desk's unseen_fill. A venue whose
   // desk is off stops only that venue's sends.
-  async function sendTakerOrders(decisions, rows, passStartedAt) {
+  //   isCurrent  false once the pass was abandoned (takerPass): nothing more is confirmed or sent
+  async function sendTakerOrders(decisions, rows, passStartedAt, isCurrent = () => true) {
     const rowByKey = new Map(rows.map((row) => [row.key, row]));
     const bets = decisions.filter((decision) => decision.reason === "bet").sort((a, b) => b.liveEdge - a.liveEdge);
     const venuesOff = new Set();
     for (const decision of bets) {
+      if (!isCurrent()) return;
       if (venuesOff.has(decision.venue)) continue;
       const row = rowByKey.get(decision.rowKey);
       if (decision.venue === taker.VENUE_NOVIG) {
         if (!(await novigMarketConfirmed(decision, row))) continue;
+        if (!isCurrent()) return;
         decision.order = await sendNovigTakerOrder(decision, passStartedAt);
       } else {
         if (!(await marketConfirmed(decision, row))) continue;
+        if (!isCurrent()) return;
         decision.order = await sendTakerOrder(decision, passStartedAt);
       }
       if (decision.order.status === "off") venuesOff.add(decision.venue);
@@ -3489,8 +3536,11 @@ function createRunner(deps) {
       edgeLog: { ...edgeLogStatus, openSegments: edgeSegments.size, unsent: unsentEdgeRows.size },
       tauPool: { ...tauStatus, size: tauPool.size(), unsent: tauUnsent.size },
       livePrices: liveStatus(),
+      rfq: { leagueLoadedAt: rfqLeagueLoadedAt(now()) },
       taker: {
         desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
+        runningSince: takerRunning ? isoOrNull(takerRunning.startedAt) : null,
+        stuck: { count: takerStuck.count, lastAt: isoOrNull(takerStuck.lastAt), lastStartedAt: isoOrNull(takerStuck.lastStartedAt) },
         skipped: takerLastPass.skipped, novigSkipped: takerLastPass.novigSkipped,
         rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, dropped: takerLogStatus.dropped, unsent: takerUnsent.length },
       },

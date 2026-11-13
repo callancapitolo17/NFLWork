@@ -6,12 +6,14 @@ NO ORDERS: nothing in this package can send a quote.
 Threads
   rfq-feed    feed.RFQFeed reads Kalshi's RFQ websocket; the door (scope rule
               + size floor) leaves only RFQs we could price, on a queue.
-  leg-table   legtable.Refresher re-prices every leg seen in the last 10 min
-              off the runner's /rfq_fairs.json, every 2 s.
+  leg-table   legtable.Refresher reads each league's snapshot time off the
+              runner's /health every 2 s and prices, off /rfq_fairs.json,
+              only legs that are new or whose league's snapshot changed.
   main        Quoter.step: takes RFQs off the queue and decides each from the
               leg table (memory only), then flushes the decision log.
-  confirm-*   a capped number of would-quote parlays a second are re-priced
-              through the runner's Kalshi-checked /rfq_price.json.
+  confirm-*   off by default (PARLAY_CONFIRMS_PER_SEC=0). When on, that many
+              would-quote parlays a second are re-priced through the
+              runner's Kalshi-checked /rfq_price.json.
 
 Side effects: appends to DB_PATH (db.DecisionLog: rfq_decisions, rfq_legs,
 minute_counts). Every frame and decision is counted per minute; confirmed
@@ -258,10 +260,13 @@ def run() -> None:
         min_cost_usd=config.MIN_RFQ_TARGET_COST_USD, queue_max=config.FEED_QUEUE_MAX,
         idle_timeout_sec=config.FEED_IDLE_TIMEOUT_SEC)
     table = legtable.LegTable(max_age_sec=config.TABLE_MAX_AGE_SEC,
-                              leg_ttl_sec=config.TABLE_LEG_TTL_SEC)
+                              leg_ttl_sec=config.TABLE_LEG_TTL_SEC,
+                              max_reuse_sec=config.TABLE_MAX_REUSE_SEC,
+                              league_of=scope.league_of_leg)
     refresher = legtable.Refresher(
         table,
         lambda keys: pricer.fairs(config.RUNNER_URL, keys, timeout=config.TABLE_FETCH_TIMEOUT_SEC),
+        lambda: pricer.league_snapshot_times(config.RUNNER_URL, timeout=config.TABLE_HEALTH_TIMEOUT_SEC),
         interval_sec=config.TABLE_REFRESH_SEC)
     quoter = Quoter(
         rfq_feed.rfqs, table, dlog,
@@ -293,8 +298,9 @@ def run() -> None:
         if stop_file != paused:
             paused = stop_file
             rfq_feed.set_paused(paused)
+            refresher.set_paused(paused)
             log.info("[quoter] stop file %s %s", config.STOP_PATH,
-                     "present: feed closed, idling" if paused else "gone: resuming")
+                     "present: feed closed, runner calls stopped, idling" if paused else "gone: resuming")
         if paused:
             quoter.drop_waiting()          # also what the reader queued while it was closing
             stop.wait(1)

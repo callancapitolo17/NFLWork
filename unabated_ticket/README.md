@@ -3329,6 +3329,16 @@ would sell that YES; across them the bot still never bets against a held bet). T
 (`stale_decision`), a game that has started (`started`) and a runner priced
 on another Kalshi API than its own (`env_mismatch`).
 
+**A pass that never finishes (2026-11-13).** One pass at a time runs. On
+2026-11-13 a pass started at 04:40 UTC and never finished, with no error
+logged, and every later pass waited behind it for 17 hours. Since then a
+pass still running after 5 minutes (`TAKER_PASS_STUCK_MS`) is abandoned: the
+runner logs it, the next 30 s tick starts a new pass, and the abandoned one
+decides, confirms and sends nothing more if it resumes (an order already on
+its way to the desk still lands; the desk's own guards cover it). `/health` shows
+`taker.runningSince` (the pass in progress) and `taker.stuck` (how many were
+abandoned, and the last one's start).
+
 **Two clocks for "started" (2026-10-16, option B).** A backup to Unabated's
 eventStart, added after a suspected late start that turned out to be right
 (Columbia at Penn: public schedules said 7:00 PM ET, Unabated and Kalshi
