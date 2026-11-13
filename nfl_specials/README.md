@@ -299,7 +299,12 @@ only 1st halves are read.
    covers Wagerzon's 1H spread when every one of them needs at least that 1H
    margin (a 1H win leg on the 1H underdog; `fecta_min_h1_margin` vs
    `min_cover_margin`), spread over those cells in proportion; otherwise they
-   are taken as unrelated to the 1H result. Placed 1H parlays
+   are taken as unrelated to the 1H result. A fecta can hedge the other
+   team's corners and so raise their stake; that is only trusted where sure:
+   each stake is capped at its smallest Kelly over the readings the boards
+   cannot tell apart (with and without fectas only recommended so far, and a
+   chain that need not cover both inside its cover and unrelated), and the
+   budget is then fitted once. A free play fecta loses no cash. Placed 1H parlays
    (`placed_half_parlays`, counting the ones that may have gone through) are
    fixed bets in their game's group; a placed bet the boards cannot price
    blocks its game. $20 minimum, $250 per parlay a week
@@ -399,9 +404,12 @@ Pricing is books only (Cal, 2026-11-12):
 4. Each corner's fair is the **effective** fair at Wagerzon's parlay decimal D:
    P(both win) + push return / D, where push return = P(spread wins, total
    pushes) x spread decimal + P(spread pushes, total wins) x total decimal +
-   P(both push). Same EV as the real bet; Kelly on it is the smaller,
-   cautious stake (the binary swings more than the real payout). Worst case
-   across books as for half-point lines.
+   P(both push); same EV as the real bet. It is read off the **worst-case
+   grid**: each cell's lowest chance across the books (`HalfLine.worst_case_cells`),
+   the rest a state where every corner loses, so it is at or below every
+   book's own effective fair. The stake is sized on those same cells with
+   the real push payouts (`push_grid.cell_payout`), so the EV shown is the EV
+   sized on.
 5. A whole-number game needs two books priced (`MIN_BOOKS_WHOLE_NUMBER`,
    `halves_board.py`); with one, it is listed under "not priced" with the book
    named, stakes nothing, and Place refuses it (as it refuses any corner with
@@ -409,7 +417,7 @@ Pricing is books only (Cal, 2026-11-12):
 
 `half_parlay_quotes.fair_prob` is the both-win chance and `push_return` the
 push return, so the effective fair can be rebuilt from the table;
-`placed_half_parlays.fair_prob` is the effective fair the stake was sized on.
+`placed_half_parlays.fair_prob` is the effective fair shown at the click (the worst-case grid's).
 A held whole-number parlay counts its pushes at the price it was placed at.
 
 Unverified: the push rule (other leg at its straight price, both push

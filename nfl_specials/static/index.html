@@ -1028,7 +1028,7 @@ function halfStakeCell(line, corner, c, p) {
   } else if (c.recommended_stake < 0.5 && c.unlimited_stake > 0.5) {
     children.push(el("div", { class: "why", text: "$0: the cash the fectas leave went to bigger edges" }));
   } else if (c.recommended_stake < 0.5 && c.kelly_stake < 0.5) {
-    children.push(el("div", { class: "why", text: "$0: this team's fecta or parlay already holds its Kelly" }));
+    children.push(el("div", { class: "why", text: "$0: the fectas and parlays already held in this game take its Kelly" }));
   }
   const message = placeMessages.get(id);
   if (message) children.push(el("div", { class: message.ok ? "msg-ok" : "msg-err", role: "status", text: message.text }));

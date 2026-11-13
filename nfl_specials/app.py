@@ -508,7 +508,8 @@ def _held_half_parlays(half_placements: list[dict], account: str | None) -> tupl
 
 def _held_placements(placements: list[dict], account: str | None) -> tuple[HeldPlacement, ...]:
     """The bets `account` has placed, among `placements`."""
-    return tuple(HeldPlacement(p["wz_game_id"], p["risk"], p["wz_american"]) for p in placements
+    return tuple(HeldPlacement(p["wz_game_id"], p["risk"], p["wz_american"], bool(p.get("free_play")))
+                 for p in placements
                  if p["account"] == account and p["status"] == "placed")
 
 

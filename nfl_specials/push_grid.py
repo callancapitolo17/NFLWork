@@ -138,23 +138,29 @@ def fit_push_grid(partitions: dict[tuple[float, float], dict[str, float]],
     return GridFit(grid, residual=residual)
 
 
-def corner_outcomes(grid: PushGrid, corner: str) -> tuple[float, float, float, float]:
-    """(both win, spread wins + total pushes, spread pushes + total wins, both push) for one corner."""
+def cell_payout(game: WzHalfGame, corner: str, parlay_decimal: float, cell: tuple[str, str]) -> float:
+    """Dollars back per $1 on `corner` (stake included) when the 1H lands in
+    `cell`: both legs win pays the parlay; a pushed leg is dropped and the
+    other leg pays its straight decimal; both pushed refunds the stake; a
+    losing leg (or a cell that is neither side, such as an unassigned one) pays 0."""
     spread_side, total_side = corner.split("_")
-    return (grid.prob(spread_side, total_side), grid.prob(spread_side, PUSH),
-            grid.prob(PUSH, total_side), grid.prob(PUSH, PUSH))
+    spread_result, total_result = cell
+    if spread_result not in (spread_side, PUSH) or total_result not in (total_side, PUSH):
+        return 0.0
+    if spread_result == spread_side and total_result == total_side:
+        return parlay_decimal
+    if spread_result == PUSH and total_result == PUSH:
+        return 1.0
+    if spread_result == spread_side:
+        return american_to_decimal(game.away_spread_american if spread_side == AWAY else game.home_spread_american)
+    return american_to_decimal(game.over_american if total_side == OVER else game.under_american)
 
 
 def push_return(grid: PushGrid, corner: str, game: WzHalfGame) -> float:
     """Expected dollars back per $1 from the corner's push outcomes at
     Wagerzon: the surviving leg at its straight decimal, or the stake."""
-    spread_side, total_side = corner.split("_")
-    spread_american = game.away_spread_american if spread_side == AWAY else game.home_spread_american
-    total_american = game.over_american if total_side == OVER else game.under_american
-    _, spread_only, total_only, both_push = corner_outcomes(grid, corner)
-    return (spread_only * american_to_decimal(spread_american)
-            + total_only * american_to_decimal(total_american)
-            + both_push)
+    return sum(prob * cell_payout(game, corner, 0.0, cell)
+               for cell, prob in grid.cells.items() if PUSH in cell)
 
 
 def corner_bracket_pairs(game: WzHalfGame) -> list[tuple[float, float]]:

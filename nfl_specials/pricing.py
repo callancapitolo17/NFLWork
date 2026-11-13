@@ -335,6 +335,15 @@ def _group_stakes_at_hurdle(group: OutcomeGroup, active_candidates: list[int], k
     return {bet[3]: fraction * kelly_bankroll for bet, fraction in zip(bets, fractions) if bet[3] is not None}
 
 
+# A stake a hair under a whole dollar is that dollar: the budget often binds
+# exactly at one, where float rounding lands either side of it.
+WHOLE_DOLLAR_SLACK = 1e-6
+
+
+def _whole_dollars(stake: float) -> int:
+    return math.floor(stake + WHOLE_DOLLAR_SLACK)
+
+
 # Raising the hurdle this many times over without fitting the budget means
 # the stakes do not shrink with it: a bug, not a board to size.
 MAX_HURDLE_DOUBLINGS = 60
@@ -357,7 +366,7 @@ def _fit(groups: list[OutcomeGroup], active: set[tuple[int, int]], kelly_bankrol
 
     uncapped = stakes_at(0.0)
     if budget is None or sum(uncapped.values()) <= budget:
-        return {key: math.floor(s) for key, s in uncapped.items()}
+        return {key: _whole_dollars(s) for key, s in uncapped.items()}
     low = 0.0
     high = max(groups[g].expected_value(c) for g, c in active)
     # A bet that hedges a held one can grow faster at the margin than its own
@@ -374,7 +383,7 @@ def _fit(groups: list[OutcomeGroup], active: set[tuple[int, int]], kelly_bankrol
             low = mid
         else:
             high = mid
-    return {key: math.floor(s) for key, s in stakes_at(high).items()}
+    return {key: _whole_dollars(s) for key, s in stakes_at(high).items()}
 
 
 def trifecta_part(fecta: Fecta) -> Fecta:
