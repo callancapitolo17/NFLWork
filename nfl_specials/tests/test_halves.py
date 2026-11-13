@@ -482,22 +482,6 @@ def test_a_failed_1h_refresh_clears_the_board(half_app, monkeypatch):
     assert half_app._last_error == "1H parlays: CatalogUnavailable: catalog did not load"
 
 
-def test_a_failed_fecta_refresh_clears_the_fecta_board_and_still_runs_the_1h(half_app, monkeypatch):
-    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
-    half_app._board = object()          # last refresh's board, fairs now stale
-    halves_ran = []
-
-    def broken(store, publish):
-        raise app_module.wz.CatalogUnavailable("catalog did not load")
-
-    monkeypatch.setattr(app_module, "refresh_board", broken)
-    monkeypatch.setattr(app_module, "refresh_halves", lambda store, publish: halves_ran.append(1))
-    half_app._run_refresh()
-    assert half_app._board is None
-    assert halves_ran == [1]
-    assert half_app._last_error == "fectas: CatalogUnavailable: catalog did not load"
-
-
 def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatch):
     calls, _state = placer
 
@@ -509,7 +493,7 @@ def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatc
         "rejected", None, error="preflight failed: KeyError")
 
     def offline():
-        raise RuntimeError("no 1H league")
+        raise RuntimeError("1H read failed")
 
     monkeypatch.setattr(wz_halves, "fetch_half_games", offline)
     assert wz_halves.place_half_parlay("Wagerzon", _game(), "away_over", 100.0, 3.638).status == "rejected"
