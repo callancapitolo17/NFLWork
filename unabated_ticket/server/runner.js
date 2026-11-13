@@ -208,7 +208,8 @@
 //                    the same legs priced off the board alone, no Kalshi read:
 //                    ok says Unabated has a fair for a game not seen started,
 //                    the Kalshi fields stay null; league_loaded_at says when
-//                    each RFQ league's snapshot landed. The quoter holds these
+//                    the snapshot of each RFQ league priced now landed (a
+//                    stale or failed league is absent). The quoter holds these
 //                    in memory and asks again only for the legs of a league
 //                    whose snapshot time on /health (rfq.leagueLoadedAt) moved.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices, rfq, taker}
@@ -2699,10 +2700,11 @@ function createRunner(deps) {
   // is absent. A leg's fair changes only when its league's entry does, so the
   // quoter re-prices a leg on that change (read off /health, which the main
   // thread answers) and not on a clock.
-  function rfqLeagueLoadedAt() {
+  //   at  the time the answer it rides on was priced at: a league is listed
+  //       exactly when a leg priced at `at` would not decline stale_feed
+  function rfqLeagueLoadedAt(at) {
     const byLabel = {};
     if (!scannerStatus) return byLabel;
-    const at = now();
     for (const leagueId of rfqprice.RFQ_LEAGUE_IDS) {
       if (staleSnapshotReason(leagueId, at) === null) byLabel[feedLib.LEAGUES[leagueId].label] = scannerStatus.leagueLoadedAt[leagueId];
     }
@@ -2755,7 +2757,7 @@ function createRunner(deps) {
     const { board } = context;
     if (board && !rfqBoardLookup) rfqBoardLookup = rfqprice.boardLookupOf(board);
     const priced = legs.map((leg) => rfqprice.priceLeg(leg, rfqprice.resolveLeg(leg.marketTicker, board, board ? rfqBoardLookup : null), context, { unchecked: true }));
-    return { priced_at_ms: pricedAt, league_loaded_at: rfqLeagueLoadedAt(), legs: priced };
+    return { priced_at_ms: pricedAt, league_loaded_at: rfqLeagueLoadedAt(pricedAt), legs: priced };
   }
 
   // The Kalshi contract Place buys: the bot's own reading of the rungs, and
@@ -3534,7 +3536,7 @@ function createRunner(deps) {
       edgeLog: { ...edgeLogStatus, openSegments: edgeSegments.size, unsent: unsentEdgeRows.size },
       tauPool: { ...tauStatus, size: tauPool.size(), unsent: tauUnsent.size },
       livePrices: liveStatus(),
-      rfq: { leagueLoadedAt: rfqLeagueLoadedAt() },
+      rfq: { leagueLoadedAt: rfqLeagueLoadedAt(now()) },
       taker: {
         desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
         runningSince: takerRunning ? isoOrNull(takerRunning.startedAt) : null,

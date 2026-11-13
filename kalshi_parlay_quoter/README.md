@@ -124,7 +124,7 @@ A fair is priced on only while all three hold:
   quoter sees a change up to ~7 s after it lands (`/health` is posted every
   5 s and read every 2 s). A league the runner would decline (stale or
   failed snapshot, not loaded, a restarted runner) is left out of the
-  snapshot times, which counts as a change;
+  snapshot times: its fairs stop at once and its legs are asked again;
 - the leg was priced under 105 s ago (`PARLAY_TABLE_MAX_REUSE_SEC` + 15).
 
 So a fair can be one snapshot behind the runner's board for about 22 s. What
@@ -132,8 +132,8 @@ a snapshot time does not show is caught by the 90 s re-price and can lag
 that long: time to kickoff inside `sigma`/`tau`, and the runner's tail
 measurement. Every leg row records `cache_age_ms` (now often 30-60 s, since
 an unchanged fair is reused), and `fair_age_ms` is the age of Unabated's
-snapshot plus that
-reuse. A leg whose kickoff has passed since it was priced logs `started`.
+snapshot plus that reuse. A leg whose kickoff has passed since it was priced
+logs `started`.
 With the runner down, RFQs decline `pricer_error`.
 
 ## Running

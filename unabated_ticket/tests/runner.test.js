@@ -1279,7 +1279,7 @@ test("taker: each order carries its market's Kalshi cash pot (exchange_index), n
   runner.stop();
 });
 
-// ---- GET /rfq_price.json: RFQ legs priced off Unabated (#282, places nothing) ----
+// ---- taker: a pass that never finishes is abandoned (2026-11-13) ----
 test("taker: a pass that never finishes is abandoned after 5 min, the next pass runs, and the stuck one sends nothing when it wakes", async () => {
   let clock = TAKER_NOW;
   const kalshi = kalshiFetch();
@@ -1407,6 +1407,7 @@ test("taker: a pass abandoned while it confirms a market sends no order when it 
   runner.stop();
 });
 
+// ---- GET /rfq_price.json, /rfq_fairs.json: RFQ legs priced off Unabated (#282, places nothing) ----
 test("rfq_fairs: the same fairs off the board alone, with no Kalshi read and at most 200 legs", async () => {
   const { runner, kalshi } = await quoteRunner({}, { now: () => TAKER_NOW });
   const legs = `${TAKER_TICKER}:yes,KXNCAAFTOTAL-26SEP19DUQWSU-53:no,KXNFL1HSPREAD-26NOV09KCDEN-KC4:yes`;
@@ -1439,6 +1440,19 @@ test("rfq_fairs: a league the runner would decline as stale is left out of leagu
   const out = runner.rfqFairs(legs);
   assert.deepEqual([out.legs[0].ok, out.legs[0].reason, out.league_loaded_at], [false, "stale_feed", {}]);
   assert.deepEqual(runner.health().rfq.leagueLoadedAt, {});
+  runner.stop();
+});
+
+test("rfq_fairs: league_loaded_at is as of the time the legs were priced at, not a later clock read", async () => {
+  // The snapshot turns 3 min old while the answer is built: the first clock read is just before, the rest after.
+  let reads = null;
+  let base = TAKER_NOW;
+  const { runner } = await quoteRunner({}, { now: () => { if (reads === null) return base; reads += 1; return reads === 1 ? base : base + 2000; } });
+  const legs = new URLSearchParams({ legs: `${TAKER_TICKER}:yes` });
+  base = runner.rfqFairs(legs).league_loaded_at.CFB + 3 * 60 * 1000;
+  reads = 0;
+  const out = runner.rfqFairs(legs);
+  assert.deepEqual([out.legs[0].ok, Object.keys(out.league_loaded_at)], [true, ["CFB"]], "a leg priced ok has its league listed");
   runner.stop();
 });
 

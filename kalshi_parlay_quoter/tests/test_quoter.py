@@ -49,18 +49,22 @@ def priced(ticker, side, fair, lo=None, hi=None, sigma=0.01, ok=True,
             "kalshi_yes_ask": 0.52, "kalshi_no_ask": 0.52}
 
 
+# Every league loaded, as the runner lists them when all are fresh.
+LOADED = {league: 1 for league in ("NFL", "CFB", "NBA", "CBB", "MLB")}
+
+
 def make_table(**kwargs):
     """A leg table whose snapshot times were just read (as after one /health poll)."""
     table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600, max_reuse_sec=90,
                               league_of=scope.league_of_leg, **kwargs)
-    table.note_snapshot_times({})
+    table.note_snapshot_times(LOADED)
     return table
 
 
 def make_refresher(table, fetch, times=None, **kwargs):
     """A Refresher over a test fetch (chunk -> PriceResult); `times` is the
     runner's {league: snapshot ms}, read live so a test can move it."""
-    times = {} if times is None else times
+    times = LOADED if times is None else times
 
     def fetch_fairs(chunk):
         got = fetch(chunk)
@@ -579,7 +583,7 @@ def test_refresher_prices_every_wanted_leg_in_chunks_and_a_failed_chunk_ends_the
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
     fail = [True]
-    times = {"NBA": 1}
+    times = dict(LOADED)
     refresher = make_refresher(table, fetch, times, interval_sec=2)
     assert refresher.refresh_once() is False
     assert calls == [200, 200] and len(table.missing(keys)) == 250
@@ -868,10 +872,9 @@ def test_a_league_the_runner_stops_showing_counts_as_changed():
     table.store([nfl, nba], [priced(NFL_SPREAD, "yes", .5), priced(NBA_ML, "no", .4)], 1, sent_at=100.0)
     clock[0] = 110.0
     table.note_snapshot_times({"NBA": 20})
-    assert table.due() == [nfl] and table.missing([nfl, nba]) == [], "due at once, served for the grace"
+    assert table.due() == [nfl] and table.missing([nfl, nba]) == [nfl], "due and not served, at once"
     clock[0] = 126.0
     table.note_snapshot_times({"NBA": 20})
-    assert table.missing([nfl, nba]) == [nfl], "the old fair is not served past the grace"
     # The runner's answer for it (a decline) is stamped as priced with the league gone.
     table.want([nfl, nba])
     table.store([nfl], [{"market_ticker": NFL_SPREAD, "side": "yes", "ok": False, "reason": "stale_feed"}],
@@ -882,6 +885,12 @@ def test_a_league_the_runner_stops_showing_counts_as_changed():
     assert table.due() == []
     table.note_snapshot_times({"NFL": 12, "NBA": 20})
     assert table.due() == [nfl]
+    # A fair that comes back ok without its league listed is never current.
+    table.note_snapshot_times({"NFL": 13, "NBA": 20})
+    table.store([nfl], [priced(NFL_SPREAD, "yes", .5)], 3, sent_at=126.0, snapshot_times={"NBA": 20})
+    assert table.due() == [nfl] and table.missing([nfl]) == [nfl]
+    table.store([nfl], [{"market_ticker": NFL_SPREAD, "side": "yes", "ok": False, "reason": "stale_feed"}],
+                4, sent_at=126.0, snapshot_times={"NBA": 20})
     # Every league gone at once (the restart case).
     table.note_snapshot_times({})
     assert table.due() == [nba], "the NFL decline was priced with the league gone, so it stands"
@@ -900,12 +909,40 @@ def test_fairs_are_stamped_with_the_times_that_came_with_them():
     assert table.due() == [] and table.missing([nfl]) == []
     table.note_snapshot_times({"NFL": 11})          # /health catches up: still no re-price
     assert table.due() == []
+    # /health moves on while a fetch priced on the older snapshot is in flight: that answer is not current.
+    table.note_snapshot_times({"NFL": 12})
+    table.store([nfl], [priced(NFL_SPREAD, "yes", .5)], 1, sent_at=100.0, snapshot_times={"NFL": 11})
+    assert table.due() == [nfl]
+    table.store([nfl], [priced(NFL_SPREAD, "yes", .5)], 1, sent_at=100.0, snapshot_times={"NFL": 12})
+    assert table.due() == []
     # A league only a fairs answer has shown is not dropped by a /health that has not caught up.
     nba = (NBA_ML, "no")
     table.want([nba])
     table.store([nba], [priced(NBA_ML, "no", .4)], 2, sent_at=100.0, snapshot_times={"NFL": 11, "NBA": 20})
     table.note_snapshot_times({"NFL": 11})
     assert table.due() == [] and table.missing([nfl, nba]) == []
+
+
+def test_a_league_that_comes_back_in_a_fairs_answer_survives_a_lagging_health():
+    table = make_table(clock=lambda: 100.0)
+    nfl = (NFL_SPREAD, "yes")
+    table.want([nfl])
+    table.note_snapshot_times({"NFL": 10})
+    table.note_snapshot_times({})                               # the league drops
+    table.store([nfl], [priced(NFL_SPREAD, "yes", .5)], 1, sent_at=100.0, snapshot_times={"NFL": 13})
+    table.note_snapshot_times({})                               # /health has not caught up
+    assert table.due() == [] and table.missing([nfl]) == []
+    table.note_snapshot_times({"NFL": 10})                      # nor does an old time undo it
+    table.note_snapshot_times({"NFL": 13})
+    assert table.due() == [] and table.missing([nfl]) == []
+    # A fairs answer that leaves a league out drops it, whatever /health last showed.
+    table.store([], [], 2, sent_at=100.0, snapshot_times={})
+    assert table.due() == [nfl] and table.missing([nfl]) == [nfl]
+    # /health still shows the old time, then nothing, while a fairs answer brings the league back.
+    table.note_snapshot_times({"NFL": 13})
+    table.store([nfl], [priced(NFL_SPREAD, "yes", .5)], 3, sent_at=100.0, snapshot_times={"NFL": 14})
+    table.note_snapshot_times({})
+    assert table.due() == [] and table.missing([nfl]) == []
 
 
 def test_a_fair_is_not_served_past_the_reuse_cap_even_with_the_runner_up():
@@ -950,6 +987,10 @@ def test_snapshot_times_must_be_whole_numbers():
     with pytest.raises(pricer.PricerError):
         pricer._snapshot_times({"NFL": True}, "x")
     assert pricer._snapshot_times({"NFL": 5}, "x") == {"NFL": 5}
+
+
+def test_a_ticker_of_the_wrong_shape_has_no_league():
+    assert scope.league_of_leg((NFL_SPREAD, "yes")) == "NFL"
     assert scope.league_of_leg(("KXNFLGAME-junk", "yes")) is None
 
 
@@ -996,7 +1037,7 @@ def test_new_legs_are_priced_first_and_between_passes():
         calls.append(list(chunk))
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
-    times = {"NBA": 1}
+    times = dict(LOADED)
     refresher = make_refresher(table, fetch, times, interval_sec=2)
     refresher.refresh_once()
     new = [(NFL_SPREAD, "yes"), (NBA_ML, "no")]
@@ -1032,7 +1073,7 @@ def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path)
             raise pricer.PricerRejected("http_400")
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
-    times = {"NBA": 1}
+    times = dict(LOADED)
     refresher = make_refresher(table, fetch, times, interval_sec=2, clock=lambda: clock[0])
     assert refresher.refresh_once() is True
     assert table.missing(keys) == [], "every good leg priced, the bad one answered as a decline"

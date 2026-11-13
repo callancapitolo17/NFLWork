@@ -19,7 +19,8 @@ no Kalshi read) only for:
     time does not show: time to kickoff in sigma and tau, and the runner's
     tail measurement, which can therefore be up to `max_reuse_sec` behind).
 A league the runner stops pricing (stale or failed snapshot, restart) drops
-out of its snapshot times, which counts as a change.
+out of its snapshot times: its fairs stop being served at once and its legs
+are asked again (they come back as declines).
 The first version re-priced every leg every 2 s; ~97% of those calls
 returned the same number and they loaded the taker's thread (2026-11-13: the
 taker froze 40 minutes after the quoter went live).
@@ -28,7 +29,8 @@ A fair is served only while (a) the runner's snapshot times were read under
 `max_age_sec` ago, (b) the leg was priced on its league's current snapshot,
 or the quoter saw that snapshot change under `max_age_sec` ago and the
 re-price is on its way (the quoter sees a change up to ~7 s after it lands:
-/health is posted every 5 s and read every 2 s), and (c) the leg was priced under `max_reuse_sec + max_age_sec` ago.
+/health is posted every 5 s and read every 2 s), and (c) the leg was priced
+under `max_reuse_sec + max_age_sec` ago.
 Every served leg carries priced_at_ms (the runner's stamp) and cache_age_ms,
 and fair_age_ms grows by the cache age, so the log never shows a reused fair
 as fresh. Table legs are not Kalshi-checked (kalshi_* fields are null).
@@ -116,7 +118,6 @@ class LegTable:
                 # failed snapshot): its fairs are not current any more.
                 self._absent.add(league)
                 self._health_seen.discard(league)
-                self._changed_at[league] = now
             if read:
                 self._times_read_at = now
 
@@ -137,6 +138,10 @@ class LegTable:
             self._fairs.pop(key, None)
 
     def _on_current_snapshot(self, key: LegKey, held) -> bool:
+        # A fair (ok) with no snapshot time behind it is never current: the
+        # runner prices no league it does not list.
+        if held[3] is None and held[0].get("ok"):
+            return False
         return held[3] == self._snapshot_of(self._league_of(key))
 
     def due(self) -> list[LegKey]:
@@ -202,7 +207,10 @@ class LegTable:
             return True
         if self._on_current_snapshot(key, held):
             return False
-        changed_at = self._changed_at.get(self._league_of(key))
+        league = self._league_of(key)
+        if league in self._absent:
+            return True     # the runner stopped pricing the league: no newer fair is on its way
+        changed_at = self._changed_at.get(league)
         return changed_at is None or now - changed_at > self._max_age
 
     def missing(self, keys: list[LegKey]) -> list[LegKey]:
@@ -222,7 +230,7 @@ class LegTable:
         if stale:
             raise LegsNotReady(f"no current fair for {len(stale)} of {len(keys)} legs, "
                                f"e.g. {stale[0][0]}")
-        for leg, priced_at_ms, sent_at, _version in held:
+        for leg, priced_at_ms, sent_at, _stamp in held:
             age_ms = max(0.0, (now - sent_at) * 1000.0)
             aged = dict(leg)
             aged["priced_at_ms"] = priced_at_ms
