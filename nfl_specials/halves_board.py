@@ -450,7 +450,8 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
                 held: tuple[HeldHalfParlay, ...] = ()) -> dict[tuple[int, str], HalfSizing]:
     """Fair, EV and stakes per (wz_game_id, corner).
 
-    `budget` is what the fectas left of the Wagerzon balance (None = no cap).
+    `budget` is the cash these games may use (NFL: what the fectas left; a
+    college slate: its slate budget; None = no cap).
     Each game is ONE group (game_outcome_group): its corners are exclusive
     outcomes of the 1H, sized jointly with the 1H parlays already placed on
     it. Fectas are not in the groups (Cal, 2026-11-13); they only take their

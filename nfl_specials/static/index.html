@@ -1026,7 +1026,7 @@ function halfStakeCell(line, corner, c, p) {
   if (c.recommended_stake < 0.5 && c.kelly_stake > 0.5 && c.kelly_stake < p.min_stake) {
     children.push(el("div", { class: "why", text: `$0: Kelly's ${money(c.kelly_stake)} is under Wagerzon's ${money(p.min_stake)} minimum` }));
   } else if (c.recommended_stake < 0.5 && c.unlimited_stake > 0.5) {
-    children.push(el("div", { class: "why", text: "$0: the cash the fectas leave went to bigger edges" }));
+    children.push(el("div", { class: "why", text: line.league === "CFB" ? "$0: the slate's cash went to bigger edges" : "$0: the cash the fectas leave went to bigger edges" }));
   } else if (c.recommended_stake < 0.5 && c.kelly_stake < 0.5) {
     children.push(el("div", { class: "why", text: "$0: the parlays already held in this game take its Kelly" }));
   }
