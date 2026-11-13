@@ -572,6 +572,8 @@ function createRunner(deps) {
   const startedAt = now();
 
   let feedState = null;
+  // rfqprice.boardLookupOf(feedState) for /rfq_fairs.json, rebuilt after each board change.
+  let rfqBoardLookup = null;
   let scannerStatus = null;
   let history = {};
   let boardLinesCache = null;
@@ -770,6 +772,7 @@ function createRunner(deps) {
       boardLinesCache = null;
       ladderReaders = null;
       tailFlexCache = null;
+      rfqBoardLookup = null;
       registerFeedTeams();
       noteMatchedStarts();
       rememberKickoffOdds();
@@ -2708,7 +2711,9 @@ function createRunner(deps) {
     if (typeof legs === "string") throw httpError(400, legs);
     const pricedAt = now();
     const context = rfqContextAt(pricedAt);
-    const priced = legs.map((leg) => rfqprice.priceLeg(leg, rfqprice.resolveLeg(leg.marketTicker, context.board), context, { unchecked: true }));
+    const { board } = context;
+    if (board && !rfqBoardLookup) rfqBoardLookup = rfqprice.boardLookupOf(board);
+    const priced = legs.map((leg) => rfqprice.priceLeg(leg, rfqprice.resolveLeg(leg.marketTicker, board, board ? rfqBoardLookup : null), context, { unchecked: true }));
     return { priced_at_ms: pricedAt, legs: priced };
   }
 

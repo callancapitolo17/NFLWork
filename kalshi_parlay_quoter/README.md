@@ -24,8 +24,11 @@ sends no quotes and no orders**; nothing in this package can.
    call, board only, no Kalshi read). An RFQ is priced from that table in
    memory, so the work grows with distinct legs (thousands), not with RFQs.
    Per leg: Unabated fair for that side, `fair_lo`/`fair_hi` bracket, `sigma`
-   (with `c`, `tau`), the resolved Unabated line, kickoff and fair age. An RFQ
-   with a leg not priced yet waits for the next refresh, at most 5 s.
+   (with `c`, `tau`), the resolved Unabated line, kickoff and fair age. A leg
+   seen for the first time is priced within ~0.25 s, ahead of the next full
+   pass; its RFQ waits for that, at most 5 s. A leg the runner refuses (HTTP
+   400) is isolated by halving its chunk, declines `runner_rejected`, and is
+   not asked again while it stays in the table.
 4. **Decision** (`decide.py`). `would_quote` when every leg is priced (parlay
    fair = product of leg fairs, since legs are on different games), otherwise
    `decline` with a reason.
@@ -34,7 +37,8 @@ sends no quotes and no orders**; nothing in this package can.
    strike), book and start for each leg. Those rows are `confirmed` and carry
    Kalshi's prices. The cap exists because those reads share Kalshi's 20
    reads/s limit with the taker bot. The others are counted
-   `would_quote_unconfirmed`.
+   `would_quote_unconfirmed`. A confirm that fails with `pricer_error` stops
+   confirms for 30 s.
 
 Python never sends keys to the runner; the runner never sees an RFQ beyond
 its legs. The margin formula is #284; a confirmed row logs everything it
@@ -50,21 +54,34 @@ needs.
 
 `minute_counts` keys:
 
-- Frames: `frames_deleted`, `frames_other`, `malformed`, `reconnects`.
+- Frames: `frames_deleted`, `frames_other`, `malformed` (an `rfq_created`
+  frame that could not be read), `reconnects`.
 - Door: `door_other_league` (no leg in our series; legless frames too),
   `door_unsupported_leg`, `door_same_game`, `door_single_leg`,
   `door_bad_side`, `door_no_legs`, `door_below_floor`, `kept`,
   `queue_dropped`.
-- Decisions (they sum to `kept`, less RFQs still waiting): `would_quote`
-  (confirmed), `would_quote_unconfirmed`, `pricer_error`, `pricer_backlog`,
+- Decisions, one per kept RFQ: `would_quote` (confirmed),
+  `would_quote_unconfirmed`, `pricer_error`, `pricer_backlog`,
   `leg_<runner reason>` (`leg_past_ladder`, `leg_started`, `leg_stale_feed`,
-  `leg_no_event`, and after a confirm `leg_market_mismatch`,
-  `leg_kalshi_unread`), `stored`.
-- Health: `table_refresh_failed`, `gauge_table_legs`,
+  `leg_no_event`, `leg_runner_rejected`), `confirm_<reason>` (a would-quote
+  the Kalshi-checked confirm declined: `confirm_leg_market_mismatch`,
+  `confirm_leg_kalshi_unread`, `confirm_pricer_error`, …),
+  `expired_in_queue` (waited over 15 s before it was decided),
+  `dropped_on_pause`, `handle_crashed`, `confirm_crashed`.
+- `stored`: rows written to `rfq_decisions`. It is on top of the decision
+  keys, not one of them.
+- Health: `table_refresh_failed`, `table_legs_rejected`, `gauge_table_legs`,
   `gauge_table_refresh_ms`, `gauge_pending`, `gauge_queue` (gauges are the
   value at the minute's end, not a count).
 
-`rfq_created` frames a minute = every `door_*` key + `kept` + `queue_dropped`.
+`rfq_created` frames a minute = `malformed` + every `door_*` key + `kept` +
+`queue_dropped`. `kept` = the decision keys, less RFQs still waiting at the
+minute's end (`gauge_pending`, `gauge_queue`). A restart inside a minute adds
+to that minute's counts.
+
+Rows from before 2026-11-13 are a census (every in-scope RFQ, each priced
+with Kalshi reads) and have `confirmed` NULL. Do not compare row counts
+across that date; use `minute_counts` after it.
 
 ```sql
 -- the 24 h check
@@ -98,7 +115,7 @@ then builds it, restarts it and checks it is running. Remove the line (and
 ```
 cd ~/NFLWork/unabated_ticket/deploy
 docker compose logs -f parlay_quoter          # one counts line a minute
-touch ~/unabated-data/parlay_quoter.stop      # close the feed and idle (rm to resume)
+touch ~/unabated-data/parlay_quoter.stop      # close the feed, drop waiting RFQs, idle (rm to resume)
 ```
 
 Load, measured locally 2026-11-13 against a fake feed at 9,900 frames a
@@ -126,11 +143,18 @@ Locally: `KALSHI_API_KEY_ID=… KALSHI_PRIVATE_KEY_PATH=… python -m kalshi_par
 | `PARLAY_TABLE_LEG_TTL_SEC` | 600 | how long a leg stays in the table after it was last asked |
 | `PARLAY_TABLE_FETCH_TIMEOUT_SEC` | 15 | one refresh call |
 | `PARLAY_PENDING_MAX_WAIT_SEC` | 5 | wait for a leg's first fair, then `pricer_error` |
+| `PARLAY_MAX_RFQ_AGE_SEC` | 15 | an RFQ that waited longer in the queue is counted `expired_in_queue`, not decided |
 | `PARLAY_MAX_BACKLOG` | 2000 | RFQs waiting that way; beyond it `pricer_backlog` |
 | `PARLAY_CONFIRMS_PER_SEC` | 1 | Kalshi-checked confirms; 0 turns them off |
-| `PARLAY_CONFIRM_TIMEOUT_SEC` | 3 | slower = `pricer_error` (detail `timeout`) |
+| `PARLAY_CONFIRM_WORKERS` | 2 | confirms in flight |
+| `PARLAY_CONFIRM_TIMEOUT_SEC` | 3 | slower = `confirm_pricer_error` (detail `timeout`) |
+| `PARLAY_CONFIRM_BACKOFF_SEC` | 30 | no confirms for this long after one fails with `pricer_error` |
 | `PARLAY_STORED_SAMPLE_PCT` | 0.5 | share of unconfirmed RFQs stored as rows |
 | `PARLAY_FEED_QUEUE_MAX` | 20000 | kept RFQs waiting to be decided; beyond it `queue_dropped` |
+| `PARLAY_FEED_IDLE_TIMEOUT_SEC` | 30 | reconnect after this long with no frame |
+| `PARLAY_FLUSH_SEC` | 1 | how often rows are written |
+| `PARLAY_KALSHI_ENV_FILE` | unset | file to read `KALSHI_API_KEY_ID` from when it is not in the environment |
+| `KALSHI_BASE_URL` | Kalshi production | the signer requires it; no REST call is made |
 | `PARLAY_STOP_PATH` | package dir `.stop` | pause file |
 
 Tests: `python -m pytest kalshi_parlay_quoter/tests`.

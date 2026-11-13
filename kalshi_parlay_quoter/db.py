@@ -1,6 +1,7 @@
 """Decision log (DuckDB). One writer: the main thread flushes buffered rows
 in one transaction per FLUSH_SEC, so worker threads never touch the
-connection. Insert-only (INSERT OR IGNORE: the first row for a key wins).
+connection. rfq_decisions and rfq_legs are insert-only (the first row for a
+key wins); minute_counts adds to a minute already written.
 
 Tables
   rfq_decisions  one row per STORED RFQ: every confirmed parlay, plus a
@@ -105,15 +106,23 @@ COUNT_COLS = ["minute", "key", "n"]
 CHUNK_ROWS = 500
 
 
-def _insert_many(con, table, cols, rows):
+# A restart inside a minute writes that minute twice (the old process's
+# last counts, then the new one's): counts add up, a gauge keeps the newest.
+COUNTS_ON_CONFLICT = (
+    "ON CONFLICT (minute, key) DO UPDATE SET n = CASE WHEN excluded.key LIKE 'gauge_%' "
+    "THEN excluded.n ELSE minute_counts.n + excluded.n END")
+FIRST_ROW_WINS = "ON CONFLICT DO NOTHING"
+
+
+def _insert_many(con, table, cols, rows, on_conflict=FIRST_ROW_WINS):
     """One multi-row INSERT per CHUNK_ROWS rows, not executemany, which
     DuckDB runs row by row (~4-12 ms a row with the PK check; ~12x slower)."""
     one = "(" + ",".join("?" * len(cols)) + ")"
     for i in range(0, len(rows), CHUNK_ROWS):
         chunk = rows[i:i + CHUNK_ROWS]
         con.execute(
-            f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES "
-            + ",".join([one] * len(chunk)),
+            f"INSERT INTO {table} ({','.join(cols)}) VALUES "
+            + ",".join([one] * len(chunk)) + " " + on_conflict,
             [v for r in chunk for v in r])
 
 
@@ -150,7 +159,9 @@ class DecisionLog:
             self._legs.extend(legs)
 
     def add_counts(self, minute, counts: dict[str, int]) -> None:
-        """One minute's counts; zero counts are not stored."""
+        """One minute's counts; zero counts are not stored. Call once per
+        minute per process: two calls for one minute in one flush would hit
+        the same key twice in one statement."""
         with self._lock:
             self._counts.extend((minute, key, n) for key, n in counts.items() if n)
 
@@ -167,7 +178,7 @@ class DecisionLog:
             if l:
                 _insert_many(self._con, "rfq_legs", LEG_COLS, l)
             if o:
-                _insert_many(self._con, "minute_counts", COUNT_COLS, o)
+                _insert_many(self._con, "minute_counts", COUNT_COLS, o, COUNTS_ON_CONFLICT)
             self._con.execute("COMMIT")
         except Exception:
             self._con.execute("ROLLBACK")

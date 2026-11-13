@@ -102,6 +102,9 @@ def decide(rfq: dict, legs: list[dict] | None, price_fn, *,
         for f in LEG_FIELDS:
             lr[f] = got.get(f)
         lr["ok"] = bool(got.get("ok"))
+        if lr["priced_at_ms"] is None:
+            # A leg straight from the runner (a confirm) is as old as its call.
+            lr["priced_at_ms"] = res.priced_at_ms
         for f in ("fair", "fair_lo", "fair_hi", "sigma", "c", "tau",
                   "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask",
                   "cache_age_ms"):

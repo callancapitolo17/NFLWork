@@ -23,8 +23,9 @@ def _key_from_env_file(path: str | None) -> str | None:
     return None
 
 
-# Kalshi read access: the WS handshake and the REST gap-fill are signed. A
-# read-only key is enough; this process never places or quotes.
+# Kalshi read access: the websocket handshake is signed. A read-only key is
+# enough; this process never places or quotes, and makes no Kalshi REST call
+# (KALSHI_BASE_URL is only what auth_client.configure() requires).
 KALSHI_API_KEY_ID = (_get("KALSHI_API_KEY_ID")
                      or _key_from_env_file(_get("PARLAY_KALSHI_ENV_FILE")))
 KALSHI_PRIVATE_KEY_PATH = _get("KALSHI_PRIVATE_KEY_PATH")
@@ -60,9 +61,13 @@ TABLE_LEG_TTL_SEC = float(_get("PARLAY_TABLE_LEG_TTL_SEC", "600"))
 # refresh waits behind that. Every row logs the fair's true age.
 TABLE_MAX_AGE_SEC = float(_get("PARLAY_TABLE_MAX_AGE_SEC", "15"))
 TABLE_FETCH_TIMEOUT_SEC = float(_get("PARLAY_TABLE_FETCH_TIMEOUT_SEC", "15"))
-# An RFQ with a leg the table has not priced yet waits this long for the
-# next refresh (RFQs live ~10 s), then declines pricer_error.
+# An RFQ with a leg the table has not priced yet waits this long for it
+# (new legs are priced within ~0.25 s when the runner answers; RFQs live
+# ~10 s), then declines pricer_error.
 PENDING_MAX_WAIT_SEC = float(_get("PARLAY_PENDING_MAX_WAIT_SEC", "5"))
+# An RFQ this old when the decision loop reaches it is counted
+# expired_in_queue and not decided: its requester is gone.
+MAX_RFQ_AGE_SEC = float(_get("PARLAY_MAX_RFQ_AGE_SEC", "15"))
 # RFQs waiting that way beyond this are logged pricer_backlog.
 MAX_BACKLOG = int(_get("PARLAY_MAX_BACKLOG", "2000"))
 
@@ -74,6 +79,10 @@ MAX_BACKLOG = int(_get("PARLAY_MAX_BACKLOG", "2000"))
 CONFIRMS_PER_SEC = float(_get("PARLAY_CONFIRMS_PER_SEC", "1"))
 CONFIRM_WORKERS = int(_get("PARLAY_CONFIRM_WORKERS", "2"))
 CONFIRM_TIMEOUT_SEC = float(_get("PARLAY_CONFIRM_TIMEOUT_SEC", "3"))
+# After a confirm the runner failed or timed out on, no confirm is sent for
+# this long: the runner keeps working a call the quoter gave up on, and its
+# Kalshi reads queue behind 4 slots, so pressing on would pile reads up.
+CONFIRM_BACKOFF_SEC = float(_get("PARLAY_CONFIRM_BACKOFF_SEC", "30"))
 
 # Decision log: confirmed parlays are stored in full; of every other RFQ
 # this percent is stored (chosen by a hash of its id) and all are counted

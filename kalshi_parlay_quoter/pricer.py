@@ -43,6 +43,12 @@ class LegsNotReady(PricerError):
     """The leg table has no fresh fair for some leg yet."""
 
 
+class PricerRejected(PricerError):
+    """The runner refused the request itself (HTTP 4xx) or answered other
+    legs than were asked: something in THIS request is wrong, so retrying it
+    unchanged cannot work."""
+
+
 # The runner's limit per /rfq_fairs.json call (rfqprice.js MAX_FAIR_LEGS).
 FAIRS_CHUNK_LEGS = 200
 
@@ -76,6 +82,8 @@ def _get_legs(url: str, legs: list[tuple[str, str]], *, timeout: float, opener) 
                     timeout=timeout) as r:
             body = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500:
+            raise PricerRejected(f"http_{e.code}") from e
         raise PricerError(f"http_{e.code}") from e
     except OSError as e:     # URLError and TimeoutError are OSErrors
         reason = getattr(e, "reason", e)
@@ -89,11 +97,11 @@ def _get_legs(url: str, legs: list[tuple[str, str]], *, timeout: float, opener) 
     elapsed_ms = (time.monotonic() - t0) * 1000.0
     out = body.get("legs") if isinstance(body, dict) else None
     if not isinstance(out, list) or len(out) != len(legs):
-        raise PricerError("leg_count_mismatch")
+        raise PricerRejected("leg_count_mismatch")
     for (ticker, side), got in zip(legs, out):
         if (not isinstance(got, dict) or got.get("market_ticker") != ticker
                 or got.get("side") != side):
-            raise PricerError(f"leg_order_mismatch at {ticker}")
+            raise PricerRejected(f"leg_order_mismatch at {ticker}")
     return PriceResult(out, body.get("priced_at_ms"), elapsed_ms)
 
 

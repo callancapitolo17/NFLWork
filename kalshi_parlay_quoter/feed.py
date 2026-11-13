@@ -23,6 +23,7 @@ import re
 import threading
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Callable, Protocol
 
 from kalshi_parlay_quoter import scope
@@ -32,9 +33,12 @@ log = logging.getLogger("kalshi_parlay_quoter.feed")
 COMMUNICATIONS_CHANNEL = "communications"
 SUBSCRIBE_CMD_ID = 1
 SUBSCRIBE_ACK_TIMEOUT_SEC = 10.0
-RECV_TIMEOUT_SEC = 5.0
+RECV_TIMEOUT_SEC = 1.0
 RECONNECT_BASE_SEC = 1.0
 RECONNECT_MAX_SEC = 30.0
+# websockets waits this long for the server's close frame; its 10 s default
+# would hold every reconnect and overrun Docker's 10 s stop grace.
+CLOSE_TIMEOUT_SEC = 1.0
 
 # A leg ticker of one of scope.SERIES as it appears in a frame, e.g.
 # "KXNFLSPREAD-. A frame without one cannot be in scope.
@@ -49,17 +53,18 @@ KEPT = "kept"
 def below_floor(rfq: dict, min_cost_usd: float) -> bool:
     """A dollar-sized RFQ under the floor, or a contract-sized one with fewer
     contracts than the floor's dollars (a contract pays at most $1, so its
-    cost is under the floor whatever the price)."""
+    cost is under the floor whatever the price). An RFQ with no size at all
+    is below any floor."""
     if min_cost_usd <= 0:
         return False
     try:
         cost = float(rfq.get("target_cost_dollars") or 0)
         contracts = float(rfq.get("contracts_fp") or 0)
     except (TypeError, ValueError):
-        return False
+        return True
     if cost > 0:
         return cost < min_cost_usd
-    return 0 < contracts < min_cost_usd
+    return contracts < min_cost_usd
 
 
 def door(raw: bytes, min_cost_usd: float) -> tuple[str, dict | None]:
@@ -112,9 +117,12 @@ class _WebsocketsConnection:
         from websockets.sync.client import connect   # lazy: tests need no network lib
         # compression off: Kalshi has always sent this client plain frames,
         # and inflating ~10k frames a second would cost what the swap saved.
-        self._ws = connect(url, additional_headers=headers, compression=None,
-                           max_size=2 ** 22, open_timeout=10,
-                           ping_interval=20, ping_timeout=20)
+        # Entered as a context manager by hand (the reader owns the lifetime):
+        # calling connect() bare is deprecated since websockets 17.
+        self._context = connect(url, additional_headers=headers, compression=None,
+                                max_size=2 ** 22, open_timeout=10, close_timeout=CLOSE_TIMEOUT_SEC,
+                                ping_interval=20, ping_timeout=20)
+        self._ws = self._context.__enter__()
 
     def send(self, text: str) -> None:
         self._ws.send(text)
@@ -123,7 +131,7 @@ class _WebsocketsConnection:
         return self._ws.recv(timeout=timeout, decode=False)
 
     def close(self) -> None:
-        self._ws.close()
+        self._context.__exit__(None, None, None)
 
 
 def kalshi_connect(url: str, headers_fn: Callable[[], dict[str, str]]) -> Callable[[], Connection]:
@@ -132,9 +140,10 @@ def kalshi_connect(url: str, headers_fn: Callable[[], dict[str, str]]) -> Callab
 
 
 class RFQFeed:
-    """Kept RFQs land in `rfqs` (queue.Queue of the frame's msg dict). When the
-    queue is full the RFQ is counted `queue_dropped` and dropped, so a stalled
-    consumer can never stall the socket."""
+    """Kept RFQs land in `rfqs`, a queue.Queue of (the frame's msg dict, the
+    UTC time the frame was read). When the queue is full the RFQ is counted
+    `queue_dropped` and dropped, so a stalled consumer can never stall the
+    socket."""
 
     def __init__(self, connect: Callable[[], Connection], *, min_cost_usd: float,
                  queue_max: int, idle_timeout_sec: float,
@@ -159,7 +168,7 @@ class RFQFeed:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=RECV_TIMEOUT_SEC + 2)
+            self._thread.join(timeout=RECV_TIMEOUT_SEC + CLOSE_TIMEOUT_SEC + 1)
 
     def set_paused(self, paused: bool) -> None:
         """Paused, the reader closes its socket and reads nothing (the stop
@@ -185,7 +194,7 @@ class RFQFeed:
         key, payload = door(raw, self._min_cost_usd)
         if key == KEPT:
             try:
-                self.rfqs.put_nowait(payload)
+                self.rfqs.put_nowait((payload, datetime.now(timezone.utc)))
             except queue.Full:
                 key = "queue_dropped"
         self._count(key)
@@ -208,8 +217,6 @@ class RFQFeed:
                         f"no frames in {self._idle_timeout_sec:.0f}s, socket presumed dead") from None
                 continue
             last_frame_at = self._clock()
-            if isinstance(raw, str):
-                raw = raw.encode()
             envelope = self.handle_frame(raw)
             if envelope is None:
                 continue

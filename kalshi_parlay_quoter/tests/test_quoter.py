@@ -3,12 +3,12 @@ decision log, the feed's door, the leg table and the decision loop."""
 import io
 import json
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import queue
-import threading
+import time
 
 from kalshi_parlay_quoter import decide, feed, legtable, pricer, scope
 from kalshi_parlay_quoter.db import DecisionLog
@@ -333,6 +333,11 @@ def frame(msg, kind="rfq_created"):
     (frame(rfq("a", [leg(NFL_SPREAD)])), "door_single_leg"),
     (frame(rfq("a", [leg(NFL_SPREAD), leg(NBA_ML, side="maybe")])), "door_bad_side"),
     (frame(rfq("a")), "door_other_league"),                      # legless
+    # Shapes the runner's TICKER_RE refuses must not reach the leg table.
+    (frame(rfq("a", [leg(NFL_SPREAD), leg("KXNBAGAME-26NOV08LALBOS-LAL-G2")])), "door_unsupported_leg"),
+    (frame(rfq("a", [leg(NFL_SPREAD), leg("KXNBAGAME-26NOV08LALBOS")])), "door_unsupported_leg"),
+    (frame(rfq("a", [leg(NFL_SPREAD), leg("KXNBAGAME-26nov08LALBOS-LAL")])), "door_unsupported_leg"),
+    (frame(rfq("a", [leg(NFL_SPREAD), leg("KXNBAGAME-26NOV08LALBOS-LAL ")])), "door_unsupported_leg"),
     (frame({"id": "a", "market_ticker": "x"}, "rfq_deleted"), "frames_deleted"),
     (frame({"channel": "communications", "sid": 1}, "subscribed"), "frames_other"),
     (b"not json", "malformed"),
@@ -351,6 +356,9 @@ def test_door_contract_sized_rfqs_meet_the_floor():
     key, kept = feed.door(frame(big), 50)
     assert (key, kept["id"]) == ("kept", "big")
     assert feed.door(frame(small), 0)[0] == "kept", "a zero floor keeps every size"
+    sizeless = dict(small, contracts_fp="0.00")
+    unreadable = dict(small, contracts_fp="lots")
+    assert [feed.door(frame(one), 50)[0] for one in (sizeless, unreadable)] == ["door_below_floor"] * 2
 
 
 class FakeConnection:
@@ -390,7 +398,8 @@ def test_feed_subscribes_queues_kept_rfqs_and_counts_the_rest():
     f.start()
     _wait_for(lambda: f.rfqs.qsize() == 1 and not conn.frames, "the frames to be read")
     assert conn.sent == [{"id": 1, "cmd": "subscribe", "params": {"channels": ["communications"]}}]
-    assert f.rfqs.get_nowait()["id"] == "r1"
+    kept, read_at = f.rfqs.get_nowait()
+    assert kept["id"] == "r1" and read_at.tzinfo is timezone.utc
     assert f.take_counts() == {"frames_other": 1, "kept": 1, "door_below_floor": 1, "frames_deleted": 1}
     assert f.take_counts() == {}, "counts are per call"
     f.stop()
@@ -512,6 +521,11 @@ def test_refresher_prices_every_wanted_leg_in_chunks_and_a_failed_chunk_ends_the
 
 # -- decision loop --------------------------------------------------------------
 
+def put(rfqs, one, age_sec=0.0):
+    """Queue an RFQ the way the feed does: with the time its frame was read."""
+    rfqs.put((one, datetime.now(timezone.utc) - timedelta(seconds=age_sec)))
+
+
 def table_pricer(fairs, **leg_overrides):
     """A table fetch: board-only legs (no Kalshi fields)."""
     def fetch(chunk):
@@ -542,16 +556,16 @@ FAIRS = {NFL_SPREAD: 0.5, NBA_ML: 0.4, CBB_TOTAL: 0.5, CFB_SPREAD: 0.5}
 
 def test_new_legs_wait_one_refresh_then_price_from_memory(tmp_path):
     quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS)
-    rfqs.put(rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
     assert quoter.step() == 1
     assert quoter.take_counts()["gauge_pending"] == 1, "parked: no fair for its legs yet"
     refresher.refresh_once()
     quoter.step()
-    rfqs.put(rfq("r2", [leg(NBA_ML), leg(NFL_SPREAD, side="no")]))   # NO side is its own leg
+    put(rfqs, rfq("r2", [leg(NBA_ML), leg(NFL_SPREAD, side="no")]))   # NO side is its own leg
     quoter.step()
     assert quoter.take_counts()["gauge_pending"] == 1
     refresher.refresh_once()
-    rfqs.put(rfq("r3", [leg(NFL_SPREAD), leg(NBA_ML)]))              # both legs known: no wait
+    put(rfqs, rfq("r3", [leg(NFL_SPREAD), leg(NBA_ML)]))              # both legs known: no wait
     quoter.step()
     dlog.flush()
     rows = dlog.query("SELECT rfq_id, decision, parlay_fair, confirmed, legs_kalshi_ask_product, queue_ms >= 0 "
@@ -566,7 +580,7 @@ def test_new_legs_wait_one_refresh_then_price_from_memory(tmp_path):
 def test_a_leg_never_priced_declines_pricer_error_after_the_wait(tmp_path):
     clock = [0.0]
     quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS, clock=lambda: clock[0])
-    rfqs.put(rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
     quoter.step()
     clock[0] = 4.9
     quoter.step()
@@ -583,8 +597,8 @@ def test_a_leg_never_priced_declines_pricer_error_after_the_wait(tmp_path):
 
 def test_a_full_waiting_room_logs_pricer_backlog(tmp_path):
     quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS, max_backlog=1)
-    rfqs.put(rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
-    rfqs.put(rfq("r2", [leg(CBB_TOTAL), leg(CFB_SPREAD)]))
+    put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, rfq("r2", [leg(CBB_TOTAL), leg(CFB_SPREAD)]))
     quoter.step()
     counts = quoter.take_counts()
     assert (counts["pricer_backlog"], counts["gauge_pending"]) == (1, 1)
@@ -600,7 +614,7 @@ def test_a_declined_leg_declines_the_parlay_and_is_not_confirmed(tmp_path):
     quoter = Quoter(rfqs, table, dlog, confirm_fn=confirm, confirms_per_sec=1000, stored_sample_pct=100)
     table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
     legtable.Refresher(table, fetch, interval_sec=2).refresh_once()
-    rfqs.put(rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
     quoter.step()
     quoter.shutdown()
     assert quoter.take_counts()["leg_no_event"] == 1 and confirm.calls == []
@@ -616,10 +630,10 @@ def test_would_quotes_are_confirmed_up_to_the_rate_and_stored_in_full(tmp_path):
     quoter._table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
     refresher.refresh_once()
     for rid in ("r1", "r2", "r3"):
-        rfqs.put(rfq(rid, [leg(NFL_SPREAD), leg(NBA_ML)]))
+        put(rfqs, rfq(rid, [leg(NFL_SPREAD), leg(NBA_ML)]))
     quoter.step()                                     # one confirm slot this second
     clock[0] = 1.0
-    rfqs.put(rfq("r4", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, rfq("r4", [leg(NFL_SPREAD), leg(NBA_ML)]))
     quoter.step()
     quoter.shutdown()
     assert [rid for rid, _ in confirm.calls] == ["r1", "r4"]
@@ -629,7 +643,7 @@ def test_would_quotes_are_confirmed_up_to_the_rate_and_stored_in_full(tmp_path):
     rows = dlog.query("SELECT rfq_id, decision, confirmed, round(legs_kalshi_ask_product, 4), pricer_ms "
                       "FROM rfq_decisions ORDER BY rfq_id")
     assert rows == [("r1", "would_quote", True, 0.2704, 4.0), ("r4", "would_quote", True, 0.2704, 4.0)]
-    assert dlog.query("SELECT count(*), count(kalshi_yes_ask) FROM rfq_legs") == [(4, 4)]
+    assert dlog.query("SELECT count(*), count(kalshi_yes_ask), count(priced_at_ms) FROM rfq_legs") == [(4, 4, 4)]
     dlog.close()
 
 
@@ -642,13 +656,13 @@ def test_a_confirm_that_declines_is_stored_as_the_decline(tmp_path):
                                                 confirms_per_sec=1000, stored_sample_pct=0)
     quoter._table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
     refresher.refresh_once()
-    rfqs.put(rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
     quoter.step()
     quoter.shutdown()
     dlog.flush()
     assert dlog.query("SELECT decision, reason, confirmed FROM rfq_decisions") == [
         ("decline", "leg_market_mismatch", True)]
-    assert quoter.take_counts()["leg_market_mismatch"] == 1
+    assert quoter.take_counts()["confirm_leg_market_mismatch"] == 1
     dlog.close()
 
 
@@ -662,7 +676,7 @@ def test_unconfirmed_rows_are_stored_by_a_fixed_sample_of_ids(tmp_path):
     quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS, stored_sample_pct=0)
     quoter._table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
     refresher.refresh_once()
-    rfqs.put(rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
     quoter.step()
     counts = quoter.take_counts()
     assert counts["would_quote_unconfirmed"] == 1 and "stored" not in counts
@@ -675,8 +689,8 @@ def test_one_bad_rfq_does_not_stop_the_loop(tmp_path):
     quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS)
     quoter._table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
     refresher.refresh_once()
-    rfqs.put({"id": "bad", "mve_selected_legs": [None, 7]})
-    rfqs.put(rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    put(rfqs, {"id": "bad", "mve_selected_legs": [None, 7]})
+    put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
     assert quoter.step() == 2
     counts = quoter.take_counts()
     assert (counts["handle_crashed"], counts["would_quote_unconfirmed"]) == (1, 1)
@@ -699,4 +713,139 @@ def test_minute_counts_round_trip_and_old_files_gain_the_new_columns(tmp_path):
     dlog.checkpoint()
     assert dlog.query("SELECT key, n FROM minute_counts ORDER BY key") == [("kept", 475), ("would_quote", 3)]
     assert dlog.query("SELECT confirmed FROM rfq_decisions") == [(False,)]
+    dlog.close()
+
+
+def test_a_failed_confirm_backs_off_and_counts_apart_from_first_pass_errors(tmp_path):
+    clock = [0.0]
+    calls = []
+
+    def confirm(rfq_id, legs):
+        calls.append(rfq_id)
+        raise pricer.PricerTimeout("timeout")
+
+    quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS, confirm_fn=confirm, clock=lambda: clock[0],
+                                                confirms_per_sec=1, confirm_backoff_sec=30, stored_sample_pct=0)
+    quoter._table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
+    refresher.refresh_once()
+    for second, rid in ((0.0, "r1"), (5.0, "r2"), (29.0, "r3"), (31.0, "r4")):
+        clock[0] = second
+        refresher.refresh_once()
+        put(rfqs, rfq(rid, [leg(NFL_SPREAD), leg(NBA_ML)]))
+        quoter.step()
+        _wait_for(lambda: quoter._confirms_in_flight == 0, "the confirm to finish")
+    quoter.shutdown()
+    assert calls == ["r1", "r4"], "no confirm for 30 s after one the runner failed"
+    counts = quoter.take_counts()
+    assert (counts["confirm_pricer_error"], counts["would_quote_unconfirmed"]) == (2, 2)
+    assert "pricer_error" not in counts
+    dlog.flush()
+    assert dlog.query("SELECT rfq_id, reason, reason_detail, confirmed FROM rfq_decisions ORDER BY 1") == [
+        ("r1", "pricer_error", "timeout", True), ("r4", "pricer_error", "timeout", True)]
+    dlog.close()
+
+
+def test_queue_wait_is_in_queue_ms_and_an_rfq_too_old_is_not_decided(tmp_path):
+    quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS, max_rfq_age_sec=15)
+    quoter._table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
+    refresher.refresh_once()
+    put(rfqs, rfq("waited", [leg(NFL_SPREAD), leg(NBA_ML)]), age_sec=2)
+    put(rfqs, rfq("gone", [leg(NFL_SPREAD), leg(NBA_ML)]), age_sec=16)
+    assert quoter.step() == 2
+    counts = quoter.take_counts()
+    assert (counts["would_quote_unconfirmed"], counts["expired_in_queue"]) == (1, 1)
+    dlog.flush()
+    (rid, queue_ms, lag_sec), = dlog.query(
+        "SELECT rfq_id, queue_ms, epoch(now()) - epoch(seen_at) FROM rfq_decisions")
+    assert rid == "waited" and 2000 <= queue_ms < 4000 and 2 <= lag_sec < 6
+    dlog.close()
+
+
+def test_pause_drops_what_was_waiting_and_counts_it(tmp_path):
+    quoter, rfqs, refresher, dlog = make_quoter(tmp_path, FAIRS)
+    put(rfqs, rfq("parked", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    quoter.step()                                     # parked: no fair yet
+    put(rfqs, rfq("queued", [leg(NFL_SPREAD), leg(NBA_ML)]))
+    quoter.drop_waiting()
+    refresher.refresh_once()
+    quoter.step()
+    counts = quoter.take_counts()
+    assert counts == {"dropped_on_pause": 2, "gauge_pending": 0, "gauge_queue": 0, "gauge_table_legs": 2}
+    dlog.close()
+
+
+def test_new_legs_are_priced_first_and_between_passes():
+    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    old = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 301)]
+    table.want(old)
+    calls = []
+
+    def fetch(chunk):
+        calls.append(list(chunk))
+        return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
+
+    refresher = legtable.Refresher(table, fetch, interval_sec=2)
+    refresher.refresh_once()
+    new = [(NFL_SPREAD, "yes"), (NBA_ML, "no")]
+    table.want(new)
+    assert table.unpriced() == new
+    calls.clear()
+    assert refresher.price_new_legs() is True
+    assert calls == [new] and table.missing(new) == [] and table.unpriced() == []
+    table.want([(CBB_TOTAL, "yes")])
+    calls.clear()
+    refresher.refresh_once()
+    assert calls[0][0] == (CBB_TOTAL, "yes"), "a full pass prices the leg with no fair first"
+    assert sum(map(len, calls)) == 303
+
+
+def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path):
+    bad = ("KXNBAGAME-26NOV08LALBOS-BAD", "yes")
+    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    good = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 451)]
+    keys = good[:100] + [bad] + good[100:]
+    table.want(keys)
+    calls = []
+
+    def fetch(chunk):
+        calls.append(len(chunk))
+        if bad in chunk:
+            raise pricer.PricerRejected("http_400")
+        return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
+
+    refresher = legtable.Refresher(table, fetch, interval_sec=2)
+    assert refresher.refresh_once() is True
+    assert table.missing(keys) == [], "every good leg priced, the bad one answered as a decline"
+    assert len(calls) <= 3 + 2 * 8, "halving, not one call per leg"
+    assert refresher.take_stats()["table_legs_rejected"] == 1
+    declined = table.price("r1", [bad, good[0]]).legs[0]
+    assert (declined["ok"], declined["reason"], declined["detail"]) == (False, "runner_rejected", "http_400")
+    calls.clear()
+    refresher.refresh_once()
+    assert calls == [200, 200, 50], "a rejected leg is not asked again"
+    other = (NFL_SPREAD, "yes")
+    table.want([other])
+    table.store([other], [priced(*other, .5)], 9, time.monotonic())
+    row, _ = decide.decide(rfq("r1", [leg(bad[0]), leg(NFL_SPREAD)]), [leg(bad[0]), leg(NFL_SPREAD)], table.price)
+    assert (row["decision"], row["reason"]) == ("decline", "leg_runner_rejected")
+
+
+def test_4xx_and_misaligned_answers_are_rejections_and_5xx_is_not():
+    def http(code):
+        return lambda r, timeout: (_ for _ in ()).throw(urllib.error.HTTPError(r.full_url, code, "x", {}, io.BytesIO(b"")))
+    with pytest.raises(pricer.PricerRejected, match="http_400"):
+        pricer.fairs("http://x", [(NFL_SPREAD, "yes")], timeout=1, opener=http(400))
+    with pytest.raises(pricer.PricerError, match="http_500") as raised:
+        pricer.fairs("http://x", [(NFL_SPREAD, "yes")], timeout=1, opener=http(500))
+    assert not isinstance(raised.value, pricer.PricerRejected)
+
+
+def test_minute_counts_add_up_across_a_restart_inside_the_minute(tmp_path):
+    minute = datetime(2026, 11, 13, 2, 0, tzinfo=timezone.utc)
+    for kept, gauge in ((100, 7), (40, 3)):
+        dlog = DecisionLog(tmp_path / "q.duckdb")
+        dlog.add_counts(minute, {"kept": kept, "gauge_pending": gauge})
+        dlog.close()
+    dlog = DecisionLog(tmp_path / "q.duckdb")
+    assert dlog.query("SELECT key, n FROM minute_counts ORDER BY key") == [("gauge_pending", 3), ("kept", 140)]
     dlog.close()
