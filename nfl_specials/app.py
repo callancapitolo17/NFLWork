@@ -186,7 +186,7 @@ class SpecialsApp:
                                0.0 if budget is None else budget,
                                held=_held_placements(placements, account))
         if halves is not None:
-            half_budget = self.half_budget(account, sized)
+            half_budget = self.half_budget(account, board, sized)
             slates = self.cfb_slates_for(halves, board, sized, account)
             half_sized = self.size_halves_for(halves, board, sized, settings, account, half_placements)
             slate_kickoff = {game_id: slate.first_kickoff for slate in slates for game_id in slate.wz_game_ids}
@@ -215,12 +215,25 @@ class SpecialsApp:
         }
         return payload
 
-    def half_budget(self, account: str, fecta_sizing: list) -> float | None:
+    def _cash_for_halves(self, account: str | None, fecta_board: Board | None) -> float | None:
+        """The cash 1H parlays are fitted to: the account's cash 'available',
+        or 0 while this refresh's fecta board is still pricing and fectas draw
+        on cash. The two boards price side by side, so the 1H board can finish
+        first, and a fecta not priced yet has no stake to set aside: sized
+        then, 1H stakes would take cash the fectas get first call on."""
+        with self._lock:
+            refreshing = self._refreshing
+        fectas_pricing = refreshing and fecta_board is not None and fecta_board.finished_at is None
+        if fectas_pricing and not self.store.settings()["use_free_play"]:
+            return 0.0
+        return self.budget(account)
+
+    def half_budget(self, account: str, fecta_board: Board | None, fecta_sizing: list) -> float | None:
         """Cash left for NFL 1H parlays: the account's cash 'available' less the
         fectas' recommended stakes (fectas get first call; with Use free play
         on they draw on the free play balance, not this one). None = unknown.
         College 1H parlays don't use it (cfb_slates_for)."""
-        cash = self.budget(account)
+        cash = self._cash_for_halves(account, fecta_board)
         if cash is None:
             return None
         fecta_cash = 0.0 if self.store.settings()["use_free_play"] else sum(s.recommended_stake for s in fecta_sizing)
@@ -231,7 +244,8 @@ class SpecialsApp:
         """This account's college slates, each on the whole cash less fectas
         due before its halftime (none when fectas draw on free play)."""
         fectas_use_cash = not self.store.settings()["use_free_play"]
-        return cfb_slates(halves, self.budget(account), fecta_board if fectas_use_cash else None,
+        return cfb_slates(halves, self._cash_for_halves(account, fecta_board),
+                          fecta_board if fectas_use_cash else None,
                           fecta_sizing if fectas_use_cash else [])
 
     def size_halves_for(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list,
@@ -239,7 +253,7 @@ class SpecialsApp:
         """size_half_board on this account's 1H parlays: NFL on the cash after
         fectas, each college slate on its own budget. An unknown balance
         recommends nothing."""
-        nfl_budget = self.half_budget(account, fecta_sizing)
+        nfl_budget = self.half_budget(account, fecta_board, fecta_sizing)
         return size_half_board(halves, settings["bankroll"], settings["kelly_fraction"],
                                0.0 if nfl_budget is None else nfl_budget,
                                self.cfb_slates_for(halves, fecta_board, fecta_sizing, account),

@@ -30,13 +30,12 @@ import logging
 import math
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from nfl_specials import config, push_grid, wz_halves
-from nfl_specials.board import BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE, Board, BookTurns, Sizing, new_book_turns
+from nfl_specials.board import BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE, Board, BookTurns, Sizing
 from nfl_specials.books import CFB, NFL, BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
@@ -337,11 +336,8 @@ def _price_lane(name: str, tasks: list[tuple[SgpBook, BookGame, HalfLine]], boar
     store.append_half_quotes(rows)
 
 
-def refresh_halves(store: Store, publish: Callable[[HalfBoard], None], turns: BookTurns | None = None) -> HalfBoard:
-    """`turns`: shared with the fecta board pricing at the same time; None = this board's own.
-    Wagerzon's previews of every game run while the books price (they need
-    nothing from the books); only the priced games' previews are kept."""
-    turns = turns if turns is not None else new_book_turns()
+def refresh_halves(store: Store, publish: Callable[[HalfBoard], None], turns: BookTurns) -> HalfBoard:
+    """`turns`: shared with the fecta board pricing at the same time."""
     started_at = datetime.now(timezone.utc)
     books, book_status = open_books(turns)
     lines = []
@@ -379,20 +375,17 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None], turns: Bo
 
     threads = [threading.Thread(target=run_lane, args=(name, tasks), name=f"halves-{name}", daemon=True)
                for name, tasks in lanes.items() if tasks]
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="halves-wagerzon") as preview_pool:
-        wz_previews = preview_pool.submit(wz_halves.price_corners,
-                                          [line.game for line in lines if line.status == "pricing"])
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        wz_prices = wz_previews.result()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
     if lane_crashes:
         name, exc = lane_crashes[0]
         raise RuntimeError(f"{name} 1H pricing lane crashed: {exc}") from exc
 
     priced = [line for line in lines if line.status == "pricing"
               and any(f.corner_fairs for f in line.book_fairs.values())]
+    wz_prices = wz_halves.price_corners([line.game for line in priced])
     now = datetime.now(timezone.utc)
     rows = []
     for line in priced:

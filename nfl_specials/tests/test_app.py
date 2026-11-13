@@ -320,3 +320,25 @@ def test_a_fecta_kicking_off_during_the_slate_is_held_back_unless_it_is_on_free_
     assert payload["halves"]["cfb_slates"][0]["budget"] == pytest.approx(500.0 - fecta_stake)
     app.store.save_settings(10000.0, 0.25, True)
     assert app.board_payload("Wagerzon")["halves"]["cfb_slates"][0]["budget"] == 500.0
+
+
+def test_no_1h_stake_while_the_fecta_board_is_still_pricing(app):
+    """The boards price side by side: a 1H board that finishes first must not
+    take cash the fectas, not yet priced, get first call on."""
+    from dataclasses import replace
+    app.store.save_settings(10000.0, 0.25, False)
+    _publish_one_college_game(app)
+    priced_fectas = app._board
+    app.publish(replace(priced_fectas, finished_at=None))
+    app._refreshing = True
+    halves = app.board_payload("Wagerzon")["halves"]
+    assert halves["budget"] == 0.0 and halves["cfb_slates"][0]["budget"] == 0.0
+    assert halves["lines"][0]["corners"]["away_over"]["recommended_stake"] == 0.0
+    app.store.save_settings(10000.0, 0.25, True)     # fectas on free play take no cash
+    assert app.board_payload("Wagerzon")["halves"]["cfb_slates"][0]["budget"] == 500.0
+    app.store.save_settings(10000.0, 0.25, False)
+    app._refreshing = False                          # a fecta board that failed mid-run: as before
+    assert app.board_payload("Wagerzon")["halves"]["lines"][0]["corners"]["away_over"]["recommended_stake"] > 0
+    app.publish(priced_fectas)
+    app._refreshing = True                           # fectas done, 1H still pricing
+    assert app.board_payload("Wagerzon")["halves"]["lines"][0]["corners"]["away_over"]["recommended_stake"] > 0

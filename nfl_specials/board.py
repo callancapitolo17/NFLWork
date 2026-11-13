@@ -16,10 +16,10 @@ first" into an SGP, so only DK prices them) — its trifecta-part partition,
 then its scores-first share. When DraftKings is down (it failed to open this
 refresh), a superfecta's trifecta part prices at FanDuel + BetMGM like a
 trifecta and takes a fixed scores-first share instead (user decision
-2026-10-22). The books price in parallel, one thread per book; each book's own
-calls stay sequential, so DK's 0.5 s pacing holds. The 1H board
+2026-10-22). The books price in parallel, one thread per book. The 1H board
 (halves_board) prices at the same time on the same BookTurns, so each book
-still answers one request at a time across both boards.
+still answers one request at a time across both boards and DK's 0.5 s
+pacing holds.
 """
 from __future__ import annotations
 
@@ -369,9 +369,8 @@ def _price_lane(name: str, book: SgpBook, tasks: list[tuple[str, FectaLine]], bo
             publish(board.snapshot())
 
 
-def refresh_board(store: Store, publish: Callable[[Board], None], turns: BookTurns | None = None) -> Board:
-    """`turns`: shared with the 1H board pricing at the same time; None = this board's own."""
-    turns = turns if turns is not None else new_book_turns()
+def refresh_board(store: Store, publish: Callable[[Board], None], turns: BookTurns) -> Board:
+    """`turns`: shared with the 1H board pricing at the same time."""
     started_at = datetime.now(timezone.utc)
     books, book_status = open_books(turns)
 

@@ -8,6 +8,7 @@ import pytest
 from scipy.stats import norm
 
 from nfl_specials import halves_board
+from nfl_specials.board import new_book_turns
 from nfl_specials.board import Board, FectaLine, Sizing
 from nfl_specials.books import BookGame, LegMarket, Outcome
 from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
@@ -310,7 +311,7 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
             self.rows += rows
 
     store = MemoryStore()
-    board = halves_board.refresh_halves(store, lambda _board: None)
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns())
     assert [(l.game.wz_game_id, l.status, l.note) for l in board.lines] == [
         (6118382, "priced", None), (2, "unpriced", "whole-number line priced by FanDuel only; needs 2 books")]
     assert board.lines[1].fair_prob("home_under") is None

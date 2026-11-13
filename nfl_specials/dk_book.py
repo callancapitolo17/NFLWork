@@ -60,26 +60,28 @@ MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.5
 
 
 class PriceCallPacer:
-    """One DraftKings price call at a time, each starting at least
-    MIN_SECONDS_BETWEEN_PRICE_CALLS after the previous one started (the
-    widget's own rule), across every DraftKingsBook that shares it: one
-    refresh prices the fecta and 1H boards side by side, and together they
-    must still go no faster than one person clicking. Until 2026-11-13 the
-    gap ran from the previous call's ANSWER, so each call also waited out
-    the last one's round trip."""
+    """One DraftKings price call at a time, each sent at least
+    MIN_SECONDS_BETWEEN_PRICE_CALLS after the previous one's answer, across
+    every DraftKingsBook that shares it: one refresh prices the fecta and 1H
+    boards side by side, and together they must still go no faster than one
+    person clicking. (mlb_sgp.dk_client.PriceLane gates the same endpoint
+    but gives up after a max wait and caches answers; here every call waits
+    its turn and DraftKingsBook keeps its own cache.)"""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._last_call_started_at = float("-inf")
+        self._last_call_done_at = float("-inf")
 
     def call(self, send):
         """Run `send()` (one price request) once the gap has passed; returns its result."""
         with self._lock:
-            wait = MIN_SECONDS_BETWEEN_PRICE_CALLS - (time.monotonic() - self._last_call_started_at)
+            wait = MIN_SECONDS_BETWEEN_PRICE_CALLS - (time.monotonic() - self._last_call_done_at)
             if wait > 0:
                 time.sleep(wait)
-            self._last_call_started_at = time.monotonic()
-            return send()
+            try:
+                return send()
+            finally:
+                self._last_call_done_at = time.monotonic()
 
 SPREAD_MAIN = {"GM": "Spread", "Q1": "Spread 1st Quarter", "H1": "Spread 1st Half"}
 SPREAD_ALT = {"GM": "Spread Alternate", "Q1": "Spread Alternate - 1st Quarter",
