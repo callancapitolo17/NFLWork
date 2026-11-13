@@ -1280,6 +1280,25 @@ test("taker: each order carries its market's Kalshi cash pot (exchange_index), n
 });
 
 // ---- GET /rfq_price.json: RFQ legs priced off Unabated (#282, places nothing) ----
+test("rfq_fairs: the same fairs off the board alone, with no Kalshi read and at most 200 legs", async () => {
+  const { runner, kalshi } = await quoteRunner({}, { now: () => TAKER_NOW });
+  const legs = `${TAKER_TICKER}:yes,KXNCAAFTOTAL-26SEP19DUQWSU-53:no,KXNFL1HSPREAD-26NOV09KCDEN-KC4:yes`;
+  const reads = kalshi.calls.length;
+  const out = await runner.rfqFairs(new URLSearchParams({ legs }));
+  assert.equal(kalshi.calls.length, reads, "the table refresh reads nothing at Kalshi");
+  assert.equal(out.priced_at_ms, TAKER_NOW);
+  const [spread, total, half] = out.legs;
+  const checked = (await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:yes` }))).legs[0];
+  assert.deepEqual([spread.ok, spread.fair, spread.sigma, spread.kickoff_ms], [true, checked.fair, checked.sigma, checked.kickoff_ms]);
+  assert.deepEqual([spread.kalshi_status, spread.kalshi_yes_ask], [null, null], "unchecked: no Kalshi fields");
+  // The total /rfq_price.json declines kalshi_unread is ok here: Kalshi is the confirm call's job.
+  assert.deepEqual([total.ok, total.reason], [true, null]);
+  assert.deepEqual([half.ok, half.reason], [false, "unsupported_series"]);
+  const many = Array.from({ length: 201 }, (_, index) => `KXNCAAFTOTAL-26SEP19DUQWSU-${index + 1}:yes`).join(",");
+  await assert.rejects(() => Promise.resolve().then(() => runner.rfqFairs(new URLSearchParams({ legs: many }))), /201 legs, at most 200/);
+  runner.stop();
+});
+
 test("rfq_price: legs in request order, each priced or declined; Kalshi's market re-read after 10 s, its book after 2 s, a failed read next time", async () => {
   let clock = TAKER_NOW;
   const { runner, kalshi, service } = await quoteRunner({}, { now: () => clock });

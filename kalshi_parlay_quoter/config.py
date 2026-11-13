@@ -35,35 +35,51 @@ KALSHI_BASE_URL = _get("KALSHI_BASE_URL",
 DB_PATH = Path(_get("PARLAY_QUOTER_DB_PATH",
                     str(PKG_DIR / "kalshi_parlay_quoter.duckdb")))
 
-# The runner's leg pricer (#282), loopback only.
-RUNNER_URL = _get("UNABATED_RUNNER_URL", "http://127.0.0.1:8095").rstrip("/")
-PRICER_TIMEOUT_SEC = float(_get("PARLAY_PRICER_TIMEOUT_SEC", "3"))
-PRICER_WORKERS = int(_get("PARLAY_PRICER_WORKERS", "8"))
-# Each (ticker, side) is priced at most once per this many seconds; RFQs
-# re-ask the same legs constantly (~100 in-league RFQs/s, 2026-11-07). 10 s,
-# not 3: the runner reads Kalshi per uncached leg (4 in flight) and could
-# not keep ~2k live legs fresh every 3 s (2026-11-12 VM run).
-PRICE_CACHE_SEC = float(_get("PARLAY_PRICE_CACHE_SEC", "10"))
-# After a runner error, or 3 timeouts in a row, skip calls for this long
-# (logged pricer_error, detail "backoff after ...").
-PRICER_BACKOFF_SEC = float(_get("PARLAY_PRICER_BACKOFF_SEC", "5"))
-# In-scope RFQs waiting for a pricer worker beyond this are logged as
-# pricer_backlog instead of queueing without bound.
-MAX_BACKLOG = int(_get("PARLAY_MAX_BACKLOG", "200"))
+# The RFQ feed (feed.py). A socket with no frame for this long is dead:
+# the feed is ~9,900 frames a second and Kalshi pings every ~10 s.
+KALSHI_WS_URL = _get("KALSHI_WS_URL", "wss://api.elections.kalshi.com/trade-api/ws/v2")
+FEED_IDLE_TIMEOUT_SEC = float(_get("PARLAY_FEED_IDLE_TIMEOUT_SEC", "30"))
+# Kept RFQs waiting for the decision loop; beyond it they are counted
+# queue_dropped (about 40 s of the ~475 a second measured 2026-11-13).
+FEED_QUEUE_MAX = int(_get("PARLAY_FEED_QUEUE_MAX", "20000"))
 
 # Door: RFQs below this dollar size (or, when sized in contracts, with fewer
-# contracts than this many dollars) are counted per minute, not logged as
-# rows (the firehose is mostly ~$10 algorithmic spam). 0 logs every size.
+# contracts than this many dollars) are counted per minute, never decided
+# (the firehose is mostly ~$10 algorithmic spam). 0 keeps every size.
 MIN_RFQ_TARGET_COST_USD = float(_get("PARLAY_MIN_RFQ_TARGET_COST_USD", "50"))
 
-# How long an RFQ id stays in the "already decided" set. Kalshi RFQs live
-# ~10s p50; a decision is logged once per RFQ id.
-SEEN_TTL_SEC = float(_get("PARLAY_SEEN_TTL_SEC", "900"))
-MIRROR_TTL_SEC = float(_get("PARLAY_MIRROR_TTL_SEC", "60"))
+# The runner's leg pricers (#282), loopback only.
+RUNNER_URL = _get("UNABATED_RUNNER_URL", "http://127.0.0.1:8095").rstrip("/")
 
-# Legless WS frames need a GET /markets/{combo}; cap those per second.
-MAX_MARKET_FETCHES_PER_SEC = float(_get("PARLAY_MAX_MARKET_FETCHES_PER_SEC", "5"))
+# Leg table (legtable.py): every leg seen in the last LEG_TTL is re-priced
+# every REFRESH_SEC in one pass of board-only runner calls.
+TABLE_REFRESH_SEC = float(_get("PARLAY_TABLE_REFRESH_SEC", "2"))
+TABLE_LEG_TTL_SEC = float(_get("PARLAY_TABLE_LEG_TTL_SEC", "600"))
+# A fair older than this is not priced on. 15 s, not 2x the refresh: the
+# runner's board thread is busy for 5-14 s at a time building Edges, and a
+# refresh waits behind that. Every row logs the fair's true age.
+TABLE_MAX_AGE_SEC = float(_get("PARLAY_TABLE_MAX_AGE_SEC", "15"))
+TABLE_FETCH_TIMEOUT_SEC = float(_get("PARLAY_TABLE_FETCH_TIMEOUT_SEC", "15"))
+# An RFQ with a leg the table has not priced yet waits this long for the
+# next refresh (RFQs live ~10 s), then declines pricer_error.
+PENDING_MAX_WAIT_SEC = float(_get("PARLAY_PENDING_MAX_WAIT_SEC", "5"))
+# RFQs waiting that way beyond this are logged pricer_backlog.
+MAX_BACKLOG = int(_get("PARLAY_MAX_BACKLOG", "2000"))
 
-TICK_SEC = float(_get("PARLAY_TICK_SEC", "0.25"))
+# Confirm: a parlay the table would quote is re-priced through
+# /rfq_price.json, which reads Kalshi's market, book and start per leg. Those
+# reads share Kalshi's 20 reads/s limit with the taker bot, so only this many
+# would-quote parlays a second are confirmed; the rest are counted
+# would_quote_unconfirmed.
+CONFIRMS_PER_SEC = float(_get("PARLAY_CONFIRMS_PER_SEC", "1"))
+CONFIRM_WORKERS = int(_get("PARLAY_CONFIRM_WORKERS", "2"))
+CONFIRM_TIMEOUT_SEC = float(_get("PARLAY_CONFIRM_TIMEOUT_SEC", "3"))
+
+# Decision log: confirmed parlays are stored in full; of every other RFQ
+# this percent is stored (chosen by a hash of its id) and all are counted
+# per minute. 0.5% of ~475 RFQs a second plus 1 confirm a second is ~3.4
+# stored decisions a second, measured at ~190 MB a day (2026-11-13).
+STORED_SAMPLE_PCT = float(_get("PARLAY_STORED_SAMPLE_PCT", "0.5"))
+
 FLUSH_SEC = float(_get("PARLAY_FLUSH_SEC", "1.0"))
 STOP_PATH = Path(_get("PARLAY_STOP_PATH", str(PKG_DIR / ".stop")))

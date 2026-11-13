@@ -1,4 +1,5 @@
-"""One RFQ -> one logged decision. Pure: the pricer call is injected.
+"""One RFQ -> one decision. Pure: the pricer call is injected (the leg table
+for the first pass, the Kalshi-checked runner call for a confirm).
 
 Phase 1 sends nothing, so the outcome is "would_quote" (every leg priced, a
 parlay fair exists) or "decline" with a reason. The margin formula is #284;
@@ -60,6 +61,7 @@ def base_row(rfq: dict, seen_at: datetime) -> dict:
         "max_leg_sigma": None, "legs_kalshi_ask_product": None,
         "earliest_kickoff_ms": None, "hours_to_kickoff": None,
         "pricer_ms": None, "priced_at_ms": None, "queue_ms": None,
+        "confirmed": False,
     }
 
 
@@ -106,8 +108,8 @@ def decide(rfq: dict, legs: list[dict] | None, price_fn, *,
             lr[f] = _num(lr[f])
         kickoff = _num(lr["kickoff_ms"])
         if lr["ok"] and kickoff is not None and kickoff <= now_ms:
-            # The runner's started gate ran when it priced the leg; a cached
-            # price must not outlive kickoff.
+            # The runner's started gate ran when it priced the leg; a fair
+            # held in the leg table must not outlive kickoff.
             lr.update(ok=False, reason="started", detail="started after it was priced")
 
     kickoffs = [k for k in (_num(lr["kickoff_ms"]) for lr in leg_rows) if k]

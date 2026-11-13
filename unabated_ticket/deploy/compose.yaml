@@ -115,7 +115,8 @@ services:
     logging: *rotated-logs
 
   # Dry-run Kalshi parlay quoter (#283): reads the RFQ feed, prices in-scope
-  # parlays through the runner's /rfq_price.json, logs a decision per RFQ to
+  # parlays from the runner's /rfq_fairs.json (confirming a few a second
+  # through /rfq_price.json), logs decisions and per-minute counts to
   # /data/kalshi_parlay_quoter.duckdb. Sends NO quotes or orders. Behind a
   # profile: deploy.sh builds, starts and checks it only when deploy/.env
   # sets COMPOSE_PROFILES=parlay_quoter (deploy.sh stays the one deploy route).

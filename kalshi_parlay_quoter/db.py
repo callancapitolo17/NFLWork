@@ -1,13 +1,14 @@
 """Decision log (DuckDB). One writer: the main thread flushes buffered rows
-in one transaction per FLUSH_SEC, so pricer worker threads never touch the
-connection.
+in one transaction per FLUSH_SEC, so worker threads never touch the
+connection. Insert-only (INSERT OR IGNORE: the first row for a key wins).
 
 Tables
-  rfq_decisions  one row per in-league RFQ id (first sighting wins)
-  rfq_legs       one row per leg of each logged RFQ
-  door_counts    per-minute counts of RFQs that got no row (other leagues,
-                 below the size floor, malformed) plus feed mode, so every
-                 RFQ seen is accounted for
+  rfq_decisions  one row per STORED RFQ: every confirmed parlay, plus a
+                 sample of the rest (main.py)
+  rfq_legs       one row per leg of each stored RFQ that was priced
+  minute_counts  (minute, key, n): every frame and every decision counted,
+                 stored or not, so the totals never depend on the sample
+  door_counts    written before 2026-11-13 only; kept in old files, unused
 """
 import json
 import threading
@@ -74,15 +75,14 @@ ALTER TABLE rfq_legs ADD COLUMN IF NOT EXISTS detail VARCHAR;
 -- 2026-11-12: when the runner priced the leg and how long the quoter reused it.
 ALTER TABLE rfq_legs ADD COLUMN IF NOT EXISTS priced_at_ms BIGINT;
 ALTER TABLE rfq_legs ADD COLUMN IF NOT EXISTS cache_age_ms DOUBLE;
-CREATE TABLE IF NOT EXISTS door_counts (
-    minute          TIMESTAMPTZ PRIMARY KEY,
-    logged          BIGINT,
-    other_league    BIGINT,
-    below_floor     BIGINT,
-    too_many_legs   BIGINT,
-    malformed       BIGINT,
-    backlog         BIGINT,
-    feed_mode       VARCHAR
+-- 2026-11-13: priced through the Kalshi-checked /rfq_price.json (else off
+-- the leg table alone, kalshi_* columns null).
+ALTER TABLE rfq_decisions ADD COLUMN IF NOT EXISTS confirmed BOOLEAN;
+CREATE TABLE IF NOT EXISTS minute_counts (
+    minute  TIMESTAMPTZ NOT NULL,
+    key     VARCHAR NOT NULL,
+    n       BIGINT NOT NULL,
+    PRIMARY KEY (minute, key)
 );
 """
 
@@ -92,15 +92,14 @@ DECISION_COLS = [
     "same_game", "decision", "reason", "reason_detail", "parlay_fair",
     "parlay_fair_lo", "parlay_fair_hi", "max_leg_sigma",
     "legs_kalshi_ask_product", "earliest_kickoff_ms", "hours_to_kickoff",
-    "pricer_ms", "priced_at_ms", "queue_ms"]
+    "pricer_ms", "priced_at_ms", "queue_ms", "confirmed"]
 LEG_COLS = [
     "rfq_id", "leg_idx", "market_ticker", "side", "series", "league", "market",
     "game_key", "ok", "reason", "fair", "fair_lo", "fair_hi", "bracketed",
     "sigma", "c", "tau", "line", "kickoff_ms", "fair_age_ms", "kalshi_status",
     "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask", "detail",
     "priced_at_ms", "cache_age_ms"]
-DOOR_COLS = ["minute", "logged", "other_league", "below_floor",
-             "too_many_legs", "malformed", "backlog", "feed_mode"]
+COUNT_COLS = ["minute", "key", "n"]
 
 
 CHUNK_ROWS = 500
@@ -132,7 +131,7 @@ class DecisionLog:
         self._lock = threading.Lock()
         self._decisions: list[tuple] = []
         self._legs: list[tuple] = []
-        self._doors: list[tuple] = []
+        self._counts: list[tuple] = []
 
     def add(self, row: dict, leg_rows: list[dict]) -> None:
         d = tuple(row.get(c) for c in DECISION_COLS)
@@ -150,14 +149,15 @@ class DecisionLog:
             self._decisions.append(d)
             self._legs.extend(legs)
 
-    def add_door(self, counts: dict) -> None:
+    def add_counts(self, minute, counts: dict[str, int]) -> None:
+        """One minute's counts; zero counts are not stored."""
         with self._lock:
-            self._doors.append(tuple(counts.get(c) for c in DOOR_COLS))
+            self._counts.extend((minute, key, n) for key, n in counts.items() if n)
 
     def flush(self) -> int:
         with self._lock:
-            d, l, o = self._decisions, self._legs, self._doors
-            self._decisions, self._legs, self._doors = [], [], []
+            d, l, o = self._decisions, self._legs, self._counts
+            self._decisions, self._legs, self._counts = [], [], []
         if not (d or l or o):
             return 0
         self._con.execute("BEGIN")
@@ -167,12 +167,17 @@ class DecisionLog:
             if l:
                 _insert_many(self._con, "rfq_legs", LEG_COLS, l)
             if o:
-                _insert_many(self._con, "door_counts", DOOR_COLS, o)
+                _insert_many(self._con, "minute_counts", COUNT_COLS, o)
             self._con.execute("COMMIT")
         except Exception:
             self._con.execute("ROLLBACK")
             raise
         return len(d)
+
+    def checkpoint(self) -> None:
+        """Fold the write-ahead log into the file (once a minute, so the WAL
+        on the VM's data disk stays small)."""
+        self._con.execute("CHECKPOINT")
 
     def query(self, sql, params=None):
         return self._con.execute(sql, params or []).fetchall()
