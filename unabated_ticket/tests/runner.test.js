@@ -1445,6 +1445,7 @@ test("rfq_fairs: a league the runner would decline as stale is left out of leagu
 
 test("rfq_fairs: league_loaded_at is as of the time the legs were priced at, not a later clock read", async () => {
   // The snapshot turns 3 min old while the answer is built: the first clock read is just before, the rest after.
+  // Relies on rfqFairsNow reading the clock first for pricedAt; an extra read before it would shift this.
   let reads = null;
   let base = TAKER_NOW;
   const { runner } = await quoteRunner({}, { now: () => { if (reads === null) return base; reads += 1; return reads === 1 ? base : base + 2000; } });

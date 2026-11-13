@@ -74,7 +74,7 @@ class LegTable:
         self._rejected: dict[LegKey, float] = {}    # key -> when rejected
         # league label -> the newest snapshot time (ms) the runner has shown,
         # the leagues it has since stopped showing, the leagues /health has
-        # shown, and when the quoter last saw each league change.
+        # shown, and when the quoter saw each league move to a newer snapshot.
         self._snapshot_at: dict[str, int] = {}
         self._absent: set[str] = set()
         self._health_seen: set[str] = set()
@@ -139,7 +139,8 @@ class LegTable:
 
     def _on_current_snapshot(self, key: LegKey, held) -> bool:
         # A fair (ok) with no snapshot time behind it is never current: the
-        # runner prices no league it does not list.
+        # runner prices no league it does not list (and the door keeps out
+        # legs with no league).
         if held[3] is None and held[0].get("ok"):
             return False
         return held[3] == self._snapshot_of(self._league_of(key))

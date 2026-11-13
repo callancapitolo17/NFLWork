@@ -861,7 +861,7 @@ def test_pause_drops_what_was_waiting_and_counts_it(tmp_path):
     dlog.close()
 
 
-def test_a_league_the_runner_stops_showing_counts_as_changed():
+def test_a_league_the_runner_stops_showing_stops_its_fairs_at_once():
     # A restarted runner (or a new board thread) answers /health ok with no
     # leagues loaded yet; a stale or failed league is left out the same way.
     clock = [100.0]
