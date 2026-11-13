@@ -78,15 +78,6 @@ class WzParlayPrice:
     error: str | None = None     # Wagerzon's ErrorMsgKey or why there is no price
 
 
-def whole_number_skip_reason(game: WzHalfGame) -> str | None:
-    """The one place whole-number lines are kept off the board (v1, Cal
-    2026-11-12): a pushed leg makes Wagerzon grade the parlay as the other leg
-    alone, and the books' prices do not carry the push chance."""
-    if game.away_spread == int(game.away_spread) or game.total == int(game.total):
-        return "whole-number line, push not priced"
-    return None
-
-
 def corner_legs(game: WzHalfGame, corner: str) -> list[dict]:
     """ConfirmWagerHelper legs for one corner: the spread side at its line and
     price, then the total (Wagerzon wants -total for the Over, +total for the Under)."""

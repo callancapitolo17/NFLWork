@@ -358,6 +358,10 @@ class SpecialsApp:
                             if fecta_board is not None else [])
             sizing = self.size_halves_for(halves, fecta_board, fecta_sizing, self.half_budget(account, fecta_sizing),
                                           settings, account, placements, half_placements)[(wz_game_id, corner)]
+            if sizing.fair_prob is None:
+                # e.g. a whole-number line only one book priced (halves_board.MIN_BOOKS_WHOLE_NUMBER)
+                raise ValueError(f"1H {corner} on game {wz_game_id} has no fair price: "
+                                 f"{line.note or 'no book priced it'}")
             game = line.game
             row = {"placed_at": now, "account": account, "league": game.league, "wz_game_id": game.wz_game_id,
                    "corner": corner, "away_team": game.away, "home_team": game.home,
@@ -476,7 +480,7 @@ def _half_line_json(line, sized: dict) -> dict:
             "wz_decimal": price.decimal if price else None,
             "wz_american": line.wz_american(corner),
             "wz_error": price.error if price else None,
-            "books": {name: (fair.corner_fairs or {}).get(corner) for name, fair in line.book_fairs.items()},
+            "books": {name: line.book_fair(name, corner) for name in line.book_fairs},
             "fair_prob": sizing.fair_prob,
             "fair_american": _american(sizing.fair_prob),
             "ev": sizing.ev,

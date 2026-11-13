@@ -11,8 +11,16 @@ corner price to half_parlay_quotes.
 A game's four corners (away or home spread x over or under) are the cells
 of ONE 2 x 2 partition at each book: four SGP prices, probit-devigged
 together, give all four fairs. Fair = the lowest among the books that priced
-the partition, as for fectas. A whole-number line is skipped
-(wz_halves.whole_number_skip_reason).
+the partition, as for fectas.
+
+A whole-number line (spread or total) is priced at each book off the 2 x 2
+partitions at the half-point lines either side (push_grid): the fitted
+cover/push x over/push/under grid gives each corner's chance that both legs
+win plus what Wagerzon pays back on a push (the other leg alone, or the
+stake). The corner's fair is then the EFFECTIVE fair at Wagerzon's price,
+both-win chance + push return / parlay decimal: the same EV as the real
+bet, and a binary bet with that EV swings more than the real one, so the
+Kelly stake sized on it is the smaller, cautious one.
 """
 from __future__ import annotations
 
@@ -24,15 +32,15 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from nfl_specials import config, wz_halves
+from nfl_specials import config, push_grid, wz_halves
 from nfl_specials.board import (BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE, Board, HeldPlacement, Sizing,
                                  _team_key)
 from nfl_specials.books import CFB, NFL, BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (Candidate, ExposureGroup, HeldBet, budgeted_stakes, expected_value,
-                                  price_partition)
+from nfl_specials.pricing import (Candidate, ExposureGroup, HeldBet, american_to_decimal, budgeted_stakes,
+                                  expected_value, price_partition)
 from nfl_specials.special_parser import Leg
 from nfl_specials.store import Store
 from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
@@ -40,6 +48,10 @@ from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
 log = logging.getLogger("nfl_specials.halves_board")
 
 LEAGUES = (NFL, CFB)
+# A whole-number line's push slices rest on how one book prices the lines
+# either side, which nothing in that book's own prices can check; a second
+# book can. Fewer books priced = no fair, so no stake.
+MIN_BOOKS_WHOLE_NUMBER = 2
 # College matches by name prefix, so the kickoff must agree closely.
 CFB_KICKOFF_TOLERANCE = timedelta(minutes=30)
 # A book name whose next token after Wagerzon's name is one of these is another
@@ -48,25 +60,54 @@ OTHER_SCHOOL_TOKENS = frozenset({"STATE", "TECH", "AND", "A", "CHRISTIAN", "INTE
                                  "NORTHERN", "EASTERN", "WESTERN", "CENTRAL", "ATLANTIC", "OH", "OHIO"})
 
 
+def has_whole_number_line(game: WzHalfGame) -> bool:
+    return push_grid.is_whole_number(game.away_spread) or push_grid.is_whole_number(game.total)
+
+
 @dataclass(frozen=True)
 class HalfBookFair:
     book: str
-    corner_fairs: dict[str, float] | None   # corner -> devigged probability; None when unpriced
-    overround: float | None
+    corner_fairs: dict[str, float] | None   # corner -> devigged probability both legs win; None when unpriced
+    overround: float | None                 # the largest of the partitions priced
     reason: str | None = None
+    push_returns: dict[str, float] | None = None   # whole-number line: corner -> $ back per $1 from pushes
+
+    def effective_fair(self, corner: str, wz_decimal: float | None) -> float | None:
+        """The both-win chance plus the push return in units of the parlay
+        payout: the binary chance with the real bet's EV at `wz_decimal`."""
+        if self.corner_fairs is None:
+            return None
+        if not self.push_returns:
+            return self.corner_fairs[corner]
+        if wz_decimal is None:
+            return None
+        return self.corner_fairs[corner] + self.push_returns[corner] / wz_decimal
 
 
 @dataclass
 class HalfLine:
     game: WzHalfGame
-    status: str                             # 'pricing' | 'priced' | 'unpriced' | 'skipped'
+    status: str                             # 'pricing' | 'priced' | 'unpriced'
     note: str | None = None
     book_fairs: dict[str, HalfBookFair] = field(default_factory=dict)
     wz_prices: dict[str, WzParlayPrice] = field(default_factory=dict)
 
-    def fair_prob(self, corner: str) -> float | None:
-        """The LOWEST fair among books that priced the partition (a parlay is only ever backed)."""
-        priced = [b.corner_fairs[corner] for b in self.book_fairs.values() if b.corner_fairs]
+    def book_fair(self, book: str, corner: str, wz_decimal: float | None = None) -> float | None:
+        """`book`'s effective fair at `wz_decimal`, default Wagerzon's current price."""
+        if wz_decimal is None:
+            price = self.wz_prices.get(corner)
+            wz_decimal = price.decimal if price else None
+        return self.book_fairs[book].effective_fair(corner, wz_decimal)
+
+    def fair_prob(self, corner: str, wz_decimal: float | None = None) -> float | None:
+        """The LOWEST (effective) fair among books that priced the partition
+        (a parlay is only ever backed); a whole-number line needs
+        MIN_BOOKS_WHOLE_NUMBER of them. `wz_decimal`: the price the push
+        return is paid against, default Wagerzon's current one."""
+        priced = [fair for fair in (self.book_fair(name, corner, wz_decimal) for name in self.book_fairs)
+                  if fair is not None]
+        if has_whole_number_line(self.game) and len(priced) < MIN_BOOKS_WHOLE_NUMBER:
+            return None
         return min(priced) if priced else None
 
     def wz_american(self, corner: str) -> int | None:
@@ -161,13 +202,34 @@ def match_book_game(game: WzHalfGame, book_games: list[BookGame]) -> BookGame | 
 
 # --- pricing -----------------------------------------------------------------
 def price_half_at_book(book: SgpBook, book_game: BookGame, game: WzHalfGame) -> HalfBookFair:
-    """All four corner fairs of `game` at `book` from one 2 x 2 partition."""
-    spread = book.leg_market(book_game, "away", Leg("spread", "H1", game.away_spread))
+    """All four corner fairs of `game` at `book`: one 2 x 2 partition on
+    half-point lines; on a whole-number line, the partitions either side
+    fitted into the push grid (push_grid.fit_push_grid)."""
+    partitions, overrounds = {}, []
+    for away_line, total_line in push_grid.corner_bracket_pairs(game):
+        priced = price_partition_at(book, book_game, away_line, total_line)
+        if priced.corner_fairs is None:
+            return priced
+        partitions[(away_line, total_line)] = priced.corner_fairs
+        overrounds.append(priced.overround)
+    if len(partitions) == 1:
+        return HalfBookFair(book.name, next(iter(partitions.values())), overrounds[0])
+    fit = push_grid.fit_push_grid(partitions, game.away_spread, game.total)
+    if fit.grid is None:
+        return HalfBookFair(book.name, None, max(overrounds), reason=fit.reason)
+    both_win = {corner: fit.grid.prob(*corner.split("_")) for corner in CORNERS}
+    returns = {corner: push_grid.push_return(fit.grid, corner, game) for corner in CORNERS}
+    return HalfBookFair(book.name, both_win, max(overrounds), push_returns=returns)
+
+
+def price_partition_at(book: SgpBook, book_game: BookGame, away_line: float, total_line: float) -> HalfBookFair:
+    """The four corner fairs of one 2 x 2 partition at these (half-point) lines."""
+    spread = book.leg_market(book_game, "away", Leg("spread", "H1", away_line))
     if spread is None:
-        return HalfBookFair(book.name, None, None, reason=f"no SGP 1H spread at {game.away_spread:+g}")
-    total = book.leg_market(book_game, "away", Leg("total", "H1", game.total))
+        return HalfBookFair(book.name, None, None, reason=f"no SGP 1H spread at {away_line:+g}")
+    total = book.leg_market(book_game, "away", Leg("total", "H1", total_line))
     if total is None:
-        return HalfBookFair(book.name, None, None, reason=f"no SGP 1H total at {game.total:g}")
+        return HalfBookFair(book.name, None, None, reason=f"no SGP 1H total at {total_line:g}")
     partition = price_partition(book, book_game, [spread, total])
     if partition.cell_fairs is None:
         return HalfBookFair(book.name, None, partition.overround, reason=partition.reason)
@@ -208,11 +270,12 @@ def _quote_rows(line: HalfLine, quoted_at: datetime, book: str, fair: HalfBookFa
         if fair is not None:
             rows.append({**base, "corner": corner, "overround": fair.overround, "wz_decimal": None,
                          "fair_prob": fair.corner_fairs[corner] if fair.corner_fairs else None,
-                         "reason": fair.reason})
+                         "reason": fair.reason,
+                         "push_return": fair.push_returns[corner] if fair.push_returns else None})
         else:
             price = wz_prices[corner]
             rows.append({**base, "corner": corner, "overround": None, "fair_prob": None,
-                         "wz_decimal": price.decimal, "reason": price.error})
+                         "wz_decimal": price.decimal, "reason": price.error, "push_return": None})
     return rows
 
 
@@ -243,8 +306,7 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBo
     for game in sorted(wz_halves.fetch_half_games(), key=lambda g: g.game_start_time):
         if game.game_start_time <= started_at:
             continue
-        skip = wz_halves.whole_number_skip_reason(game)
-        lines.append(HalfLine(game, "skipped" if skip else "pricing", note=skip))
+        lines.append(HalfLine(game, "pricing"))
     board = HalfBoard(started_at, None, lines, book_status)
 
     lanes: dict[str, list[tuple[SgpBook, BookGame, HalfLine]]] = {name: [] for name in BOOK_ORDER}
@@ -297,6 +359,13 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBo
         if line.status != "pricing":
             continue
         if line in priced:
+            books_priced = [b for b, f in line.book_fairs.items() if f.corner_fairs]
+            if has_whole_number_line(line.game) and len(books_priced) < MIN_BOOKS_WHOLE_NUMBER:
+                # Listed under "not priced" with the reason; fair_prob is None too.
+                line.status = "unpriced"
+                line.note = (f"whole-number line priced by {', '.join(books_priced)} only; "
+                             f"needs {MIN_BOOKS_WHOLE_NUMBER} books")
+                continue
             line.status = "priced"
             continue
         line.status = "unpriced"
@@ -365,7 +434,8 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
         if line is None:
             continue    # a started game or one off the board
         key = _group_key(line.game, bet.corner)
-        fair = line.fair_prob(bet.corner)
+        # A held whole-number parlay pays its pushes against the price it was placed at.
+        fair = line.fair_prob(bet.corner, american_to_decimal(bet.wz_american))
         if fair is None:
             blocked.add(key)
             continue

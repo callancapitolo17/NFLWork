@@ -255,11 +255,8 @@ only 1st halves are read.
 1. **Wagerzon read** (`wz_halves.py`): the catalog leagues "NFL - 1ST HALVES" and
    "NCAA FOOTBALL - 1ST HALVES", one request each (a combined `lg=` answers only
    the first sport). Each 1H line is its own Wagerzon game (`idgmtyp` 15).
-2. **Whole-number lines are skipped** (`wz_halves.whole_number_skip_reason`, the
-   one place the rule lives): a pushed leg turns the parlay into the other leg
-   alone, and the books' prices carry no push chance. Listed under "not priced"
-   with "whole-number line, push not priced". About half the board (34 of 70
-   games on 2026-11-12).
+2. **Whole-number lines** are priced off the half-point lines either side and
+   need two books; see "1H parlays on whole-number lines" below.
 3. **Fair**: the game's four corners (away or home spread x over or under) are
    the four cells of ONE 2 x 2 partition at each book, at Wagerzon's exact
    numbers, probit-devigged together (`halves_board.price_half_at_book`, the
@@ -367,12 +364,50 @@ Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
 
 ## Not done yet
 
-- **Whole-number 1H lines.** A push chance per corner would come from
-  same-game parlays at the neighbouring half-point lines (P(total = 26 and the
-  favorite covers) = P(fav, over 25.5) - P(fav, over 26.5)); lifting the skip is
-  `wz_halves.whole_number_skip_reason`.
-
 - **A live scores-first share with DraftKings down.** The fallback uses the
   fixed 0.776; FanDuel's standalone first-to-score (independence, ~0.50)
   never bets.
 - Correlation across games is ignored (cross-game NFL correlation measured ~0).
+
+## 1H parlays on whole-number lines (`push_grid.py`)
+
+A 1H spread or total on a whole number (spread 6, total 26) can push. Wagerzon
+then pays the other leg alone at its straight price; both pushing refunds.
+Pricing is books only (Cal, 2026-11-12):
+
+1. At each book, price the 2 x 2 corner partition at the half-point lines
+   either side (5.5 / 6.5 x 25.5 / 26.5: four partitions, or two with one
+   whole-number leg), probit-devigged per partition.
+2. `fit_push_grid` least-squares fits the cover/push/lose x over/push/under
+   grid those bands imply. A both-push cell is left out when the spread and
+   total differ in parity (a 1H margin and total are both even or both odd).
+3. Refused (the book prices nothing for the game): a cell below -0.005
+   (smaller negatives are rounding, clamped to 0), a spread push over 20% or a
+   total push over 15% (NFL 1H 2019-2025 maxes: margin 3 at 12.3%, total 20 at
+   8.6%), or partitions that disagree with the fit by over 0.01 (real BetMGM
+   brackets fit within 0.001). One book alone can still move mass between cells
+   no other partition pins, which only a second book catches.
+4. Each corner's fair is the **effective** fair at Wagerzon's parlay decimal D:
+   P(both win) + push return / D, where push return = P(spread wins, total
+   pushes) x spread decimal + P(spread pushes, total wins) x total decimal +
+   P(both push). Same EV as the real bet; Kelly on it is the smaller,
+   cautious stake (the binary swings more than the real payout). Worst case
+   across books as for half-point lines.
+5. A whole-number game needs two books priced (`MIN_BOOKS_WHOLE_NUMBER`,
+   `halves_board.py`); with one, it is listed under "not priced" with the book
+   named, stakes nothing, and Place refuses it (as it refuses any corner with
+   no fair).
+
+`half_parlay_quotes.fair_prob` is the both-win chance and `push_return` the
+push return, so the effective fair can be rebuilt from the table;
+`placed_half_parlays.fair_prob` is the effective fair the stake was sized on.
+A held whole-number parlay counts its pushes at the price it was placed at.
+
+Unverified: the push rule (other leg at its straight price, both push
+refunds) is as Wagerzon was described, not read off a graded ticket. Check
+the first graded whole-number push against it.
+
+Coverage (probe 2026-11-12): DraftKings posts 1H alt lines about 2 days out
+(NFL) and 1 day out (college); BetMGM college 1H legs price only near
+kickoff; FanDuel has no 1H alt totals in the SGP tab, so it prices only a
+whole-number spread with a half-point total.
