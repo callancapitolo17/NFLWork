@@ -85,6 +85,16 @@ class FectaLine:
         return self.fecta is not None and self.fecta.prop_type == "SUPERFECTA"
 
     def fair_prob(self) -> float | None:
+        """The worst case over its books, once every book has answered: a
+        line still pricing has no fair, so no stake (FanDuel's budget can
+        hold its fairs back for minutes, and a stake on the books that
+        answered first would skip the worst case)."""
+        if self.status != "priced":
+            return None
+        return self.answered_fair()
+
+    def answered_fair(self) -> float | None:
+        """The worst case over the books that have answered so far."""
         base = worst_case_fair(list(self.book_fairs.values()))
         if base is None or not self.is_superfecta():
             return base
@@ -449,7 +459,7 @@ def refresh_board(store: Store, publish: Callable[[Board], None], turns: BookTur
         raise RuntimeError(f"{name} pricing lane crashed: {exc}") from exc
 
     for line in pricing:
-        if line.fair_prob() is not None:
+        if line.answered_fair() is not None:
             line.status = "priced"
             continue
         line.status = "unpriced"

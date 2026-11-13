@@ -338,3 +338,14 @@ def test_books_open_with_draftkings_through_the_configured_proxy(monkeypatch):
     assert status == {"FanDuel": "ok", "BetMGM": "ok", "DraftKings": "ok"}
     assert opened == {"FanDuel": {"pacer": turns.pacers["FanDuel"]}, "BetMGM": {"pacer": turns.pacers["BetMGM"]},
                       "DraftKings": {"proxy_url": "http://100.120.136.59:8097", "pacer": turns.pacers["DraftKings"]}}
+
+
+def test_a_line_still_pricing_has_no_fair_and_no_stake():
+    """FanDuel's budget can hold its fair back for minutes; the books that
+    answered first must not size a stake that skips the worst case."""
+    from dataclasses import replace
+    line = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 900, 0.15)
+    pricing = replace(line, status="pricing")
+    assert pricing.answered_fair() == pytest.approx(0.15) and pricing.fair_prob() is None
+    assert size_board(_board(pricing), 5000, 0.25, None)[0].recommended_stake == 0.0
+    assert size_board(_board(line), 5000, 0.25, None)[0].recommended_stake > 0

@@ -156,6 +156,7 @@ class RequestPacer:
                 time.sleep(wait)
             if self.window is not None:
                 self.window.wait_turn()
+                self._raise_if_halted()   # a block may have landed while it waited
             try:
                 return self._note_status(send(), what)
             finally:

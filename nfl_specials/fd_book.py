@@ -49,9 +49,10 @@ ALT_RUNNER_RE = re.compile(r"^(.+?) \(([+-]\d+(?:\.\d+)?)\)$")
 # trailing 5 min (VM probe 2026-11-13: 163 calls at 1.5/s, the 164th 403,
 # unblocked as the window fell under 100; a burst of 234 in 40 s got through
 # first only because the WAF counts with a lag). So FanDuel prices to a
-# window budget, with margin, not a gap; its scan and event pages are other
-# hosts and do not count.
-MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.0
+# window budget, with margin; its scan and event pages are other hosts and do
+# not count. The 1 s gap keeps a full budget under the probe's 1.5/s and
+# costs nothing (90 s of sends in a 300 s window).
+MIN_SECONDS_BETWEEN_PRICE_CALLS = 1.0
 FD_PRICE_CALLS_PER_WINDOW = 90
 FD_PRICE_WINDOW_SECONDS = 300.0
 

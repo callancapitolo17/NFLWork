@@ -304,6 +304,8 @@ class SpecialsApp:
         line = next((l for l in (board.lines if board else []) if l.special.wz_game_id == wz_game_id), None)
         if line is None or line.game is None:
             raise ValueError(f"special {wz_game_id!r} is not on the current board")
+        if line.status != "priced":
+            raise ValueError(f"special {wz_game_id!r} is not priced on the current board (status {line.status})")
         if line.special.wz_american != shown_american:
             raise ValueError(f"price on the board is {line.special.wz_american:+d}, page showed "
                              f"{shown_american:+d} — refresh the page")

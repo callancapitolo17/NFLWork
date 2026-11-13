@@ -26,8 +26,10 @@ specials, unpaced FanDuel): BetMGM done in 0.5 min, FanDuel in 0.9 min;
 DraftKings' six superfectas (7-10 requests each then, 0.5 s apart) took ~40 s.
 Since 2026-11-13 FanDuel prices to a budget of 90 implyBets per trailing 5 min
 (see below), so on a full slate (~400 FanDuel calls across fectas and 1H) its
-lane is by far the slowest, ~20 min, and the page shows FanDuel's fairs as
-they arrive.
+lane is by far the slowest, ~20 min. A fecta gets a fair and a stake only once
+every one of its books has answered; 1H games stay unplaceable until the 1H
+board finishes, and 1H stakes wait for the fecta board. The budget lives in the
+app's memory, so a restart (a deploy) starts it from zero.
 
 ## Running on the VM
 
@@ -338,7 +340,8 @@ gap, FanDuel at most `FD_PRICE_CALLS_PER_WINDOW` = 90 implyBets in any trailing
 `FD_PRICE_WINDOW_SECONDS` = 300 s, counted across refreshes by the app's
 `books.CallWindow`), so no book sees more traffic than when the boards ran one
 after the other. FanDuel's WAF blocks an address for ~5 min after 100 implyBets
-in a trailing 5 min (measured from the VM 2026-11-13). A 403 or 429 on any call to a book (a listing, a game's
+in a trailing 5 min (measured from the VM 2026-11-13; the ~40 min block that
+night came from 165 calls sent into it after the first 403). A 403 or 429 on any call to a book (a listing, a game's
 market page or a price) stops it for the rest of the refresh (its later specials and games read "blocked this refresh"):
 FanDuel's CloudFront blocked the VM for ~40 min on 2026-11-13 after ~6
 calls/s, and every extra call into a block extends it.
