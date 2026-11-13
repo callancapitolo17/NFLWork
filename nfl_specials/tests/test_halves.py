@@ -1,21 +1,17 @@
 """1H parlays: Wagerzon parsing, game matching, the
-2 x 2 partition fair, worst case across books, and sizing after the fectas.
+2 x 2 partition fair, worst case across books, and sizing each game as one group.
 No network."""
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from scipy.stats import norm
 
 from nfl_specials import halves_board
-from nfl_specials.board import Board, FectaLine, HeldPlacement, Sizing
 from nfl_specials.books import BookGame, LegMarket, Outcome
 from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
                                        college_names_match, conservative_american, match_book_game,
                                        price_half_at_book, size_halves)
-from nfl_specials.pricing import BookFair
-from nfl_specials.special_parser import parse_fecta
-from nfl_specials.wz import WzSpecial
 from nfl_specials.wz_halves import (CORNERS, WzHalfGame, WzParlayPrice, corner_legs, parse_half_game)
 
 KICKOFF = datetime(2099, 1, 1, 18, 0, tzinfo=timezone.utc)
@@ -269,35 +265,6 @@ def test_only_positive_ev_corners_get_a_stake():
     assert away_over.fair_prob == 0.29 and away_over.ev == pytest.approx(0.29 * 3.64 - 1)
 
 
-def test_a_parlay_next_to_the_teams_fecta_is_sized_smaller():
-    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
-    special = WzSpecial(wz_game_id=99, rotation=99, description="COMMANDERS TRIFECTA (1Q, 1H & GM)",
-                        wz_american=500, week_date=date(2098, 12, 31))
-    fecta_game = BookGame("evt", home="NYG", away="WAS", game_start_time="2099-01-01T18:00:00Z")
-    fecta = FectaLine(special, parse_fecta(special.description), "priced", game=fecta_game,
-                      book_fairs={"FanDuel": BookFair("FanDuel", 0.2, None, 1.3, 8)})
-    fecta_board = Board(datetime.now(timezone.utc), None, [fecta], {})
-    fecta_sizing = [Sizing(0.2, 0.2, 10.0, 10.0, None)]
-    alone = size_halves(_half_board(line), 20000, 0.25, None)
-    beside = size_halves(_half_board(line), 20000, 0.25, None, fecta_board, fecta_sizing)
-    key, other_team = (line.game.wz_game_id, "away_over"), (line.game.wz_game_id, "home_under")
-    assert 0 < beside[key].recommended_stake < alone[key].recommended_stake
-    assert beside[other_team].recommended_stake == alone[other_team].recommended_stake
-
-
-def test_a_held_fecta_the_board_cannot_price_blocks_that_team():
-    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
-    special = WzSpecial(wz_game_id=99, rotation=99, description="COMMANDERS TRIFECTA (1Q, 1H & GM)",
-                        wz_american=500, week_date=date(2098, 12, 31))
-    fecta_game = BookGame("evt", home="NYG", away="WAS", game_start_time="2099-01-01T18:00:00Z")
-    fecta = FectaLine(special, parse_fecta(special.description), "unpriced", game=fecta_game)
-    fecta_board = Board(datetime.now(timezone.utc), None, [fecta], {})
-    sized = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(None, None, 0.0, 0.0, None)],
-                        held_fectas=(HeldPlacement(99, 50.0, 500),))
-    assert sized[(line.game.wz_game_id, "away_over")].recommended_stake == 0
-    assert sized[(line.game.wz_game_id, "home_under")].recommended_stake > 0
-
-
 def test_a_placed_parlay_shrinks_the_next_stake_on_that_side():
     line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
     key = (line.game.wz_game_id, "away_over")
@@ -515,3 +482,53 @@ def test_a_held_parlay_lowers_what_the_next_stake_may_reach():
     held = size_halves(_half_board(line), 1_000_000, 0.25, None,
                        held=(HeldHalfParlay(line.game.wz_game_id, "away_over", 200.0, 264),))[key]
     assert held.recommended_stake == 50
+
+
+# --- one group per game -------------------------------------------------------------
+def test_both_teams_corners_in_a_game_hedge_each_other():
+    from nfl_specials.pricing import kelly_stake
+    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    sized = size_halves(_half_board(line), 5000, 0.25, None)
+    for corner in ("away_over", "home_under"):     # exactly one corner wins: bigger than each alone
+        alone = kelly_stake(TRUE_CORNERS[corner], line.wz_american(corner), 5000, 0.25)
+        assert sized[(line.game.wz_game_id, corner)].kelly_stake > alone + 1
+
+
+def test_the_worst_book_sets_each_result_and_the_rest_loses_every_corner():
+    from nfl_specials.halves_board import UNASSIGNED, game_outcome_group
+    lower = {c: f - 0.02 if c == "away_over" else f for c, f in TRUE_CORNERS.items()}
+    line = HalfLine(_game(), "priced",
+                    book_fairs={"FanDuel": HalfBookFair("FanDuel", TRUE_CORNERS, 1.2),
+                                "BetMGM": HalfBookFair("BetMGM", lower, 1.2)},
+                    wz_prices={c: WzParlayPrice(3.64) for c in CORNERS})
+    cells = line.worst_case_cells()
+    assert cells[("away", "over")] == pytest.approx(0.27) and sum(cells.values()) == pytest.approx(0.98)
+    group = game_outcome_group(line, list(CORNERS), [])
+    assert len(group.state_probs) == 5 and group.state_probs[-1] == pytest.approx(0.02)
+    assert all(c.payoffs[-1] == -1.0 for c in group.candidates)
+    assert UNASSIGNED not in cells
+
+
+def test_a_pushed_leg_pays_the_other_leg_alone():
+    from nfl_specials.halves_board import UNASSIGNED
+    from nfl_specials.push_grid import cell_payout
+    game = _game(away_spread=3.0, total=24.0)
+    assert cell_payout(game, "away_over", 3.6, ("away", "over")) == pytest.approx(3.6)
+    assert cell_payout(game, "away_over", 3.6, ("push", "over")) == pytest.approx(1 + 100 / 102)
+    assert cell_payout(game, "away_over", 3.6, ("away", "push")) == pytest.approx(1 + 100 / 118)
+    assert cell_payout(game, "away_over", 3.6, ("push", "push")) == 1.0
+    assert cell_payout(game, "away_over", 3.6, ("home", "push")) == 0.0
+    assert cell_payout(game, "away_over", 3.6, UNASSIGNED) == 0.0
+    assert cell_payout(game, "home_under", 3.6, ("push", "under")) == pytest.approx(1 + 100 / 118)
+    assert cell_payout(game, "home_under", 3.6, ("home", "push")) == pytest.approx(1 + 100 / 102)
+
+
+def test_a_hedging_held_parlay_still_fits_a_small_budget():
+    """A held bet the others hedge lifts their marginal growth past their own
+    EV, so the hurdle must climb past it (the doubling step)."""
+    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    held = (HeldHalfParlay(line.game.wz_game_id, "away_under", 200.0, 264),)
+    sized = size_halves(_half_board(line), 5000, 0.25, 30.0, held=held)
+    total = sum(s.recommended_stake for s in sized.values())
+    assert 20 <= total <= 30
+

@@ -285,15 +285,18 @@ only 1st halves are read.
 5. **Stake** (`halves_board.size_halves`): quarter Kelly on the page's bankroll,
    **after the fectas**: the budget is the cash available less the fectas'
    recommended stakes (cash only; with Use free play on, fectas draw on the free
-   play balance and parlays keep the cash). An NFL parlay sits in one group with
-   that spread team's fectas in the game (the fectas' `board._team_key`): the
-   fectas' placed bets and recommended stakes are fixed bets the parlay is sized
-   around, as one nested chain, the maximum correlation the fairs allow, so a
-   parlay beside a fecta gets less, never more. A team's over and under corners
-   cannot both win, which the chain also over-counts (cautious). Placed 1H
-   parlays (`placed_half_parlays`, counting the ones that may have gone through)
-   shrink the next stake on that side; a placed bet the board cannot price
-   blocks its side. $20 minimum, $250 per parlay a week
+   play balance and parlays keep the cash). **Each game is one group**
+   (`halves_board.game_outcome_group`, `pricing.OutcomeGroup`): the 1H results
+   (the four corners, plus the push results on a whole-number line) are the
+   outcome states, so the corners hedge each other (exactly one wins on
+   half-point lines) and are sized jointly. Each result's chance is its LOWEST
+   at any book that priced the game; what that leaves unassigned is a state
+   where every corner loses, so no corner's EV beats its worst book's. A pushed
+   leg pays the other leg alone at its straight price (both pushed = stake
+   back). Placed 1H parlays (`placed_half_parlays`, counting the ones that may
+   have gone through) are fixed bets in their game's group. Fectas are not in
+   the groups (Cal, 2026-11-13): they only take their cash first.
+   $20 minimum, $250 per parlay a week
    (`config.WZ_HALF_PARLAY_MAX_STAKE`, a mistyped-stake guard, not a measured
    Wagerzon limit).
 6. **Place**: the server re-checks the corner is priced at the price the page
@@ -396,9 +399,12 @@ Pricing is books only (Cal, 2026-11-12):
 4. Each corner's fair is the **effective** fair at Wagerzon's parlay decimal D:
    P(both win) + push return / D, where push return = P(spread wins, total
    pushes) x spread decimal + P(spread pushes, total wins) x total decimal +
-   P(both push). Same EV as the real bet; Kelly on it is the smaller,
-   cautious stake (the binary swings more than the real payout). Worst case
-   across books as for half-point lines.
+   P(both push); same EV as the real bet. It is read off the **worst-case
+   grid**: each cell's lowest chance across the books (`HalfLine.worst_case_cells`),
+   the rest a state where every corner loses, so it is at or below every
+   book's own effective fair. The stake is sized on those same cells with
+   the real push payouts (`push_grid.cell_payout`), so the EV shown is the EV
+   sized on.
 5. A whole-number game needs two books priced (`MIN_BOOKS_WHOLE_NUMBER`,
    `halves_board.py`); with one, it is listed under "not priced" with the book
    named, stakes nothing, and Place refuses it (as it refuses any corner with
@@ -406,7 +412,7 @@ Pricing is books only (Cal, 2026-11-12):
 
 `half_parlay_quotes.fair_prob` is the both-win chance and `push_return` the
 push return, so the effective fair can be rebuilt from the table;
-`placed_half_parlays.fair_prob` is the effective fair the stake was sized on.
+`placed_half_parlays.fair_prob` is the effective fair shown at the click (the worst-case grid's).
 A held whole-number parlay counts its pushes at the price it was placed at.
 
 Unverified: the push rule (other leg at its straight price, both push

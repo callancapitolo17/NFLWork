@@ -154,7 +154,6 @@ def test_wagerzon_pays_the_other_leg_alone_on_a_push():
         "home_under": 0.02 * american_to_decimal(110) + 0.03 * american_to_decimal(-130) + 0.01,
     }
     assert {c: push_grid.push_return(grid, c, game) for c in CORNERS} == pytest.approx(expected)
-    assert push_grid.corner_outcomes(grid, "home_under") == (0.29, 0.02, 0.03, 0.01)
 
 
 def test_book_prices_the_four_bracket_partitions_and_the_fair_is_effective():
@@ -254,13 +253,31 @@ def test_a_whole_number_line_needs_two_books():
     prices = {c: WzParlayPrice(3.6, 500) for c in CORNERS}
     alone = HalfLine(game, "priced", book_fairs={"DraftKings": one}, wz_prices=prices)
     assert all(alone.fair_prob(c) is None for c in CORNERS)
+    lower_cells = {cell: p - 0.01 if "push" not in cell else p for cell, p in one.push_cells.items()}
     lower = HalfBookFair("BetMGM", {c: f - 0.01 for c, f in one.corner_fairs.items()}, 1.2,
-                         push_returns=one.push_returns)
+                         push_returns=one.push_returns, push_cells=lower_cells)
     both = HalfLine(game, "priced", book_fairs={"DraftKings": one, "BetMGM": lower}, wz_prices=prices)
     assert both.fair_prob("away_over") == pytest.approx(lower.effective_fair("away_over", 3.6))
     half = _game(away_spread=-6.5, total=26.5)
     assert HalfLine(half, "priced", book_fairs={"DraftKings": HalfBookFair("DraftKings", {c: 0.25 for c in CORNERS}, 1.2)},
                     wz_prices=prices).fair_prob("away_over") == 0.25
+
+
+def test_books_that_split_the_pushes_differently_take_the_worst_of_each_result():
+    """The fair is the worst chance of each 1H result, not the worst book's
+    corner: below either book's own effective fair, and the EV sizing uses."""
+    game = _game()
+    one = price_half_at_book(GridBook(TRUE_GRID, game), BOOK_GAME, game)
+    shifted = dict(one.push_cells)
+    shifted[("push", "over")] -= 0.01                 # this book moves push mass into a both-win cell
+    shifted[("away", "over")] += 0.01
+    other = HalfBookFair("BetMGM", one.corner_fairs, 1.2, push_returns=one.push_returns, push_cells=shifted)
+    line = HalfLine(game, "priced", book_fairs={"DraftKings": one, "BetMGM": other},
+                    wz_prices={c: WzParlayPrice(3.6, 500) for c in CORNERS})
+    cells = line.worst_case_cells()
+    paid = sum(p * push_grid.cell_payout(game, "away_over", 3.6, cell) for cell, p in cells.items())
+    assert line.fair_prob("away_over") == pytest.approx(paid / 3.6)
+    assert line.fair_prob("away_over") < one.effective_fair("away_over", 3.6) - 0.001
 
 
 def test_a_held_whole_number_parlay_pays_pushes_at_its_own_price(monkeypatch):
@@ -277,5 +294,9 @@ def test_a_held_whole_number_parlay_pays_pushes_at_its_own_price(monkeypatch):
     board = HalfBoard(datetime.now(timezone.utc), None, [line], {})
     size_halves(board, 5000, 0.25, None, held=(HeldHalfParlay(game.wz_game_id, "away_over", 50.0, 300),))
     held = [h for group in groups_seen[0] for h in group.held]
-    # Placed at +300 (4.0): its pushes pay against 4.0, not today's 5.0.
-    assert [h.fair_prob for h in held] == pytest.approx([0.20 + fair.push_returns["away_over"] / 4.0])
+    # Placed at +300 (4.0): both legs winning pays 3 per $1, not today's 4;
+    # its EV over the game's results is the one its own price gives.
+    assert len(held) == 1 and max(held[0].payoffs) == pytest.approx(3.0)
+    probs = groups_seen[0][0].state_probs
+    ev = sum(p * r for p, r in zip(probs, held[0].payoffs))
+    assert ev == pytest.approx((0.20 + fair.push_returns["away_over"] / 4.0) * 4.0 - 1)

@@ -29,6 +29,7 @@ import itertools
 import math
 from dataclasses import dataclass
 
+import numpy as np
 from scipy.optimize import brentq
 
 from kalshi_common.fair_value import _probit_devig_n as probit_devig_n
@@ -188,6 +189,54 @@ class ExposureGroup:
     candidates: tuple[Candidate, ...]
     held: tuple[HeldBet, ...] = ()
 
+    def as_outcome_group(self) -> "OutcomeGroup":
+        """The same chain written as explicit outcome states."""
+        bets = ([(h.fair_prob, h.wz_american) for h in self.held] +
+                [(c.fair_prob, c.wz_american) for c in self.candidates])
+        order = sorted(range(len(bets)), key=lambda i: -bets[i][0])   # likeliest first
+        states = _chain_states([bets[i][0] for i in order])
+        rank = {bet: position for position, bet in enumerate(order)}
+        payoffs = []
+        for i, (_fair, american) in enumerate(bets):
+            net_odds = american_to_decimal(american) - 1.0
+            payoffs.append(tuple(net_odds if rank[i] < winners else -1.0 for _p, winners in states))
+        held_count = len(self.held)
+        return OutcomeGroup(
+            state_probs=tuple(p for p, _winners in states),
+            candidates=tuple(OutcomeBet(payoffs[held_count + c], max_stake=cand.max_stake)
+                             for c, cand in enumerate(self.candidates)),
+            held=tuple(OutcomeBet(payoffs[h], risk=bet.risk) for h, bet in enumerate(self.held)))
+
+
+@dataclass(frozen=True)
+class OutcomeBet:
+    """One bet inside an OutcomeGroup: what it returns in each outcome state."""
+    payoffs: tuple[float, ...]     # $ won (+) or lost (-) per $1 staked, one per state; 0 = stake back
+    max_stake: float = math.inf    # candidate: the book's limit less what is already on it
+    risk: float = 0.0              # held bet: the dollars already staked
+
+
+@dataclass(frozen=True)
+class OutcomeGroup:
+    """Bets whose results all follow from one set of exclusive outcome states,
+    sized jointly. The general form of ExposureGroup: any mix of bets that
+    win, lose, push or pay partly in each state (a game's four 1H corners and
+    both teams' fectas, say)."""
+    state_probs: tuple[float, ...]
+    candidates: tuple[OutcomeBet, ...]
+    held: tuple[OutcomeBet, ...] = ()
+
+    def __post_init__(self):
+        if any(p < 0 for p in self.state_probs) or abs(sum(self.state_probs) - 1.0) > 1e-9:
+            raise ValueError(f"state probabilities must be >= 0 and sum to 1, got sum {sum(self.state_probs)}")
+        for bet in self.candidates + self.held:
+            if len(bet.payoffs) != len(self.state_probs):
+                raise ValueError(f"expected {len(self.state_probs)} payoffs per bet, got {len(bet.payoffs)}")
+
+    def expected_value(self, candidate: int) -> float:
+        """EV per $1 of a candidate on its own."""
+        return sum(p * r for p, r in zip(self.state_probs, self.candidates[candidate].payoffs))
+
 
 def _chain_states(fair_probs: list[float]) -> list[tuple[float, int]]:
     """(probability, number of winners) per outcome of a nested chain whose
@@ -201,40 +250,33 @@ def _chain_states(fair_probs: list[float]) -> list[tuple[float, int]]:
     return states
 
 
-def _marginal_growth(index: int, fractions: list[float], net_odds: list[float],
-                     states: list[tuple[float, int]]) -> float:
-    """d E[log wealth] / d fraction[index] for a chain sorted likeliest first."""
-    marginal = 0.0
-    for probability, winners in states:
-        if probability == 0.0:
-            continue
-        wealth = 1.0 + sum(net_odds[i] * f if i < winners else -f for i, f in enumerate(fractions))
-        payoff = net_odds[index] if index < winners else -1.0
-        marginal += probability * payoff / wealth
-    return marginal
-
-
-def _group_fractions_at_hurdle(fair_probs: list[float], net_odds: list[float], fixed: list[float | None],
-                               caps: list[float], hurdle: float) -> list[float]:
-    """Full-Kelly fractions of a chain (sorted likeliest first) at which each
-    free bet's marginal log growth has fallen to `hurdle` or its cap/zero
-    bound binds. `fixed[i]` is a held bet's fraction (None = free). Coordinate
-    ascent on a concave objective: each step solves one bet exactly given the
-    rest. A single free bet with nothing held is plain hurdle Kelly."""
-    states = _chain_states(fair_probs)
-    fractions = [f if f is not None else 0.0 for f in fixed]
+def _group_fractions_at_hurdle(state_probs: tuple[float, ...], payoffs: list[tuple[float, ...]],
+                               fixed: list[float | None], caps: list[float], hurdle: float) -> list[float]:
+    """Full-Kelly fractions at which each free bet's marginal log growth has
+    fallen to `hurdle` or its cap/zero bound binds. `fixed[i]` is a held
+    bet's fraction (None = free). Coordinate ascent on a concave objective:
+    each step solves one bet exactly given the rest. A single free bet with
+    nothing held is plain hurdle Kelly."""
+    possible = np.array(state_probs) > 0.0           # impossible states never constrain or count
+    probs = np.array(state_probs)[possible]
+    returns = np.array(payoffs, dtype=float).reshape(len(payoffs), -1)[:, possible]
+    fractions = np.array([f if f is not None else 0.0 for f in fixed])
+    wealth = 1.0 + fractions @ returns               # per state
     free = [i for i, f in enumerate(fixed) if f is None]
     for _sweep in range(500):
         largest_move = 0.0
         for i in free:
-            others_at_risk = sum(f for j, f in enumerate(fractions) if j != i)
-            # Wealth when every bet loses must stay positive (all-lose has
-            # probability 1 - top fair > 0, so the optimum is interior).
-            upper = min(caps[i], 1.0 - others_at_risk - 1e-9)
+            bet_returns = returns[i]
+            base = wealth - fractions[i] * bet_returns   # wealth from every other bet
+            losing = bet_returns < 0
+            if not losing.any():
+                raise ValueError("a candidate that never loses cannot be Kelly-sized")
+            # Wealth must stay positive in every possible state; a bet that
+            # can lose has an interior optimum below that bound.
+            upper = min(caps[i], float(np.min(base[losing] / -bet_returns[losing])) - 1e-9)
 
             def excess(f: float) -> float:
-                trial = fractions[:i] + [f] + fractions[i + 1:]
-                return _marginal_growth(i, trial, net_odds, states) - hurdle
+                return float(np.dot(probs, bet_returns / (base + f * bet_returns))) - hurdle
 
             if upper <= 0 or excess(0.0) <= 0:
                 best = 0.0
@@ -244,12 +286,13 @@ def _group_fractions_at_hurdle(fair_probs: list[float], net_odds: list[float], f
                 best = brentq(excess, 0.0, upper, xtol=1e-12)
             largest_move = max(largest_move, abs(best - fractions[i]))
             fractions[i] = best
+            wealth = base + best * bet_returns
         if largest_move < 1e-10:
             break
-    return fractions
+    return [float(f) for f in fractions]
 
 
-def budgeted_stakes(groups: list[ExposureGroup], bankroll: float, kelly_fraction: float,
+def budgeted_stakes(groups: list[ExposureGroup | OutcomeGroup], bankroll: float, kelly_fraction: float,
                     budget: float | None, min_stake: float) -> list[list[float]]:
     """Whole-dollar stakes, per group and candidate, that fit `budget`.
 
@@ -265,55 +308,82 @@ def budgeted_stakes(groups: list[ExposureGroup], bankroll: float, kelly_fraction
     """
     if budget is not None:
         budget = max(0.0, budget)   # Wagerzon can report a negative 'available'
-    active = {(g, c) for g, group in enumerate(groups) for c, cand in enumerate(group.candidates)
-              if expected_value(cand.fair_prob, cand.wz_american) > 0}
+    outcome_groups = [g.as_outcome_group() if isinstance(g, ExposureGroup) else g for g in groups]
+    active = {(g, c) for g, group in enumerate(outcome_groups) for c in range(len(group.candidates))
+              if group.expected_value(c) > 0}
+    solved: dict[tuple, dict[int, float]] = {}   # (group, its active candidates, hurdle) -> stakes
     while True:
-        stakes = _fit(groups, active, bankroll * kelly_fraction, budget)
+        stakes = _fit(outcome_groups, active, bankroll * kelly_fraction, budget, solved)
         too_small = [key for key in active if stakes[key] < min_stake]
         if not too_small:
             return [[float(stakes.get((g, c), 0)) for c in range(len(group.candidates))]
-                    for g, group in enumerate(groups)]
+                    for g, group in enumerate(outcome_groups)]
         active.remove(min(too_small, key=lambda key: stakes[key]))
 
 
-def _group_stakes_at_hurdle(group: ExposureGroup, active_candidates: list[int], kelly_bankroll: float,
+def _group_stakes_at_hurdle(group: OutcomeGroup, active_candidates: list[int], kelly_bankroll: float,
                             hurdle: float) -> dict[int, float]:
-    """Stakes (dollars) of a group's active candidates at `hurdle`."""
+    """Stakes (dollars) of a group's active candidates at `hurdle`; the
+    inactive ones stake nothing."""
     if not active_candidates or kelly_bankroll <= 0:
         return {}
-    chain = ([(h.fair_prob, h.wz_american, h.risk / kelly_bankroll, math.inf, None) for h in group.held] +
-             [(group.candidates[c].fair_prob, group.candidates[c].wz_american, None,
-               group.candidates[c].max_stake / kelly_bankroll, c) for c in active_candidates])
-    chain.sort(key=lambda bet: -bet[0])
+    bets = ([(h.payoffs, h.risk / kelly_bankroll, math.inf, None) for h in group.held] +
+            [(group.candidates[c].payoffs, None, group.candidates[c].max_stake / kelly_bankroll, c)
+             for c in active_candidates])
     fractions = _group_fractions_at_hurdle(
-        [bet[0] for bet in chain], [american_to_decimal(bet[1]) - 1.0 for bet in chain],
-        [bet[2] for bet in chain], [bet[3] for bet in chain], hurdle)
-    return {bet[4]: fraction * kelly_bankroll for bet, fraction in zip(chain, fractions) if bet[4] is not None}
+        group.state_probs, [bet[0] for bet in bets], [bet[1] for bet in bets], [bet[2] for bet in bets], hurdle)
+    return {bet[3]: fraction * kelly_bankroll for bet, fraction in zip(bets, fractions) if bet[3] is not None}
 
 
-def _fit(groups: list[ExposureGroup], active: set[tuple[int, int]], kelly_bankroll: float,
-         budget: float | None) -> dict[tuple[int, int], int]:
+# A stake a hair under a whole dollar is that dollar: the budget often binds
+# exactly at one, where float rounding lands either side of it.
+WHOLE_DOLLAR_SLACK = 1e-6
+
+
+def _whole_dollars(stake: float) -> int:
+    return math.floor(stake + WHOLE_DOLLAR_SLACK)
+
+
+# Raising the hurdle this many times over without fitting the budget means
+# the stakes do not shrink with it: a bug, not a board to size.
+MAX_HURDLE_DOUBLINGS = 60
+
+
+def _fit(groups: list[OutcomeGroup], active: set[tuple[int, int]], kelly_bankroll: float,
+         budget: float | None, solved: dict[tuple, dict[int, float]]) -> dict[tuple[int, int], int]:
+    """`solved` caches each group's stakes across calls: dropping one stake
+    under the minimum re-fits every group, but only that group changed."""
     def stakes_at(hurdle: float) -> dict[tuple[int, int], float]:
         stakes = {}
         for g, group in enumerate(groups):
-            members = sorted(c for gg, c in active if gg == g)
-            for c, stake in _group_stakes_at_hurdle(group, members, kelly_bankroll, hurdle).items():
+            members = tuple(sorted(c for gg, c in active if gg == g))
+            key = (g, members, hurdle)
+            if key not in solved:
+                solved[key] = _group_stakes_at_hurdle(group, list(members), kelly_bankroll, hurdle)
+            for c, stake in solved[key].items():
                 stakes[(g, c)] = stake
         return stakes
 
     uncapped = stakes_at(0.0)
     if budget is None or sum(uncapped.values()) <= budget:
-        return {key: math.floor(s) for key, s in uncapped.items()}
+        return {key: _whole_dollars(s) for key, s in uncapped.items()}
     low = 0.0
-    high = max(expected_value(groups[g].candidates[c].fair_prob, groups[g].candidates[c].wz_american)
-               for g, c in active)
+    high = max(groups[g].expected_value(c) for g, c in active)
+    # A bet that hedges a held one can grow faster at the margin than its own
+    # EV, so the first guess may still be too low a hurdle.
+    for _ in range(MAX_HURDLE_DOUBLINGS):
+        if sum(stakes_at(high).values()) <= budget:
+            break
+        low, high = high, high * 2
+    else:
+        raise RuntimeError(f"no hurdle up to {high:g} fits the stakes into the ${budget:g} budget")
     for _ in range(60):   # bisection: the total is decreasing in the hurdle
         mid = (low + high) / 2
         if sum(stakes_at(mid).values()) > budget:
             low = mid
         else:
             high = mid
-    return {key: math.floor(s) for key, s in stakes_at(high).items()}
+    return {key: _whole_dollars(s) for key, s in stakes_at(high).items()}
 
 
 def trifecta_part(fecta: Fecta) -> Fecta:
