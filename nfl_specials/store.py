@@ -3,9 +3,7 @@
 Tables:
     fecta_quotes   APPEND — one row per (refresh, special, book): a partition
                    fair (the special's, or a superfecta's trifecta part's) or
-                   DraftKings' scores-first share, or the reason there is none;
-                   priced_at is when the book's prices were read (earlier than
-                   quoted_at when the refresh reused them, pricing.PriceMemory).
+                   DraftKings' scores-first share, or the reason there is none.
                    The history that lets us check later whether fairs were right.
     placed_fectas  APPEND — one row per placement ATTEMPT, whatever Wagerzon said;
                    free_play TRUE when it risked the free play balance, not cash.
@@ -51,7 +49,7 @@ SCHEMA = [
         fair_prob       DOUBLE,      -- fair of what quote_kind names
         sgp_decimal     DOUBLE,
         overround       DOUBLE,
-        n_cells         INTEGER,     -- SGP calls made (by the refresh that priced it; see priced_at)
+        n_cells         INTEGER,     -- SGP calls made
         sf_share        DOUBLE,      -- P(scores first | trifecta part), DK rows and the 'fixed' DK-down rows
         reason          VARCHAR
     )""",
@@ -91,11 +89,6 @@ SCHEMA = [
     )""",
     # A file made before whole-number lines were priced lacks push_return.
     "ALTER TABLE half_parlay_quotes ADD COLUMN IF NOT EXISTS push_return DOUBLE",
-    # Added 2026-11-13 with PriceMemory: when the book's prices behind a row
-    # were read; earlier than quoted_at when a refresh reused them. NULL on
-    # rows written before it (priced at quoted_at) and where nothing was priced.
-    "ALTER TABLE fecta_quotes ADD COLUMN IF NOT EXISTS priced_at TIMESTAMPTZ",
-    "ALTER TABLE half_parlay_quotes ADD COLUMN IF NOT EXISTS priced_at TIMESTAMPTZ",
     """CREATE TABLE IF NOT EXISTS placed_half_parlays (
         placed_at       TIMESTAMPTZ,
         account         VARCHAR,
@@ -125,10 +118,10 @@ SCHEMA = [
 
 QUOTE_COLUMNS = ("quoted_at", "wz_game_id", "rotation", "description", "team", "prop_type",
                  "home_team", "away_team", "game_start_time", "wz_american", "book", "quote_kind",
-                 "fair_prob", "sgp_decimal", "overround", "n_cells", "sf_share", "reason", "priced_at")
+                 "fair_prob", "sgp_decimal", "overround", "n_cells", "sf_share", "reason")
 HALF_QUOTE_COLUMNS = ("quoted_at", "league", "wz_game_id", "away_team", "home_team", "game_start_time",
                       "away_spread", "total", "corner", "book", "fair_prob", "overround", "wz_decimal", "reason",
-                      "push_return", "priced_at")
+                      "push_return")
 HALF_PLACEMENT_COLUMNS = ("placed_at", "account", "league", "wz_game_id", "corner", "away_team", "home_team",
                           "game_start_time", "away_spread", "total", "wz_decimal", "wz_american", "risk",
                           "to_win", "fair_prob", "ev", "status", "ticket_number", "error")

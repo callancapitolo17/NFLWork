@@ -52,7 +52,6 @@ class BetMgmBook:
         self.client = BetMGMClient()
         self._games = self._list_games()
         self._markets: dict[str, list[dict]] = {}
-        self._decimal_of_option: dict[tuple, float] = {}
 
     # --- discovery ---------------------------------------------------------
     def _list_games(self) -> list[BookGame]:
@@ -97,11 +96,6 @@ class BetMgmBook:
             self._markets[game.book_event_id] = [
                 m for m in fixtures[0].get("optionMarkets", [])
                 if m.get("isBetBuilder") and m.get("status") == "Visible"]
-            for market in self._markets[game.book_event_id]:
-                for option in market.get("options", []):
-                    decimal = (option.get("price") or {}).get("odds")
-                    if isinstance(decimal, (int, float)):
-                        self._decimal_of_option[(market["id"], option["id"])] = float(decimal)
         return self._markets[game.book_event_id]
 
     # --- legs --------------------------------------------------------------
@@ -122,11 +116,6 @@ class BetMgmBook:
         raise ValueError(f"unknown leg kind {leg.kind!r}")
 
     # --- pricing -----------------------------------------------------------
-    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
-        self._option_markets(game)
-        odds = tuple(self._decimal_of_option.get(ref) for ref in refs)
-        return None if None in odds else odds
-
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
         pick_group = str(uuid.uuid4())
         body = {"tv1Picks": [], "tv2Picks": [

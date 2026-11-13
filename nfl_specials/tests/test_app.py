@@ -359,18 +359,3 @@ def test_the_fecta_flag_is_up_from_the_refresh_start_and_drops_when_fectas_fail(
         time.sleep(0.01)
     assert not app._refreshing and not app._fectas_pricing
     assert app._last_error == "fectas: RuntimeError: Wagerzon down"
-
-
-def test_every_refresh_shares_the_apps_one_price_memory(app, monkeypatch):
-    """Reuse only works if the memory outlives a refresh."""
-    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
-    seen = []
-    monkeypatch.setattr(app_module, "refresh_board", lambda store, publish, turns: seen.append(turns.memory))
-    monkeypatch.setattr(app_module, "refresh_halves", lambda store, publish, turns: seen.append(turns.memory))
-    for _ in range(2):
-        assert app.start_refresh()
-        for _ in range(200):
-            if not app._refreshing:
-                break
-            time.sleep(0.01)
-    assert len(seen) == 4 and all(memory is app.price_memory for memory in seen)

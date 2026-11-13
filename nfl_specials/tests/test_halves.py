@@ -14,7 +14,7 @@ from nfl_specials.books import BookGame, LegMarket, Outcome
 from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
                                        college_names_match, conservative_american, match_book_game,
                                        price_half_at_book, size_halves)
-from nfl_specials.pricing import BookFair, PriceMemory
+from nfl_specials.pricing import BookFair
 from nfl_specials.special_parser import parse_fecta
 from nfl_specials.wz import WzSpecial
 from nfl_specials.wz_halves import (CORNERS, WzHalfGame, WzParlayPrice, corner_legs, parse_half_game)
@@ -194,9 +194,6 @@ class CorrelatedBook:
             return None
         return 1.0 / norm.cdf(norm.ppf(self.corners[corner]) + self.vig_z)
 
-    def single_odds(self, game, refs):
-        return None   # no single prices: nothing is reused
-
 
 BOOK_GAME = BookGame("evt", "NYG", "WAS", "2099-01-01T18:00:00Z")
 
@@ -314,7 +311,7 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
             self.rows += rows
 
     store = MemoryStore()
-    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns(PriceMemory()))
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns())
     assert [(l.game.wz_game_id, l.status, l.note) for l in board.lines] == [
         (6118382, "priced", None), (2, "unpriced", "whole-number line priced by FanDuel only; needs 2 books")]
     assert board.lines[1].fair_prob("home_under") is None
@@ -359,7 +356,7 @@ def test_wagerzon_previews_run_with_the_books_for_listed_games_only(monkeypatch)
     store = MemoryStore()
     book = SlowListedBook("FanDuel", TRUE_CORNERS)
     monkeypatch.setattr(halves_board, "open_books", lambda _turns: ({("FanDuel", "NFL"): book}, {"FanDuel NFL": "ok"}))
-    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns(PriceMemory()))
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns())
     assert previewed == [listed.wz_game_id]
     assert [line.status for line in board.lines] == ["priced", "unpriced"]
     wz_rows = [r for r in store.rows if r["book"] == "Wagerzon"]
@@ -387,7 +384,7 @@ def test_a_failed_wagerzon_preview_fails_the_1h_board(monkeypatch):
             pass
 
     with pytest.raises(ConnectionError, match="preview timed out"):
-        halves_board.refresh_halves(MemoryStore(), lambda _board: None, new_book_turns(PriceMemory()))
+        halves_board.refresh_halves(MemoryStore(), lambda _board: None, new_book_turns())
 
 
 def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
@@ -397,7 +394,7 @@ def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
     import threading
     import time as time_module
     from nfl_specials import board as board_module
-    turns = new_book_turns(PriceMemory())
+    turns = new_book_turns()
     inside = {name: 0 for name in turns.locks}
     most_inside = {name: 0 for name in turns.locks}
     count_lock = threading.Lock()
@@ -410,7 +407,7 @@ def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
         with count_lock:
             inside[name] -= 1
 
-    def fecta_lane_task(book, line, memory):
+    def fecta_lane_task(book, line):
         busy(book.name)
         return board_module.BookFair(book.name, None, None, None, 0, reason="test")
 
@@ -419,7 +416,7 @@ def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
             self.name = name
 
     monkeypatch.setattr(halves_board, "price_half_at_book",
-                        lambda book, book_game, game, memory: (busy(book.name), HalfBookFair(book.name, None, None, "t"))[1])
+                        lambda book, book_game, game: (busy(book.name), HalfBookFair(book.name, None, None, "t"))[1])
     monkeypatch.setattr(board_module, "_price_partition", fecta_lane_task)
     half_lines = [halves_board.HalfLine(_game(wz_game_id=i), "pricing") for i in range(6)]
     fecta_lines = [object() for _ in range(6)]
@@ -451,10 +448,10 @@ def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
         book = Named(name)
         threads.append(threading.Thread(target=board_module._price_lane, args=(
             name, book, [("partition", stub) for stub in stubs], fake_fecta_board, threading.Lock(),
-            turns.locks[name], turns.memory, NoStore(), lambda _b: None)))
+            turns.locks[name], NoStore(), lambda _b: None)))
         threads.append(threading.Thread(target=halves_board._price_lane, args=(
             name, [(book, BOOK_GAME, line) for line in half_lines], fake_half_board, threading.Lock(),
-            turns.locks[name], turns.memory, NoStore(), lambda _b: None)))
+            turns.locks[name], NoStore(), lambda _b: None)))
     for thread in threads:
         thread.start()
     for thread in threads:

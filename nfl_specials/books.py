@@ -164,8 +164,3 @@ class SgpBook(Protocol):
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
         """Decimal odds of the same-game parlay of `refs`, or None when the
         book declines the combination. Raises on transport failure."""
-
-    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
-        """Each ref's own single price as the book's game payload shows it
-        (already loaded by leg_market, so no request), or None when any is
-        missing. PriceMemory reuses a partition only while these match."""

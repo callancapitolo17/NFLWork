@@ -1,4 +1,4 @@
-"""FanDuelBook: single prices off the event page, and stopping on a block — no network."""
+"""FanDuelBook: stopping on a block — no network."""
 import pytest
 
 from nfl_specials import fd_book
@@ -8,8 +8,7 @@ from nfl_specials.fd_book import FanDuelBook
 GAME = BookGame("e1", home="SEA", away="LAC", game_start_time="2099-01-01T00:00:00Z")
 EVENT_PAGE = {"attachments": {"markets": {"m1": {
     "marketId": "m1", "marketName": "1st Half Total", "sgmMarket": True, "marketStatus": "OPEN",
-    "runners": [{"selectionId": 11, "runnerName": "Over", "handicap": 23.5,
-                 "winRunnerOdds": {"trueOdds": {"decimalOdds": {"decimalOdds": 1.91}}}},
+    "runners": [{"selectionId": 11, "runnerName": "Over", "handicap": 23.5},
                 {"selectionId": 12, "runnerName": "Under", "handicap": 23.5}]}}}}
 
 
@@ -42,12 +41,6 @@ def _book(monkeypatch, session):
     return FanDuelBook(pacer=RequestPacer("FanDuel", 0.0))
 
 
-def test_single_odds_come_off_the_event_page(monkeypatch):
-    book = _book(monkeypatch, FakeSession())
-    assert book.single_odds(GAME, (("m1", 11),)) == (1.91,)
-    assert book.single_odds(GAME, (("m1", 11), ("m1", 12))) is None   # a runner with no price
-
-
 def test_an_implybets_403_stops_fanduel_for_the_refresh(monkeypatch):
     session = FakeSession(price_status=403)
     book = _book(monkeypatch, session)
@@ -65,7 +58,7 @@ def test_an_event_page_403_stops_fanduel_too(monkeypatch):
     session = FakeSession(event_status=403)
     book = _book(monkeypatch, session)
     with pytest.raises(RuntimeError, match="event page"):
-        book.single_odds(GAME, (("m1", 11),))
+        book.leg_market(GAME, "home", None)
     sent = len(session.sent)
     with pytest.raises(BookBlocked, match="event page HTTP 403"):
         book.price(GAME, (("m1", 11), ("m2", 21)))

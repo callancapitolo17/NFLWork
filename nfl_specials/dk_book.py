@@ -85,7 +85,6 @@ class DraftKingsBook:
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
         self._market_of_selection: dict[str, str] = {}
-        self._american_of_selection: dict[str, str] = {}
         # (event id, base selection ids, candidate market id) -> decimal odds of
         # base + each candidate selection DK can combine with it
         self._added_leg_odds: dict[tuple[str, frozenset[str], str], dict[str, float]] = {}
@@ -155,9 +154,6 @@ class DraftKingsBook:
             for market in self._markets[game.book_event_id].values():
                 for selection in market["selections"]:
                     self._market_of_selection[selection["id"]] = market["id"]
-                    american = (selection.get("displayOdds") or {}).get("american")
-                    if american and not selection.get("isDisabled"):
-                        self._american_of_selection[selection["id"]] = american
         return self._markets[game.book_event_id]
 
     # --- legs --------------------------------------------------------------
@@ -209,11 +205,6 @@ class DraftKingsBook:
         if key not in self._added_leg_odds:
             self._added_leg_odds[key] = self._fetch_added_leg_odds(*key)
         return self._added_leg_odds[key].get(last)
-
-    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
-        self._event_markets(game)
-        odds = tuple(self._american_of_selection.get(ref) for ref in refs)
-        return None if None in odds else odds
 
     def _fetch_added_leg_odds(self, event_id: str, base: frozenset[str],
                               candidate_market_id: str) -> dict[str, float]:

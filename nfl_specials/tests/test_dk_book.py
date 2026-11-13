@@ -162,15 +162,3 @@ def test_a_403_stops_every_later_draftkings_call_this_refresh(monkeypatch):
     with pytest.raises(BookBlocked, match="SGP price HTTP 403"):
         book.price(GAME, ("q1_lac", "ml_sea"))
     assert len(session.price_calls) == 1
-
-
-def test_single_odds_read_off_the_event_payload_without_a_request(monkeypatch):
-    priced = [{"id": "m_ml", "name": "Moneyline", "tags": ["SGP"],
-               "selections": [{"id": "ml_sea", "displayOdds": {"american": "-150"}},
-                              {"id": "ml_lac", "displayOdds": {"american": "+130"}, "isDisabled": True}]}]
-    monkeypatch.setattr("nfl_specials.tests.test_dk_book.MARKETS", priced)
-    session = FakeSession(_price_answer(["q1_sea"], {}))
-    book = _book(monkeypatch, session)
-    assert book.single_odds(GAME, ("ml_sea",)) == ("-150",)
-    assert book.single_odds(GAME, ("ml_sea", "ml_lac")) is None   # a disabled outcome: nothing to compare
-    assert session.price_calls == []

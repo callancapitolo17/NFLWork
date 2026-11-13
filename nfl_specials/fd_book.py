@@ -61,7 +61,6 @@ class FanDuelBook:
         self.session = cffi_requests.Session(impersonate="chrome")
         self._games = self._list_games()
         self._markets: dict[str, dict[str, dict]] = {}
-        self._decimal_of_runner: dict[tuple, float] = {}
 
     # --- discovery ---------------------------------------------------------
     def _list_games(self) -> list[BookGame]:
@@ -105,10 +104,6 @@ class FanDuelBook:
             for market in _walk_dicts(resp.json(), lambda d: "marketId" in d and "runners" in d and "marketName" in d):
                 if market.get("sgmMarket") and market.get("marketStatus") == "OPEN":
                     markets.setdefault(market["marketName"], market)
-                    for runner in market.get("runners", []):
-                        decimal = _runner_decimal(runner)
-                        if decimal is not None:
-                            self._decimal_of_runner[(market["marketId"], runner["selectionId"])] = decimal
             self._markets[game.book_event_id] = markets
         return self._markets[game.book_event_id]
 
@@ -137,11 +132,6 @@ class FanDuelBook:
         raise ValueError(f"unknown leg kind {leg.kind!r}")
 
     # --- pricing -----------------------------------------------------------
-    def single_odds(self, game: BookGame, refs: tuple[Hashable, ...]) -> tuple | None:
-        self._event_markets(game)
-        odds = tuple(self._decimal_of_runner.get(ref) for ref in refs)
-        return None if None in odds else odds
-
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
         body = {"betLegs": [{"legType": "SIMPLE_SELECTION",
                              "betRunners": [{"runner": {"marketId": market_id, "selectionId": selection_id}}]}
@@ -158,13 +148,6 @@ class FanDuelBook:
         # INVALID_SGM_COMBINATION = FD will not build this parlay (a decline);
         # INVALID_COMBINATION rides on every same-game request and means nothing.
         return None
-
-
-def _runner_decimal(runner: dict) -> float | None:
-    """A runner's single decimal odds (winRunnerOdds.trueOdds.decimalOdds.decimalOdds), or None."""
-    odds = ((runner.get("winRunnerOdds") or {}).get("trueOdds") or {}).get("decimalOdds") or {}
-    decimal = odds.get("decimalOdds")
-    return float(decimal) if isinstance(decimal, (int, float)) else None
 
 
 def _walk_dicts(node, keep) -> list[dict]:
