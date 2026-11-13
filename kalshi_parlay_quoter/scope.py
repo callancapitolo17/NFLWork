@@ -9,6 +9,7 @@ Kalshi tickers: series-EVENTCODE-STRIKE, e.g.
 Period series (KXNCAAF1HTOTAL, KXMLBF5...) and props (KXNBATEAMTOTAL) are not
 in SERIES, so they fall out as unsupported_leg.
 """
+import re
 from dataclasses import dataclass
 
 # Kalshi series root -> league label. Order matters only for readability.
@@ -27,11 +28,10 @@ SERIES: dict[str, tuple[str, str]] = {
     for root, league in LEAGUES.items()
     for suffix, market in MARKETS.items()
 }
-# Door prefixes for the WS source: anything that could be one of SERIES.
-LEAGUE_PREFIXES: tuple[str, ...] = tuple(LEAGUES)
-# Decline reasons evaluate() can return (no pricing happened).
-SCOPE_REASONS = frozenset({"no_legs", "unsupported_leg", "bad_side",
-                           "single_leg", "same_game"})
+# series-event-strike exactly as the runner accepts it (rfqprice.js
+# TICKER_RE). A leg outside this shape is unsupported here, because the
+# runner would answer its whole 200-leg refresh chunk with a 400.
+TICKER_SHAPE = re.compile(r"[A-Z0-9.]+-[A-Z0-9]+-[A-Z0-9.]+")
 
 
 @dataclass(frozen=True)
@@ -61,18 +61,10 @@ def classify_leg(leg: dict) -> LegInfo:
     parts = ticker.split("-")
     series = parts[0]
     hit = SERIES.get(series)
-    if hit is None or len(parts) < 2 or not parts[1]:
+    if hit is None or not TICKER_SHAPE.fullmatch(ticker):
         return LegInfo(ticker, side, series, None, None, None)
     league, market = hit
     return LegInfo(ticker, side, series, league, market, f"{league}:{parts[1]}")
-
-
-def in_league(legs: list[dict]) -> bool:
-    """Cheap door check: every leg's ticker starts with a priced league root.
-    Mirrors the WS door so the REST fallback (unfiltered) is counted the
-    same way instead of writing a row per foreign RFQ."""
-    return all(str(l.get("market_ticker") or "").startswith(LEAGUE_PREFIXES)
-               for l in legs)
 
 
 def evaluate(legs: list[dict] | None) -> ScopeVerdict:

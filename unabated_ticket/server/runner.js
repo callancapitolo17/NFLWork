@@ -204,6 +204,12 @@
 //                    and Kalshi's live market and book, or a decline reason
 //                    (server/rfqprice.js, #282); the parlay quoter (#283) asks.
 //                    Places nothing.
+//   GET /rfq_fairs.json?legs=TICKER:yes,TICKER:no   (at most 200 legs)
+//                    the same legs priced off the board alone, no Kalshi read:
+//                    ok says Unabated has a fair for a game not seen started,
+//                    the Kalshi fields stay null. The quoter refreshes its
+//                    in-memory leg table with these and confirms a sample of
+//                    would-quote parlays through /rfq_price.json.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices, taker}
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
@@ -382,7 +388,7 @@ const KALSHI_START_TTL_MS = 10 * 60 * 1000;
 const RFQ_MARKET_TTL_MS = 10 * 1000;
 const RFQ_BOOK_TTL_MS = 2 * 1000;
 const RFQ_CACHE_MAX = 500;
-// Each read gives up after this, inside the quoter's 1.5 s budget (#283); the leg is then kalshi_unread.
+// Each read gives up after this, inside the quoter's 3 s budget (#283); the leg is then kalshi_unread.
 const RFQ_KALSHI_READ_TIMEOUT_MS = 1000;
 // Reads in flight for RFQs at once, beside the taker's KALSHI_BOOK_READS_AT_ONCE,
 // under Kalshi's 20 reads/s basic limit; the caches above keep a repeated leg off it.
@@ -566,6 +572,8 @@ function createRunner(deps) {
   const startedAt = now();
 
   let feedState = null;
+  // rfqprice.boardLookupOf(feedState) for /rfq_fairs.json, rebuilt after each board change.
+  let rfqBoardLookup = null;
   let scannerStatus = null;
   let history = {};
   let boardLinesCache = null;
@@ -764,6 +772,7 @@ function createRunner(deps) {
       boardLinesCache = null;
       ladderReaders = null;
       tailFlexCache = null;
+      rfqBoardLookup = null;
       registerFeedTeams();
       noteMatchedStarts();
       rememberKickoffOdds();
@@ -2662,16 +2671,20 @@ function createRunner(deps) {
   // GET /rfq_price.json (#282; header above, server/rfqprice.js). Only a leg
   // resolved to a game in a fresh league reads Kalshi (market, book, start).
   //   params  URLSearchParams {legs: "TICKER:yes,TICKER:no", rfq_id?}
-  async function rfqPriceNow(params) {
-    const legs = rfqprice.parseLegsParam(params.get("legs"));
-    if (typeof legs === "string") throw httpError(400, legs);
-    const pricedAt = now();
+  function rfqContextAt(pricedAt) {
     const board = feedState;
-    const context = {
+    return {
       board, measurement: board ? tailFlexMeasurement() : null, now: pricedAt, ladderOf: ladderReaderOf,
       staleReasonOf: (leagueId) => (scannerStatus ? staleSnapshotReason(leagueId, pricedAt) : "the scanner has not reported yet"),
       fairAsOf: fairAsOfLeague,
     };
+  }
+  async function rfqPriceNow(params) {
+    const legs = rfqprice.parseLegsParam(params.get("legs"));
+    if (typeof legs === "string") throw httpError(400, legs);
+    const pricedAt = now();
+    const context = rfqContextAt(pricedAt);
+    const { board } = context;
     const priced = await Promise.all(legs.map(async (leg) => {
       const resolved = rfqprice.resolveLeg(leg.marketTicker, board);
       if (!rfqprice.needsKalshi(resolved, context)) return rfqprice.priceLeg(leg, resolved, context, {});
@@ -2686,6 +2699,22 @@ function createRunner(deps) {
       return rfqprice.priceLeg(leg, resolved, context, kalshi);
     }));
     return { rfq_id: params.get("rfq_id") || null, priced_at_ms: pricedAt, legs: priced };
+  }
+
+  // GET /rfq_fairs.json: up to MAX_FAIR_LEGS legs priced off the board alone,
+  // no Kalshi read (rfqprice.priceLeg, unchecked). The quoter refreshes every
+  // leg it has seen with these every couple of seconds and prices RFQs from
+  // memory, so this must stay pure compute: ~1,900 leg prices a second
+  // (2026-11-13) cannot each wait on Kalshi.
+  function rfqFairsNow(params) {
+    const legs = rfqprice.parseLegsParam(params.get("legs"), rfqprice.MAX_FAIR_LEGS);
+    if (typeof legs === "string") throw httpError(400, legs);
+    const pricedAt = now();
+    const context = rfqContextAt(pricedAt);
+    const { board } = context;
+    if (board && !rfqBoardLookup) rfqBoardLookup = rfqprice.boardLookupOf(board);
+    const priced = legs.map((leg) => rfqprice.priceLeg(leg, rfqprice.resolveLeg(leg.marketTicker, board, board ? rfqBoardLookup : null), context, { unchecked: true }));
+    return { priced_at_ms: pricedAt, legs: priced };
   }
 
   // The Kalshi contract Place buys: the bot's own reading of the rungs, and
@@ -3471,7 +3500,7 @@ function createRunner(deps) {
   return {
     start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postEdgeSegments, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass, rereadLiveLine,
     edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, ticketLinePayload: ticketLinePayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
-    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, rfqPrice: rfqPriceNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
+    scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, rfqPrice: rfqPriceNow, rfqFairs: rfqFairsNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,
   };
 }
@@ -3521,7 +3550,7 @@ function sendJson(response, status, body) {
   response.end(text);
 }
 
-// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /live_prices.json, /kalshi_quote.json, /rfq_price.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json, /team_keys.json and /health, the Host allowlist first on
+// The HTTP side: GET /edges.json, /teasers.json, /attach.json, /scenarios.json, /taker.json, /tau.json, /live_prices.json, /kalshi_quote.json, /rfq_price.json, /rfq_fairs.json, /novig_quote.json, /polymarket_quote.json, /prophetx_quote.json, /bfa_quote.json, /team_keys.json and /health, the Host allowlist first on
 // every request. The port comes from the socket, not config, so a runner on
 // an ephemeral or non-default port guards itself (as the bets service does).
 function createHttpServer(runner, { host }) {
@@ -3553,6 +3582,7 @@ function createHttpServer(runner, { host }) {
       if (path === "/ticket_line.json") return sendJson(response, 200, await runner.ticketLinePayload(url.searchParams));
       if (path === "/kalshi_quote.json") return sendJson(response, 200, await runner.kalshiQuote(url.searchParams));
       if (path === "/rfq_price.json") return sendJson(response, 200, await runner.rfqPrice(url.searchParams));
+      if (path === "/rfq_fairs.json") return sendJson(response, 200, await runner.rfqFairs(url.searchParams));
       if (path === "/novig_quote.json") return sendJson(response, 200, await runner.novigQuote(url.searchParams));
       if (path === "/polymarket_quote.json") return sendJson(response, 200, await runner.polymarketQuote(url.searchParams));
       if (path === "/prophetx_quote.json") return sendJson(response, 200, await runner.prophetxQuote(url.searchParams));

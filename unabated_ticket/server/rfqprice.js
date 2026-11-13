@@ -60,6 +60,9 @@ const SERIES = Object.fromEntries(Object.entries(betsLib.GAME_SERIES).flatMap(([
 const SIDES = new Set(["yes", "no"]);
 // More legs than this is not a parlay request, it is a bug.
 const MAX_LEGS = 50;
+// GET /rfq_fairs.json prices the quoter's whole leg table in chunks of this:
+// 200 tickers stay under Node's 16 KB request-line limit.
+const MAX_FAIR_LEGS = 200;
 const TICKER_RE = /^[A-Z0-9.]+-[A-Z0-9]+-[A-Z0-9.]+$/;
 const SPREAD_STRIKE_RE = /^([A-Z]+)(\d+)$/;
 const MONEYLINE_STRIKE_RE = /^[A-Z]+$/;
@@ -73,7 +76,7 @@ function roundProb(value) {
 
 // "T1:yes,T2:no" -> [{marketTicker, side}], request order kept, or a string
 // saying why the list is malformed (the runner answers it with a 400).
-function parseLegsParam(text) {
+function parseLegsParam(text, maxLegs = MAX_LEGS) {
   if (typeof text !== "string" || !text.trim()) return "legs is required: TICKER:yes|no, comma-separated";
   const legs = [];
   for (const part of text.split(",")) {
@@ -83,7 +86,7 @@ function parseLegsParam(text) {
     if (!TICKER_RE.test(marketTicker) || !SIDES.has(side)) return `leg ${JSON.stringify(part)} is not TICKER:yes|no`;
     legs.push({ marketTicker, side });
   }
-  if (legs.length > MAX_LEGS) return `${legs.length} legs, at most ${MAX_LEGS}`;
+  if (legs.length > maxLegs) return `${legs.length} legs, at most ${maxLegs}`;
   return legs;
 }
 
@@ -111,13 +114,38 @@ function parseTicker(marketTicker) {
 }
 
 // The board events of the ticker's league whose Kalshi rungs carry its event suffix.
-function eventsOfSuffix(board, leagueId, eventSuffix) {
+function eventsOfSuffix(board, leagueId, eventSuffix, lookup) {
+  if (lookup) return lookup.eventsBySuffix.get(`${leagueId}:${eventSuffix}`) || [];
   return Object.values(board.events || {}).filter((event) => event && event.leagueId === leagueId
     && event.venueIds && Array.isArray(event.venueIds.kalshiEventSuffixes) && event.venueIds.kalshiEventSuffixes.includes(eventSuffix));
 }
 
+// One board's lookup for resolveLeg: the same answers as the scans above,
+// read once. /rfq_fairs.json resolves thousands of legs every 2 s on the board
+// thread, where a scan of every event per leg would cost a real share of the
+// thread that also builds Edges and runs the taker. Valid only for the board
+// it was built from: the runner drops it whenever the board changes.
+function boardLookupOf(board) {
+  const eventsBySuffix = new Map();
+  for (const event of Object.values(board.events || {})) {
+    if (!event || !event.venueIds || !Array.isArray(event.venueIds.kalshiEventSuffixes)) continue;
+    for (const suffix of event.venueIds.kalshiEventSuffixes) {
+      const key = `${event.leagueId}:${suffix}`;
+      if (!eventsBySuffix.has(key)) eventsBySuffix.set(key, []);
+      eventsBySuffix.get(key).push(event);
+    }
+  }
+  return { eventsBySuffix, teamCodesByEvent: new Map() };
+}
+
+function spreadTeamCodesOf(event, board, lookup) {
+  if (!lookup) return taker.spreadTeamCodes({ venueIds: event.venueIds }, board);
+  if (!lookup.teamCodesByEvent.has(event)) lookup.teamCodesByEvent.set(event, taker.spreadTeamCodes({ venueIds: event.venueIds }, board));
+  return lookup.teamCodesByEvent.get(event);
+}
+
 // Which Unabated side (0 away, 1 home) the YES team is: {side} or {reason, detail}.
-function yesTeamSideOf(parsed, marketTicker, event, board) {
+function yesTeamSideOf(parsed, marketTicker, event, board, lookup) {
   const readings = [];
   if (parsed.betTypeId === BET_TYPE_SPREAD) {
     // A Y- rung sits on the YES team's side, an N- rung on the other team's.
@@ -131,7 +159,7 @@ function yesTeamSideOf(parsed, marketTicker, event, board) {
       readings.push({ side: prefix === "Y" ? target.sideIndex : 1 - target.sideIndex, source: "rung" });
     }
   }
-  const codes = taker.spreadTeamCodes({ venueIds: event.venueIds }, board);
+  const codes = spreadTeamCodesOf(event, board, lookup);
   if (!codes.reason) {
     const index = codes.codes.indexOf(parsed.strikeCode);
     if (index >= 0 && codes.codes[1 - index] !== parsed.strikeCode) readings.push({ side: index, source: "team_codes" });
@@ -147,16 +175,17 @@ function yesTeamSideOf(parsed, marketTicker, event, board) {
 
 // Map a ticker onto the board: {parsed, event, yesSide} (yesSide null on a
 // total) or {reason, detail, parsed?, event?}. No Kalshi data needed.
-function resolveLeg(marketTicker, board) {
+// lookup: boardLookupOf(board), optional; the answer is the same without it.
+function resolveLeg(marketTicker, board, lookup = null) {
   const parsed = parseTicker(marketTicker);
   if (parsed.reason) return parsed;
   if (!board) return { reason: "no_board", detail: "the board has not loaded yet", parsed };
-  const events = eventsOfSuffix(board, parsed.leagueId, parsed.eventSuffix);
+  const events = eventsOfSuffix(board, parsed.leagueId, parsed.eventSuffix, lookup);
   if (events.length === 0) return { reason: "no_event", detail: `no ${feed.LEAGUES[parsed.leagueId].label} game on the board carries Kalshi event ${parsed.eventSuffix}`, parsed };
   if (events.length > 1) return { reason: "ambiguous_event", detail: `games ${events.map((event) => event.eventId).join(", ")} all carry Kalshi event ${parsed.eventSuffix}`, parsed };
   const event = events[0];
   if (parsed.betTypeId === BET_TYPE_TOTAL) return { parsed, event, yesSide: null };
-  const team = yesTeamSideOf(parsed, marketTicker, event, board);
+  const team = yesTeamSideOf(parsed, marketTicker, event, board, lookup);
   if (team.reason) return { ...team, parsed, event };
   return { parsed, event, yesSide: team.side };
 }
@@ -259,7 +288,11 @@ function needsKalshi(resolved, context) {
 //   resolved  resolveLeg's result
 //   context   {board, ladderOf: eventId -> (period, axis) -> ladder, measurement (tail flex, pooled tau),
 //              now, staleReasonOf: leagueId -> string|null, fairAsOf: leagueId -> ms|null}
-//   kalshi    {market, book, startMs} or {error}; ignored unless needsKalshi
+//   kalshi    {market, book, startMs} or {error}; ignored unless needsKalshi.
+//             {unchecked: true} (/rfq_fairs.json) prices off the board alone:
+//             ok then says only that Unabated has a fair for a game it has
+//             not seen start; kalshi_status stays null and the quoter must
+//             confirm through /rfq_price.json before it relies on the market.
 function priceLeg(leg, resolved, context, kalshi) {
   const out = emptyLeg(leg.marketTicker, leg.side);
   const decline = (reason, detail) => ({ ...out, ok: false, reason, detail });
@@ -297,6 +330,7 @@ function priceLeg(leg, resolved, context, kalshi) {
   out.kickoff_ms = taker.earliestStartMs(event.eventStart, kalshi.startMs);
   if (out.kickoff_ms == null) return decline("no_start", "neither Unabated nor Kalshi lists the game's start");
   if (context.now >= out.kickoff_ms) return decline("started", `the game started at ${new Date(out.kickoff_ms).toISOString()}`);
+  if (kalshi.unchecked) return { ...out, ok: true };
   if (kalshi.error) return decline("kalshi_unread", kalshi.error);
   const market = kalshi.market;
   out.kalshi_status = market.status ?? null;
@@ -309,4 +343,4 @@ function priceLeg(leg, resolved, context, kalshi) {
   return { ...out, ok: true };
 }
 
-module.exports = { RFQ_LEAGUE_IDS, MAX_LEGS, NFL_TIE_PROB_MAX, parseLegsParam, parseTicker, resolveLeg, needsKalshi, priceLeg };
+module.exports = { RFQ_LEAGUE_IDS, MAX_LEGS, MAX_FAIR_LEGS, NFL_TIE_PROB_MAX, parseLegsParam, parseTicker, boardLookupOf, resolveLeg, needsKalshi, priceLeg };

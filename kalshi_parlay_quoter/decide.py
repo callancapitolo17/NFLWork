@@ -1,4 +1,5 @@
-"""One RFQ -> one logged decision. Pure: the pricer call is injected.
+"""One RFQ -> one decision. Pure: the pricer call is injected (the leg table
+for the first pass, the Kalshi-checked runner call for a confirm).
 
 Phase 1 sends nothing, so the outcome is "would_quote" (every leg priced, a
 parlay fair exists) or "decline" with a reason. The margin formula is #284;
@@ -16,7 +17,7 @@ from datetime import datetime, timezone
 from kalshi_parlay_quoter import scope
 from kalshi_parlay_quoter.pricer import PricerBacklog, PricerError, PriceResult
 
-LEG_FIELDS = ("ok", "reason", "detail", "fair", "fair_lo", "fair_hi", "bracketed",
+LEG_FIELDS = ("ok", "reason", "detail", "priced_at_ms", "cache_age_ms", "fair", "fair_lo", "fair_hi", "bracketed",
               "sigma", "c", "tau", "line", "kickoff_ms", "fair_age_ms",
               "kalshi_status", "kalshi_yes_bid", "kalshi_yes_ask",
               "kalshi_no_ask")
@@ -60,6 +61,7 @@ def base_row(rfq: dict, seen_at: datetime) -> dict:
         "max_leg_sigma": None, "legs_kalshi_ask_product": None,
         "earliest_kickoff_ms": None, "hours_to_kickoff": None,
         "pricer_ms": None, "priced_at_ms": None, "queue_ms": None,
+        "confirmed": False,
     }
 
 
@@ -100,9 +102,18 @@ def decide(rfq: dict, legs: list[dict] | None, price_fn, *,
         for f in LEG_FIELDS:
             lr[f] = got.get(f)
         lr["ok"] = bool(got.get("ok"))
+        if lr["priced_at_ms"] is None:
+            # A leg straight from the runner (a confirm) is as old as its call.
+            lr["priced_at_ms"] = res.priced_at_ms
         for f in ("fair", "fair_lo", "fair_hi", "sigma", "c", "tau",
-                  "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask"):
+                  "kalshi_yes_bid", "kalshi_yes_ask", "kalshi_no_ask",
+                  "cache_age_ms"):
             lr[f] = _num(lr[f])
+        kickoff = _num(lr["kickoff_ms"])
+        if lr["ok"] and kickoff is not None and kickoff <= now_ms:
+            # The runner's started gate ran when it priced the leg; a fair
+            # held in the leg table must not outlive kickoff.
+            lr.update(ok=False, reason="started", detail="started after it was priced")
 
     kickoffs = [k for k in (_num(lr["kickoff_ms"]) for lr in leg_rows) if k]
     if kickoffs:

@@ -1,215 +1,247 @@
-"""Dry-run parlay quoter (#283): RFQ feed -> scope rule -> runner leg pricer
--> decision log. NO ORDERS: nothing in this package can send a quote.
+"""Dry-run parlay quoter (#283): RFQ feed -> leg table -> decision log.
+NO ORDERS: nothing in this package can send a quote.
 
     python -m kalshi_parlay_quoter.main
 
-Feed: kalshi_mlb_mm's WebSocketRFQSource with its door widened to the
-leagues in scope.LEAGUES and no leg cap. Every RFQ id gets exactly one
-decision row, except those the door drops (other leagues, below the size
-floor), which are counted per minute in door_counts.
+Threads
+  rfq-feed    feed.RFQFeed reads Kalshi's RFQ websocket; the door (scope rule
+              + size floor) leaves only RFQs we could price, on a queue.
+  leg-table   legtable.Refresher re-prices every leg seen in the last 10 min
+              off the runner's /rfq_fairs.json, every 2 s.
+  main        Quoter.step: takes RFQs off the queue and decides each from the
+              leg table (memory only), then flushes the decision log.
+  confirm-*   a capped number of would-quote parlays a second are re-priced
+              through the runner's Kalshi-checked /rfq_price.json.
+
+Side effects: appends to DB_PATH (db.DecisionLog: rfq_decisions, rfq_legs,
+minute_counts). Every frame and decision is counted per minute; confirmed
+parlays are stored in full and STORED_SAMPLE_PCT of the rest.
 """
 import logging
+import queue
 import signal
 import threading
 import time
+import zlib
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import Callable
 
 from kalshi_common import auth_client
-from kalshi_parlay_quoter import config, decide, pricer, scope
+from kalshi_parlay_quoter import config, decide, feed, legtable, pricer, scope
 from kalshi_parlay_quoter.db import DecisionLog
 
 log = logging.getLogger("kalshi_parlay_quoter")
 
+# RFQs decided per step() before the loop flushes, so a full queue cannot starve the log.
+MAX_RFQS_PER_STEP = 5000
+SAMPLE_BUCKETS = 10_000
 
-class _RateLimit:
-    """At most `per_sec` acquisitions per rolling second; never blocks."""
 
-    def __init__(self, per_sec: float):
-        self._per_sec = per_sec
-        self._stamps: list[float] = []
-        self._lock = threading.Lock()
+def stored_in_sample(rfq_id: str, sample_pct: float) -> bool:
+    """Whether an unconfirmed RFQ's row is stored: a fixed hash of its id, so
+    the sample is the same on every replay and unrelated to arrival order."""
+    return zlib.crc32(rfq_id.encode()) % SAMPLE_BUCKETS < sample_pct * SAMPLE_BUCKETS / 100.0
 
-    def try_acquire(self) -> bool:
-        now = time.monotonic()
-        with self._lock:
-            self._stamps = [t for t in self._stamps if now - t < 1.0]
-            if len(self._stamps) >= self._per_sec:
-                return False
-            self._stamps.append(now)
-            return True
+
+def leg_keys_of(rfq: dict) -> list[legtable.LegKey]:
+    """The table keys of an RFQ's legs, read the way decide.decide reads
+    them (scope.classify_leg), so both ask the table for the same keys."""
+    infos = [scope.classify_leg(leg) for leg in rfq.get("mve_selected_legs") or []]
+    return [(info.market_ticker, info.side) for info in infos]
 
 
 class Quoter:
-    def __init__(self, source, dlog: DecisionLog, *, price_fn=None,
-                 workers: int = config.PRICER_WORKERS,
-                 seen_ttl_sec: float = config.SEEN_TTL_SEC,
-                 market_fetch_rate: float = config.MAX_MARKET_FETCHES_PER_SEC,
+    """Decides the RFQs the feed kept. step() is called from one thread; the
+    confirm workers only call _record (locked) and DecisionLog.add (locked)."""
+
+    def __init__(self, rfqs: queue.Queue, table: legtable.LegTable, dlog: DecisionLog, *,
+                 confirm_fn: Callable[[str, list[legtable.LegKey]], pricer.PriceResult],
+                 confirms_per_sec: float = config.CONFIRMS_PER_SEC,
+                 confirm_workers: int = config.CONFIRM_WORKERS,
+                 confirm_backoff_sec: float = config.CONFIRM_BACKOFF_SEC,
+                 max_rfq_age_sec: float = config.MAX_RFQ_AGE_SEC,
+                 pending_max_wait_sec: float = config.PENDING_MAX_WAIT_SEC,
                  max_backlog: int = config.MAX_BACKLOG,
-                 min_cost_usd: float = config.MIN_RFQ_TARGET_COST_USD):
-        self.source = source
-        self.dlog = dlog
-        self.price_fn = price_fn or pricer.CachingPricer(
-            lambda rid, legs: pricer.price(config.RUNNER_URL, rid, legs,
-                                           timeout=config.PRICER_TIMEOUT_SEC),
-            ttl_sec=config.PRICE_CACHE_SEC, backoff_sec=config.PRICER_BACKOFF_SEC)
+                 stored_sample_pct: float = config.STORED_SAMPLE_PCT,
+                 clock: Callable[[], float] = time.monotonic):
+        self._rfqs = rfqs
+        self._table = table
+        self._dlog = dlog
+        self._confirm_fn = confirm_fn
+        self._confirm_gap_sec = 1.0 / confirms_per_sec if confirms_per_sec > 0 else None
+        self._confirm_workers = confirm_workers
+        self._confirm_backoff_sec = confirm_backoff_sec
+        self._max_rfq_age_sec = max_rfq_age_sec
+        self._next_confirm_at = 0.0
+        self._confirms_in_flight = 0
+        self._pool = ThreadPoolExecutor(max_workers=confirm_workers, thread_name_prefix="confirm")
+        self._pending_max_wait = pending_max_wait_sec
         self._max_backlog = max_backlog
-        self._min_cost = min_cost_usd
-        self._below_floor = 0
-        self._pending = 0
-        self._pool = ThreadPoolExecutor(max_workers=workers,
-                                        thread_name_prefix="pricer")
-        self._seen: dict[str, float] = {}
-        self._seen_ttl = seen_ttl_sec
-        self._last_prune = time.monotonic()
-        self._fetch_limit = _RateLimit(market_fetch_rate)
+        self._stored_sample_pct = stored_sample_pct
+        self._clock = clock
+        # RFQs waiting for a leg's first fair: (rfq, seen_at, waiting since on the clock).
+        self._pending: deque[tuple[dict, datetime, float]] = deque()
+        self._table_generation = table.generation
         self._lock = threading.Lock()
-        # Local counters for the per-minute door row.
-        self._logged = 0
-        self._other_league = 0
-        self._door_base = dict(getattr(source, "ingestion_drops", {}) or {})
-        self._malformed_base = getattr(source, "malformed_count", 0)
-        self.decisions: dict[str, int] = {}
+        self._counts: Counter = Counter()
 
-    # -- per RFQ -------------------------------------------------------------
+    # -- one RFQ ---------------------------------------------------------
 
-    def _legs_for(self, rfq: dict):
-        legs = rfq.get("mve_selected_legs")
-        if isinstance(legs, list) and legs:
-            return legs, None
-        ticker = rfq.get("market_ticker")
-        if not ticker:
-            return None, "no_combo_ticker"
-        if not self._fetch_limit.try_acquire():
-            return None, "market_fetch_budget"
-        market = self.source.get_market(ticker)
-        if not market:
-            return None, "market_fetch_failed"
-        legs = market.get("mve_selected_legs")
-        return (legs, None) if isinstance(legs, list) and legs else (None, "no_mve_legs")
+    def _record(self, row: dict, leg_rows: list[dict], seen_at: datetime) -> None:
+        """Count the decision; store it when confirmed or in the sample.
+        Count keys: would_quote (confirmed), would_quote_unconfirmed,
+        confirm_<reason> (the Kalshi-checked call declined or failed), else
+        the first pass's decline reason."""
+        row["queue_ms"] = (datetime.now(timezone.utc) - seen_at).total_seconds() * 1000.0
+        if row["decision"] == "would_quote":
+            key = "would_quote" if row["confirmed"] else "would_quote_unconfirmed"
+        else:
+            key = f"confirm_{row['reason']}" if row["confirmed"] else row["reason"]
+        with self._lock:
+            self._counts[key] += 1
+        if row["confirmed"] or stored_in_sample(str(row["rfq_id"]), self._stored_sample_pct):
+            self._dlog.add(row, leg_rows)
+            with self._lock:
+                self._counts["stored"] += 1
 
-    @staticmethod
-    def _backlogged(rid, legs):
-        raise pricer.PricerBacklog("")
+    def _take_confirm_slot(self) -> bool:
+        if self._confirm_gap_sec is None:
+            return False
+        now = self._clock()
+        with self._lock:
+            if now < self._next_confirm_at or self._confirms_in_flight >= self._confirm_workers:
+                return False
+            self._next_confirm_at = max(self._next_confirm_at, now + self._confirm_gap_sec)
+            self._confirms_in_flight += 1
+            return True
 
-    def _handle_pooled(self, rfq: dict, seen_at: datetime) -> None:
+    def _confirm(self, rfq: dict, seen_at: datetime) -> None:
         try:
-            self.handle(rfq, seen_at)
+            row, leg_rows = decide.decide(rfq, rfq.get("mve_selected_legs"),
+                                          self._confirm_fn, seen_at=seen_at)
+            row["confirmed"] = True
+            if row["reason"] == "pricer_error":
+                with self._lock:
+                    self._next_confirm_at = self._clock() + self._confirm_backoff_sec
+            self._record(row, leg_rows, seen_at)
+        except Exception:
+            log.exception("[quoter] confirm failed for rfq %s", rfq.get("id"))
+            with self._lock:
+                self._counts["confirm_crashed"] += 1
         finally:
             with self._lock:
-                self._pending -= 1
+                self._confirms_in_flight -= 1
 
-    def handle(self, rfq: dict, seen_at: datetime | None = None,
-               price_fn=None) -> None:
-        """seen_at is when tick() first saw the RFQ, so a pricer backlog
-        shows up as queue_ms instead of hiding inside seen_at."""
-        try:
-            seen_at = seen_at or datetime.now(timezone.utc)
-            legs, why = self._legs_for(rfq)
-            if legs is not None and not scope.in_league(legs):
-                # REST fallback is unfiltered; count like the WS door does.
-                with self._lock:
-                    self._other_league += 1
+    def _decide(self, rfq: dict, seen_at: datetime, price_fn) -> None:
+        row, leg_rows = decide.decide(rfq, rfq.get("mve_selected_legs"), price_fn,
+                                      seen_at=seen_at)
+        if row["decision"] == "would_quote" and self._take_confirm_slot():
+            try:
+                self._pool.submit(self._confirm, rfq, seen_at)
                 return
-            row, leg_rows = decide.decide(rfq, legs, price_fn or self.price_fn,
-                                          seen_at=seen_at)
-            if row["n_legs"] and row["reason"] in scope.SCOPE_REASONS:
-                # Out-of-scope legs say nothing a margin needs, and at
-                # ~100 RFQs/s they were most of the DB; reason_detail keeps
-                # the series / game that failed.
-                leg_rows = []
-            row["queue_ms"] = (datetime.now(timezone.utc) - seen_at).total_seconds() * 1000.0
-            if legs is None and why:
-                row["reason_detail"] = why
-            self.dlog.add(row, leg_rows)
-            key = row["reason"] or row["decision"]
-            with self._lock:
-                self._logged += 1
-                self.decisions[key] = self.decisions.get(key, 0) + 1
+            except RuntimeError:            # the pool is shut down: record the table's decision
+                with self._lock:
+                    self._confirms_in_flight -= 1
+        self._record(row, leg_rows, seen_at)
+
+    @staticmethod
+    def _backlogged(rfq_id, legs):
+        raise pricer.PricerBacklog("")
+
+    def handle(self, rfq: dict, seen_at: datetime, waiting_since: float | None = None) -> None:
+        """Decide one RFQ, or park it until the next table refresh when a leg
+        has no fair yet."""
+        keys = leg_keys_of(rfq)
+        self._table.want(keys)
+        if not self._table.missing(keys):
+            self._decide(rfq, seen_at, self._table.price)
+            return
+        now = self._clock()
+        if waiting_since is None:
+            if len(self._pending) >= self._max_backlog:
+                self._decide(rfq, seen_at, self._backlogged)
+                return
+            self._pending.append((rfq, seen_at, now))
+        elif now - waiting_since >= self._pending_max_wait:
+            # table.price raises LegsNotReady -> decline pricer_error, with the leg named.
+            self._decide(rfq, seen_at, self._table.price)
+        else:
+            self._pending.append((rfq, seen_at, waiting_since))
+
+    # -- loop ------------------------------------------------------------
+
+    def _retry_pending(self) -> None:
+        for _ in range(len(self._pending)):
+            rfq, seen_at, waiting_since = self._pending.popleft()
+            self._handle_safely(rfq, seen_at, waiting_since)
+
+    def _handle_safely(self, rfq: dict, seen_at: datetime, waiting_since: float | None = None) -> None:
+        try:
+            self.handle(rfq, seen_at, waiting_since)
         except Exception:
             log.exception("[quoter] failed handling rfq %s", rfq.get("id"))
-
-    # -- loop ----------------------------------------------------------------
-
-    def tick(self) -> int:
-        """Submit every not-yet-decided open RFQ. Returns how many."""
-        now = time.monotonic()
-        submitted = 0
-        for rfq in self.source.poll():
-            rid = rfq.get("id")
-            if not rid or rid in self._seen:
-                continue
-            self._seen[rid] = now
-            if self._below_contract_floor(rfq):
-                with self._lock:
-                    self._below_floor += 1
-                continue
-            seen_at = datetime.now(timezone.utc)
             with self._lock:
-                full = self._pending >= self._max_backlog
-                if not full:
-                    self._pending += 1
-            if full:
-                # Decided here, without the pricer: scope still runs, so an
-                # out-of-scope RFQ keeps its real reason.
-                self.handle(rfq, seen_at, price_fn=self._backlogged)
-            else:
-                self._pool.submit(self._handle_pooled, rfq, seen_at)
-            submitted += 1
-        if now - self._last_prune > 60 or len(self._seen) > 200_000:
-            cutoff = now - self._seen_ttl
-            self._seen = {k: t for k, t in self._seen.items() if t >= cutoff}
-            self._last_prune = now
-        return submitted
+                self._counts["handle_crashed"] += 1
 
-    def _below_contract_floor(self, rfq: dict) -> bool:
-        """The WS door's $ floor skips contract-sized RFQs (no dollar target),
-        which were 63% of in-league RFQs on 2026-11-07. A contract pays at
-        most $1, so contracts < floor means the RFQ's cost is under the floor
-        whatever the price."""
-        if self._min_cost <= 0:
-            return False
+    def step(self, wait_sec: float = 0.0) -> int:
+        """Decide what is on the queue (waiting up to wait_sec for the first
+        RFQ) and retry parked RFQs after a table refresh or when the oldest
+        has waited out. Queue items are (rfq, seen_at): seen_at is when the
+        feed read the frame, so queue_ms covers the wait on the queue too.
+        Returns how many RFQs came off the queue."""
+        taken = 0
         try:
-            if float(rfq.get("target_cost_dollars") or 0) > 0:
-                return False          # dollar-sized: the WS door judged it
-            contracts = float(rfq.get("contracts_fp") or 0)
-        except (TypeError, ValueError):
-            return False
-        return 0 < contracts < self._min_cost
+            rfq, seen_at = self._rfqs.get(timeout=wait_sec) if wait_sec > 0 else self._rfqs.get_nowait()
+            while True:
+                taken += 1
+                age_sec = (datetime.now(timezone.utc) - seen_at).total_seconds()
+                if age_sec > self._max_rfq_age_sec:
+                    with self._lock:
+                        self._counts["expired_in_queue"] += 1
+                else:
+                    self._handle_safely(rfq, seen_at)
+                if taken >= MAX_RFQS_PER_STEP:
+                    break
+                rfq, seen_at = self._rfqs.get_nowait()
+        except queue.Empty:
+            pass
+        oldest_expired = bool(self._pending) and (
+            self._clock() - self._pending[0][2] >= self._pending_max_wait)
+        if self._table.generation != self._table_generation or oldest_expired:
+            self._table_generation = self._table.generation
+            self._retry_pending()
+        return taken
 
-    def door_row(self, minute: datetime) -> dict:
-        drops = dict(getattr(self.source, "ingestion_drops", {}) or {})
-        delta = {k: drops.get(k, 0) - self._door_base.get(k, 0) for k in drops}
-        self._door_base = drops
-        malformed = getattr(self.source, "malformed_count", 0)
-        mal_delta, self._malformed_base = malformed - self._malformed_base, malformed
+    def drop_waiting(self) -> None:
+        """Count and drop every RFQ on the queue or parked (the stop file:
+        they would be minutes old by the time the feed resumes)."""
+        dropped = len(self._pending)
+        self._pending.clear()
+        try:
+            while True:
+                self._rfqs.get_nowait()
+                dropped += 1
+        except queue.Empty:
+            pass
         with self._lock:
-            logged, other, floor = self._logged, self._other_league, self._below_floor
-            self._logged = self._other_league = self._below_floor = 0
-        return {"minute": minute, "logged": logged,
-                "backlog": self._pending,
-                "other_league": other + delta.get("non_mlb", 0),
-                "below_floor": floor + delta.get("below_floor", 0),
-                "too_many_legs": delta.get("too_many_legs", 0),
-                "malformed": mal_delta,
-                "feed_mode": getattr(self.source, "_mode", None)}
+            self._counts["dropped_on_pause"] += dropped
 
-    def shutdown(self, cancel_pending: bool = False) -> None:
-        """cancel_pending drops queued (not running) RFQs, so SIGTERM ends
-        within Docker's 10 s grace instead of draining the queue; the first
-        VM deploy was SIGKILLed (exit 137) doing that."""
-        self._pool.shutdown(wait=True, cancel_futures=cancel_pending)
+    def take_counts(self) -> dict[str, int]:
+        """Decision counts since the last call, plus gauges (current sizes)."""
+        with self._lock:
+            counts, self._counts = self._counts, Counter()
+        out = dict(counts)
+        out["gauge_pending"] = len(self._pending)
+        out["gauge_queue"] = self._rfqs.qsize()
+        out["gauge_table_legs"] = len(self._table)
+        return out
 
-
-def _build_source():
-    from kalshi_mlb_mm import ws_rfq_source
-    from kalshi_mlb_mm.rfq_source import RestRFQSource
-    return ws_rfq_source.WebSocketRFQSource(
-        rest_source=RestRFQSource(),
-        door_leg_prefixes=scope.LEAGUE_PREFIXES,
-        door_max_legs=10**6,                       # no leg cap (Cal, 2026-11-07)
-        door_min_cost_usd=config.MIN_RFQ_TARGET_COST_USD,
-        mirror_ttl_sec=config.MIRROR_TTL_SEC)
+    def shutdown(self) -> None:
+        """One confirm already at the runner finishes (its timeout is 3 s);
+        nothing else is queued, since a slot is taken only when a worker is free."""
+        self._pool.shutdown(wait=True)
 
 
 def run() -> None:
@@ -221,44 +253,72 @@ def run() -> None:
                           config.KALSHI_BASE_URL, config.PROJECT_ROOT)
     config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     dlog = DecisionLog(config.DB_PATH)
-    source = _build_source()
-    quoter = Quoter(source, dlog)
+    rfq_feed = feed.RFQFeed(
+        feed.kalshi_connect(config.KALSHI_WS_URL, auth_client.ws_auth_headers),
+        min_cost_usd=config.MIN_RFQ_TARGET_COST_USD, queue_max=config.FEED_QUEUE_MAX,
+        idle_timeout_sec=config.FEED_IDLE_TIMEOUT_SEC)
+    table = legtable.LegTable(max_age_sec=config.TABLE_MAX_AGE_SEC,
+                              leg_ttl_sec=config.TABLE_LEG_TTL_SEC)
+    refresher = legtable.Refresher(
+        table,
+        lambda keys: pricer.fairs(config.RUNNER_URL, keys, timeout=config.TABLE_FETCH_TIMEOUT_SEC),
+        interval_sec=config.TABLE_REFRESH_SEC)
+    quoter = Quoter(
+        rfq_feed.rfqs, table, dlog,
+        confirm_fn=lambda rfq_id, keys: pricer.price(config.RUNNER_URL, rfq_id, keys,
+                                                     timeout=config.CONFIRM_TIMEOUT_SEC))
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
 
-    source.start()
+    rfq_feed.start()
+    refresher.start()
     log.info("[quoter] DRY RUN: no orders. db=%s runner=%s floor=$%.0f",
              config.DB_PATH, config.RUNNER_URL, config.MIN_RFQ_TARGET_COST_USD)
+    def write_counts(minute: datetime) -> None:
+        counts = {**rfq_feed.take_counts(), **refresher.take_stats(), **quoter.take_counts()}
+        dlog.add_counts(minute, counts)
+        log.info("[quoter] minute %s: %s", minute.strftime("%H:%M"), dict(sorted(counts.items())))
+        try:
+            dlog.flush()
+            dlog.checkpoint()
+        except Exception:
+            log.exception("[quoter] decision-log flush or checkpoint failed; batch dropped")
+
     last_flush = time.monotonic()
     minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    paused = False
     while not stop.is_set():
-        if config.STOP_PATH.exists():
-            log.info("[quoter] stop file %s present; idling", config.STOP_PATH)
-            stop.wait(5)
-            continue
-        try:
-            quoter.tick()
-        except Exception:
-            log.exception("[quoter] tick failed")
+        stop_file = config.STOP_PATH.exists()
+        if stop_file != paused:
+            paused = stop_file
+            rfq_feed.set_paused(paused)
+            log.info("[quoter] stop file %s %s", config.STOP_PATH,
+                     "present: feed closed, idling" if paused else "gone: resuming")
+        if paused:
+            quoter.drop_waiting()          # also what the reader queued while it was closing
+            stop.wait(1)
+        else:
+            quoter.step(wait_sec=0.25)
         now_min = datetime.now(timezone.utc).replace(second=0, microsecond=0)
         if now_min > minute:
-            row = quoter.door_row(minute)
-            dlog.add_door(row)
-            log.info("[quoter] minute %s: %s | decisions so far %s",
-                     minute.strftime("%H:%M"), row, quoter.decisions)
+            write_counts(minute)
             minute = now_min
+            last_flush = time.monotonic()
         if time.monotonic() - last_flush >= config.FLUSH_SEC:
             try:
                 dlog.flush()
             except Exception:
                 log.exception("[quoter] decision-log flush failed; batch dropped")
             last_flush = time.monotonic()
-        stop.wait(config.TICK_SEC)
 
+    # Docker gives 10 s. Worst case here is ~6 s: the feed closes in ~1 s
+    # (feed.CLOSE_TIMEOUT_SEC), the refresher in 2 s, a confirm in flight in 3 s.
     log.info("[quoter] stopping")
-    source.stop()
-    quoter.shutdown(cancel_pending=True)
+    rfq_feed.stop()
+    refresher.stop()
+    quoter.shutdown()        # waits for confirms in flight, so they are counted
+    write_counts(minute)
     dlog.close()
 
 
