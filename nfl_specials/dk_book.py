@@ -1,4 +1,5 @@
-"""DraftKings adapter (books.SgpBook) for NFL fecta legs.
+"""DraftKings adapter (books.SgpBook) for NFL fecta legs and NFL / college 1H
+spread + total legs.
 
 Plain HTTP throughout (curl_cffi Chrome TLS; none of these is Akamai-gated):
     league listing   sportsbook-nash .../leagueSubcategory/v1/markets
@@ -17,6 +18,8 @@ Leg -> DK market:
     win Q1 / H1    "1st Quarter (3 Way)" / "1st Half (3 Way)"  (home, Tie, away)
     spread         main or alternate spread for the period at that exact line,
                    paired with the opponent at the opposite line
+    total          "Total 1st Half" or "Total Alternate - 1st Half" at that
+                   exact line (Over, Under)
 """
 from __future__ import annotations
 
@@ -28,13 +31,13 @@ from urllib.parse import urlsplit
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException
 
-from nfl_specials.books import BookGame, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
+from nfl_specials.books import NFL, BookGame, LegMarket, Outcome, next_game, is_half_point, widen_with_tie
 from nfl_specials.special_parser import Leg
 from nfl_specials.teams import NICKNAME_TO_ABBR
 
 log = logging.getLogger("nfl_specials.dk_book")
 
-DK_NFL_LEAGUE_ID = "88808"
+DK_LEAGUE_IDS = {"NFL": "88808", "CFB": "87637"}
 DK_GAME_LINES_SUBCATEGORY = "4518"
 DK_LEAGUE_URL = ("https://sportsbook-nash.draftkings.com/sites/US-SB/api/sportscontent/"
                  "controldata/league/leagueSubcategory/v1/markets")
@@ -58,6 +61,8 @@ SPREAD_MAIN = {"GM": "Spread", "Q1": "Spread 1st Quarter", "H1": "Spread 1st Hal
 SPREAD_ALT = {"GM": "Spread Alternate", "Q1": "Spread Alternate - 1st Quarter",
               "H1": "Spread Alternate - 1st Half"}
 THREE_WAY_WIN = {"Q1": "1st Quarter (3 Way)", "H1": "1st Half (3 Way)"}
+TOTAL_MAIN = {"H1": "Total 1st Half"}
+TOTAL_ALT = {"H1": "Total Alternate - 1st Half"}
 ROLE_TO_DK = {"home": "Home", "away": "Away"}
 
 
@@ -70,7 +75,8 @@ def dk_team_to_abbr(dk_name: str) -> str | None:
 class DraftKingsBook:
     name = "DraftKings"
 
-    def __init__(self, proxy_url: str | None) -> None:
+    def __init__(self, proxy_url: str | None, league: str = NFL) -> None:
+        self.league = league
         self.session = cffi_requests.Session(impersonate="chrome", proxy=proxy_url)
         self._unreachable: RequestException | None = None
         self._get(DK_WARMUP_URL, timeout=30)
@@ -96,10 +102,11 @@ class DraftKingsBook:
             raise
 
     def _list_games(self) -> list[BookGame]:
+        league_id = DK_LEAGUE_IDS[self.league]
         params = {
             "isBatchable": "false",
-            "templateVars": DK_NFL_LEAGUE_ID,
-            "eventsQuery": (f"$filter=leagueId eq '{DK_NFL_LEAGUE_ID}' AND clientMetadata/"
+            "templateVars": league_id,
+            "eventsQuery": (f"$filter=leagueId eq '{league_id}' AND clientMetadata/"
                             f"Subcategories/any(s: s/Id eq '{DK_GAME_LINES_SUBCATEGORY}')"),
             "marketsQuery": (f"$filter=clientMetadata/subCategoryId eq '{DK_GAME_LINES_SUBCATEGORY}' "
                              "AND tags/all(t: t ne 'SportcastBetBuilder')"),
@@ -112,13 +119,22 @@ class DraftKingsBook:
         games = []
         for event in resp.json().get("events", []):
             roles = {p.get("venueRole"): p.get("name", "") for p in event.get("participants", [])}
-            home, away = dk_team_to_abbr(roles.get("Home", "")), dk_team_to_abbr(roles.get("Away", ""))
+            home, away = self._team_key(roles.get("Home", "")), self._team_key(roles.get("Away", ""))
             if home is None or away is None:
                 log.warning("DK event %s: unmapped teams %s", event.get("id"), roles)
                 continue
             games.append(BookGame(book_event_id=str(event["id"]), home=home, away=away,
                                   game_start_time=event.get("startEventDate", "")))
         return games
+
+    def _team_key(self, dk_name: str) -> str | None:
+        """NFL: 'SEA Seahawks' -> 'SEA'. College: DK's name as is ('' = unnamed)."""
+        if self.league == NFL:
+            return dk_team_to_abbr(dk_name)
+        return dk_name or None
+
+    def games(self) -> list[BookGame]:
+        return list(self._games)
 
     def find_game(self, team: str) -> BookGame | None:
         return next_game(self._games, team)
@@ -145,6 +161,12 @@ class DraftKingsBook:
         dk_role = ROLE_TO_DK[role]
         if leg.kind == "scores_first":
             return _outcome_market(markets.get("1st to Score"), dk_role)
+        if leg.kind == "total":
+            for name in (TOTAL_MAIN.get(leg.period), TOTAL_ALT.get(leg.period)):
+                found = _total_market(markets.get(name), leg.line)
+                if found:
+                    return found
+            return None
         if leg.kind == "win" and leg.period == "GM":
             return _outcome_market(markets.get("Moneyline"), dk_role)
         if leg.kind == "win":
@@ -254,4 +276,16 @@ def _spread_market(market: dict | None, dk_role: str, line: float) -> LegMarket 
         return None
     pick = Outcome(ref=chosen["id"], label=f"{chosen.get('name', '')} {line:+g}")
     other = Outcome(ref=opponent["id"], label=f"{opponent.get('name', '')} {-line:+g}")
+    return LegMarket.single(pick, (pick, other))
+
+
+def _total_market(market: dict | None, line: float) -> LegMarket | None:
+    """The Over / Under pair at exactly `line`: the leg is the Over."""
+    selections = [s for s in _live(market) if s.get("points") is not None and abs(s["points"] - line) < 1e-6]
+    over = next((s for s in selections if s.get("outcomeType") == "Over"), None)
+    under = next((s for s in selections if s.get("outcomeType") == "Under"), None)
+    if over is None or under is None:
+        return None
+    pick = Outcome(ref=over["id"], label=f"Over {line:g}")
+    other = Outcome(ref=under["id"], label=f"Under {line:g}")
     return LegMarket.single(pick, (pick, other))

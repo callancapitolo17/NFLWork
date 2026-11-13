@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Hashable, Protocol
+from typing import Callable, Hashable, Protocol
 
 from nfl_specials.special_parser import Leg
 
@@ -48,10 +48,19 @@ def is_half_point(line: float | None) -> bool:
     return line is not None and abs(abs(line) - 0.5) < 1e-6
 
 
+# The leagues an adapter can list. NFL games carry nflverse abbreviations;
+# college games carry the book's own team names, matched to Wagerzon's by
+# halves_board.match_book_game.
+NFL = "NFL"
+CFB = "CFB"
+# A book's team name -> the BookGame team key (None = not a team of the league).
+TeamKey = Callable[[str], "str | None"]
+
+
 @dataclass(frozen=True)
 class BookGame:
     book_event_id: str
-    home: str            # nflverse abbreviation
+    home: str            # NFL: nflverse abbreviation; CFB: the book's team name
     away: str
     game_start_time: str  # ISO 8601 UTC as the book reports it
 
@@ -81,12 +90,16 @@ class SgpBook(Protocol):
 
     name: str
 
+    def games(self) -> list[BookGame]:
+        """Every game the book lists for the adapter's league."""
+
     def find_game(self, team: str) -> BookGame | None:
         """The team's next not-yet-started game at the book (books.next_game)."""
 
     def leg_market(self, game: BookGame, role: str, leg: Leg) -> LegMarket | None:
         """`leg` for the team playing `role` ('home'/'away'), or None when
-        the book does not post it as an SGP-eligible market."""
+        the book does not post it as an SGP-eligible market. A 'total' leg
+        is the game's Over at that line (the role is ignored)."""
 
     def price(self, game: BookGame, refs: tuple[Hashable, ...]) -> float | None:
         """Decimal odds of the same-game parlay of `refs`, or None when the

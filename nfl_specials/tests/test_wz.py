@@ -44,6 +44,33 @@ def test_other_errors_are_not_retried(monkeypatch):
     assert len(attempts) == 1
 
 
+def _two_accounts(monkeypatch):
+    monkeypatch.setattr(wz, "list_accounts", lambda: [SimpleNamespace(label="Wagerzon"),
+                                                      SimpleNamespace(label="WagerzonJ")])
+
+
+def test_a_catalog_that_did_not_load_is_retried_on_the_read_accounts_fresh_login(monkeypatch):
+    monkeypatch.setattr(wz.time, "sleep", lambda _seconds: None)
+    _two_accounts(monkeypatch)
+    catalog = [{"IdLeague": 430, "Description": "NFL - 1ST HALVES"}]
+    replies = [None, [], catalog]
+    monkeypatch.setattr(wz, "fetch_active_leagues", lambda session: replies.pop(0))
+    cleared = []
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: cleared.append(label))
+    assert wz._retry_reads(lambda: wz.fetch_catalog(object())) == catalog
+    assert cleared == ["Wagerzon", "Wagerzon"]   # the other account keeps its login
+
+
+def test_a_catalog_that_never_loads_fails_the_fecta_read_loudly(monkeypatch):
+    monkeypatch.setattr(wz.time, "sleep", lambda _seconds: None)
+    _two_accounts(monkeypatch)
+    monkeypatch.setattr(wz, "_session", lambda account_label=None: object())
+    monkeypatch.setattr(wz, "fetch_active_leagues", lambda session: None)
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda label=None: None)
+    with pytest.raises(wz.CatalogUnavailable, match="did not load"):
+        wz.fetch_fecta_specials()
+
+
 def test_every_specials_league_once():
     catalog = [{"IdLeague": 1135, "Description": "NFL WEEK 4 - SPECIALS"},
                {"IdLeague": 1135, "Description": "NFL WEEK 4 - SPECIALS"},   # listed under 2 menus
