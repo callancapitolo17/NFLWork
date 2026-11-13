@@ -117,7 +117,7 @@ then builds it, restarts it and checks it is running. Remove the line (and
 ```
 cd ~/NFLWork/unabated_ticket/deploy
 docker compose logs -f parlay_quoter          # one counts line a minute
-touch ~/unabated-data/parlay_quoter.stop      # close the feed, drop waiting RFQs, idle (rm to resume)
+touch ~/unabated-data/parlay_quoter.stop      # close the feed, stop all runner calls, drop waiting RFQs (rm to resume)
 ```
 
 Load, measured locally 2026-11-13 against a fake feed at 9,900 frames a

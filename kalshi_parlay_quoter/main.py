@@ -293,8 +293,9 @@ def run() -> None:
         if stop_file != paused:
             paused = stop_file
             rfq_feed.set_paused(paused)
+            refresher.set_paused(paused)
             log.info("[quoter] stop file %s %s", config.STOP_PATH,
-                     "present: feed closed, idling" if paused else "gone: resuming")
+                     "present: feed closed, runner calls stopped, idling" if paused else "gone: resuming")
         if paused:
             quoter.drop_waiting()          # also what the reader queued while it was closing
             stop.wait(1)

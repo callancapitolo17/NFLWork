@@ -774,6 +774,32 @@ def test_pause_drops_what_was_waiting_and_counts_it(tmp_path):
     dlog.close()
 
 
+def test_a_paused_refresher_asks_the_runner_nothing_and_resumes():
+    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    keys = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 451)]
+    table.want(keys)
+    calls = []
+
+    def fetch(chunk):
+        calls.append(len(chunk))
+        if len(calls) == 1:
+            refresher.set_paused(True)       # paused mid-pass
+        return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
+
+    refresher = legtable.Refresher(table, fetch, interval_sec=0.05)
+    refresher.refresh_once()
+    assert calls == [200], "a pause ends the pass at the next chunk"
+    refresher.start()
+    time.sleep(0.4)
+    assert calls == [200], "the running thread asks nothing while paused"
+    refresher.set_paused(False)
+    deadline = time.monotonic() + 3
+    while len(calls) < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    refresher.stop()
+    assert len(calls) >= 3, "and resumes when the pause lifts"
+
+
 def test_new_legs_are_priced_first_and_between_passes():
     table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
     old = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 301)]

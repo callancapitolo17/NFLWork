@@ -159,6 +159,7 @@ class Refresher:
         self._interval = interval_sec
         self._clock = clock
         self._stop = threading.Event()
+        self._paused = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._failed_passes = 0
@@ -186,6 +187,8 @@ class Refresher:
 
     def _price(self, keys: list[LegKey]) -> bool:
         for i in range(0, len(keys), FAIRS_CHUNK_LEGS):
+            if self._paused.is_set() or self._stop.is_set():
+                return True     # a pause ends the pass at the next chunk
             try:
                 self._price_chunk(keys[i:i + FAIRS_CHUNK_LEGS])
             except PricerError as e:
@@ -227,12 +230,24 @@ class Refresher:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
+    def set_paused(self, paused: bool) -> None:
+        """While paused, nothing is asked of the runner (the stop file must
+        take the quoter's whole load off it, not only the feed's)."""
+        if paused:
+            self._paused.set()
+        else:
+            self._paused.clear()
+
     def _run(self) -> None:
         while not self._stop.is_set():
+            if self._paused.is_set():
+                self._stop.wait(NEW_LEG_POLL_SEC)
+                continue
             started = self._clock()
             try:
                 answered = self.refresh_once()
-                while not self._stop.wait(NEW_LEG_POLL_SEC) and self._clock() - started < self._interval:
+                while (not self._stop.wait(NEW_LEG_POLL_SEC) and not self._paused.is_set()
+                       and self._clock() - started < self._interval):
                     # A runner that just failed is not asked again before the next pass.
                     if answered:
                         answered = self.price_new_legs()
