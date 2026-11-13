@@ -170,3 +170,44 @@ def test_stakes_cap_at_the_max_and_the_rest_flows_to_the_next_edge():
     stakes = _lone_stakes([(1 / 7.92, 1730), (1 / 6.04, 855)], 35000, 0.25, 500, 20, 250)
     assert stakes[0] == 250.0
     assert 240 <= stakes[1] <= 250
+
+
+def test_exclusive_outcomes_size_bigger_than_independent_bets():
+    """31% at +250 and 28.35% at +275 that cannot both win hedge each other."""
+    from nfl_specials.pricing import Candidate, ExposureGroup, OutcomeBet, OutcomeGroup, budgeted_stakes
+    exclusive = OutcomeGroup((0.31, 0.2835, 0.4065), (OutcomeBet((2.5, -1, -1)), OutcomeBet((-1, 2.75, -1))))
+    assert budgeted_stakes([exclusive], 35000, 0.25, None, 0) == [[442.0, 361.0]]
+    independent = [ExposureGroup((Candidate(0.31, 250, 1e9),)), ExposureGroup((Candidate(0.2835, 275, 1e9),))]
+    assert budgeted_stakes(independent, 35000, 0.25, None, 0) == [[297.0], [200.0]]
+
+
+def test_outcome_group_kelly_matches_brute_force_with_held_bets():
+    import numpy as np
+    from scipy.optimize import minimize
+    from nfl_specials.pricing import OutcomeBet, OutcomeGroup, budgeted_stakes
+    probs = (0.12, 0.08, 0.2, 0.15, 0.25, 0.2)
+    candidates = (OutcomeBet((4.5, 4.5, -1, -1, -1, -1)), OutcomeBet((-1, -1, 2.8, 0.9, -1, -1)),
+                  OutcomeBet((-1, -1, -1, 0.0, 2.8, -1)))
+    held = (OutcomeBet((9.0, -1, -1, -1, -1, -1), risk=150.0),)
+    kelly_bankroll = 10000 * 0.25
+    group = OutcomeGroup(probs, candidates, held)
+    assert all(group.expected_value(c) > 0 for c in range(3))   # only +EV bets are staked
+    stakes = budgeted_stakes([group], 10000, 0.25, None, 0)[0]
+
+    payoffs = np.array([c.payoffs for c in candidates]).T
+    held_wealth = np.array(held[0].payoffs) * held[0].risk / kelly_bankroll
+
+    def neg_growth(f):
+        return -float(np.dot(probs, np.log(1 + held_wealth + payoffs @ f)))
+
+    best = minimize(neg_growth, np.full(3, 0.01), bounds=[(0, 0.5)] * 3, method="L-BFGS-B",
+                    options={"ftol": 1e-14, "gtol": 1e-12})
+    assert stakes == pytest.approx(list(np.floor(best.x * kelly_bankroll)), abs=1.0)
+
+
+def test_outcome_group_refuses_probabilities_that_do_not_sum_to_one():
+    from nfl_specials.pricing import OutcomeBet, OutcomeGroup
+    with pytest.raises(ValueError, match="sum to 1"):
+        OutcomeGroup((0.5, 0.4), (OutcomeBet((1.0, -1.0)),))
+    with pytest.raises(ValueError, match="payoffs per bet"):
+        OutcomeGroup((0.5, 0.5), (OutcomeBet((1.0,)),))

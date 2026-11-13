@@ -277,5 +277,9 @@ def test_a_held_whole_number_parlay_pays_pushes_at_its_own_price(monkeypatch):
     board = HalfBoard(datetime.now(timezone.utc), None, [line], {})
     size_halves(board, 5000, 0.25, None, held=(HeldHalfParlay(game.wz_game_id, "away_over", 50.0, 300),))
     held = [h for group in groups_seen[0] for h in group.held]
-    # Placed at +300 (4.0): its pushes pay against 4.0, not today's 5.0.
-    assert [h.fair_prob for h in held] == pytest.approx([0.20 + fair.push_returns["away_over"] / 4.0])
+    # Placed at +300 (4.0): both legs winning pays 3 per $1, not today's 4;
+    # its EV over the game's results is the one its own price gives.
+    assert len(held) == 1 and max(held[0].payoffs) == pytest.approx(3.0)
+    probs = groups_seen[0][0].state_probs
+    ev = sum(p * r for p, r in zip(probs, held[0].payoffs))
+    assert ev == pytest.approx((0.20 + fair.push_returns["away_over"] / 4.0) * 4.0 - 1)

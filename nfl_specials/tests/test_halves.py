@@ -229,10 +229,12 @@ def test_a_parlay_next_to_the_teams_fecta_is_sized_smaller():
     beside = size_halves(_half_board(line), 20000, 0.25, None, fecta_board, fecta_sizing)
     key, other_team = (line.game.wz_game_id, "away_over"), (line.game.wz_game_id, "home_under")
     assert 0 < beside[key].recommended_stake < alone[key].recommended_stake
-    assert beside[other_team].recommended_stake == alone[other_team].recommended_stake
+    # WAS's fecta needs WAS to win the 1H, so it only wins where WAS +0.5
+    # covers: the NYG corner hedges it and grows.
+    assert beside[other_team].recommended_stake > alone[other_team].recommended_stake
 
 
-def test_a_held_fecta_the_board_cannot_price_blocks_that_team():
+def test_a_held_fecta_the_board_cannot_price_blocks_the_game():
     line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
     special = WzSpecial(wz_game_id=99, rotation=99, description="COMMANDERS TRIFECTA (1Q, 1H & GM)",
                         wz_american=500, week_date=date(2098, 12, 31))
@@ -242,7 +244,7 @@ def test_a_held_fecta_the_board_cannot_price_blocks_that_team():
     sized = size_halves(_half_board(line), 5000, 0.25, None, fecta_board, [Sizing(None, None, 0.0, 0.0, None)],
                         held_fectas=(HeldPlacement(99, 50.0, 500),))
     assert sized[(line.game.wz_game_id, "away_over")].recommended_stake == 0
-    assert sized[(line.game.wz_game_id, "home_under")].recommended_stake > 0
+    assert sized[(line.game.wz_game_id, "home_under")].recommended_stake == 0
 
 
 def test_a_placed_parlay_shrinks_the_next_stake_on_that_side():
@@ -462,3 +464,74 @@ def test_a_held_parlay_lowers_what_the_next_stake_may_reach():
     held = size_halves(_half_board(line), 1_000_000, 0.25, None,
                        held=(HeldHalfParlay(line.game.wz_game_id, "away_over", 200.0, 264),))[key]
     assert held.recommended_stake == 50
+
+
+# --- one group per game -------------------------------------------------------------
+def _fecta(team_name: str, description_legs: str, fair: float, american: int = 500, team_abbr: str = "WAS"):
+    from nfl_specials.halves_board import GameFecta, fecta_min_h1_margin
+    fecta = parse_fecta(f"{team_name} TRIFECTA ({description_legs})")
+    return GameFecta(team_abbr, fair, american, 100.0, fecta_min_h1_margin(fecta))
+
+
+def test_both_teams_corners_in_a_game_hedge_each_other():
+    from nfl_specials.pricing import kelly_stake
+    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    sized = size_halves(_half_board(line), 5000, 0.25, None)
+    for corner in ("away_over", "home_under"):     # exactly one corner wins: bigger than each alone
+        alone = kelly_stake(TRUE_CORNERS[corner], line.wz_american(corner), 5000, 0.25)
+        assert sized[(line.game.wz_game_id, corner)].kelly_stake > alone + 1
+
+
+def test_a_fecta_that_needs_the_1h_cover_wins_only_where_its_team_covers():
+    from nfl_specials.halves_board import game_outcome_group
+    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)        # WAS +0.5: a 1H win covers
+    group = game_outcome_group(line, ["home_under"], [], [_fecta("COMMANDERS", "1Q, 1H & GM", 0.2)])
+    fecta = group.held[0]
+    p_fecta = sum(p for p, r in zip(group.state_probs, fecta.payoffs) if r > 0)
+    p_fecta_and_home_under = sum(p for p, r, c in zip(group.state_probs, fecta.payoffs, group.candidates[0].payoffs)
+                                 if r > 0 and c > 0)
+    assert p_fecta == pytest.approx(0.2) and p_fecta_and_home_under == 0.0
+
+
+def test_a_fecta_looser_than_the_1h_line_is_unrelated_to_it():
+    from nfl_specials.halves_board import game_outcome_group
+    line = _priced_line(_game(away_spread=-3.5), TRUE_CORNERS, EVEN_PRICES)   # a 1H win need not cover -3.5
+    group = game_outcome_group(line, ["home_under"], [], [_fecta("COMMANDERS", "1Q, 1H & GM", 0.2)])
+    fecta, home_under = group.held[0], group.candidates[0]
+    both = sum(p for p, r, c in zip(group.state_probs, fecta.payoffs, home_under.payoffs) if r > 0 and c > 0)
+    assert both == pytest.approx(0.2 * TRUE_CORNERS["home_under"])
+
+
+def test_both_teams_fectas_sit_in_one_game_group():
+    from nfl_specials.halves_board import game_outcome_group
+    line = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    group = game_outcome_group(line, ["away_over", "home_under"], [],
+                               [_fecta("COMMANDERS", "1Q, 1H & GM", 0.2),
+                                _fecta("GIANTS", "1Q, 1H -0.5 & GM", 0.15, team_abbr="NYG")])
+    was, nyg = group.held
+    assert sum(p for p, a, b in zip(group.state_probs, was.payoffs, nyg.payoffs) if a > 0 and b > 0) == 0.0
+
+
+def test_the_worst_book_sets_each_result_and_the_rest_loses_every_corner():
+    from nfl_specials.halves_board import UNASSIGNED, game_outcome_group
+    lower = {c: f - 0.02 if c == "away_over" else f for c, f in TRUE_CORNERS.items()}
+    line = HalfLine(_game(), "priced",
+                    book_fairs={"FanDuel": HalfBookFair("FanDuel", TRUE_CORNERS, 1.2),
+                                "BetMGM": HalfBookFair("BetMGM", lower, 1.2)},
+                    wz_prices={c: WzParlayPrice(3.64) for c in CORNERS})
+    cells = line.worst_case_cells()
+    assert cells[("away", "over")] == pytest.approx(0.27) and sum(cells.values()) == pytest.approx(0.98)
+    group = game_outcome_group(line, list(CORNERS), [], [])
+    assert len(group.state_probs) == 5 and group.state_probs[-1] == pytest.approx(0.02)
+    assert all(c.payoffs[-1] == -1.0 for c in group.candidates)
+    assert UNASSIGNED not in cells
+
+
+def test_a_pushed_leg_pays_the_other_leg_alone():
+    from nfl_specials.halves_board import corner_payoff
+    game = _game(away_spread=3.0, total=24.0)
+    assert corner_payoff(game, "away_over", 3.6, ("away", "over")) == pytest.approx(2.6)
+    assert corner_payoff(game, "away_over", 3.6, ("push", "over")) == pytest.approx(100 / 102)
+    assert corner_payoff(game, "away_over", 3.6, ("away", "push")) == pytest.approx(100 / 118)
+    assert corner_payoff(game, "away_over", 3.6, ("push", "push")) == 0.0
+    assert corner_payoff(game, "away_over", 3.6, ("home", "push")) == -1.0

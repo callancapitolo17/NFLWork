@@ -285,15 +285,24 @@ only 1st halves are read.
 5. **Stake** (`halves_board.size_halves`): quarter Kelly on the page's bankroll,
    **after the fectas**: the budget is the cash available less the fectas'
    recommended stakes (cash only; with Use free play on, fectas draw on the free
-   play balance and parlays keep the cash). An NFL parlay sits in one group with
-   that spread team's fectas in the game (the fectas' `board._team_key`): the
-   fectas' placed bets and recommended stakes are fixed bets the parlay is sized
-   around, as one nested chain, the maximum correlation the fairs allow, so a
-   parlay beside a fecta gets less, never more. A team's over and under corners
-   cannot both win, which the chain also over-counts (cautious). Placed 1H
-   parlays (`placed_half_parlays`, counting the ones that may have gone through)
-   shrink the next stake on that side; a placed bet the board cannot price
-   blocks its side. $20 minimum, $250 per parlay a week
+   play balance and parlays keep the cash). **Each game is one group**
+   (`halves_board.game_outcome_group`, `pricing.OutcomeGroup`): the 1H results
+   (the four corners, plus the push results on a whole-number line) are the
+   outcome states, so the corners hedge each other (exactly one wins on
+   half-point lines) and are sized jointly. Each result's chance is its LOWEST
+   at any book that priced the game; what that leaves unassigned is a state
+   where every corner loses, so no corner's EV beats its worst book's. A pushed
+   leg pays the other leg alone at its straight price (both pushed = stake
+   back). In the NFL, both teams' fectas in the game (placed bets and the
+   recommended stakes) are fixed bets in the same group, each team's fectas one
+   nested chain as on the fecta board. A team's fectas win only where the team
+   covers Wagerzon's 1H spread when every one of them needs at least that 1H
+   margin (a 1H win leg on the 1H underdog; `fecta_min_h1_margin` vs
+   `min_cover_margin`), spread over those cells in proportion; otherwise they
+   are taken as unrelated to the 1H result. Placed 1H parlays
+   (`placed_half_parlays`, counting the ones that may have gone through) are
+   fixed bets in their game's group; a placed bet the boards cannot price
+   blocks its game. $20 minimum, $250 per parlay a week
    (`config.WZ_HALF_PARLAY_MAX_STAKE`, a mistyped-stake guard, not a measured
    Wagerzon limit).
 6. **Place**: the server re-checks the corner is priced at the price the page

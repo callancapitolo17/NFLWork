@@ -33,15 +33,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from nfl_specials import config, push_grid, wz_halves
-from nfl_specials.board import (BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE, Board, HeldPlacement, Sizing,
-                                 _team_key)
+from nfl_specials.board import BOOK_ORDER, SAME_GAME_KICKOFF_TOLERANCE, Board, HeldPlacement, Sizing
 from nfl_specials.books import CFB, NFL, BookGame, SgpBook, parse_start
 from nfl_specials.dk_book import DraftKingsBook
 from nfl_specials.fd_book import FanDuelBook
 from nfl_specials.mgm_book import BetMgmBook
-from nfl_specials.pricing import (Candidate, ExposureGroup, HeldBet, american_to_decimal, budgeted_stakes,
+from nfl_specials.pricing import (OutcomeBet, OutcomeGroup, american_to_decimal, budgeted_stakes, chain_states,
                                   expected_value, price_partition)
-from nfl_specials.special_parser import Leg
+from nfl_specials.push_grid import AWAY, HOME, PUSH
+from nfl_specials.special_parser import Fecta, Leg
 from nfl_specials.store import Store
 from nfl_specials.wz_halves import CORNERS, WzHalfGame, WzParlayPrice
 
@@ -71,6 +71,17 @@ class HalfBookFair:
     overround: float | None                 # the largest of the partitions priced
     reason: str | None = None
     push_returns: dict[str, float] | None = None   # whole-number line: corner -> $ back per $1 from pushes
+    # (spread result, total result) -> probability: the 4 corners on half-point
+    # lines, the fitted push grid on a whole number. None = not kept.
+    cells: dict[tuple[str, str], float] | None = None
+
+    def outcome_cells(self) -> dict[tuple[str, str], float] | None:
+        """Every 1H result this book priced and its chance."""
+        if self.cells is not None:
+            return self.cells
+        if self.corner_fairs is None or self.push_returns:
+            return None
+        return {tuple(corner.split("_")): fair for corner, fair in self.corner_fairs.items()}
 
     def effective_fair(self, corner: str, wz_decimal: float | None) -> float | None:
         """The both-win chance plus the push return in units of the parlay
@@ -113,6 +124,17 @@ class HalfLine:
     def wz_american(self, corner: str) -> int | None:
         price = self.wz_prices.get(corner)
         return conservative_american(price.decimal) if price and price.decimal else None
+
+    def worst_case_cells(self) -> dict[tuple[str, str], float] | None:
+        """Each 1H result's LOWEST chance among the books that priced the
+        game (MIN_BOOKS_WHOLE_NUMBER of them on a whole number). The cells sum
+        to 1 or less; sizing puts what is left in a state where every corner
+        loses, so no corner's EV beats its worst book's."""
+        per_book = [cells for cells in (f.outcome_cells() for f in self.book_fairs.values()) if cells is not None]
+        if not per_book or (has_whole_number_line(self.game) and len(per_book) < MIN_BOOKS_WHOLE_NUMBER):
+            return None
+        results = sorted(set().union(*per_book))
+        return {result: min(cells.get(result, 0.0) for cells in per_book) for result in results}
 
 
 @dataclass
@@ -213,13 +235,15 @@ def price_half_at_book(book: SgpBook, book_game: BookGame, game: WzHalfGame) -> 
         partitions[(away_line, total_line)] = priced.corner_fairs
         overrounds.append(priced.overround)
     if len(partitions) == 1:
-        return HalfBookFair(book.name, next(iter(partitions.values())), overrounds[0])
+        corner_fairs = next(iter(partitions.values()))
+        cells = {tuple(corner.split("_")): fair for corner, fair in corner_fairs.items()}
+        return HalfBookFair(book.name, corner_fairs, overrounds[0], cells=cells)
     fit = push_grid.fit_push_grid(partitions, game.away_spread, game.total)
     if fit.grid is None:
         return HalfBookFair(book.name, None, max(overrounds), reason=fit.reason)
     both_win = {corner: fit.grid.prob(*corner.split("_")) for corner in CORNERS}
     returns = {corner: push_grid.push_return(fit.grid, corner, game) for corner in CORNERS}
-    return HalfBookFair(book.name, both_win, max(overrounds), push_returns=returns)
+    return HalfBookFair(book.name, both_win, max(overrounds), push_returns=returns, cells=dict(fit.grid.cells))
 
 
 def price_partition_at(book: SgpBook, book_game: BookGame, away_line: float, total_line: float) -> HalfBookFair:
@@ -376,14 +400,144 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None]) -> HalfBo
 
 
 # --- sizing ------------------------------------------------------------------
-def _group_key(game: WzHalfGame, corner: str) -> tuple:
-    """NFL: (home, away, spread team), the key the fectas group by, so a
-    parlay and that team's fectas in the game size as one group. College:
-    the Wagerzon game and spread side (no college fectas)."""
-    side = corner.split("_")[0]
+# The probability the books' worst-case cells leave unassigned: every corner loses there.
+UNASSIGNED = ("unassigned", "unassigned")
+
+
+@dataclass(frozen=True)
+class GameFecta:
+    """A fecta stake in the game the 1H parlays are sized around (placed, or
+    the fecta board's recommendation): fixed exposure."""
+    team: str                          # nflverse abbreviation, one of the game's two teams
+    fair_prob: float
+    wz_american: int
+    risk: float
+    min_h1_margin: int | None          # smallest 1H margin (team minus opponent) it can win at; None = no 1H leg
+
+
+def _game_key(game: WzHalfGame) -> tuple:
+    """NFL: (home, away), the teams the fectas carry. College: the Wagerzon game."""
     if game.league == NFL:
-        return (game.home, game.away, game.away if side == "away" else game.home)
-    return (CFB, game.wz_game_id, side)
+        return (game.home, game.away)
+    return (CFB, game.wz_game_id)
+
+
+def fecta_min_h1_margin(fecta: Fecta) -> int | None:
+    """The smallest 1H margin at which every 1H leg of `fecta` wins. A win
+    leg needs 1 (a tied half loses). A whole-number spread leg is counted at
+    its push margin, in case a push drops the leg rather than losing it."""
+    margins = []
+    for leg in fecta.legs:
+        if leg.period != "H1":
+            continue
+        if leg.kind == "win":
+            margins.append(1)
+        elif leg.kind == "spread":
+            margins.append(int(-leg.line) if push_grid.is_whole_number(leg.line) else math.floor(-leg.line) + 1)
+    return max(margins) if margins else None
+
+
+def min_cover_margin(game: WzHalfGame, team: str) -> int:
+    """The smallest 1H margin at which `team` covers Wagerzon's 1H spread."""
+    team_line = game.away_spread if team == game.away else -game.away_spread
+    return math.floor(-team_line) + 1
+
+
+def corner_payoff(game: WzHalfGame, corner: str, parlay_decimal: float, cell: tuple[str, str]) -> float:
+    """$ won or lost per $1 on `corner` when the 1H lands in `cell`: both legs
+    win pays the parlay; a pushed leg is dropped and the other leg pays its
+    straight price (both pushed = stake back); a losing leg loses."""
+    if cell == UNASSIGNED:
+        return -1.0
+    spread_side, total_side = corner.split("_")
+    spread_result, total_result = cell
+    if spread_result not in (spread_side, PUSH) or total_result not in (total_side, PUSH):
+        return -1.0
+    if spread_result == spread_side and total_result == total_side:
+        return parlay_decimal - 1.0
+    if spread_result == PUSH and total_result == PUSH:
+        return 0.0
+    if spread_result == spread_side:
+        american = game.away_spread_american if spread_side == AWAY else game.home_spread_american
+    else:
+        american = game.over_american if total_side == "over" else game.under_american
+    return american_to_decimal(american) - 1.0
+
+
+def _fecta_levels(game: WzHalfGame, cells: dict[tuple[str, str], float], chain: list[GameFecta],
+                  ) -> Callable[[tuple[str, str]], list[tuple[int, float]]]:
+    """How one team's fectas (a nested chain, likeliest first) split each 1H
+    result: cell -> [(how many of the chain win, share of the cell)].
+
+    When every fecta needs at least the 1H margin that covers Wagerzon's 1H
+    spread (a 1H win leg on the 1H underdog, say), the fectas win only where
+    the team covers: their chance sits in the team's covering cells, spread
+    over them in proportion (the 1H total is taken as unrelated to the fecta
+    given the cover). Otherwise, or when the fairs do not fit inside the
+    cover chance, the fectas are taken as unrelated to the 1H result.
+    """
+    team_side = AWAY if chain[0].team == game.away else HOME
+    cover_prob = sum(p for cell, p in cells.items() if cell[0] == team_side)
+    fairs = [bet.fair_prob for bet in chain]
+    needs_cover = all(bet.min_h1_margin is not None and bet.min_h1_margin >= min_cover_margin(game, bet.team)
+                      for bet in chain)
+    if needs_cover and 0 < fairs[0] <= cover_prob:
+        inside = [(winners, p) for p, winners in chain_states([f / cover_prob for f in fairs])]
+        return lambda cell: inside if cell[0] == team_side else [(0, 1.0)]
+    unrelated = [(winners, p) for p, winners in chain_states(fairs)]
+    return lambda cell: unrelated
+
+
+def game_outcome_group(line: HalfLine, corners: list[str], held_parlays: list[HeldHalfParlay],
+                       fectas: list[GameFecta]) -> OutcomeGroup | None:
+    """One game's 1H corners (candidates), the 1H parlays already placed on it
+    and both teams' fectas (held), as one OutcomeGroup over the game's 1H
+    results x how many of each team's fectas win. None when no 1H result
+    has a worst-case chance (the game cannot be sized).
+
+    A team's fectas are one nested chain, as on the fecta board."""
+    cells = line.worst_case_cells()
+    if cells is None:
+        return None
+    game = line.game
+    states: list[tuple[tuple[str, str], dict[str, int], float]] = [(cell, {}, p) for cell, p in cells.items()]
+    unassigned = 1.0 - sum(cells.values())
+    if unassigned > 1e-12:
+        states.append((UNASSIGNED, {}, unassigned))
+
+    chains: dict[str, list[GameFecta]] = {}
+    for bet in fectas:
+        if bet.team not in (game.away, game.home):
+            raise ValueError(f"fecta team {bet.team} is not in {game.away} @ {game.home}")
+        chains.setdefault(bet.team, []).append(bet)
+    for team, chain in chains.items():
+        chain.sort(key=lambda bet: -bet.fair_prob)
+        levels = _fecta_levels(game, cells, chain)
+        states = [(cell, {**winners_by_team, team: winners}, p * share)
+                  for cell, winners_by_team, p in states
+                  for winners, share in levels(cell) if p * share > 0]
+
+    total = sum(p for _cell, _winners, p in states)
+    state_probs = tuple(p / total for _cell, _winners, p in states)   # float dust only
+
+    def parlay_payoffs(corner: str, american: int) -> tuple[float, ...]:
+        decimal = american_to_decimal(american)
+        return tuple(corner_payoff(game, corner, decimal, cell) for cell, _winners, _p in states)
+
+    held = [OutcomeBet(parlay_payoffs(bet.corner, bet.wz_american), risk=bet.risk) for bet in held_parlays]
+    for team, chain in chains.items():
+        for rank, bet in enumerate(chain):
+            net_odds = american_to_decimal(bet.wz_american) - 1.0
+            payoffs = tuple(net_odds if rank < winners.get(team, 0) else -1.0 for _cell, winners, _p in states)
+            held.append(OutcomeBet(payoffs, risk=bet.risk))
+    held_risk: dict[str, float] = {}
+    for bet in held_parlays:
+        held_risk[bet.corner] = held_risk.get(bet.corner, 0.0) + bet.risk
+    candidates = tuple(
+        OutcomeBet(parlay_payoffs(corner, line.wz_american(corner)),
+                   max_stake=max(0.0, config.WZ_HALF_PARLAY_MAX_STAKE - held_risk.get(corner, 0.0)))
+        for corner in corners)
+    return OutcomeGroup(state_probs, candidates, tuple(held))
 
 
 def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget: float | None,
@@ -393,80 +547,69 @@ def size_halves(board: HalfBoard, bankroll: float, kelly_fraction: float, budget
     """Fair, EV and stakes per (wz_game_id, corner) after the fectas.
 
     `budget` is what the fectas left of the Wagerzon balance (None = no cap).
-    Each NFL group (one team's side of one game) holds, as fixed bets, that
-    team's fectas in the game (the ones already placed and the stakes the
-    fecta board recommends) and the 1H parlays already placed. The group is
-    one nested chain (pricing.ExposureGroup): the maximum correlation the
-    fairs allow, the cautious case, so a parlay next to a fecta gets a
-    smaller stake, never a bigger one. A team's two corners (over and under)
-    cannot both win, which the chain also over-counts, again on the cautious
-    side. Corners on the two teams are separate groups. A held bet the
-    boards cannot price blocks its group. No stake on a started game.
+    Each game is ONE group (game_outcome_group): its four corners are
+    exclusive outcomes of the 1H (with the push results on a whole-number
+    line), sized jointly with the 1H parlays already placed on it and, in
+    the NFL, both teams' fectas in the game (placed, plus the stakes the
+    fecta board recommends) as fixed bets. A held bet the boards cannot
+    price blocks its game. No stake on a started game.
     """
     now = datetime.now(timezone.utc)
-    held_by_key: dict[tuple, list[HeldBet]] = {}
+    fectas_by_game: dict[tuple, list[GameFecta]] = {}
     blocked: set[tuple] = set()
 
     if fecta_board is not None:
-        risk_by_special: dict[int, list[HeldPlacement]] = {}
+        placed_by_special: dict[int, list[HeldPlacement]] = {}
         for bet in held_fectas:
-            risk_by_special.setdefault(bet.wz_game_id, []).append(bet)
+            placed_by_special.setdefault(bet.wz_game_id, []).append(bet)
         for line, sizing in zip(fecta_board.lines, fecta_sizing):
             if line.game is None or line.fecta is None:
                 continue
-            key = _team_key(line)
-            placed = risk_by_special.get(line.special.wz_game_id, [])
+            key = (line.game.home, line.game.away)
+            placed = placed_by_special.get(line.special.wz_game_id, [])
             if sizing.fair_prob is None:
                 if placed:
                     blocked.add(key)
                 continue
-            fixed = [HeldBet(sizing.fair_prob, bet.wz_american, bet.risk) for bet in placed]
+            margin = fecta_min_h1_margin(line.fecta)
+            stakes = [(bet.wz_american, bet.risk) for bet in placed]
             if sizing.recommended_stake > 0:
-                fixed.append(HeldBet(sizing.fair_prob, line.special.wz_american, sizing.recommended_stake))
-            held_by_key.setdefault(key, []).extend(fixed)
+                stakes.append((line.special.wz_american, sizing.recommended_stake))
+            fectas_by_game.setdefault(key, []).extend(
+                GameFecta(line.fecta.team, sizing.fair_prob, american, risk, margin) for american, risk in stakes)
 
     line_by_id = {line.game.wz_game_id: line for line in board.lines}
-    held_risk: dict[tuple[int, str], float] = {}
+    held_by_game: dict[int, list[HeldHalfParlay]] = {}
     for bet in held:
-        held_risk[(bet.wz_game_id, bet.corner)] = held_risk.get((bet.wz_game_id, bet.corner), 0.0) + bet.risk
-    for bet in held:
-        line = line_by_id.get(bet.wz_game_id)
-        if line is None:
-            continue    # a started game or one off the board
-        key = _group_key(line.game, bet.corner)
-        # A held whole-number parlay pays its pushes against the price it was placed at.
-        fair = line.fair_prob(bet.corner, american_to_decimal(bet.wz_american))
-        if fair is None:
-            blocked.add(key)
-            continue
-        held_by_key.setdefault(key, []).append(HeldBet(fair, bet.wz_american, bet.risk))
+        if bet.wz_game_id in line_by_id:   # else a started game or one off the board
+            held_by_game.setdefault(bet.wz_game_id, []).append(bet)
 
-    members: dict[tuple, list[tuple[int, str]]] = {}
+    group_ids, groups, group_corners = [], [], []
     for line in board.lines:
-        if line.game.game_start_time <= now:
+        game = line.game
+        if game.game_start_time <= now or _game_key(game) in blocked:
             continue
-        for corner in CORNERS:
-            fair, american = line.fair_prob(corner), line.wz_american(corner)
-            if fair is None or american is None or expected_value(fair, american) <= 0:
-                continue
-            key = _group_key(line.game, corner)
-            if key not in blocked:
-                members.setdefault(key, []).append((line.game.wz_game_id, corner))
+        corners = [c for c in CORNERS
+                   if (fair := line.fair_prob(c)) is not None and (american := line.wz_american(c)) is not None
+                   and expected_value(fair, american) > 0]
+        if not corners:
+            continue
+        group = game_outcome_group(line, corners, held_by_game.get(game.wz_game_id, []),
+                                   fectas_by_game.get(_game_key(game), []))
+        if group is None:
+            continue
+        group_ids.append(game.wz_game_id)
+        groups.append(group)
+        group_corners.append(corners)
 
-    keys = list(members)
-    groups = []
-    for key in keys:
-        candidates = tuple(Candidate(line_by_id[gid].fair_prob(c), line_by_id[gid].wz_american(c),
-                                     max(0.0, config.WZ_HALF_PARLAY_MAX_STAKE - held_risk.get((gid, c), 0.0)))
-                           for gid, c in members[key])
-        groups.append(ExposureGroup(candidates, tuple(held_by_key.get(key, []))))
     fitted = budgeted_stakes(groups, bankroll, kelly_fraction, budget, config.WZ_MIN_STAKE)
     unlimited = budgeted_stakes(groups, bankroll, kelly_fraction, None, config.WZ_MIN_STAKE)
     joint = budgeted_stakes(groups, bankroll, kelly_fraction, None, 0.0)
     stakes: dict[tuple[int, str], tuple[float, float, float]] = {}
-    for key, group_fitted, group_unlimited, group_joint in zip(keys, fitted, unlimited, joint):
-        for member, rec, unl, kelly in zip(members[key], group_fitted, group_unlimited, group_joint):
-            stakes[member] = (rec, unl, kelly)
+    for gid, corners, group_fitted, group_unlimited, group_joint in zip(group_ids, group_corners, fitted,
+                                                                         unlimited, joint):
+        for corner, rec, unl, kelly in zip(corners, group_fitted, group_unlimited, group_joint):
+            stakes[(gid, corner)] = (rec, unl, kelly)
 
     sized = {}
     for line in board.lines:
