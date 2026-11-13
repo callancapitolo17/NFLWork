@@ -28,7 +28,8 @@ sends no quotes and no orders**; nothing in this package can.
    seen for the first time is priced within ~0.25 s, ahead of the next full
    pass (while a pass takes under 2 s; otherwise first in the next pass); its RFQ waits for that, at most 5 s. A leg the runner refuses (HTTP
    400) is isolated by halving its chunk, declines `runner_rejected`, and is
-   asked again after 5 minutes.
+   asked again after 5 minutes (so a ticker that stays bad counts in
+   `table_legs_rejected` 12 times an hour).
 4. **Decision** (`decide.py`). `would_quote` when every leg is priced (parlay
    fair = product of leg fairs, since legs are on different games), otherwise
    `decline` with a reason.

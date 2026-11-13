@@ -312,8 +312,8 @@ def run() -> None:
                 log.exception("[quoter] decision-log flush failed; batch dropped")
             last_flush = time.monotonic()
 
-    # Docker gives 10 s: the feed closes in ~1 s (feed.CLOSE_TIMEOUT_SEC) and
-    # the log is written before the slower joins, so a SIGKILL costs no rows.
+    # Docker gives 10 s. Worst case here is ~6 s: the feed closes in ~1 s
+    # (feed.CLOSE_TIMEOUT_SEC), the refresher in 2 s, a confirm in flight in 3 s.
     log.info("[quoter] stopping")
     rfq_feed.stop()
     refresher.stop()
