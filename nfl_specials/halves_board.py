@@ -337,7 +337,10 @@ def _price_lane(name: str, tasks: list[tuple[SgpBook, BookGame, HalfLine]], boar
 
 
 def refresh_halves(store: Store, publish: Callable[[HalfBoard], None], turns: BookTurns) -> HalfBoard:
-    """`turns`: shared with the fecta board pricing at the same time."""
+    """`turns`: shared with the fecta board pricing at the same time.
+    Wagerzon previews every game some book lists while the books price (a
+    preview needs nothing from them); its rows carry the time the previews
+    came back, and only the priced games' previews are kept."""
     started_at = datetime.now(timezone.utc)
     books, book_status = open_books(turns)
     lines = []
@@ -373,8 +376,20 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None], turns: Bo
             log.exception("%s 1H pricing lane crashed", name)
             lane_crashes.append((name, exc))
 
+    listed_games = list({line.game.wz_game_id: line.game
+                         for tasks in lanes.values() for _book, _book_game, line in tasks}.values())
+    previews: dict[str, object] = {}
+
+    def run_previews() -> None:
+        try:
+            previews["prices"] = wz_halves.price_corners(listed_games)
+            previews["quoted_at"] = datetime.now(timezone.utc)
+        except Exception as exc:  # re-raised below, once the lanes are done
+            previews["error"] = exc
+
     threads = [threading.Thread(target=run_lane, args=(name, tasks), name=f"halves-{name}", daemon=True)
                for name, tasks in lanes.items() if tasks]
+    threads.append(threading.Thread(target=run_previews, name="halves-wagerzon", daemon=True))
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -382,15 +397,16 @@ def refresh_halves(store: Store, publish: Callable[[HalfBoard], None], turns: Bo
     if lane_crashes:
         name, exc = lane_crashes[0]
         raise RuntimeError(f"{name} 1H pricing lane crashed: {exc}") from exc
+    if "error" in previews:
+        raise previews["error"]
 
     priced = [line for line in lines if line.status == "pricing"
               and any(f.corner_fairs for f in line.book_fairs.values())]
-    wz_prices = wz_halves.price_corners([line.game for line in priced])
-    now = datetime.now(timezone.utc)
+    wz_prices = previews["prices"]
     rows = []
     for line in priced:
         line.wz_prices = {corner: wz_prices[(line.game.wz_game_id, corner)] for corner in CORNERS}
-        rows += _quote_rows(line, now, "Wagerzon", wz_prices=line.wz_prices)
+        rows += _quote_rows(line, previews["quoted_at"], "Wagerzon", wz_prices=line.wz_prices)
     store.append_half_quotes(rows)
 
     for line in lines:

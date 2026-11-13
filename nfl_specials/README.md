@@ -330,7 +330,9 @@ Refresh prices the fectas and the 1H board side by side. Each book still
 answers one request at a time across both boards (`board.BookTurns`: a lock
 per book, held while it opens and for one special or one 1H game, plus
 DraftKings' shared 0.5 s pacer), so no book sees more traffic than when the
-boards ran one after the other. While the fecta board is still pricing, 1H
+boards ran one after the other. Wagerzon's 1H previews run while the books
+price (games some book lists; rows stamped when the previews came back).
+While the fecta board is still pricing, 1H
 parlays get no stake (fectas get first call on the cash). DraftKings prices
 each partition with the leg of most outcomes last (one request prices all of
 that leg's outcomes), so a superfecta's 3 x 3 x 2 trifecta part is 6

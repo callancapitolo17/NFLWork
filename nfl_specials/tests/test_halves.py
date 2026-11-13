@@ -323,6 +323,47 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
     assert len(store.rows) == 16
 
 
+def test_wagerzon_previews_run_with_the_books_for_listed_games_only(monkeypatch):
+    """Previews start with the book lanes (the book's price calls wait for
+    them) and skip games no book lists."""
+    import threading
+    listed, unlisted = _game(), _game(wz_game_id=3, away="DAL", home="PHI")
+    monkeypatch.setattr(halves_board.wz_halves, "fetch_half_games", lambda: [listed, unlisted])
+    book_may_finish = threading.Event()
+    previewed = []
+
+    def price_corners(games):
+        previewed.extend(g.wz_game_id for g in games)
+        book_may_finish.set()       # the book lane is still pricing: it waits for this
+        return {(g.wz_game_id, c): WzParlayPrice(3.64) for g in games for c in CORNERS}
+
+    monkeypatch.setattr(halves_board.wz_halves, "price_corners", price_corners)
+
+    class SlowListedBook(CorrelatedBook):
+        def games(self):
+            return [BOOK_GAME]
+
+        def price(self, game, refs):
+            assert book_may_finish.wait(timeout=5), "previews never ran while the book priced"
+            return super().price(game, refs)
+
+    class MemoryStore:
+        rows: list = []
+
+        def append_half_quotes(self, rows):
+            self.rows += rows
+
+    store = MemoryStore()
+    book = SlowListedBook("FanDuel", TRUE_CORNERS)
+    monkeypatch.setattr(halves_board, "open_books", lambda _turns: ({("FanDuel", "NFL"): book}, {"FanDuel NFL": "ok"}))
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns())
+    assert previewed == [listed.wz_game_id]
+    assert [line.status for line in board.lines] == ["priced", "unpriced"]
+    wz_rows = [r for r in store.rows if r["book"] == "Wagerzon"]
+    assert [r["wz_game_id"] for r in wz_rows] == [listed.wz_game_id] * 4
+    assert all(r["wz_decimal"] == 3.64 for r in wz_rows)
+
+
 # --- placing -----------------------------------------------------------------------
 from nfl_specials import app as app_module  # noqa: E402
 from nfl_specials import wz_halves  # noqa: E402
