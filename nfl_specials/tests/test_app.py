@@ -340,17 +340,19 @@ def test_no_1h_stake_while_the_fecta_board_is_still_pricing(app):
     assert app.board_payload("Wagerzon")["halves"]["lines"][0]["corners"]["away_over"]["recommended_stake"] > 0
 
 
-def test_the_fecta_flag_drops_when_the_fecta_board_ends_either_way(app, monkeypatch):
+def test_the_fecta_flag_is_up_from_the_refresh_start_and_drops_when_fectas_fail(app, monkeypatch):
     monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
-    seen_while_1h_priced = []
+    fectas_may_fail = threading.Event()
 
     def fectas(store, publish, turns):
+        fectas_may_fail.wait(timeout=5)
         raise RuntimeError("Wagerzon down")
 
     monkeypatch.setattr(app_module, "refresh_board", fectas)
-    monkeypatch.setattr(app_module, "refresh_halves",
-                        lambda store, publish, turns: seen_while_1h_priced.append(app._fectas_pricing))
+    monkeypatch.setattr(app_module, "refresh_halves", lambda store, publish, turns: None)
     assert app.start_refresh()
+    assert app._fectas_pricing           # raised before either board has published anything
+    fectas_may_fail.set()
     for _ in range(200):
         if not app._refreshing:
             break

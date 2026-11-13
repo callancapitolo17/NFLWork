@@ -195,7 +195,7 @@ class SpecialsApp:
                                0.0 if budget is None else budget,
                                held=_held_placements(placements, account))
         if halves is not None:
-            half_budget = self.half_budget(account, board, sized)
+            half_budget = self.half_budget(account, sized)
             slates = self.cfb_slates_for(halves, board, sized, account)
             half_sized = self.size_halves_for(halves, board, sized, settings, account, half_placements)
             slate_kickoff = {game_id: slate.first_kickoff for slate in slates for game_id in slate.wz_game_ids}
@@ -237,7 +237,7 @@ class SpecialsApp:
             return 0.0
         return self.budget(account)
 
-    def half_budget(self, account: str, fecta_board: Board | None, fecta_sizing: list) -> float | None:
+    def half_budget(self, account: str, fecta_sizing: list) -> float | None:
         """Cash left for NFL 1H parlays: the account's cash 'available' less the
         fectas' recommended stakes (fectas get first call; with Use free play
         on they draw on the free play balance, not this one). None = unknown.
@@ -262,7 +262,7 @@ class SpecialsApp:
         """size_half_board on this account's 1H parlays: NFL on the cash after
         fectas, each college slate on its own budget. An unknown balance
         recommends nothing."""
-        nfl_budget = self.half_budget(account, fecta_board, fecta_sizing)
+        nfl_budget = self.half_budget(account, fecta_sizing)
         return size_half_board(halves, settings["bankroll"], settings["kelly_fraction"],
                                0.0 if nfl_budget is None else nfl_budget,
                                self.cfb_slates_for(halves, fecta_board, fecta_sizing, account),
