@@ -49,6 +49,25 @@ def priced(ticker, side, fair, lo=None, hi=None, sigma=0.01, ok=True,
             "kalshi_yes_ask": 0.52, "kalshi_no_ask": 0.52}
 
 
+def make_table(**kwargs):
+    """A leg table whose snapshot times were just read (as after one /health poll)."""
+    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600, max_reuse_sec=90,
+                              league_of=scope.league_of_leg, **kwargs)
+    table.note_versions({})
+    return table
+
+
+def make_refresher(table, fetch, versions=None, **kwargs):
+    """A Refresher over a test fetch (chunk -> PriceResult); `versions` is the
+    runner's {league: snapshot ms}, read live so a test can move it."""
+    versions = {} if versions is None else versions
+
+    def fetch_fairs(chunk):
+        got = fetch(chunk)
+        return pricer.FairsResult(got.legs, got.priced_at_ms, got.elapsed_ms, dict(versions))
+    return legtable.Refresher(table, fetch_fairs, lambda: dict(versions), chunk_pause_sec=0, **kwargs)
+
+
 def fixed_pricer(fairs):
     calls = []
 
@@ -302,11 +321,12 @@ def test_fairs_builds_its_own_url_and_refuses_an_oversized_chunk():
 
     def opener(req, timeout):
         seen.update(url=req.full_url, timeout=timeout)
-        return _Resp(json.dumps({"priced_at_ms": 7, "legs": [priced(NFL_SPREAD, "no", 0.5)]}).encode())
+        return _Resp(json.dumps({"priced_at_ms": 7, "league_loaded_at": {"NFL": 5},
+                                 "legs": [priced(NFL_SPREAD, "no", 0.5)]}).encode())
 
     res = pricer.fairs("http://127.0.0.1:8095", [(NFL_SPREAD, "no")], timeout=15, opener=opener)
     assert seen == {"url": f"http://127.0.0.1:8095/rfq_fairs.json?legs={NFL_SPREAD}:no", "timeout": 15}
-    assert res.priced_at_ms == 7
+    assert (res.priced_at_ms, res.league_loaded_at) == (7, {"NFL": 5})
     with pytest.raises(ValueError, match="at most 200"):
         pricer.fairs("http://x", [(NFL_SPREAD, "yes")] * 201, timeout=1, opener=opener)
 
@@ -315,6 +335,28 @@ def test_an_answer_for_the_other_side_is_refused():
     opener = lambda r, timeout: _Resp(json.dumps({"legs": [priced(NFL_SPREAD, "yes", .5)]}).encode())
     with pytest.raises(pricer.PricerError, match="leg_order_mismatch"):
         pricer.fairs("http://x", [(NFL_SPREAD, "no")], timeout=1, opener=opener)
+
+
+def test_snapshot_times_come_off_health_and_a_runner_that_is_not_ok_is_an_error():
+    def health(body):
+        seen = {}
+
+        def opener(req, timeout):
+            seen.update(url=req.full_url)
+            return _Resp(json.dumps(body).encode())
+        return opener, seen
+
+    opener, seen = health({"ok": True, "rfq": {"leagueLoadedAt": {"NFL": 11, "CBB": 12}}})
+    assert pricer.league_snapshot_times("http://127.0.0.1:8095", timeout=3, opener=opener) == {"NFL": 11, "CBB": 12}
+    assert seen["url"] == "http://127.0.0.1:8095/health"
+    for body, why in (({"ok": False, "rfq": {"leagueLoadedAt": {}}}, "not ok"),
+                      ({"ok": True}, "rfq.leagueLoadedAt"),              # a runner from before this field
+                      ({"ok": True, "rfq": {"leagueLoadedAt": {"NFL": "x"}}}, "rfq.leagueLoadedAt")):
+        with pytest.raises(pricer.PricerError, match=why):
+            pricer.league_snapshot_times("http://x", timeout=3, opener=health(body)[0])
+    # The scope's league labels are the runner's (extension/feed.js LEAGUES).
+    assert sorted(set(scope.LEAGUES.values())) == ["CBB", "CFB", "MLB", "NBA", "NFL"]
+    assert scope.league_of_leg((NFL_SPREAD, "yes")) == "NFL"
 
 
 # -- feed door ------------------------------------------------------------------
@@ -455,9 +497,9 @@ def test_feed_silent_socket_is_presumed_dead(monkeypatch):
 
 # -- leg table ------------------------------------------------------------------
 
-def test_leg_table_serves_true_ages_and_refuses_old_or_missing_fairs():
+def test_leg_table_serves_true_ages_and_refuses_missing_fairs():
     clock = [100.0]
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600, clock=lambda: clock[0])
+    table = make_table(clock=lambda: clock[0])
     keys = [(NFL_SPREAD, "yes"), (NBA_ML, "no")]
     table.want(keys)
     assert table.missing(keys) == keys
@@ -472,29 +514,59 @@ def test_leg_table_serves_true_ages_and_refuses_old_or_missing_fairs():
     assert [l["fair_age_ms"] for l in res.legs] == [7200.0, 3200.0], "runner's 1200 ms plus the reuse"
     assert [l["priced_at_ms"] for l in res.legs] == [1000, 5000]
     assert (res.priced_at_ms, res.elapsed_ms) == (1000, 0.0), "the RFQ takes its oldest leg's stamp"
-    clock[0] = 115.5                                  # the first fair is now 15.5 s old
-    assert table.missing(keys) == keys[:1]
-    with pytest.raises(pricer.LegsNotReady, match=NFL_SPREAD):
-        table.price("r1", keys)
     assert isinstance(pricer.LegsNotReady(""), pricer.PricerError)
+
+
+def test_a_fair_is_served_until_its_league_changes_or_the_runner_goes_quiet():
+    clock = [100.0]
+    table = make_table(clock=lambda: clock[0])
+    nfl, nba = (NFL_SPREAD, "yes"), (NBA_ML, "no")
+    table.want([nfl, nba])
+    table.note_versions({"NFL": 10, "NBA": 20})
+    table.store([nfl, nba], [priced(NFL_SPREAD, "yes", .5), priced(NBA_ML, "no", .4)], 1, sent_at=100.0)
+    assert table.due() == []
+    # 60 s on with the same snapshots (and /health still read): nothing to re-price, both served.
+    clock[0] = 160.0
+    table.note_versions({"NFL": 10, "NBA": 20})
+    assert table.due() == [] and table.missing([nfl, nba]) == []
+    assert table.price("r", [nfl]).legs[0]["cache_age_ms"] == 60000.0, "and its true age is logged"
+    # The NFL snapshot lands: only the NFL leg is due; its old fair is served while the re-price is on its way.
+    table.note_versions({"NFL": 11, "NBA": 20})
+    assert table.due() == [nfl] and table.missing([nfl, nba]) == []
+    clock[0] = 176.0                                   # 16 s after the change with no re-price
+    table.note_versions({"NFL": 11, "NBA": 20})
+    assert table.missing([nfl, nba]) == [nfl]
+    table.want([nfl, nba])
+    table.store([nfl], [priced(NFL_SPREAD, "yes", .6)], 2, sent_at=176.0, versions={"NFL": 11})
+    assert table.due() == [] and table.missing([nfl, nba]) == []
+    # An older time from a lagging /health does not make the leg due again.
+    table.note_versions({"NFL": 10, "NBA": 20})
+    assert table.due() == []
+    # Priced over max_reuse_sec ago: due again, whatever the snapshot times say.
+    clock[0] = 191.0
+    table.note_versions({"NFL": 11, "NBA": 20})
+    assert table.due() == [nba]
+    # /health unread for over 15 s: nothing is served.
+    clock[0] = 207.0
+    assert table.missing([nfl, nba]) == [nfl, nba]
 
 
 def test_leg_table_forgets_legs_nobody_asked_for_lately():
     clock = [0.0]
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600, clock=lambda: clock[0])
+    table = make_table(clock=lambda: clock[0])
     table.want([(NFL_SPREAD, "yes")])
     table.store([(NFL_SPREAD, "yes")], [priced(NFL_SPREAD, "yes", .5)], 1, sent_at=0.0)
     clock[0] = 500.0
     table.want([(NBA_ML, "no")])
     clock[0] = 601.0
-    assert table.wanted() == [(NBA_ML, "no")] and len(table) == 1
+    assert table.due() == [(NBA_ML, "no")] and len(table) == 1
     # A refresh that was in flight when the leg expired must not bring it back.
     table.store([(NFL_SPREAD, "yes")], [priced(NFL_SPREAD, "yes", .5)], 1, sent_at=601.0)
     assert table.missing([(NFL_SPREAD, "yes")]) == [(NFL_SPREAD, "yes")]
 
 
 def test_refresher_prices_every_wanted_leg_in_chunks_and_a_failed_chunk_ends_the_pass():
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    table = make_table()
     keys = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 451)]
     table.want(keys)
     calls = []
@@ -506,7 +578,8 @@ def test_refresher_prices_every_wanted_leg_in_chunks_and_a_failed_chunk_ends_the
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
     fail = [True]
-    refresher = legtable.Refresher(table, fetch, interval_sec=2)
+    versions = {"NBA": 1}
+    refresher = make_refresher(table, fetch, versions, interval_sec=2)
     assert refresher.refresh_once() is False
     assert calls == [200, 200] and len(table.missing(keys)) == 250
     assert refresher.take_stats()["table_refresh_failed"] == 1
@@ -514,9 +587,18 @@ def test_refresher_prices_every_wanted_leg_in_chunks_and_a_failed_chunk_ends_the
     calls.clear()
     generation = table.generation
     assert refresher.refresh_once() is True
-    assert calls == [200, 200, 50] and table.missing(keys) == []
+    assert calls == [200, 50] and table.missing(keys) == [], "only the legs still unpriced"
     assert table.generation > generation
-    assert refresher.take_stats()["table_refresh_failed"] == 0
+    stats = refresher.take_stats()
+    assert (stats["table_refresh_failed"], stats["table_legs_priced"]) == (0, 250)
+    # Nothing changed on the runner: the next passes ask for no fairs at all.
+    calls.clear()
+    assert refresher.refresh_once() is True and calls == []
+    # The NBA snapshot lands: every NBA leg is priced again, once.
+    versions["NBA"] = 2
+    assert refresher.refresh_once() is True and calls == [200, 200, 50]
+    calls.clear()
+    assert refresher.refresh_once() is True and calls == []
 
 
 # -- decision loop --------------------------------------------------------------
@@ -540,8 +622,8 @@ def table_pricer(fairs, **leg_overrides):
 
 def make_quoter(tmp_path, fairs, *, confirm_fn=None, clock=None, **kwargs):
     dlog = DecisionLog(tmp_path / "q.duckdb")
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600, **({"clock": clock} if clock else {}))
-    refresher = legtable.Refresher(table, table_pricer(fairs), interval_sec=2,
+    table = make_table(**({"clock": clock} if clock else {}))
+    refresher = make_refresher(table, table_pricer(fairs), interval_sec=2,
                                    **({"clock": clock} if clock else {}))
     rfqs = queue.Queue()
     kwargs.setdefault("stored_sample_pct", 100)
@@ -607,13 +689,13 @@ def test_a_full_waiting_room_logs_pricer_backlog(tmp_path):
 
 def test_a_declined_leg_declines_the_parlay_and_is_not_confirmed(tmp_path):
     dlog = DecisionLog(tmp_path / "q.duckdb")
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    table = make_table()
     fetch = table_pricer(FAIRS, **{NBA_ML: {"ok": False, "reason": "no_event"}})
     confirm = fixed_pricer(FAIRS)
     rfqs = queue.Queue()
     quoter = Quoter(rfqs, table, dlog, confirm_fn=confirm, confirms_per_sec=1000, stored_sample_pct=100)
     table.want([(NFL_SPREAD, "yes"), (NBA_ML, "yes")])
-    legtable.Refresher(table, fetch, interval_sec=2).refresh_once()
+    make_refresher(table, fetch, interval_sec=2).refresh_once()
     put(rfqs, rfq("r1", [leg(NFL_SPREAD), leg(NBA_ML)]))
     quoter.step()
     quoter.shutdown()
@@ -775,7 +857,7 @@ def test_pause_drops_what_was_waiting_and_counts_it(tmp_path):
 
 
 def test_a_paused_refresher_asks_the_runner_nothing_and_resumes():
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    table = make_table()
     keys = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 451)]
     table.want(keys)
     calls = []
@@ -786,7 +868,7 @@ def test_a_paused_refresher_asks_the_runner_nothing_and_resumes():
             refresher.set_paused(True)       # paused mid-pass
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
-    refresher = legtable.Refresher(table, fetch, interval_sec=0.05)
+    refresher = make_refresher(table, fetch, interval_sec=0.05)
     refresher.refresh_once()
     assert calls == [200], "a pause ends the pass at the next chunk"
     refresher.start()
@@ -801,7 +883,7 @@ def test_a_paused_refresher_asks_the_runner_nothing_and_resumes():
 
 
 def test_new_legs_are_priced_first_and_between_passes():
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    table = make_table()
     old = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 301)]
     table.want(old)
     calls = []
@@ -810,7 +892,8 @@ def test_new_legs_are_priced_first_and_between_passes():
         calls.append(list(chunk))
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
-    refresher = legtable.Refresher(table, fetch, interval_sec=2)
+    versions = {"NBA": 1}
+    refresher = make_refresher(table, fetch, versions, interval_sec=2)
     refresher.refresh_once()
     new = [(NFL_SPREAD, "yes"), (NBA_ML, "no")]
     table.want(new)
@@ -821,14 +904,19 @@ def test_new_legs_are_priced_first_and_between_passes():
     table.want([(CBB_TOTAL, "yes")])
     calls.clear()
     refresher.refresh_once()
-    assert calls[0][0] == (CBB_TOTAL, "yes"), "a full pass prices the leg with no fair first"
-    assert sum(map(len, calls)) == 303
+    assert calls == [[(CBB_TOTAL, "yes")]], "a pass prices the new leg and nothing that did not change"
+    versions["NBA"] = 2
+    table.want([(CFB_SPREAD, "yes")])
+    calls.clear()
+    refresher.refresh_once()
+    assert calls[0][0] == (CFB_SPREAD, "yes"), "a leg with no fair goes first"
+    assert sum(map(len, calls)) == 302, "then the 300 NBA totals and the NBA moneyline"
 
 
 def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path):
     bad = ("KXNBAGAME-26NOV08LALBOS-BAD", "yes")
     clock = [1000.0]
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600, clock=lambda: clock[0])
+    table = make_table(clock=lambda: clock[0])
     good = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 451)]
     keys = good[:100] + [bad] + good[100:]
     table.want(keys)
@@ -840,7 +928,8 @@ def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path)
             raise pricer.PricerRejected("http_400")
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
-    refresher = legtable.Refresher(table, fetch, interval_sec=2, clock=lambda: clock[0])
+    versions = {"NBA": 1}
+    refresher = make_refresher(table, fetch, versions, interval_sec=2, clock=lambda: clock[0])
     assert refresher.refresh_once() is True
     assert table.missing(keys) == [], "every good leg priced, the bad one answered as a decline"
     assert len(calls) <= 3 + 2 * 8, "halving, not one call per leg"
@@ -848,6 +937,7 @@ def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path)
     declined = table.price("r1", [bad, good[0]]).legs[0]
     assert (declined["ok"], declined["reason"], declined["detail"]) == (False, "runner_rejected", "http_400")
     calls.clear()
+    versions["NBA"] = 2                    # every NBA leg is due again
     refresher.refresh_once()
     assert calls == [200, 200, 50], "a rejected leg is not asked again"
     other = (NFL_SPREAD, "yes")

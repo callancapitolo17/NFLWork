@@ -60,6 +60,12 @@ class PriceResult:
     elapsed_ms: float
 
 
+@dataclass
+class FairsResult(PriceResult):
+    # League label -> when that league's snapshot landed on the runner (ms).
+    league_loaded_at: dict[str, int]
+
+
 def _legs_param(legs: list[tuple[str, str]]) -> str:
     return ",".join(f"{t}:{s}" for t, s in legs)
 
@@ -74,9 +80,9 @@ def build_fairs_url(base_url: str, legs: list[tuple[str, str]]) -> str:
     return f"{base_url}/rfq_fairs.json?{q}"
 
 
-def _get_legs(url: str, legs: list[tuple[str, str]], *, timeout: float, opener) -> PriceResult:
-    """GET url and check the answer lines up with `legs`, leg for leg."""
-    t0 = time.monotonic()
+def _get_json(url: str, *, timeout: float, opener) -> dict:
+    """GET url as a JSON object. PricerRejected on HTTP 400, PricerTimeout
+    on a timeout, PricerError on anything else that is not an answer."""
     try:
         with opener(urllib.request.Request(url, method="GET"),
                     timeout=timeout) as r:
@@ -94,26 +100,60 @@ def _get_legs(url: str, legs: list[tuple[str, str]], *, timeout: float, opener) 
         raise PricerError(f"transport: {type(e).__name__}") from e
     except (ValueError, UnicodeDecodeError) as e:
         raise PricerError(f"bad_json: {e}") from e
+    if not isinstance(body, dict):
+        raise PricerError(f"bad_json: expected an object, got {type(body).__name__}")
+    return body
+
+
+def _get_legs(url: str, legs: list[tuple[str, str]], *, timeout: float, opener) -> tuple[PriceResult, dict]:
+    """GET url and check the answer lines up with `legs`, leg for leg.
+    Returns the legs and the whole answer."""
+    t0 = time.monotonic()
+    body = _get_json(url, timeout=timeout, opener=opener)
     elapsed_ms = (time.monotonic() - t0) * 1000.0
-    out = body.get("legs") if isinstance(body, dict) else None
+    out = body.get("legs")
     if not isinstance(out, list) or len(out) != len(legs):
         raise PricerRejected("leg_count_mismatch")
     for (ticker, side), got in zip(legs, out):
         if (not isinstance(got, dict) or got.get("market_ticker") != ticker
                 or got.get("side") != side):
             raise PricerRejected(f"leg_order_mismatch at {ticker}")
-    return PriceResult(out, body.get("priced_at_ms"), elapsed_ms)
+    return PriceResult(out, body.get("priced_at_ms"), elapsed_ms), body
+
+
+def _snapshot_times(value, where: str) -> dict[str, int]:
+    if not isinstance(value, dict) or not all(isinstance(v, int) for v in value.values()):
+        raise PricerError(f"expected {where} as {{league: ms}}, got {str(value)[:80]}")
+    return value
 
 
 def price(base_url: str, rfq_id: str, legs: list[tuple[str, str]], *,
           timeout: float, opener=urllib.request.urlopen) -> PriceResult:
     """Kalshi-checked prices for one RFQ's legs (the confirm call)."""
-    return _get_legs(build_url(base_url, rfq_id, legs), legs, timeout=timeout, opener=opener)
+    return _get_legs(build_url(base_url, rfq_id, legs), legs, timeout=timeout, opener=opener)[0]
 
 
 def fairs(base_url: str, legs: list[tuple[str, str]], *,
-          timeout: float, opener=urllib.request.urlopen) -> PriceResult:
-    """Board-only fairs for up to FAIRS_CHUNK_LEGS legs (the table refresh)."""
+          timeout: float, opener=urllib.request.urlopen) -> FairsResult:
+    """Board-only fairs for up to FAIRS_CHUNK_LEGS legs (the table refresh),
+    with the snapshot times they were priced on."""
     if len(legs) > FAIRS_CHUNK_LEGS:
         raise ValueError(f"expected at most {FAIRS_CHUNK_LEGS} legs per fairs call, got {len(legs)}")
-    return _get_legs(build_fairs_url(base_url, legs), legs, timeout=timeout, opener=opener)
+    result, body = _get_legs(build_fairs_url(base_url, legs), legs, timeout=timeout, opener=opener)
+    return FairsResult(result.legs, result.priced_at_ms, result.elapsed_ms,
+                       _snapshot_times(body.get("league_loaded_at"), "league_loaded_at"))
+
+
+def league_snapshot_times(base_url: str, *, timeout: float,
+                          opener=urllib.request.urlopen) -> dict[str, int]:
+    """When each league's snapshot last landed on the runner, off its
+    /health: {league label: ms}. The runner's main thread answers /health
+    from what its board thread last posted, so this read costs the board
+    thread (where the taker runs) nothing. PricerError when the runner is
+    down, says it is not ok, or is a version without the field."""
+    body = _get_json(f"{base_url}/health", timeout=timeout, opener=opener)
+    if body.get("ok") is not True:
+        raise PricerError("the runner's /health is not ok")
+    rfq = body.get("rfq")
+    return _snapshot_times(rfq.get("leagueLoadedAt") if isinstance(rfq, dict) else None,
+                           "/health rfq.leagueLoadedAt")

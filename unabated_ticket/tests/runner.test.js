@@ -1280,6 +1280,57 @@ test("taker: each order carries its market's Kalshi cash pot (exchange_index), n
 });
 
 // ---- GET /rfq_price.json: RFQ legs priced off Unabated (#282, places nothing) ----
+test("taker: a pass that never finishes is abandoned after 5 min, the next pass runs, and the stuck one sends nothing when it wakes", async () => {
+  let clock = TAKER_NOW;
+  const kalshi = kalshiFetch();
+  // The first orderbook read hangs until released; every later read answers at once.
+  let release = null;
+  let held = false;
+  const hangingKalshi = (url) => {
+    if (!held && url.endsWith("/orderbook")) {
+      held = true;
+      return new Promise((resolve) => { release = () => resolve(kalshi(url)); });
+    }
+    return kalshi(url);
+  };
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const warnings = [];
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: hangingKalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, logInfo: () => {}, logWarning: (text) => warnings.push(text),
+  });
+  await runner.start();
+  const stuckPass = runner.takerPass();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runner.health().taker.runningSince, new Date(TAKER_NOW).toISOString());
+  // Under 5 min: the running pass keeps the turn.
+  clock = TAKER_NOW + 4 * 60 * 1000;
+  await runner.takerPass();
+  assert.equal(runner.health().taker.stuck.count, 0);
+  assert.equal(runner.health().taker.lastPassAt, null);
+  // Over 5 min: abandoned, and this tick's pass runs whole. The bets poll is
+  // re-read so the new pass is not blocked on a stale holdings read.
+  clock = TAKER_NOW + 5 * 60 * 1000 + 1000;
+  service.script["/bets.json"] = { ...takerBetsBody(), sources: { ...takerBetsBody().sources, kalshi: { ok: true, fetchedAt: new Date(clock - 30 * 1000).toISOString(), error: null, count: 0 } } };
+  await runner.scanner.resync();
+  await runner.pollBets();
+  await runner.takerPass();
+  const health = runner.health().taker;
+  assert.deepEqual({ count: health.stuck.count, lastStartedAt: health.stuck.lastStartedAt, runningSince: health.runningSince },
+    { count: 1, lastStartedAt: new Date(TAKER_NOW).toISOString(), runningSince: null });
+  assert.equal(health.lastPassAt, new Date(clock).toISOString());
+  assert.ok(warnings.some((text) => /taker pass 1 .* abandoned/.test(text)), warnings.join("\n"));
+  const ordersAfterNewPass = service.posts.filter((post) => post.route === "/taker/order.json").length;
+  assert.ok(ordersAfterNewPass >= 1, "the new pass sent its orders");
+  // The stuck read answers at last: its pass ends without deciding, sending or touching the pass state.
+  release();
+  await stuckPass;
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, ordersAfterNewPass, "the abandoned pass sent nothing");
+  assert.equal(runner.health().taker.lastPassAt, new Date(clock).toISOString());
+  assert.equal(runner.health().taker.runningSince, null);
+  runner.stop();
+});
+
 test("rfq_fairs: the same fairs off the board alone, with no Kalshi read and at most 200 legs", async () => {
   const { runner, kalshi } = await quoteRunner({}, { now: () => TAKER_NOW });
   const legs = `${TAKER_TICKER}:yes,KXNCAAFTOTAL-26SEP19DUQWSU-53:no,KXNFL1HSPREAD-26NOV09KCDEN-KC4:yes`;
@@ -1287,6 +1338,9 @@ test("rfq_fairs: the same fairs off the board alone, with no Kalshi read and at 
   const out = await runner.rfqFairs(new URLSearchParams({ legs }));
   assert.equal(kalshi.calls.length, reads, "the table refresh reads nothing at Kalshi");
   assert.equal(out.priced_at_ms, TAKER_NOW);
+  // When each league's snapshot landed: the quoter re-prices a leg only when its league's entry changes.
+  assert.deepEqual(Object.keys(out.league_loaded_at), ["CFB"]);
+  assert.deepEqual(runner.health().rfq.leagueLoadedAt, out.league_loaded_at);
   const [spread, total, half] = out.legs;
   const checked = (await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:yes` }))).legs[0];
   assert.deepEqual([spread.ok, spread.fair, spread.sigma, spread.kickoff_ms], [true, checked.fair, checked.sigma, checked.kickoff_ms]);

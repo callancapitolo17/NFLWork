@@ -258,10 +258,13 @@ def run() -> None:
         min_cost_usd=config.MIN_RFQ_TARGET_COST_USD, queue_max=config.FEED_QUEUE_MAX,
         idle_timeout_sec=config.FEED_IDLE_TIMEOUT_SEC)
     table = legtable.LegTable(max_age_sec=config.TABLE_MAX_AGE_SEC,
-                              leg_ttl_sec=config.TABLE_LEG_TTL_SEC)
+                              leg_ttl_sec=config.TABLE_LEG_TTL_SEC,
+                              max_reuse_sec=config.TABLE_MAX_REUSE_SEC,
+                              league_of=scope.league_of_leg)
     refresher = legtable.Refresher(
         table,
         lambda keys: pricer.fairs(config.RUNNER_URL, keys, timeout=config.TABLE_FETCH_TIMEOUT_SEC),
+        lambda: pricer.league_snapshot_times(config.RUNNER_URL, timeout=config.TABLE_HEALTH_TIMEOUT_SEC),
         interval_sec=config.TABLE_REFRESH_SEC)
     quoter = Quoter(
         rfq_feed.rfqs, table, dlog,
