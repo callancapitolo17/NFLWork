@@ -319,7 +319,8 @@ The tab lists every corner in one list sorted by edge, best first; chips sort
 by edge, stake, kickoff, fair or Wagerzon price (a second tap reverses), and
 By game groups the corners under their game, games ordered by their best
 corner. Started games sort last. Rows hold their order between polls and
-after a Place; they re-sort only when the sort, a filter or the board changes.
+after a Place; they re-sort only when the sort, a filter, the settings, the
+account or the board changes (a game that kicks off in between stays put).
 The sort, layout, league and +EV only choices are remembered in the browser.
 
 ## Files

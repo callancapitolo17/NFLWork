@@ -1173,7 +1173,8 @@ function renderHalves(p) {
   const priced = inLeague.filter(l => l.status === "priced" || l.status === "pricing");
   const allRows = priced.flatMap(line => CORNER_ORDER.map(corner => ({ line, corner, c: line.corners[corner] })));
   const shownRows = heldOrder(allRows.filter(x => !prefs.halfEvOnly || (x.c.ev > 0 && !hasStarted(x.line))).sort(compareHalfRows),
-    [prefs.halfSort, prefs.halfSortDir, prefs.league, prefs.halfEvOnly, h.started_at, h.finished_at].join("|"));
+    [prefs.halfSort, prefs.halfSortDir, prefs.league, prefs.halfEvOnly, h.started_at, h.finished_at,
+     p.account, JSON.stringify(p.settings)].join("|"));
   const parts = [];
   if (prefs.halfView === "flat") {
     if (shownRows.length) parts.push(el("div", { class: "group" }, shownRows.map(x => halfRow(x.line, x.corner, p, true))));
