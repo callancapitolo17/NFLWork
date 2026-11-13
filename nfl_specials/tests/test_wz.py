@@ -44,6 +44,24 @@ def test_other_errors_are_not_retried(monkeypatch):
     assert len(attempts) == 1
 
 
+def test_a_catalog_that_did_not_load_is_retried_on_a_fresh_login(monkeypatch):
+    monkeypatch.setattr(wz.time, "sleep", lambda _seconds: None)
+    replies = [None, [{"IdLeague": 430, "Description": "NFL - 1ST HALVES"}]]
+    monkeypatch.setattr(wz, "fetch_active_leagues", lambda session: replies.pop(0))
+    cleared = []
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda: cleared.append(1))
+    assert wz._retry_reads(lambda: wz.fetch_catalog(object())) == [{"IdLeague": 430, "Description": "NFL - 1ST HALVES"}]
+    assert cleared == [1]
+
+
+def test_a_catalog_that_never_loads_says_so(monkeypatch):
+    monkeypatch.setattr(wz.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(wz, "fetch_active_leagues", lambda session: None)
+    monkeypatch.setattr(wz.wagerzon_auth, "clear_session_cache", lambda: None)
+    with pytest.raises(wz.CatalogUnavailable, match="did not load"):
+        wz._retry_reads(lambda: wz.fetch_catalog(object()))
+
+
 def test_every_specials_league_once():
     catalog = [{"IdLeague": 1135, "Description": "NFL WEEK 4 - SPECIALS"},
                {"IdLeague": 1135, "Description": "NFL WEEK 4 - SPECIALS"},   # listed under 2 menus

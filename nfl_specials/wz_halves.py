@@ -28,7 +28,7 @@ import parlay_placer  # noqa: E402  (wz put wagerzon_odds on sys.path)
 import requests  # noqa: E402
 from parlay_pricer import (PLAY_AWAY_SPREAD, PLAY_HOME_SPREAD, PLAY_OVER, PLAY_UNDER,  # noqa: E402
                            get_combined_parlay_price)
-from scraper_v2 import _wz_game_start_time, fetch_active_leagues  # noqa: E402
+from scraper_v2 import _wz_game_start_time  # noqa: E402
 
 log = logging.getLogger("nfl_specials.wz_halves")
 
@@ -99,10 +99,12 @@ def fetch_half_games() -> list[WzHalfGame]:
 def _fetch_half_games_once() -> list[WzHalfGame]:
     session = wz._session()
     league_of_id = {int(row["IdLeague"]): WZ_HALF_LEAGUES[(row.get("Description") or "").strip()]
-                    for row in fetch_active_leagues(session) or []
+                    for row in wz.fetch_catalog(session)
                     if (row.get("Description") or "").strip() in WZ_HALF_LEAGUES and row.get("IdLeague")}
     if not league_of_id:
-        raise RuntimeError(f"none of {sorted(WZ_HALF_LEAGUES)} in Wagerzon's catalog")
+        # The catalog loaded, so neither league is posted now (between slates).
+        log.warning("none of %s in Wagerzon's catalog; no 1H lines to price", sorted(WZ_HALF_LEAGUES))
+        return []
     games: dict[int, WzHalfGame] = {}
     # One request per league: a combined lg=430,540 answers only the first sport (2026-11-12).
     for league_id, league_name in sorted(league_of_id.items()):

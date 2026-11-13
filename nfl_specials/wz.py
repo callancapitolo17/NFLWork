@@ -67,6 +67,13 @@ READ_RETRY_PAUSE_SECONDS = 5
 T = TypeVar("T")
 
 
+class CatalogUnavailable(RuntimeError):
+    """Wagerzon's league catalog did not load (non-200, non-JSON, or a
+    logged-out reply). Retried on a fresh login: an empty catalog read as
+    'no such league' failed the 1H refresh on 2026-11-12 while both leagues
+    were posted."""
+
+
 @dataclass(frozen=True)
 class WzSpecial:
     wz_game_id: int        # Wagerzon idgm — what a bet is placed against
@@ -125,15 +132,27 @@ def specials_league_ids(catalog: list[dict]) -> list[int]:
     return sorted(ids)
 
 
+def fetch_catalog(session) -> list[dict]:
+    """Wagerzon's active-league catalog; raises CatalogUnavailable when it
+    does not load, so a failed read is never mistaken for a missing league."""
+    catalog = fetch_active_leagues(session)
+    if catalog is None:
+        raise CatalogUnavailable("Wagerzon's league catalog (ActiveLeaguesHelper) did not load")
+    return catalog
+
+
 def _retry_reads(read: Callable[[], T]) -> T:
-    """Retry a READ on timeouts / dropped connections. Never wrap a placement:
-    a retried submission can place the bet twice."""
+    """Retry a READ on timeouts / dropped connections, and on a catalog that
+    did not load (after dropping the cached login, which may have expired).
+    Never wrap a placement: a retried submission can place the bet twice."""
     for attempt in range(1, READ_ATTEMPTS + 1):
         try:
             return read()
-        except (requests.Timeout, requests.ConnectionError) as exc:
+        except (requests.Timeout, requests.ConnectionError, CatalogUnavailable) as exc:
             if attempt == READ_ATTEMPTS:
                 raise
+            if isinstance(exc, CatalogUnavailable):
+                wagerzon_auth.clear_session_cache()
             log.warning("Wagerzon read failed (%s), attempt %d/%d; retrying in %ds",
                         type(exc).__name__, attempt, READ_ATTEMPTS, READ_RETRY_PAUSE_SECONDS)
             time.sleep(READ_RETRY_PAUSE_SECONDS)
@@ -148,7 +167,7 @@ def fetch_fecta_specials() -> list[WzSpecial]:
 def _fetch_fecta_specials_once() -> list[WzSpecial]:
     session = _session()
     specials: dict[int, WzSpecial] = {}
-    for league_id in specials_league_ids(fetch_active_leagues(session) or []):
+    for league_id in specials_league_ids(fetch_catalog(session)):
         resp = session.get(SCHEDULE_URL.format(league_id=league_id), timeout=30,
                            headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"})
         resp.raise_for_status()

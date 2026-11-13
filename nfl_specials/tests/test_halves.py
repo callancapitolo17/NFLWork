@@ -29,6 +29,14 @@ def _game(**overrides) -> WzHalfGame:
 
 
 # --- Wagerzon ------------------------------------------------------------------
+def test_no_1h_league_posted_is_an_empty_board_not_a_failure(monkeypatch):
+    from nfl_specials import wz_halves
+    monkeypatch.setattr(wz_halves.wz, "_session", lambda: object())
+    monkeypatch.setattr(wz_halves.wz, "fetch_active_leagues",
+                        lambda session: [{"IdLeague": 4017, "Description": "NFL - THURSDAY NIGHT FOOTBALL"}])
+    assert wz_halves.fetch_half_games() == []
+
+
 def test_parses_a_wagerzon_nfl_first_half_game():
     raw = {"idgm": 6118382, "idgmtyp": 15, "vtm": "1H WAS COMMANDERS", "htm": "1H NY GIANTS",
            "gmdt": "20261112", "gmtm": "20:15:00",
