@@ -36,8 +36,8 @@ from urllib.parse import parse_qs, urlparse
 from nfl_specials import config, wz, wz_halves
 from nfl_specials.board import Board, HeldPlacement, refresh_board, size_board
 from nfl_specials.books import parse_start
-from nfl_specials.halves_board import (HalfBoard, HeldHalfParlay, conservative_american,
-                                       refresh_halves, size_halves)
+from nfl_specials.halves_board import (CfbSlate, HalfBoard, HeldHalfParlay, cfb_slates, conservative_american,
+                                       refresh_halves, size_half_board)
 from nfl_specials.pricing import decimal_to_american, free_play_value
 from nfl_specials.store import Store
 
@@ -175,7 +175,9 @@ class SpecialsApp:
                                held=_held_placements(placements, account))
         if halves is not None:
             half_budget = self.half_budget(account, sized)
-            half_sized = self.size_halves_for(halves, half_budget, settings, account, half_placements)
+            slates = self.cfb_slates_for(halves, board, sized, account)
+            half_sized = self.size_halves_for(halves, board, sized, settings, account, half_placements)
+            slate_kickoff = {game_id: slate.first_kickoff for slate in slates for game_id in slate.wz_game_ids}
             payload["halves"] = {
                 "started_at": halves.started_at.isoformat(),
                 "finished_at": halves.finished_at.isoformat() if halves.finished_at else None,
@@ -183,7 +185,10 @@ class SpecialsApp:
                 "progress_total": halves.progress_total,
                 "book_status": halves.book_status,
                 "budget": half_budget,
-                "lines": [_half_line_json(line, half_sized) for line in halves.lines],
+                "cfb_slates": [{"first_kickoff": slate.first_kickoff.isoformat(), "budget": slate.budget}
+                               for slate in slates],
+                "lines": [_half_line_json(line, half_sized, slate_kickoff.get(line.game.wz_game_id))
+                          for line in halves.lines],
             }
         if board is None:
             return payload
@@ -199,21 +204,34 @@ class SpecialsApp:
         return payload
 
     def half_budget(self, account: str, fecta_sizing: list) -> float | None:
-        """Cash left for 1H parlays: the account's cash 'available' less the
+        """Cash left for NFL 1H parlays: the account's cash 'available' less the
         fectas' recommended stakes (fectas get first call; with Use free play
-        on they draw on the free play balance, not this one). None = unknown."""
+        on they draw on the free play balance, not this one). None = unknown.
+        College 1H parlays don't use it (cfb_slates_for)."""
         cash = self.budget(account)
         if cash is None:
             return None
         fecta_cash = 0.0 if self.store.settings()["use_free_play"] else sum(s.recommended_stake for s in fecta_sizing)
         return max(0.0, cash - fecta_cash)
 
-    def size_halves_for(self, halves: HalfBoard, budget: float | None, settings: dict, account: str | None,
-                        half_placements: list[dict]) -> dict:
-        """size_halves on this account's 1H parlays; an unknown budget recommends nothing."""
-        return size_halves(halves, settings["bankroll"], settings["kelly_fraction"],
-                           0.0 if budget is None else budget,
-                           held=_held_half_parlays(half_placements, account))
+    def cfb_slates_for(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list,
+                       account: str | None) -> list[CfbSlate]:
+        """This account's college slates, each on the whole cash less fectas
+        due before its halftime (none when fectas draw on free play)."""
+        fectas_use_cash = not self.store.settings()["use_free_play"]
+        return cfb_slates(halves, self.budget(account), fecta_board if fectas_use_cash else None,
+                          fecta_sizing if fectas_use_cash else [])
+
+    def size_halves_for(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list,
+                        settings: dict, account: str | None, half_placements: list[dict]) -> dict:
+        """size_half_board on this account's 1H parlays: NFL on the cash after
+        fectas, each college slate on its own budget. An unknown balance
+        recommends nothing."""
+        nfl_budget = self.half_budget(account, fecta_sizing)
+        return size_half_board(halves, settings["bankroll"], settings["kelly_fraction"],
+                               0.0 if nfl_budget is None else nfl_budget,
+                               self.cfb_slates_for(halves, fecta_board, fecta_sizing, account),
+                               held=_held_half_parlays(half_placements, account))
 
     # --- write -------------------------------------------------------------
     def save_settings(self, body: dict) -> dict:
@@ -353,8 +371,8 @@ class SpecialsApp:
                                        self.budget(account, settings["use_free_play"]) or 0.0,
                                        held=_held_placements(placements, account))
                             if fecta_board is not None else [])
-            sizing = self.size_halves_for(halves, self.half_budget(account, fecta_sizing),
-                                          settings, account, half_placements)[(wz_game_id, corner)]
+            sizing = self.size_halves_for(halves, fecta_board, fecta_sizing, settings, account,
+                                          half_placements)[(wz_game_id, corner)]
             if sizing.fair_prob is None:
                 # e.g. a whole-number line only one book priced (halves_board.MIN_BOOKS_WHOLE_NUMBER)
                 raise ValueError(f"1H {corner} on game {wz_game_id} has no fair price: "
@@ -467,7 +485,7 @@ def _line_json(line, sizing) -> dict:
     }
 
 
-def _half_line_json(line, sized: dict) -> dict:
+def _half_line_json(line, sized: dict, slate_kickoff: datetime | None) -> dict:
     game = line.game
     corners = {}
     for corner in wz_halves.CORNERS:
@@ -494,6 +512,8 @@ def _half_line_json(line, sized: dict) -> dict:
         "status": line.status, "note": line.note,
         "book_reasons": {name: fair.reason for name, fair in line.book_fairs.items() if fair.reason},
         "corners": corners,
+        # college: the first kickoff of its slate; NFL or started: None
+        "slate_kickoff": slate_kickoff.isoformat() if slate_kickoff else None,
     }
 
 

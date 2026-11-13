@@ -1,17 +1,21 @@
 """1H parlays: Wagerzon parsing, game matching, the
 2 x 2 partition fair, worst case across books, and sizing each game as one group.
 No network."""
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from scipy.stats import norm
 
 from nfl_specials import halves_board
+from nfl_specials.board import Board, FectaLine, Sizing
 from nfl_specials.books import BookGame, LegMarket, Outcome
 from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
                                        college_names_match, conservative_american, match_book_game,
                                        price_half_at_book, size_halves)
+from nfl_specials.pricing import BookFair
+from nfl_specials.special_parser import parse_fecta
+from nfl_specials.wz import WzSpecial
 from nfl_specials.wz_halves import (CORNERS, WzHalfGame, WzParlayPrice, corner_legs, parse_half_game)
 
 KICKOFF = datetime(2099, 1, 1, 18, 0, tzinfo=timezone.utc)
@@ -484,6 +488,75 @@ def test_a_held_parlay_lowers_what_the_next_stake_may_reach():
     assert held.recommended_stake == 50
 
 
+# --- College slates --------------------------------------------------------------
+def _cfb(game_id: int, kickoff: datetime) -> HalfLine:
+    return _priced_line(_game(league="CFB", wz_game_id=game_id, away=f"AWAY {game_id}", home=f"HOME {game_id}",
+                              game_start_time=kickoff), TRUE_CORNERS, EVEN_PRICES)
+
+
+def _fecta_kicking_off(kickoff: str, stake: float) -> tuple[Board, list[Sizing]]:
+    special = WzSpecial(wz_game_id=99, rotation=99, description="COMMANDERS TRIFECTA (1Q, 1H & GM)",
+                        wz_american=500, week_date=date(2098, 12, 31))
+    fecta = FectaLine(special, parse_fecta(special.description), "priced",
+                      game=BookGame("evt", home="NYG", away="WAS", game_start_time=kickoff),
+                      book_fairs={"FanDuel": BookFair("FanDuel", 0.2, None, 1.3, 8)})
+    return Board(datetime.now(timezone.utc), None, [fecta], {}), [Sizing(0.2, 0.2, stake, stake, None)]
+
+
+def test_a_slate_is_games_kicking_off_less_than_two_hours_after_its_first():
+    window = halves_board.CFB_FIRST_HALF_WINDOW
+    kickoffs = [KICKOFF, KICKOFF + timedelta(minutes=45), KICKOFF + window - timedelta(minutes=1),
+                KICKOFF + window, KICKOFF + window + timedelta(hours=1), KICKOFF + 2 * window + timedelta(minutes=30)]
+    board = _half_board(*(_cfb(n, kickoff) for n, kickoff in enumerate(kickoffs, start=1)),
+                        _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES))
+    slates = halves_board.cfb_slates(board, 500.0)
+    # Not chained: 2h gaps all day still split; exactly 2h after starts a new slate; NFL left out.
+    assert [slate.wz_game_ids for slate in slates] == [(1, 2, 3), (4, 5), (6,)]
+    assert slates[0].halftime_by == kickoffs[2] + window
+    assert [slate.budget for slate in slates] == [500.0, 500.0, 500.0]
+
+
+def test_started_games_are_in_no_slate_and_unknown_cash_budgets_nothing():
+    started = _cfb(1, datetime.now(timezone.utc) - timedelta(minutes=5))
+    slates = halves_board.cfb_slates(_half_board(started, _cfb(2, KICKOFF)), None)
+    assert [(slate.wz_game_ids, slate.budget) for slate in slates] == [((2,), 0.0)]
+
+
+def test_a_slate_holds_back_only_fectas_kicking_off_before_its_halftime():
+    # A later slate holds it back too while the page shows it; by the time that slate
+    # is bet the fecta has started (no recommendation) and the balance is net of it.
+    early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
+    inside = _fecta_kicking_off("2099-01-01T19:00:00Z", 120.0)      # during slate 1's half
+    after = _fecta_kicking_off("2099-01-02T03:00:00Z", 120.0)       # after both halftimes
+    assert [s.budget for s in halves_board.cfb_slates(_half_board(early, late), 500.0, *inside)] == [380.0, 380.0]
+    assert [s.budget for s in halves_board.cfb_slates(_half_board(early, late), 500.0, *after)] == [500.0, 500.0]
+
+
+def test_each_college_slate_gets_its_budget_and_nfl_keeps_the_cash_after_fectas():
+    early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
+    nfl = _priced_line(_game(), TRUE_CORNERS, EVEN_PRICES)
+    board = _half_board(early, late, nfl)
+    sized = halves_board.size_half_board(board, 20000, 0.25, 50.0, halves_board.cfb_slates(board, 100.0))
+
+    def staked(line):
+        return sum(sized[(line.game.wz_game_id, c)].recommended_stake for c in CORNERS)
+    assert staked(nfl) == pytest.approx(50.0, abs=1)
+    assert staked(early) == pytest.approx(100.0, abs=3) and staked(late) == pytest.approx(100.0, abs=3)
+    # Two games in one slate split its 100.
+    pair = _half_board(early, _cfb(3, KICKOFF + timedelta(minutes=10)))
+    together = halves_board.size_half_board(pair, 20000, 0.25, 0.0, halves_board.cfb_slates(pair, 100.0))
+    assert sum(s.recommended_stake for s in together.values()) == pytest.approx(100.0, abs=3)
+
+
+def test_a_held_college_parlay_shrinks_only_its_own_side():
+    early, late = _cfb(1, KICKOFF), _cfb(2, KICKOFF + timedelta(hours=4))
+    board = _half_board(early, late)
+    slates = halves_board.cfb_slates(board, 5000.0)
+    held = (HeldHalfParlay(1, "away_over", 30.0, 264),)
+    alone = halves_board.size_half_board(board, 20000, 0.25, 0.0, slates)
+    with_held = halves_board.size_half_board(board, 20000, 0.25, 0.0, slates, held=held)
+    assert 0 < with_held[(1, "away_over")].recommended_stake < alone[(1, "away_over")].recommended_stake
+    assert with_held[(2, "away_over")] == alone[(2, "away_over")]
 # --- one group per game -------------------------------------------------------------
 def test_both_teams_corners_in_a_game_hedge_each_other():
     from nfl_specials.pricing import kelly_stake

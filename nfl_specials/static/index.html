@@ -1045,7 +1045,7 @@ function halfStakeCell(line, corner, c, p) {
   if (c.recommended_stake < 0.5 && c.kelly_stake > 0.5 && c.kelly_stake < p.min_stake) {
     children.push(el("div", { class: "why", text: `$0: Kelly's ${money(c.kelly_stake)} is under Wagerzon's ${money(p.min_stake)} minimum` }));
   } else if (c.recommended_stake < 0.5 && c.unlimited_stake > 0.5) {
-    children.push(el("div", { class: "why", text: "$0: the cash the fectas leave went to bigger edges" }));
+    children.push(el("div", { class: "why", text: line.league === "CFB" ? "$0: the slate's cash went to bigger edges" : "$0: the cash the fectas leave went to bigger edges" }));
   } else if (c.recommended_stake < 0.5 && c.kelly_stake < 0.5) {
     children.push(el("div", { class: "why", text: "$0: the parlays already held in this game take its Kelly" }));
   }
@@ -1141,18 +1141,23 @@ function renderHalves(p) {
       "Wagerzon's NFL and college 1st-half spread + total, every same-game pairing, against FanDuel, BetMGM and DraftKings.", true));
     return;
   }
+  const slates = h.cfb_slates || [];   // missing from a server older than the page
   const corners = h.lines.flatMap(line => CORNER_ORDER.map(corner => ({ line, corner, c: line.corners[corner] })));
   const live = corners.filter(x => x.c.recommended_stake > 0.5);
   const total = live.reduce((s, x) => s + x.c.recommended_stake, 0);
   const profit = live.reduce((s, x) => s + x.c.recommended_stake * x.c.ev, 0);
   tiles.replaceChildren(
-    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Cash after fectas" }),
+    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "NFL: cash after fectas" }),
       el("div", { class: "tile-value num", text: h.budget == null ? "Unknown" : money(h.budget) }),
       h.budget == null ? el("div", { class: "tile-sub keep", text: "No stakes until Refresh reads it" })
         : el("div", { class: "tile-sub", text: "fectas get first call" })]),
+    el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "College: cash per slate" }),
+      el("div", { class: "tile-value num", text: p.cash_available == null ? "Unknown" : money(slates.length ? slates[0].budget : p.cash_available) }),
+      el("div", { class: "tile-sub keep", text: p.cash_available == null ? "No stakes until Refresh reads it"
+        : `${slates.length} slate${slates.length === 1 ? "" : "s"}; each bet on the balance after the last one settles` })]),
     el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Recommended" }),
       el("div", { class: "tile-value num", text: money(total) }),
-      el("div", { class: "tile-sub", text: `${live.length} parlay${live.length === 1 ? "" : "s"}` })]),
+      el("div", { class: "tile-sub", text: `${live.length} parlay${live.length === 1 ? "" : "s"}${slates.length ? ", NFL and every slate added up" : ""}` })]),
     el("div", { class: "tile" }, [el("div", { class: "tile-label", text: "Expected profit" }),
       el("div", { class: "tile-value num", style: profit > 0 ? "color:var(--good)" : null, text: (profit > 0 ? "+" : "") + money(profit) }),
       el("div", { class: "tile-sub", text: "at worst-case fair" })]),
@@ -1190,7 +1195,7 @@ function renderHalves(p) {
       parts.push(el("div", { class: "group" }, [
         el("div", { class: "group-head" }, [
           el("span", {}, [el("span", { class: "matchup", text: `${line.away} @ ${line.home}` }),
-            el("span", { class: "muted small num", text: ` · ${LEAGUE_LABEL[line.league]} · 1H ${line.away} ${halfPoints(line.away_spread)}, total ${halfPoints(line.total).slice(1)}` })]),
+            el("span", { class: "muted small num", text: ` · ${LEAGUE_LABEL[line.league]}${line.slate_kickoff ? ` · slate ${clock(parseTime(line.slate_kickoff))}` : ""} · 1H ${line.away} ${halfPoints(line.away_spread)}, total ${halfPoints(line.total).slice(1)}` })]),
           el("span", { class: "muted small num", text: `${dayClock(start)} · ${untilKickoff(start)}` }),
         ]),
         ...rows.map(x => halfRow(x.line, x.corner, p, false)),
