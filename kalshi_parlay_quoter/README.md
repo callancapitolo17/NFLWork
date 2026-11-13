@@ -26,9 +26,9 @@ sends no quotes and no orders**; nothing in this package can.
    Per leg: Unabated fair for that side, `fair_lo`/`fair_hi` bracket, `sigma`
    (with `c`, `tau`), the resolved Unabated line, kickoff and fair age. A leg
    seen for the first time is priced within ~0.25 s, ahead of the next full
-   pass; its RFQ waits for that, at most 5 s. A leg the runner refuses (HTTP
+   pass (while a pass takes under 2 s; otherwise first in the next pass); its RFQ waits for that, at most 5 s. A leg the runner refuses (HTTP
    400) is isolated by halving its chunk, declines `runner_rejected`, and is
-   not asked again while it stays in the table.
+   asked again after 5 minutes.
 4. **Decision** (`decide.py`). `would_quote` when every leg is priced (parlay
    fair = product of leg fairs, since legs are on different games), otherwise
    `decline` with a reason.
@@ -76,7 +76,8 @@ needs.
 
 `rfq_created` frames a minute = `malformed` + every `door_*` key + `kept` +
 `queue_dropped`. `kept` = the decision keys, less RFQs still waiting at the
-minute's end (`gauge_pending`, `gauge_queue`). A restart inside a minute adds
+minute's end (`gauge_pending`, `gauge_queue`, and up to 2 confirms in
+flight, which count in the minute they finish). A restart inside a minute adds
 to that minute's counts.
 
 Rows from before 2026-11-13 are a census (every in-scope RFQ, each priced

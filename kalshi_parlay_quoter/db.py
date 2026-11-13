@@ -159,11 +159,13 @@ class DecisionLog:
             self._legs.extend(legs)
 
     def add_counts(self, minute, counts: dict[str, int]) -> None:
-        """One minute's counts; zero counts are not stored. Call once per
+        """One minute's counts; zero counts are not stored (a zero gauge
+        is, so it replaces an older one after a restart). Call once per
         minute per process: two calls for one minute in one flush would hit
         the same key twice in one statement."""
         with self._lock:
-            self._counts.extend((minute, key, n) for key, n in counts.items() if n)
+            self._counts.extend((minute, key, n) for key, n in counts.items()
+                                if n or key.startswith("gauge_"))
 
     def flush(self) -> int:
         with self._lock:

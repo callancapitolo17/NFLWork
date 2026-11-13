@@ -316,9 +316,9 @@ def run() -> None:
     # the log is written before the slower joins, so a SIGKILL costs no rows.
     log.info("[quoter] stopping")
     rfq_feed.stop()
-    write_counts(minute)
     refresher.stop()
-    quoter.shutdown()
+    quoter.shutdown()        # waits for confirms in flight, so they are counted
+    write_counts(minute)
     dlog.close()
 
 

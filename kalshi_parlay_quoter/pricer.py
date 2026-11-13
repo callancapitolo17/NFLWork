@@ -82,7 +82,7 @@ def _get_legs(url: str, legs: list[tuple[str, str]], *, timeout: float, opener) 
                     timeout=timeout) as r:
             body = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        if 400 <= e.code < 500:
+        if e.code == 400:    # the request's legs; 403/404/405 are about the runner
             raise PricerRejected(f"http_{e.code}") from e
         raise PricerError(f"http_{e.code}") from e
     except OSError as e:     # URLError and TimeoutError are OSErrors

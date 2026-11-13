@@ -801,7 +801,8 @@ def test_new_legs_are_priced_first_and_between_passes():
 
 def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path):
     bad = ("KXNBAGAME-26NOV08LALBOS-BAD", "yes")
-    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600)
+    clock = [1000.0]
+    table = legtable.LegTable(max_age_sec=15, leg_ttl_sec=600, clock=lambda: clock[0])
     good = [(f"KXNBATOTAL-26NOV08LALBOS-{n}", "yes") for n in range(1, 451)]
     keys = good[:100] + [bad] + good[100:]
     table.want(keys)
@@ -813,7 +814,7 @@ def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path)
             raise pricer.PricerRejected("http_400")
         return pricer.PriceResult([priced(t, s, .5) for t, s in chunk], 9, 1.0)
 
-    refresher = legtable.Refresher(table, fetch, interval_sec=2)
+    refresher = legtable.Refresher(table, fetch, interval_sec=2, clock=lambda: clock[0])
     assert refresher.refresh_once() is True
     assert table.missing(keys) == [], "every good leg priced, the bad one answered as a decline"
     assert len(calls) <= 3 + 2 * 8, "halving, not one call per leg"
@@ -825,9 +826,15 @@ def test_a_leg_the_runner_rejects_is_isolated_and_the_rest_still_price(tmp_path)
     assert calls == [200, 200, 50], "a rejected leg is not asked again"
     other = (NFL_SPREAD, "yes")
     table.want([other])
-    table.store([other], [priced(*other, .5)], 9, time.monotonic())
+    table.store([other], [priced(*other, .5)], 9, clock[0])
     row, _ = decide.decide(rfq("r1", [leg(bad[0]), leg(NFL_SPREAD)]), [leg(bad[0]), leg(NFL_SPREAD)], table.price)
     assert (row["decision"], row["reason"]) == ("decline", "leg_runner_rejected")
+    clock[0] += legtable.REJECT_RETRY_SEC + 1
+    table.want(keys)
+    calls.clear()
+    refresher.refresh_once()
+    assert sum(calls) > 450, "after 5 minutes the rejected leg is asked again"
+    assert refresher.take_stats()["table_legs_rejected"] == 1, "and rejected again"
 
 
 def test_4xx_and_misaligned_answers_are_rejections_and_5xx_is_not():
@@ -835,17 +842,18 @@ def test_4xx_and_misaligned_answers_are_rejections_and_5xx_is_not():
         return lambda r, timeout: (_ for _ in ()).throw(urllib.error.HTTPError(r.full_url, code, "x", {}, io.BytesIO(b"")))
     with pytest.raises(pricer.PricerRejected, match="http_400"):
         pricer.fairs("http://x", [(NFL_SPREAD, "yes")], timeout=1, opener=http(400))
-    with pytest.raises(pricer.PricerError, match="http_500") as raised:
-        pricer.fairs("http://x", [(NFL_SPREAD, "yes")], timeout=1, opener=http(500))
-    assert not isinstance(raised.value, pricer.PricerRejected)
+    for code in (403, 404, 500):     # about the runner, not these legs
+        with pytest.raises(pricer.PricerError, match=f"http_{code}") as raised:
+            pricer.fairs("http://x", [(NFL_SPREAD, "yes")], timeout=1, opener=http(code))
+        assert not isinstance(raised.value, pricer.PricerRejected)
 
 
 def test_minute_counts_add_up_across_a_restart_inside_the_minute(tmp_path):
     minute = datetime(2026, 11, 13, 2, 0, tzinfo=timezone.utc)
-    for kept, gauge in ((100, 7), (40, 3)):
+    for kept, gauge in ((100, 7), (40, 0)):
         dlog = DecisionLog(tmp_path / "q.duckdb")
         dlog.add_counts(minute, {"kept": kept, "gauge_pending": gauge})
         dlog.close()
     dlog = DecisionLog(tmp_path / "q.duckdb")
-    assert dlog.query("SELECT key, n FROM minute_counts ORDER BY key") == [("gauge_pending", 3), ("kept", 140)]
+    assert dlog.query("SELECT key, n FROM minute_counts ORDER BY key") == [("gauge_pending", 0), ("kept", 140)]
     dlog.close()

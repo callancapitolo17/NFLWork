@@ -10,7 +10,7 @@ grows with distinct legs, not with RFQs.
 A leg with no fair yet is priced first and between passes (Refresher), so
 a new leg waits a fraction of a second, not a whole pass. A leg the runner
 refuses outright is found by halving its chunk and declines
-`runner_rejected` until it leaves the table, so one bad ticker cannot stop
+`runner_rejected` for REJECT_RETRY_SEC, so one bad ticker cannot stop
 the other legs' refresh.
 
 A fair is served only while it is younger than `max_age_sec`, counted from
@@ -34,6 +34,9 @@ LegKey = tuple[str, str]          # (market_ticker, side)
 NEW_LEG_POLL_SEC = 0.25
 
 
+REJECT_RETRY_SEC = 300.0
+
+
 class LegTable:
     def __init__(self, *, max_age_sec: float, leg_ttl_sec: float,
                  clock: Callable[[], float] = time.monotonic):
@@ -44,7 +47,7 @@ class LegTable:
         self._last_asked: dict[LegKey, float] = {}
         # key -> (leg as the runner answered, runner priced_at_ms, sent_at)
         self._fairs: dict[LegKey, tuple[dict, int | None, float]] = {}
-        self._rejected: set[LegKey] = set()
+        self._rejected: dict[LegKey, float] = {}    # key -> when rejected
         self.generation = 0        # bumps on every store(); waiters retry on change
 
     def __len__(self) -> int:
@@ -66,7 +69,13 @@ class LegTable:
             for key in expired:
                 del self._last_asked[key]
                 self._fairs.pop(key, None)
-                self._rejected.discard(key)
+                self._rejected.pop(key, None)
+            # A rejection is retried after REJECT_RETRY_SEC, so a refusal that
+            # was the runner's fault (not the leg's) heals without a restart.
+            retry_before = self._clock() - REJECT_RETRY_SEC
+            for key in [k for k, at in self._rejected.items() if at < retry_before]:
+                del self._rejected[key]
+                self._fairs.pop(key, None)
             live = [k for k in self._last_asked if k not in self._rejected]
             return ([k for k in live if k not in self._fairs]
                     + [k for k in live if k in self._fairs])
@@ -79,11 +88,11 @@ class LegTable:
 
     def reject(self, key: LegKey, detail: str) -> None:
         """The runner refuses this leg: it declines runner_rejected, at any
-        age, until nobody has asked for it for leg_ttl_sec."""
+        age, and is asked again after REJECT_RETRY_SEC."""
         with self._lock:
             if key not in self._last_asked:
                 return
-            self._rejected.add(key)
+            self._rejected[key] = self._clock()
             self._fairs[key] = ({"market_ticker": key[0], "side": key[1], "ok": False,
                                  "reason": "runner_rejected", "detail": detail},
                                 None, self._clock())
