@@ -315,6 +315,13 @@ only 1st halves are read.
 Refresh prices the fectas, then the 1H board (about 70 s for ~70 games on
 2026-11-12), one after the other so each book's pacing holds.
 
+The tab lists every corner in one list sorted by edge, best first; chips sort
+by edge, stake, kickoff, fair or Wagerzon price (a second tap reverses), and
+By game groups the corners under their game, games ordered by their best
+corner. Started games sort last. Rows hold their order between polls and
+after a Place; they re-sort only when the sort, a filter or the board changes.
+The sort, layout, league and +EV only choices are remembered in the browser.
+
 ## Files
 
 | File | Job |

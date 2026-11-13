@@ -102,7 +102,6 @@
   .sort-bar { margin-top: -2px; }
   .sort-bar .seg { max-width: 100%; overflow-x: auto; }
   .row.plus { box-shadow: inset 3px 0 0 var(--good); }
-  .game-meta { font-size: 12px; color: var(--muted); margin-top: 1px; overflow-wrap: anywhere; }
 
   /* --- board --- */
   .group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
@@ -199,10 +198,8 @@
     .stake-form button { min-width: 112px; justify-content: center; }
     .to-win { flex-basis: 100%; }
     .toolbar .spacer { display: none; }
-    .sort-bar .seg button { height: 36px; padding: 0 10px; }
-    .tabs button, .toolbar > .seg button, .toggle { height: 38px; }
-    .row.dim.half .stake-none { display: none; }
-    .row.dim.half { gap: 4px; padding: 10px 12px; }
+    #half-sort-seg button { padding: 0 10px; }
+    #halves-tab .toolbar .seg button, #halves-tab .toggle { height: 38px; }
     .placed-row { grid-template-columns: 18px minmax(0, 1fr) auto; }
     .placed-row .placed-when { display: none; }
     dialog { margin: auto auto 0; width: 100vw; max-width: 100vw; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
@@ -444,7 +441,7 @@ function renderHeader(p) {
   const h = p.halves;
   if (prefs.tab === "halves") {
     if (h) {
-      const games = h.lines.filter(l => l.status === "priced").length;
+      const games = h.lines.filter(l => l.status === "priced" || l.status === "pricing").length;
       summary = `${games} game${games === 1 ? "" : "s"} · ` +
         (h.finished_at ? "updated " + clock(parseTime(h.finished_at)) : "pricing since " + clock(parseTime(h.started_at)));
     }
@@ -1059,11 +1056,10 @@ function halfStakeCell(line, corner, c, p) {
 
 function gameMeta(line) {
   const start = parseTime(line.game_start_time);
-  return el("div", { class: "game-meta num" }, [`${line.away} @ ${line.home} · ${LEAGUE_LABEL[line.league]} · ${dayClock(start)}`,
+  return el("div", { class: "books-line num" }, [`${line.away} @ ${line.home} · ${LEAGUE_LABEL[line.league]} · ${dayClock(start)}`,
     el("span", { class: "wide-only", text: ` · ${untilKickoff(start)}` })]);
 }
 
-// `showGame` adds the matchup under the title, for the list with no game headers.
 function halfRow(line, corner, p, showGame) {
   const c = line.corners[corner];
   const dim = c.fair_prob == null || !(c.ev > 0) || hasStarted(line);
@@ -1094,10 +1090,10 @@ const HALF_SORTS = {
   wz: ["WZ price", x => x.c.wz_decimal, "desc"],
 };
 
-// The chosen sort, then edge, then the board's own order; a started game
+// The chosen sort, then edge, then Wagerzon game and corner; a started game
 // can't be bet, so its corners sort last whatever the sort.
 function compareHalfRows(a, b) {
-  const [, value] = HALF_SORTS[prefs.halfSort] || HALF_SORTS.ev;
+  const [, value] = HALF_SORTS[prefs.halfSort];
   const sign = prefs.halfSortDir === "asc" ? 1 : -1;
   const byValue = (va, vb) => va == null ? (vb == null ? 0 : 1) : vb == null ? -1 : sign * (va - vb);
   return hasStarted(a.line) - hasStarted(b.line)
@@ -1105,6 +1101,18 @@ function compareHalfRows(a, b) {
     || (b.c.ev ?? -Infinity) - (a.c.ev ?? -Infinity)
     || a.line.wz_game_id - b.line.wz_game_id
     || CORNER_ORDER.indexOf(a.corner) - CORNER_ORDER.indexOf(b.corner);
+}
+
+// Rows keep the order they had until the sort, a filter or the board changes,
+// so a poll or a placement never moves a row under a finger reaching for Place.
+let halfOrder = { signature: null, rank: new Map() };
+function heldOrder(rows, signature) {
+  if (signature !== halfOrder.signature) {
+    halfOrder = { signature, rank: new Map(rows.map((x, i) => [halfKey(x.line, x.corner), i])) };
+    return rows;
+  }
+  const rank = x => halfOrder.rank.get(halfKey(x.line, x.corner)) ?? halfOrder.rank.size;
+  return [...rows].sort((a, b) => rank(a) - rank(b));
 }
 
 function setHalfSort(key) {
@@ -1155,6 +1163,8 @@ function renderHalves(p) {
       [label, el("span", { class: "count", text: counts[key] })])));
   document.getElementById("half-ev-only").setAttribute("aria-pressed", String(prefs.halfEvOnly));
 
+  if (!Object.hasOwn(HALF_SORTS, prefs.halfSort)) prefs.halfSort = "ev";
+  if (prefs.halfView !== "game") prefs.halfView = "flat";
   document.getElementById("half-view-seg").replaceChildren(...[["flat", "All by sort"], ["game", "By game"]].map(([key, label]) =>
     el("button", { "aria-pressed": String(prefs.halfView === key), text: label, onclick: () => setPref("halfView", key) })));
   renderHalfSortBar();
@@ -1162,7 +1172,8 @@ function renderHalves(p) {
   const inLeague = h.lines.filter(l => prefs.league === "all" || l.league === prefs.league);
   const priced = inLeague.filter(l => l.status === "priced" || l.status === "pricing");
   const allRows = priced.flatMap(line => CORNER_ORDER.map(corner => ({ line, corner, c: line.corners[corner] })));
-  const shownRows = allRows.filter(x => !prefs.halfEvOnly || (x.c.ev > 0 && !hasStarted(x.line))).sort(compareHalfRows);
+  const shownRows = heldOrder(allRows.filter(x => !prefs.halfEvOnly || (x.c.ev > 0 && !hasStarted(x.line))).sort(compareHalfRows),
+    [prefs.halfSort, prefs.halfSortDir, prefs.league, prefs.halfEvOnly, h.started_at, h.finished_at].join("|"));
   const parts = [];
   if (prefs.halfView === "flat") {
     if (shownRows.length) parts.push(el("div", { class: "group" }, shownRows.map(x => halfRow(x.line, x.corner, p, true))));
@@ -1186,14 +1197,13 @@ function renderHalves(p) {
     }
   }
   const hiddenCount = allRows.length - shownRows.length;
-  const showAllHalves = () => { prefs.halfEvOnly = false; savePrefs(); render(); };
   if (!parts.length) {
     parts.push(el("div", { class: "card empty" }, [
       el("h2", { text: !priced.length ? "No priced 1H parlays" : "No +EV 1H parlays" }),
-      hiddenCount ? el("button", { text: `Show all ${allRows.length}`, onclick: showAllHalves }) : null]));
+      hiddenCount ? el("button", { text: `Show all ${allRows.length}`, onclick: () => setPref("halfEvOnly", false) }) : null]));
   } else if (hiddenCount > 0) {
-    parts.push(el("div", { class: "hidden-note" }, [`${hiddenCount} -EV or started hidden · `,
-      el("button", { class: "linkish", text: "Show all", onclick: showAllHalves })]));
+    parts.push(el("div", { class: "hidden-note" }, [`${hiddenCount} hidden by +EV only · `,
+      el("button", { class: "linkish", text: "Show all", onclick: () => setPref("halfEvOnly", false) })]));
   }
   const rest = inLeague.filter(l => l.status === "skipped" || l.status === "unpriced");
   if (rest.length) {
