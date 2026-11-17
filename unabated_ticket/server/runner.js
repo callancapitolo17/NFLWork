@@ -312,6 +312,13 @@ const NOVIG_STREAM_WAIT_MS = 2000;
 // event list are reused (neither changes inside it; the book read every pass
 // still shows a closed market as empty).
 const LIVE_REREAD_MS = 20 * 1000;
+// The stream pass (liveStreamPass, between the live price passes): how often
+// every Edges exchange line is reread off the bets service's streams alone
+// (no REST, no market check, no catalog or event-list read), so a dead price
+// leaves the list in ~10 s rather than up to the 2 min a read stands. It sends
+// no venue request and builds no Edges list: the phone's 15 s /edges.json poll
+// shows the newest reads.
+const LIVE_STREAM_PASS_MS = 10 * 1000;
 // A Place refusal's reread of one line (rereadLiveLine): how long it holds up
 // the list it was asked with (it runs beside that list's bets read, and both
 // plus the build must answer inside the bets service's 5 s runner proxy
@@ -725,6 +732,13 @@ function createRunner(deps) {
   const polymarketEventLists = new Map();
   const polymarketLineContracts = new Map();
   let liveBusy = false;
+  // Row key -> {points, at} of its last read by anything but the stream pass.
+  // The live price pass decides what is due off this, not liveReads, so the
+  // stream pass's reads never starve it: it still renews Kalshi's market
+  // checks, Novig's catalog and the parity checks the stream pass relies on.
+  const fullReadAt = new Map();
+  let liveStreamBusy = false;
+  let liveStreamLastPass = { startedAt: null, finishedAt: null, rows: 0, byVenue: {}, error: null };
   // The open Ticket's reads (ticketLinePayloadNow): line key -> its read in
   // flight, line key -> its last failed read {at, error}; the newest failure for /health.
   const ticketReadsInFlight = new Map();
@@ -1716,10 +1730,12 @@ function createRunner(deps) {
   // requestedAt: when its venue read was asked for. A read already held that is
   // newer than that stays (a pass batch stamped at its end must not undo a
   // Place refusal's reread that landed mid-batch).
-  function recordLiveRead(row, venue, quote, at, requestedAt = at) {
+  //   streamPass  the stream pass's read: kept as the line's price, but not as a full read (fullReadAt)
+  function recordLiveRead(row, venue, quote, at, requestedAt = at, streamPass = false) {
     const points = row.points ?? null;
     const held_ = liveReads.get(row.key);
     if (held_ && (held_.points ?? null) === points && held_.readAtMs > requestedAt) return;
+    if (!streamPass) fullReadAt.set(row.key, { points, at });
     liveReads.set(row.key, quote
       ? { venue, points, allIn: Math.round(quote.allIn * LIVE_PRICE_DECIMALS) / LIVE_PRICE_DECIMALS, depthDollars: Math.round(quote.depthDollars * 100) / 100, readAtMs: at }
       : { venue, points, empty: true, readAtMs: at });
@@ -1796,6 +1812,9 @@ function createRunner(deps) {
       for (const [key, read] of liveReads) {
         if (startedAt - read.readAtMs > livePrices.LIVE_READ_MAX_AGE_MS) liveReads.delete(key);
       }
+      for (const [key, read] of fullReadAt) {
+        if (startedAt - read.at > livePrices.LIVE_READ_MAX_AGE_MS) fullReadAt.delete(key);
+      }
       for (const [ticker, check] of kalshiMarketChecks) {
         if (startedAt - check.checkedAt > KALSHI_MARKET_CHECK_TTL_MS) kalshiMarketChecks.delete(ticker);
       }
@@ -1806,8 +1825,8 @@ function createRunner(deps) {
         if (startedAt >= contract.startMs) polymarketLineContracts.delete(line);
       }
       const readAtOf = (row) => {
-        const read = liveReads.get(row.key);
-        return read && (read.points ?? null) === (row.points ?? null) ? read.readAtMs : -Infinity;
+        const read = fullReadAt.get(row.key);
+        return read && read.points === (row.points ?? null) ? read.at : -Infinity;
       };
       const rows = liveCandidateRows(board, startedAt);
       const due = rows.filter((row) => startedAt - readAtOf(row) > LIVE_REREAD_MS)
@@ -1829,6 +1848,44 @@ function createRunner(deps) {
       liveLastPass = { ...liveLastPass, startedAt, finishedAt: now(), error: error.message };
     } finally {
       liveBusy = false;
+    }
+  }
+
+  // One stream pass (every LIVE_STREAM_PASS_MS): every Edges line at the read
+  // venues reread off the bets service's streams only, so the list's exchange
+  // prices are at most ~10 s old between live price passes. Only what is
+  // already held is used: Kalshi's market checks (none read: a line without
+  // one waits for the live price pass), its stream books (no REST book, no
+  // parity check), Novig's catalog as held up to
+  // LIVE_REREAD_NOVIG_CATALOG_MAX_AGE_MS (no keyed REST book), Polymarket US
+  // lines whose contract is already found (no event-list read), and
+  // ProphetX's last reads. Sends no venue request; the reads land in
+  // liveReads (not fullReadAt). Skips while the live price pass runs, and
+  // while the previous stream pass is still running.
+  async function liveStreamPass() {
+    const board = feedState;
+    if (liveBusy || liveStreamBusy || !board || !scannerStatus || scannerStatus.phase !== "live") return;
+    liveStreamBusy = true;
+    const startedAt = now();
+    try {
+      const rows = liveCandidateRows(board, startedAt);
+      const ofVenue = (venue) => rows.filter((row) => liveVenueOf(board, row.book.id) === venue);
+      const polymarketFound = ofVenue(polymarket.VENUE).filter((row) => polymarketLineContracts.has(polymarketLineKey(row)));
+      const [kalshiCounts, novigCounts, polymarketCounts, prophetxCounts] = await Promise.all([
+        liveKalshiReads(board, ofVenue(taker.VENUE_KALSHI), { streamPass: true }),
+        liveNovigReads(board, ofVenue(taker.VENUE_NOVIG), { streamPass: true }),
+        livePolymarketReads(polymarketFound.slice(0, POLYMARKET_BOOK_SLUGS_PER_ASK), { freshEventReadsAllowed: 0, streamPass: true }),
+        liveProphetxReads(board, ofVenue(VENUE_PROPHETX), { streamPass: true }),
+      ]);
+      liveStreamLastPass = {
+        startedAt, finishedAt: now(), rows: rows.length, error: null,
+        byVenue: { kalshi: kalshiCounts, novig: novigCounts, polymarket_us: polymarketCounts, prophetx: prophetxCounts },
+      };
+    } catch (error) {
+      logWarning(`live stream pass failed: ${error.stack || error.message}`);
+      liveStreamLastPass = { ...liveStreamLastPass, startedAt, finishedAt: now(), error: error.message };
+    } finally {
+      liveStreamBusy = false;
     }
   }
 
@@ -1865,7 +1922,10 @@ function createRunner(deps) {
     });
     const { failed, ...answer } = await Promise.race([read, waited]);
     clearTimeout(timer);
-    if (failed || (answer.counts && answer.counts.unchecked)) liveReads.delete(rowKey);
+    if (failed || (answer.counts && answer.counts.unchecked)) {
+      liveReads.delete(rowKey);
+      fullReadAt.delete(rowKey);
+    }
     return answer;
   }
 
@@ -1891,8 +1951,8 @@ function createRunner(deps) {
     counts.lastError = why;
   }
 
-  function noteRead(counts, row, venue, quote, at, requestedAt = at) {
-    recordLiveRead(row, venue, quote, at, requestedAt);
+  function noteRead(counts, row, venue, quote, at, requestedAt = at, streamPass = false) {
+    recordLiveRead(row, venue, quote, at, requestedAt, streamPass);
     if (quote) counts.live += 1;
     else counts.empty += 1;
   }
@@ -1903,12 +1963,12 @@ function createRunner(deps) {
   // reads at most that many REST books; a line past the check budget waits a
   // pass, uncounted. counts.fromStream / fromRest say where the books came from.
   //   priority  a reread of one line: its stream book waits KALSHI_STREAM_WAIT_MS, no pass budgets
-  async function liveKalshiReads(board, rows, { priority = false } = {}) {
+  async function liveKalshiReads(board, rows, { priority = false, streamPass = false } = {}) {
     const at = now();
     const unresolved = [];
     const taken = [];
     const unchecked = new Set();
-    const checkBudget = priority ? Infinity : LIVE_KALSHI_READS_PER_PASS;
+    const checkBudget = priority ? Infinity : (streamPass ? 0 : LIVE_KALSHI_READS_PER_PASS);
     for (const row of rows) {
       const contract = taker.resolveKalshiContract(row, board);
       if (contract.reason) {
@@ -1937,8 +1997,8 @@ function createRunner(deps) {
     });
     const tickers = Array.from(new Set(checked.map(({ contract }) => contract.ticker)));
     const books = await readKalshiBooksStreamFirst(tickers, priority
-      ? { priority: true, restBudget: Infinity } : { background: true, restBudget: LIVE_KALSHI_READS_PER_PASS });
-    if (!priority) await checkKalshiStreamParity(books);
+      ? { priority: true, restBudget: Infinity } : { background: true, restBudget: streamPass ? 0 : LIVE_KALSHI_READS_PER_PASS });
+    if (!priority && !streamPass) await checkKalshiStreamParity(books);
     const readAt = now();
     for (const { row, contract } of checked) {
       const read = books.get(contract.ticker);
@@ -1951,7 +2011,7 @@ function createRunner(deps) {
         noteUnchecked(counts, `${contract.ticker}: ${read ? read.error : "no read"}`);
         continue;
       }
-      noteRead(counts, row, taker.VENUE_KALSHI, kalshiLiveQuote(read.book, contract.side), readAt, at);
+      noteRead(counts, row, taker.VENUE_KALSHI, kalshiLiveQuote(read.book, contract.side), readAt, at, streamPass);
       if (read.from === "stream") counts.fromStream += 1;
       else counts.fromRest += 1;
     }
@@ -2074,7 +2134,9 @@ function createRunner(deps) {
   //   ticket  an open Ticket's read (ticketLinePayloadNow): the stream subscribes the
   //           market ahead of the bot's and waits for its first book, and no
   //           keyed REST book is read (a 2 s poll would spend Novig's REST budget)
-  async function liveNovigReads(board, rows, { heldOnly = false, ticket = false } = {}) {
+  //   streamPass  the stream pass: as heldOnly, its reads kept as stream-pass reads
+  async function liveNovigReads(board, rows, { heldOnly: heldOnlyAsked = false, ticket = false, streamPass = false } = {}) {
+    const heldOnly = heldOnlyAsked || streamPass;
     const counts = newLiveCounts(rows.length);
     if (!rows.length) return counts;
     const requestedAt = now();
@@ -2113,11 +2175,11 @@ function createRunner(deps) {
         noteUnchecked(counts, `${contract.marketId}: no stream answer`);
       } else if (read.error) {
         // The stream saw the market go live or leave OPEN: nothing there to buy pregame.
-        if (read.final) noteRead(counts, row, taker.VENUE_NOVIG, null, readAt, requestedAt);
+        if (read.final) noteRead(counts, row, taker.VENUE_NOVIG, null, readAt, requestedAt, streamPass);
         else noteUnchecked(counts, read.error);
       } else {
         try {
-          noteRead(counts, row, taker.VENUE_NOVIG, novigLiveQuote(read.book, contract), readAt, requestedAt);
+          noteRead(counts, row, taker.VENUE_NOVIG, novigLiveQuote(read.book, contract), readAt, requestedAt, streamPass);
         } catch (error) {
           noteUnchecked(counts, `${contract.marketId}: ${error.message}`);
         }
@@ -2158,7 +2220,8 @@ function createRunner(deps) {
   //   freshEventReadsAllowed  fresh event lists this call may read (a Place
   //                           refusal's reread reads none: held lists only)
   //   ticket  an open Ticket's read: the stream subscribes the market first and waits for its first book
-  async function livePolymarketReads(rows, { freshEventReadsAllowed = LIVE_POLYMARKET_EVENT_READS_PER_PASS, ticket = false } = {}) {
+  //   streamPass  the stream pass's read (only rows whose contract is already found are passed)
+  async function livePolymarketReads(rows, { freshEventReadsAllowed = LIVE_POLYMARKET_EVENT_READS_PER_PASS, ticket = false, streamPass = false } = {}) {
     const counts = newLiveCounts(rows.length);
     const requestedAt = now();
     const found = [];
@@ -2203,7 +2266,7 @@ function createRunner(deps) {
       }
       const quote = polymarket.quoteOf(read.book, side);
       if (quote.reason === "no_book" || quote.reason === "market_closed") {
-        noteRead(counts, row, polymarket.VENUE, null, now(), requestedAt);
+        noteRead(counts, row, polymarket.VENUE, null, now(), requestedAt, streamPass);
         continue;
       }
       if (quote.reason) {
@@ -2211,7 +2274,7 @@ function createRunner(deps) {
         continue;
       }
       const allIn = polymarket.allInOf(quote.ask);
-      noteRead(counts, row, polymarket.VENUE, { allIn, depthDollars: quote.depth * allIn }, now(), requestedAt);
+      noteRead(counts, row, polymarket.VENUE, { allIn, depthDollars: quote.depth * allIn }, now(), requestedAt, streamPass);
     }
     return counts;
   }
@@ -2253,7 +2316,7 @@ function createRunner(deps) {
   // matched to the one ProphetX side that reads as its line (the line's own
   // strike id, when Unabated names one, must be that side's). The service
   // never waits: a game it has not read yet leaves its rows unchecked.
-  async function liveProphetxReads(board, rows) {
+  async function liveProphetxReads(board, rows, { streamPass = false } = {}) {
     const counts = newLiveCounts(rows.length);
     if (!rows.length) return counts;
     const rowsByGame = new Map();
@@ -2285,7 +2348,7 @@ function createRunner(deps) {
       }
       const { side, readAtMs } = matched;
       const quote = side.price == null ? null : { allIn: pricecheck.impliedProb(side.price), depthDollars: side.depth };
-      noteRead(counts, row, VENUE_PROPHETX, quote, readAtMs);
+      noteRead(counts, row, VENUE_PROPHETX, quote, readAtMs, readAtMs, streamPass);
     }
     return counts;
   }
@@ -2445,6 +2508,12 @@ function createRunner(deps) {
       startedAt: isoOrNull(liveLastPass.startedAt), finishedAt: isoOrNull(liveLastPass.finishedAt),
       rows: liveLastPass.rows, due: liveLastPass.due ?? null, reads: liveReads.size, error: liveLastPass.error, byVenue: liveLastPass.byVenue,
       kalshiStreamParity: { ...kalshiParity },
+      // The last stream pass (liveStreamPass, every LIVE_STREAM_PASS_MS): its time, rows and per-venue counts.
+      streamPass: {
+        startedAt: isoOrNull(liveStreamLastPass.startedAt), finishedAt: isoOrNull(liveStreamLastPass.finishedAt),
+        durationMs: liveStreamLastPass.startedAt == null || liveStreamLastPass.finishedAt == null ? null : liveStreamLastPass.finishedAt - liveStreamLastPass.startedAt,
+        rows: liveStreamLastPass.rows, error: liveStreamLastPass.error, byVenue: liveStreamLastPass.byVenue,
+      },
       // The open Ticket's last venue read when it failed (GET /ticket_line.json), else null.
       ticketLastError: ticketLastError ? { key: ticketLastError.key, at: isoOrNull(ticketLastError.at), error: ticketLastError.error } : null,
     };
@@ -3345,6 +3414,7 @@ function createRunner(deps) {
         await takerPass();
         await livePricePass();
       }, TAKER_PASS_MS),
+      timers.setInterval(() => liveStreamPass(), LIVE_STREAM_PASS_MS),
       timers.setInterval(() => postTauSamples(), TAU_SAMPLES_POST_MS),
     ];
     await loadTauPool();
@@ -3498,7 +3568,7 @@ function createRunner(deps) {
   }
 
   return {
-    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postEdgeSegments, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass, rereadLiveLine,
+    start, stop, pollBets, pollSettings, postClosingFairs, postLadders, postEdgeSegments, postTauSamples, scanLoaded: () => scanLoad, learn, takerPass, postTakerDecisions, livePricePass, liveStreamPass, rereadLiveLine,
     edgesPayload: edgesPayloadNow, livePricesPayload: livePricesPayloadNow, ticketLinePayload: ticketLinePayloadNow, teasersPayload: teasersPayloadNow, attachPayload: attachPayloadNow, tauPayload: tauPayloadNow,
     scenariosPayload: scenariosPayloadNow, takerPayload: takerPayloadNow, kalshiQuote: kalshiQuoteNow, rfqPrice: rfqPriceNow, rfqFairs: rfqFairsNow, novigQuote: novigQuoteNow, polymarketQuote: polymarketQuoteNow, prophetxQuote: prophetxQuoteNow, bfaQuote: bfaQuoteNow, teamKeys: teamKeysNow, health, scanner,
     boardLines,

@@ -820,6 +820,21 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   About 60 games stay read within the 2 min a read stands. The taker's own reads count,
   so a 3%+ line is not read twice. A line whose market fails its check is
   never painted with that market's price.
+- **Stream pass (`liveStreamPass`, every 10 s; Cal, 2026-11-17).** Between
+  live price passes every Edges line at the four exchanges is reread off the
+  bets service's streams alone, so a dead price leaves the list within ~10 s
+  plus the phone's 15 s `/edges.json` poll instead of standing up to 2 min.
+  It uses only what the live price pass already holds: Kalshi lines with a
+  market check cached (stream book only, no REST book or parity check),
+  Novig's catalog as held up to 10 min (stream book only, no keyed REST
+  book), Polymarket US lines whose contract is already found (no event-list
+  read) and ProphetX's last reads. It sends no Kalshi, Novig, Polymarket US
+  or ProphetX request and builds no Edges list, and its reads do not count
+  as the live price pass's (`fullReadAt`), so that pass still rereads every
+  line on its own 20 s clock, renewing the market checks, the catalog and
+  the Kalshi parity checks. It skips a tick while the live price pass, or
+  the previous stream pass, is running. `/health` `livePrices.streamPass`
+  shows its last run (`durationMs`, `rows`, per-venue counts).
 - **The overlay (`extension/liveprices.js`).** A read under 2 min old at the
   line's own number reprices it: price = the live all-in (Kalshi's 7% fee and
   Polymarket US's 6% fee included; Novig charges none pregame), liquidity =
