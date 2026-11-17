@@ -243,7 +243,8 @@
     if (fresh === true && rereadKey) path += `&reread=${encodeURIComponent(rereadKey)}`;
     try {
       const payload = await requestJson("GET", path);
-      if (phoneView.edgesListReplaces(payload, state.edges.payload)) pollSucceeded(state.edges, payload);
+      // An older build than the one shown keeps the list but still counts as a good poll.
+      pollSucceeded(state.edges, phoneView.edgesListReplaces(payload, state.edges.payload) ? payload : state.edges.payload);
     } catch (error) {
       pollFailed(state.edges, error);
     }

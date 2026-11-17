@@ -2892,8 +2892,8 @@ node unabated_ticket/server/runner.js                     # must be running too 
   price can be up to 2 min old (the live price pass), the Ticket's is read every
   2 s, so each Ticket answer also patches its Edges row (`phoneview.withTicketReads`):
   the row takes the answer's price, edge and stake in place (the order holds
-  until the next list), or leaves the list when the Ticket would close on it
-  (under Min edge or nothing to bet; a card shows its next line, or drops; a
+  until the next list), or leaves the list on any answer under Min edge or
+  with nothing to bet (one such answer, though the Ticket closes only after two; a card shows its next line, or drops; a
   skipped row only drops). A patch stands until the shown list was built after
   the Ticket's read (`generatedAt` against the answer's `readAt`, both the
   runner's clock: a plain `/edges.json` is the board thread's copy from the
