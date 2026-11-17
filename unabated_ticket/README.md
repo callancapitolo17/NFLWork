@@ -2888,6 +2888,18 @@ node unabated_ticket/server/runner.js                     # must be running too 
   none), so one tick never closes it (Cal); a pause over
   10 s starts the count again. A price or number that moves between Place and
   its confirm disarms it. Phone only; the panel's Ticket is unchanged.
+- **The Ticket's reads on the Edges list (2026-11-17)**: the list's exchange
+  price can be up to 2 min old (the live price pass), the Ticket's is read every
+  2 s, so each Ticket answer also patches its Edges row (`phoneview.withTicketReads`):
+  the row takes the answer's price, edge and stake in place (the order holds
+  until the next list), or leaves the list on any answer under Min edge or
+  with nothing to bet (one such answer, though the Ticket closes only after two; a card shows its next line, or drops; a
+  skipped row only drops). A patch stands until the shown list was built after
+  the Ticket's read (`generatedAt` against the answer's `readAt`, both the
+  runner's clock: a plain `/edges.json` is the board thread's copy from the
+  previous ask, which the runner then rebuilds with the Ticket's read), at most
+  2 min. A list built earlier than the shown one never replaces it (a plain
+  poll's copy can land after a `?fresh=1` asked before it).
 - **Reuse**: `phoneview.js` (pure, tested in `tests/phoneview.test.js`) formats
   on top of the extension's `kelly.js`, `feed.js`, `teams.js`, `bets.js`,
   `ladder.js`, `condkelly.js`, `betsview.js`, `edgemove.js`, `fillfair.js`,

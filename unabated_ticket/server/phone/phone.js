@@ -145,6 +145,9 @@
     // counts them (phoneView.placedMarkShows): row key -> {stake, sentAt,
     // repliedAt, betsReadAfter, cardKey}.
     placedMarks: new Map(),
+    // The open Ticket's answers laid over its Edges row until a list built
+    // after them lands (phoneView.withTicketReads): row key -> patch.
+    ticketPatches: new Map(),
     // Row keys whose every-book list is open; the Skipped fold's state.
     openPriceChecks: new Set(),
     skippedFoldOpen: false,
@@ -239,7 +242,9 @@
     if (fresh === true) path += "?fresh=1";
     if (fresh === true && rereadKey) path += `&reread=${encodeURIComponent(rereadKey)}`;
     try {
-      pollSucceeded(state.edges, await requestJson("GET", path));
+      const payload = await requestJson("GET", path);
+      // An older build than the one shown keeps the list but still counts as a good poll.
+      pollSucceeded(state.edges, phoneView.edgesListReplaces(payload, state.edges.payload) ? payload : state.edges.payload);
     } catch (error) {
       pollFailed(state.edges, error);
     }
@@ -577,6 +582,15 @@
     renderAll();
   }
 
+  // The list with the open Ticket's fresher reads on their rows; a patch the
+  // shown list already carries (built after the read) is dropped.
+  function withTicketPatches(payload, now) {
+    for (const [key, patch] of state.ticketPatches) {
+      if (!phoneView.ticketPatchShows(patch, payload.generatedAt, now)) state.ticketPatches.delete(key);
+    }
+    return phoneView.withTicketReads(payload, state.ticketPatches);
+  }
+
   // Drops the Place marks the shown list already counts; once per render.
   function prunePlacedMarks(now) {
     const listBetsReadAt = state.edges.payload ? state.edges.payload.betsService.generatedAt ?? null : null;
@@ -634,7 +648,8 @@
     view.edgesPriceCheck.textContent = payload.priceCheck || "";
     view.edgesPriceCheck.hidden = !payload.priceCheck;
     prunePlacedMarks(now);
-    const { items: withSkips, skipped, total: totalWithSkips } = edgesWithSkips(payload);
+    const shown = withTicketPatches(payload, now);
+    const { items: withSkips, skipped, total: totalWithSkips } = edgesWithSkips(shown);
     const listed = phoneView.withoutFullyBet(withSkips, payload.grouped);
     const fullyBet = withSkips.length - listed.length;
     const total = totalWithSkips - fullyBet;
@@ -642,11 +657,11 @@
     view.edgesList.replaceChildren(...items, ...skippedFoldEls(skipped, now));
     view.edgesCount.hidden = total === 0;
     view.edgesCount.textContent = String(total);
-    view.edgesEmpty.hidden = total > 0 && payload.total <= payload.maxShown;
-    view.edgesEmpty.textContent = payload.total === 0
+    view.edgesEmpty.hidden = total > 0 && shown.total <= payload.maxShown;
+    view.edgesEmpty.textContent = shown.total === 0
       ? (payload.scanner.phase === "live" ? `No line at or above ${settings.minEdgePct}% edge right now.` : "Waiting for the runner's first snapshot…")
-      : total === 0 && fullyBet > 0 && payload.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
-        : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
+      : total === 0 && fullyBet > 0 && shown.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
+        : `Showing the top ${payload.maxShown} of ${shown.total} ${payload.unit}; raise the minimum edge to see fewer.`;
   }
 
   // The Skipped line under the list: tap to open the skipped rows, each with Restore.
@@ -709,6 +724,13 @@
     foldToastsIntoTicket(false);
   }
 
+  // Keeps a Ticket answer's patch; whether the Edges row it shows changed (only then is the list redrawn).
+  function setTicketPatch(patch) {
+    const held = state.ticketPatches.get(patch.key);
+    state.ticketPatches.set(patch.key, patch);
+    return !held || JSON.stringify(held.row) !== JSON.stringify(patch.row);
+  }
+
   // One ask for the open Ticket's line, then the next TICKET_POLL_MS after the
   // answer (never two in flight). Paused while the page is hidden; onVisibility
   // starts it again. An answer for a Ticket since closed or changed is dropped.
@@ -730,6 +752,7 @@
     if (state.ticket !== ticket) return;
     try {
       ticket.live = phoneView.ticketLiveStep(ticket.live, answer, Date.now(), failure);
+      const changed = failure ? false : setTicketPatch(phoneView.ticketReadPatch(answer, ticket.live.answeredAt));
       if (phoneView.ticketShouldClose(ticket.live)) {
         const text = phoneView.ticketClosedText(ticket.live);
         closeTicket();
@@ -738,6 +761,7 @@
         return;
       }
       renderTicket(Date.now());
+      if (changed) renderEdges(Date.now());
     } catch (error) {
       console.error("[unabated-ticket] ticket refresh failed", error);
     } finally {
