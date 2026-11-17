@@ -447,3 +447,35 @@ test("ticket live: a fresh answer shows its read time; an old read or a stale an
   assert.deepEqual(phoneView.ticketLiveNote(phoneView.ticketLiveStep(null, null, NOW, "timeout"), NOW),
     { text: "Live refresh failed: timeout. Showing the list's price.", tone: "warn" });
 });
+
+test("ticket reads on the list: an answer patches its row, or drops it under Min edge or with nothing to bet", () => {
+  const row = (key, edgePct) => ({ key, edgePct, price: 120 });
+  assert.deepEqual(phoneView.ticketReadPatch({ key: "a", row: row("a", 2), underMinEdge: false }, NOW), { key: "a", row: row("a", 2), answeredAt: NOW });
+  assert.equal(phoneView.ticketReadPatch({ key: "a", row: row("a", 0.5), underMinEdge: true }, NOW).row, null, "under Min edge drops");
+  assert.equal(phoneView.ticketReadPatch({ key: "a", row: null, reason: "empty" }, NOW).row, null, "nothing to bet drops");
+  assert.equal(phoneView.ticketReadPatch(null, NOW), null);
+
+  const flat = { grouped: false, total: 3, items: [row("a", 5), row("b", 4), row("c", 3)], skipped: [row("s", 6)] };
+  const patches = new Map([["a", { key: "a", row: row("a", 2.1), answeredAt: NOW }], ["b", { key: "b", row: null, answeredAt: NOW }], ["s", { key: "s", row: null, answeredAt: NOW }]]);
+  const shown = phoneView.withTicketReads(flat, patches);
+  assert.deepEqual(shown.items.map((item) => [item.key, item.edgePct]), [["a", 2.1], ["c", 3]]);
+  assert.equal(shown.total, 2);
+  assert.deepEqual(shown.skipped, []);
+  assert.equal(flat.items.length, 3, "the payload itself is left as it was");
+  assert.equal(phoneView.withTicketReads(flat, new Map()), flat);
+
+  const card = (key, best, others) => ({ key, best, others, lineCount: 1 + others.length });
+  const grouped = { grouped: true, total: 2, items: [card("x", row("x1", 5), [row("x2", 4)]), card("y", row("y1", 3), [])], skipped: [] };
+  const dropBest = phoneView.withTicketReads(grouped, new Map([["x1", { key: "x1", row: null, answeredAt: NOW }]]));
+  assert.deepEqual([dropBest.items[0].best.key, dropBest.items[0].others, dropBest.items[0].lineCount], ["x2", [], 1], "the next line leads the card");
+  const dropCard = phoneView.withTicketReads(grouped, new Map([["y1", { key: "y1", row: null, answeredAt: NOW }]]));
+  assert.deepEqual([dropCard.items.map((item) => item.key), dropCard.total], [["x"], 1], "a card with no line left drops");
+});
+
+test("ticket reads on the list: a patch stands until a list asked for after its answer lands", () => {
+  const patch = { key: "a", row: null, answeredAt: NOW };
+  assert.equal(phoneView.ticketPatchShows(patch, null), true);
+  assert.equal(phoneView.ticketPatchShows(patch, NOW - 1), true, "a list asked before the answer may not carry the read");
+  assert.equal(phoneView.ticketPatchShows(patch, NOW), false);
+  assert.equal(phoneView.ticketPatchShows(patch, NOW + 5000), false);
+});

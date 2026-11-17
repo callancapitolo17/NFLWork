@@ -774,6 +774,50 @@
     return tone === "ok" ? PLACE_TOAST_FILLED_HIDE_MS : null;
   }
 
+  // ---- the open Ticket's reads on the Edges list (Cal 2026-11-17) ---------------
+  // The Edges list's exchange price can be a minute or two older than the open
+  // Ticket's (the list rereads a line every 30 s or so, the Ticket every 2 s).
+  // Each Ticket answer is kept as a patch on its row until a list asked for
+  // after that answer lands (the runner keeps the Ticket's read, so that list
+  // already carries it): the row takes the Ticket's numbers, or leaves the list
+  // when the Ticket finds nothing to bet or the edge under Min edge.
+  //   patch  {key, row (the answer's rowView) | null (drop the row), answeredAt (phone ms)}
+
+  // The patch one Ticket answer makes, or null for an answer without a key.
+  function ticketReadPatch(answer, answeredAt) {
+    if (!answer || !answer.key) return null;
+    const drop = !answer.row || answer.underMinEdge === true;
+    return { key: answer.key, row: drop ? null : answer.row, answeredAt };
+  }
+
+  // Whether a patch still says more than the shown list: the list was asked
+  // for before the Ticket's answer came back. listAskedAt: phone ms the shown
+  // /edges.json was asked for (null: unknown, the patch stands).
+  function ticketPatchShows(patch, listAskedAt) {
+    return listAskedAt == null || patch.answeredAt > listAskedAt;
+  }
+
+  // The payload's items and skipped rows with the patches applied, and its
+  // total less what they dropped. A card whose best row drops shows its next
+  // line (others are in rank order); a card left with no line drops. The
+  // payload itself is not changed. patches: Map key -> patch.
+  function withTicketReads(payload, patches) {
+    if (!patches || patches.size === 0) return payload;
+    const patched = (row) => (patches.has(row.key) ? patches.get(row.key).row : row);
+    const keep = (rows) => rows.map(patched).filter(Boolean);
+    let items;
+    if (payload.grouped) {
+      items = payload.items.map((card) => {
+        const lines = keep([card.best, ...card.others]);
+        if (!lines.length) return null;
+        return { ...card, best: lines[0], others: lines.slice(1), lineCount: lines.length };
+      }).filter(Boolean);
+    } else {
+      items = keep(payload.items);
+    }
+    return { ...payload, items, skipped: keep(payload.skipped || []), total: payload.total - (payload.items.length - items.length) };
+  }
+
   // ---- Free play at BFA (Cal 2026-11-09) --------------------------------------
   // A free play pays only the to-win; the free play balance pays the risk, so
   // a loss costs no cash. Its worth per $1 is the fair chance to win times the
@@ -828,6 +872,7 @@
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
     placeToastPlacingText, placeToastHideAfterMs, toastChipView, freePlayStake,
     TICKET_POLL_MS, ticketLiveStep, ticketLiveFresh, ticketShouldClose, ticketUnderMinEdge, ticketClosedText, ticketLiveNote,
+    ticketReadPatch, ticketPatchShows, withTicketReads,
     withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 
