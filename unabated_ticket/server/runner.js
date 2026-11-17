@@ -1855,7 +1855,7 @@ function createRunner(deps) {
   }
 
   // One stream pass (every LIVE_STREAM_PASS_MS): the last live price pass's
-  // lines (still on the board, game not started) reread off the bets
+  // lines (still on the board at the same number, game not started) reread off the bets
   // service's streams only. Only what is already held is used: Kalshi's
   // market checks (a line without one waits for the live price pass), its
   // stream books (no REST book, no parity check), Novig's catalog as held up
@@ -1870,7 +1870,9 @@ function createRunner(deps) {
     liveStreamBusy = true;
     const startedAt = now();
     try {
-      const rows = liveStreamRows.filter((row) => board.lines[row.key] && row.eventStartMs > startedAt);
+      // A main line keeps its key when its number moves: a row at the old number would only overwrite the new number's read.
+      const rows = liveStreamRows.filter((row) => board.lines[row.key] && (board.lines[row.key].points ?? null) === (row.points ?? null)
+        && row.eventStartMs > startedAt);
       const ofVenue = (venue) => rows.filter((row) => liveVenueOf(board, row.book.id) === venue);
       // Only found contracts: an unfound one would only read as unchecked here.
       const polymarketFound = ofVenue(polymarket.VENUE).filter((row) => polymarketLineContracts.has(polymarketLineKey(row)));

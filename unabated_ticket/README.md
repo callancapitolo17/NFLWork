@@ -822,7 +822,7 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   never painted with that market's price.
 - **Stream pass (`liveStreamPass`, every 10 s; Cal, 2026-11-17).** Between
   live price passes the lines the last live price pass picked (still on the
-  board, game not started; no board walk of its own, which is the cost #316
+  board at the same number, game not started; no board walk of its own, which is the cost #316
   took out of `/edges.json`) are reread off the bets service's streams alone,
   so a dead price leaves the phone's list within about 25 s (10 s pass plus
   the 15 s `/edges.json` poll) instead of standing up to 2 min. It uses only
