@@ -124,8 +124,7 @@
     bannersOpen: false,
     edgesStatusOpen: false,
     // What each poll left: {payload, okAt, error, errorAt, failingSince}.
-    // askedAt: phone ms the shown /edges.json was asked for (the Ticket's patches below).
-    edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null, askedAt: null },
+    edges: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     teasers: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     bets: { payload: null, okAt: null, error: null, errorAt: null, failingSince: null },
     // The last /balances.json body and the last fetch's failure (the Edges tab's Balances line).
@@ -146,7 +145,7 @@
     // counts them (phoneView.placedMarkShows): row key -> {stake, sentAt,
     // repliedAt, betsReadAfter, cardKey}.
     placedMarks: new Map(),
-    // The open Ticket's answers laid over its Edges row until a list asked for
+    // The open Ticket's answers laid over its Edges row until a list built
     // after them lands (phoneView.withTicketReads): row key -> patch.
     ticketPatches: new Map(),
     // Row keys whose every-book list is open; the Skipped fold's state.
@@ -242,14 +241,9 @@
     let path = "/edges.json";
     if (fresh === true) path += "?fresh=1";
     if (fresh === true && rereadKey) path += `&reread=${encodeURIComponent(rereadKey)}`;
-    const askedAt = Date.now();
     try {
       const payload = await requestJson("GET", path);
-      // Polls may land out of order: an older ask's list never replaces a newer one's.
-      if (state.edges.askedAt == null || askedAt >= state.edges.askedAt) {
-        pollSucceeded(state.edges, payload);
-        state.edges.askedAt = askedAt;
-      }
+      if (phoneView.edgesListReplaces(payload, state.edges.payload)) pollSucceeded(state.edges, payload);
     } catch (error) {
       pollFailed(state.edges, error);
     }
@@ -588,10 +582,10 @@
   }
 
   // The list with the open Ticket's fresher reads on their rows; a patch the
-  // shown list already carries (asked for after the answer) is dropped.
-  function withTicketPatches(payload) {
+  // shown list already carries (built after the read) is dropped.
+  function withTicketPatches(payload, now) {
     for (const [key, patch] of state.ticketPatches) {
-      if (!phoneView.ticketPatchShows(patch, state.edges.askedAt)) state.ticketPatches.delete(key);
+      if (!phoneView.ticketPatchShows(patch, payload.generatedAt, now)) state.ticketPatches.delete(key);
     }
     return phoneView.withTicketReads(payload, state.ticketPatches);
   }
@@ -653,7 +647,8 @@
     view.edgesPriceCheck.textContent = payload.priceCheck || "";
     view.edgesPriceCheck.hidden = !payload.priceCheck;
     prunePlacedMarks(now);
-    const { items: withSkips, skipped, total: totalWithSkips } = edgesWithSkips(withTicketPatches(payload));
+    const shown = withTicketPatches(payload, now);
+    const { items: withSkips, skipped, total: totalWithSkips } = edgesWithSkips(shown);
     const listed = phoneView.withoutFullyBet(withSkips, payload.grouped);
     const fullyBet = withSkips.length - listed.length;
     const total = totalWithSkips - fullyBet;
@@ -661,11 +656,11 @@
     view.edgesList.replaceChildren(...items, ...skippedFoldEls(skipped, now));
     view.edgesCount.hidden = total === 0;
     view.edgesCount.textContent = String(total);
-    view.edgesEmpty.hidden = total > 0 && payload.total <= payload.maxShown;
-    view.edgesEmpty.textContent = payload.total === 0
+    view.edgesEmpty.hidden = total > 0 && shown.total <= payload.maxShown;
+    view.edgesEmpty.textContent = shown.total === 0
       ? (payload.scanner.phase === "live" ? `No line at or above ${settings.minEdgePct}% edge right now.` : "Waiting for the runner's first snapshot…")
-      : total === 0 && fullyBet > 0 && payload.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
-        : `Showing the top ${payload.maxShown} of ${payload.total} ${payload.unit}; raise the minimum edge to see fewer.`;
+      : total === 0 && fullyBet > 0 && shown.total <= payload.maxShown ? `Every line at or above ${settings.minEdgePct}% edge is already bet to full size.`
+        : `Showing the top ${payload.maxShown} of ${shown.total} ${payload.unit}; raise the minimum edge to see fewer.`;
   }
 
   // The Skipped line under the list: tap to open the skipped rows, each with Restore.
@@ -728,14 +723,11 @@
     foldToastsIntoTicket(false);
   }
 
-  // Closed by Cal (the close button, the backdrop, Escape): the list behind
-  // shows the Ticket's last read at once, then refreshes on the reads it made.
-  function closeTicketByHand() {
-    const hadTicket = Boolean(state.ticket);
-    closeTicket();
-    if (!hadTicket) return;
-    renderEdges(Date.now());
-    pollEdges();
+  // Keeps a Ticket answer's patch; whether the Edges row it shows changed (only then is the list redrawn).
+  function setTicketPatch(patch) {
+    const held = state.ticketPatches.get(patch.key);
+    state.ticketPatches.set(patch.key, patch);
+    return !held || JSON.stringify(held.row) !== JSON.stringify(patch.row);
   }
 
   // One ask for the open Ticket's line, then the next TICKET_POLL_MS after the
@@ -759,19 +751,16 @@
     if (state.ticket !== ticket) return;
     try {
       ticket.live = phoneView.ticketLiveStep(ticket.live, answer, Date.now(), failure);
-      const patch = failure ? null : phoneView.ticketReadPatch(answer, Date.now());
-      if (patch) state.ticketPatches.set(patch.key, patch);
+      const changed = failure ? false : setTicketPatch(phoneView.ticketReadPatch(answer, ticket.live.answeredAt));
       if (phoneView.ticketShouldClose(ticket.live)) {
         const text = phoneView.ticketClosedText(ticket.live);
         closeTicket();
         showToast(text, "refused");
         renderEdges(Date.now());
-        // The whole list now, on the reads the Ticket just made (the runner keeps them).
-        pollEdges();
         return;
       }
       renderTicket(Date.now());
-      if (patch) renderEdges(Date.now());
+      if (changed) renderEdges(Date.now());
     } catch (error) {
       console.error("[unabated-ticket] ticket refresh failed", error);
     } finally {
@@ -2055,7 +2044,7 @@
     else state.teaserFreePlay.delete(signature);
     renderAll();
   });
-  view.sheetClose.addEventListener("click", closeTicketByHand);
+  view.sheetClose.addEventListener("click", closeTicket);
   view.toastChip.addEventListener("click", () => {
     view.toasts.classList.toggle("dropped");
     // The drop-down covers the Ticket and shrinks as fills fade: an armed confirm must not sit under a tap meant for a toast.
@@ -2075,7 +2064,7 @@
   });
   // Every toast change (added, answered, faded, dismissed) redraws the chip.
   new MutationObserver(renderToastChip).observe(view.toasts, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
-  view.sheetBackdrop.addEventListener("click", closeTicketByHand);
+  view.sheetBackdrop.addEventListener("click", closeTicket);
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !state.ticket) return;
     // The first Escape folds an open drop-down, the next closes the Ticket.
@@ -2083,7 +2072,7 @@
       view.toasts.classList.remove("dropped");
       renderToastChip();
     } else {
-      closeTicketByHand();
+      closeTicket();
     }
   });
 

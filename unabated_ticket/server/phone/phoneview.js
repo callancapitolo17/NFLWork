@@ -511,7 +511,7 @@
   function ticketLiveStep(live, answer, at, error = null) {
     if (error) return { ...(live || { row: null, misses: 0, missReading: null, answeredAt: null }), error };
     const counting = ticketLiveFresh(live, at) ? live : null;
-    const miss = !answer.row || answer.underMinEdge === true;
+    const miss = ticketAnswerMisses(answer);
     // readingId: what the runner read the answer off (a venue read or the board snapshot); null never counts.
     const reading = answer.readingId ?? null;
     const counts = reading != null && !(counting && reading === counting.missReading);
@@ -522,6 +522,11 @@
       sources: answer.betsService ? answer.betsService.sources ?? null : null, readError: answer.readError || null,
       misses, missReading: miss ? reading : null, answeredAt: at, error: null,
     };
+  }
+
+  // An answer the Ticket counts toward closing: nothing to bet, or the edge under Min edge.
+  function ticketAnswerMisses(answer) {
+    return !answer.row || answer.underMinEdge === true;
   }
 
   // Whether the newest answer is recent enough to show instead of the list's row.
@@ -775,32 +780,41 @@
   }
 
   // ---- the open Ticket's reads on the Edges list (Cal 2026-11-17) ---------------
-  // The Edges list's exchange price can be a minute or two older than the open
-  // Ticket's (the list rereads a line every 30 s or so, the Ticket every 2 s).
-  // Each Ticket answer is kept as a patch on its row until a list asked for
-  // after that answer lands (the runner keeps the Ticket's read, so that list
-  // already carries it): the row takes the Ticket's numbers, or leaves the list
-  // when the Ticket finds nothing to bet or the edge under Min edge.
-  //   patch  {key, row (the answer's rowView) | null (drop the row), answeredAt (phone ms)}
+  // The list's exchange price can be up to 2 min old; the open Ticket's is
+  // read every 2 s. Each Ticket answer patches its Edges row (its numbers, or
+  // gone when the Ticket would close on it) until the shown list was built
+  // after that read: the runner keeps the Ticket's read, so that list carries
+  // it. Both clocks are the runner's (/edges.json is often a copy built at the
+  // previous ask, so the phone's ask time says nothing).
+  //   patch  {key, row (rowView) | null (drop), readAt (the answer's, runner ISO), answeredAt (phone ms)}
+  // Past this a patch is dropped even with no newer list (the runner's own read max age).
+  const TICKET_PATCH_MAX_MS = 2 * MINUTE_MS;
 
-  // The patch one Ticket answer makes, or null for an answer without a key.
+  // The patch one Ticket answer makes.
   function ticketReadPatch(answer, answeredAt) {
-    if (!answer || !answer.key) return null;
-    const drop = !answer.row || answer.underMinEdge === true;
-    return { key: answer.key, row: drop ? null : answer.row, answeredAt };
+    return { key: answer.key, row: ticketAnswerMisses(answer) ? null : answer.row, readAt: answer.readAt, answeredAt };
   }
 
-  // Whether a patch still says more than the shown list: the list was asked
-  // for before the Ticket's answer came back. listAskedAt: phone ms the shown
-  // /edges.json was asked for (null: unknown, the patch stands).
-  function ticketPatchShows(patch, listAskedAt) {
-    return listAskedAt == null || patch.answeredAt > listAskedAt;
+  // Whether a patch still says more than the shown list (listGeneratedAt: its
+  // generatedAt): the list was built no later than the Ticket's read.
+  function ticketPatchShows(patch, listGeneratedAt, now) {
+    if (now - patch.answeredAt > TICKET_PATCH_MAX_MS) return false;
+    return Date.parse(listGeneratedAt) <= Date.parse(patch.readAt);
   }
 
-  // The payload's items and skipped rows with the patches applied, and its
-  // total less what they dropped. A card whose best row drops shows its next
-  // line (others are in rank order); a card left with no line drops. The
-  // payload itself is not changed. patches: Map key -> patch.
+  // Whether a list that just landed may replace the shown one: never one
+  // built earlier (a plain poll is answered off an older copy at once, so it
+  // can land after a ?fresh=1 asked before it).
+  function edgesListReplaces(next, shown) {
+    return !shown || !(Date.parse(next.generatedAt) < Date.parse(shown.generatedAt));
+  }
+
+  // The payload with the patches applied: a patched row takes the answer's
+  // numbers in its place (the order holds until the next list), a dropped row
+  // leaves (a card shows its next line, others being in rank order, and a card
+  // with none left drops) and the total counts what left. Skipped rows only
+  // drop: the fold's Restore needs the list's own row. The payload itself is
+  // not changed. patches: Map key -> patch.
   function withTicketReads(payload, patches) {
     if (!patches || patches.size === 0) return payload;
     const patched = (row) => (patches.has(row.key) ? patches.get(row.key).row : row);
@@ -809,13 +823,13 @@
     if (payload.grouped) {
       items = payload.items.map((card) => {
         const lines = keep([card.best, ...card.others]);
-        if (!lines.length) return null;
-        return { ...card, best: lines[0], others: lines.slice(1), lineCount: lines.length };
+        return lines.length ? { ...card, best: lines[0], others: lines.slice(1), lineCount: lines.length } : null;
       }).filter(Boolean);
     } else {
       items = keep(payload.items);
     }
-    return { ...payload, items, skipped: keep(payload.skipped || []), total: payload.total - (payload.items.length - items.length) };
+    const skipped = (payload.skipped || []).filter((row) => !(patches.has(row.key) && patches.get(row.key).row === null));
+    return { ...payload, items, skipped, total: payload.total - (payload.items.length - items.length) };
   }
 
   // ---- Free play at BFA (Cal 2026-11-09) --------------------------------------
@@ -872,7 +886,7 @@
     fmtDollars, fmtAmerican, cardMoreText, underdogLinkView, betonlineLinkView, venueLinkView, UNDERDOG_BOOK_NAME,
     placeToastPlacingText, placeToastHideAfterMs, toastChipView, freePlayStake,
     TICKET_POLL_MS, ticketLiveStep, ticketLiveFresh, ticketShouldClose, ticketUnderMinEdge, ticketClosedText, ticketLiveNote,
-    ticketReadPatch, ticketPatchShows, withTicketReads,
+    TICKET_PATCH_MAX_MS, ticketReadPatch, ticketPatchShows, edgesListReplaces, withTicketReads,
     withoutFullyBet, PLACED_MARK_MAX_MS, placedMarkShows, placedMarkView, freePlayView, netOddsOf, fairProbOf,
   };
 

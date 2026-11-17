@@ -450,32 +450,50 @@ test("ticket live: a fresh answer shows its read time; an old read or a stale an
 
 test("ticket reads on the list: an answer patches its row, or drops it under Min edge or with nothing to bet", () => {
   const row = (key, edgePct) => ({ key, edgePct, price: 120 });
-  assert.deepEqual(phoneView.ticketReadPatch({ key: "a", row: row("a", 2), underMinEdge: false }, NOW), { key: "a", row: row("a", 2), answeredAt: NOW });
-  assert.equal(phoneView.ticketReadPatch({ key: "a", row: row("a", 0.5), underMinEdge: true }, NOW).row, null, "under Min edge drops");
-  assert.equal(phoneView.ticketReadPatch({ key: "a", row: null, reason: "empty" }, NOW).row, null, "nothing to bet drops");
-  assert.equal(phoneView.ticketReadPatch(null, NOW), null);
+  const readAt = new Date(NOW).toISOString();
+  assert.deepEqual(phoneView.ticketReadPatch({ key: "a", readAt, row: row("a", 2), underMinEdge: false }, NOW),
+    { key: "a", row: row("a", 2), readAt, answeredAt: NOW });
+  assert.equal(phoneView.ticketReadPatch({ key: "a", readAt, row: row("a", 0.5), underMinEdge: true }, NOW).row, null, "under Min edge drops");
+  assert.equal(phoneView.ticketReadPatch({ key: "a", readAt, row: null, reason: "empty" }, NOW).row, null, "nothing to bet drops");
 
-  const flat = { grouped: false, total: 3, items: [row("a", 5), row("b", 4), row("c", 3)], skipped: [row("s", 6)] };
-  const patches = new Map([["a", { key: "a", row: row("a", 2.1), answeredAt: NOW }], ["b", { key: "b", row: null, answeredAt: NOW }], ["s", { key: "s", row: null, answeredAt: NOW }]]);
-  const shown = phoneView.withTicketReads(flat, patches);
-  assert.deepEqual(shown.items.map((item) => [item.key, item.edgePct]), [["a", 2.1], ["c", 3]]);
-  assert.equal(shown.total, 2);
-  assert.deepEqual(shown.skipped, []);
+  const patch = (key, patchedRow) => [key, { key, row: patchedRow, readAt, answeredAt: NOW }];
+  const flat = { grouped: false, total: 120, items: [row("a", 5), row("b", 4), row("c", 3)], skipped: [row("s", 6), row("t", 7)] };
+  const shown = phoneView.withTicketReads(flat, new Map([patch("a", { ...row("a", 2.1), price: 135 }), patch("b", null), patch("s", null), patch("t", row("t", 1)), patch("zz", row("zz", 9))]));
+  assert.deepEqual(shown.items, [{ key: "a", edgePct: 2.1, price: 135 }, row("c", 3)], "a key off the list is never added");
+  assert.equal(shown.total, 119, "the total counts the dropped row past the shown cap");
+  assert.deepEqual(shown.skipped, [row("t", 7)], "a skipped row drops but is never rewritten");
   assert.equal(flat.items.length, 3, "the payload itself is left as it was");
   assert.equal(phoneView.withTicketReads(flat, new Map()), flat);
+  assert.deepEqual(phoneView.withTicketReads({ grouped: false, total: 0, items: [] }, new Map([patch("a", null)])), { grouped: false, total: 0, items: [], skipped: [] });
 
   const card = (key, best, others) => ({ key, best, others, lineCount: 1 + others.length });
-  const grouped = { grouped: true, total: 2, items: [card("x", row("x1", 5), [row("x2", 4)]), card("y", row("y1", 3), [])], skipped: [] };
-  const dropBest = phoneView.withTicketReads(grouped, new Map([["x1", { key: "x1", row: null, answeredAt: NOW }]]));
-  assert.deepEqual([dropBest.items[0].best.key, dropBest.items[0].others, dropBest.items[0].lineCount], ["x2", [], 1], "the next line leads the card");
-  const dropCard = phoneView.withTicketReads(grouped, new Map([["y1", { key: "y1", row: null, answeredAt: NOW }]]));
+  const grouped = { grouped: true, total: 2, items: [card("x", row("x1", 5), [row("x2", 4), row("x3", 3)]), card("y", row("y1", 3), [])], skipped: [] };
+  const dropBest = phoneView.withTicketReads(grouped, new Map([patch("x1", null)]));
+  assert.deepEqual(dropBest.items, [card("x", row("x2", 4), [row("x3", 3)]), grouped.items[1]], "the next line leads the card");
+  assert.equal(dropBest.total, 2);
+  const dropOther = phoneView.withTicketReads(grouped, new Map([patch("x2", null), patch("x3", row("x3", 1))]));
+  assert.deepEqual(dropOther.items[0], card("x", row("x1", 5), [row("x3", 1)]), "an other line drops or updates in place");
+  const updateBest = phoneView.withTicketReads(grouped, new Map([patch("x1", row("x1", 1))]));
+  assert.deepEqual(updateBest.items[0].best, row("x1", 1), "an updated best keeps its place until the next list");
+  const dropCard = phoneView.withTicketReads(grouped, new Map([patch("y1", null)]));
   assert.deepEqual([dropCard.items.map((item) => item.key), dropCard.total], [["x"], 1], "a card with no line left drops");
 });
 
-test("ticket reads on the list: a patch stands until a list asked for after its answer lands", () => {
-  const patch = { key: "a", row: null, answeredAt: NOW };
-  assert.equal(phoneView.ticketPatchShows(patch, null), true);
-  assert.equal(phoneView.ticketPatchShows(patch, NOW - 1), true, "a list asked before the answer may not carry the read");
-  assert.equal(phoneView.ticketPatchShows(patch, NOW), false);
-  assert.equal(phoneView.ticketPatchShows(patch, NOW + 5000), false);
+test("ticket reads on the list: a patch stands until a list built after its read lands, at most 2 min", () => {
+  const readAt = new Date(NOW).toISOString();
+  const patch = { key: "a", row: null, readAt, answeredAt: NOW };
+  const iso = (ms) => new Date(ms).toISOString();
+  assert.equal(phoneView.ticketPatchShows(patch, iso(NOW - 15000), NOW), true, "a copy built before the read (a plain poll) keeps it");
+  assert.equal(phoneView.ticketPatchShows(patch, iso(NOW), NOW), true, "same millisecond: kept");
+  assert.equal(phoneView.ticketPatchShows(patch, iso(NOW + 1), NOW), false, "a list built after the read carries it");
+  assert.equal(phoneView.ticketPatchShows(patch, iso(NOW - 15000), NOW + phoneView.TICKET_PATCH_MAX_MS), true);
+  assert.equal(phoneView.ticketPatchShows(patch, iso(NOW - 15000), NOW + phoneView.TICKET_PATCH_MAX_MS + 1), false, "no newer list for 2 min: dropped");
+});
+
+test("edges lists: one built earlier never replaces the shown one", () => {
+  const list = (ms) => ({ generatedAt: new Date(ms).toISOString() });
+  assert.equal(phoneView.edgesListReplaces(list(NOW), null), true);
+  assert.equal(phoneView.edgesListReplaces(list(NOW + 1), list(NOW)), true);
+  assert.equal(phoneView.edgesListReplaces(list(NOW), list(NOW)), true, "the same copy again still lands");
+  assert.equal(phoneView.edgesListReplaces(list(NOW - 15000), list(NOW)), false, "a plain poll's older copy landing after a fresh list");
 });
