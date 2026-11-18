@@ -161,7 +161,8 @@ process_single_game <- function(test_id) {
   target_cover  <- tg$consensus_home_cover_prob; target_over <- tg$consensus_over_prob
   if (is.na(parent_spread)||is.na(parent_total)||is.na(target_cover)||is.na(target_over)) return(NULL)
 
-  DT_train <- DT[DT$odds_id != test_id, ]
+  DT_train <- walk_forward_training_set(DT, tg$game_date)
+  if (is.null(DT_train)) return(NULL)
   sr <- tryCatch(run_answer_key_sample(id=test_id, parent_spread=parent_spread, parent_total=parent_total,
             target_cover=target_cover, target_over=target_over, DT=DT_train, ss=ss, st=st, N=N,
             use_spread_line=TRUE), error=function(e) NULL)

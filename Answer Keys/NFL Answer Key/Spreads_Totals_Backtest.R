@@ -138,7 +138,8 @@ for (i in seq_along(all_test_games)) {
   game_odds <- derivative_odds %>% filter(game_id == test_game_id)
   if (nrow(game_odds) == 0) next
 
-  DT_train <- DT_all[DT_all$game_id != test_game_id, ]
+  DT_train <- walk_forward_training_set(DT_all, test_game$game_date)
+  if (is.null(DT_train)) next
 
   parent_spread <- test_game$home_spread
   parent_total <- test_game$total_line

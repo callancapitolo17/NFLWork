@@ -6219,6 +6219,43 @@ adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
 #' @param test_game_ids Optional vector of game IDs to test (NULL = test all games)
 #' @param verbose Print progress messages (default TRUE)
 #' @return List with: predictions, by_market, by_period, overall, plots
+# =============================================================================
+# WALK-FORWARD TRAINING SET (backtests)
+# =============================================================================
+# Live pricing only ever sees games already played, so a backtest must too.
+# Leave-one-out (every game except the test game) let later seasons into the
+# sample, which inflates backtest ROI versus live.
+WALK_FORWARD_MIN_TRAIN_SHARE <- 0.5  # skip test games with < half the history behind them
+
+#' Historical games usable to price a test game in a backtest.
+#'
+#' Keeps only games with game_date strictly BEFORE the test game's date.
+#' Same-day games are dropped because their results are unknown at pricing time.
+#'
+#' @param DT data frame / data.table of historical games; needs a game_date column
+#' @param test_game_date the test game's date (Date, POSIXct, or "YYYY-MM-DD")
+#' @param min_train_share skip the test game (return NULL) when fewer than this
+#'   share of DT's games precede it. Keeps the sample-to-history ratio near what
+#'   live uses, since callers size N off the full DT.
+#' @return the training rows, or NULL when there is too little history.
+#'   No side effects.
+walk_forward_training_set <- function(DT, test_game_date,
+                                      min_train_share = WALK_FORWARD_MIN_TRAIN_SHARE) {
+  if (!"game_date" %in% names(DT)) {
+    stop("walk_forward_training_set: expected a game_date column in DT, found: ",
+         paste(head(names(DT), 20), collapse = ", "))
+  }
+  if (length(test_game_date) != 1 || is.na(test_game_date)) {
+    stop("walk_forward_training_set: expected one non-NA test_game_date, got: ",
+         paste(test_game_date, collapse = ", "))
+  }
+  history_dates <- as.Date(DT[["game_date"]])
+  is_before_test_game <- !is.na(history_dates) & history_dates < as.Date(test_game_date)
+  min_train_games <- ceiling(min_train_share * nrow(DT))
+  if (sum(is_before_test_game) < min_train_games) return(NULL)
+  DT[is_before_test_game, ]
+}
+
 run_derivative_backtest <- function(
     pbp_data,
     sport_config,
@@ -6380,8 +6417,8 @@ run_derivative_backtest <- function(
     if (is.na(parent_spread) || is.na(parent_total)) next
     if (is.na(target_cover) || is.na(target_over)) next
 
-    # Leave-one-out training data
-    DT_train <- DT[DT$game_id != test_game_id, ]
+    DT_train <- walk_forward_training_set(DT, test_game$game_date)
+    if (is.null(DT_train)) next
 
     # Run answer key sampling
     sample_result <- tryCatch({

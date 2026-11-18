@@ -208,6 +208,7 @@ mlb_triple_play.R (standalone pricer)
     ~100 of 110 Wagerzon rows were a two-month-old slate. A new scraper must write `game_start_time TIMESTAMPTZ` UTC and
     wire `.drop_past_games()` into its `get_*_odds()` helper. Regression
     test: `tests/test_drop_past_games.R`.
+12. **Backtests are walk-forward, never leave-one-out (2026-11-17)** — every backtest builds its training set with `Tools.R::walk_forward_training_set(DT, test_game$game_date)`: only games dated strictly before the test game (same-day games excluded), and the test game is skipped (NULL) when less than `WALK_FORWARD_MIN_TRAIN_SHARE` (0.5) of the history precedes it. Leave-one-out let later seasons into the sample, which live pricing never has, and overstated backtest ROI. Any new backtest must use the helper. Backtest numbers from before this change (e.g. the 2026-06-15 extreme-samples holdout) were leave-one-out.
 
 ## Known model biases
 

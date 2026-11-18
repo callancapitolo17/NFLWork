@@ -205,7 +205,8 @@ process_single_game <- function(test_id) {
   if (is.na(parent_spread) || is.na(parent_total)) return(NULL)
   if (is.na(target_cover) || is.na(target_over)) return(NULL)
 
-  DT_train <- DT[DT$odds_id != test_id, ]
+  DT_train <- walk_forward_training_set(DT, test_game$game_date)
+  if (is.null(DT_train)) return(NULL)
 
   sample_result <- tryCatch({
     run_answer_key_sample(

@@ -206,8 +206,8 @@ for (i in seq_along(test_ids)) {
   if (is.na(parent_spread) || is.na(parent_total)) next
   if (is.na(target_cover) || is.na(target_over)) next
 
-  # Leave-one-out training data
-  DT_train <- DT[DT$odds_id != test_id, ]
+  DT_train <- walk_forward_training_set(DT, test_game$game_date)
+  if (is.null(DT_train)) next
 
   # Run answer key sampling
   sample_result <- tryCatch({

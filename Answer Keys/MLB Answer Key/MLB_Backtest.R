@@ -1,5 +1,5 @@
 # MLB Answer Key Backtest
-# Leave-one-out backtest of F5 derivative markets against historical data
+# Walk-forward backtest of F5 derivative markets against historical data (each game priced only off games played before it)
 # Uses run_derivative_backtest() from Tools.R
 
 setwd("~/NFLWork/Answer Keys")

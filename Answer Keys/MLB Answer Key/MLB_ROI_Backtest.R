@@ -1,5 +1,5 @@
 # MLB F5 ROI Backtest
-# Leave-one-out backtest comparing algo F5 predictions to actual book F5 closing odds
+# Walk-forward backtest comparing algo F5 predictions to actual book F5 closing odds (each game priced only off games played before it)
 # Parallel version based on CBB_Backtest_Parallel.R
 #
 # Requires: pbp.duckdb/mlb_f5_odds_history (from fetch_mlb_f5_odds.py)
@@ -248,8 +248,8 @@ process_single_game <- function(test_id) {
   if (is.na(parent_spread) || is.na(parent_total)) return(NULL)
   if (is.na(target_cover) || is.na(target_over)) return(NULL)
 
-  # Leave-one-out
-  DT_train <- DT[DT$game_pk != test_id, ]
+  DT_train <- walk_forward_training_set(DT, test_game$game_date)
+  if (is.null(DT_train)) return(NULL)
 
   sample_result <- tryCatch({
     run_answer_key_sample(
