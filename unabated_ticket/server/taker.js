@@ -31,7 +31,7 @@
 //     runner has one.
 //
 // Novig (2026-10-16, automated_taker_plan.md § Novig; Cal: its own $500 sub-account,
-// $2,000 at 0.25 Kelly, the better all-in price first when both books trade a number):
+// $4,000 at 0.25 Kelly since 2026-11-18, the better all-in price first when both books trade a number):
 // the same rules on Novig's rows (book 89), with Novig's own facts. The
 // contract is the Novig outcome Unabated's rung names (feed.js novigOutcomes;
 // a main number with no rung is looked up in Novig's catalog off its

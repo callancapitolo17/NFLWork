@@ -3142,7 +3142,7 @@ visible. Its one write is the Bets page's Remove / Restore.
   key not proven locked), **Stopped** (a stop file), else **Running**, amber
   when the runner's last pass is over 2 min old, skipped for that venue, or
   Novig's location lapsed — money at risk (the desk's open cost against its
-  ceiling, $6,000 / $1,000), cash in its subaccount (`/balances.json`), open
+  ceiling, $6,000 / $2,400), cash in its subaccount (`/balances.json`), open
   orders and Kelly bankroll. The tab has its own range (Today, Yesterday, 7D, 30D,
   All, Custom; the header range is hidden there) driving every panel.
   **Activity** includes today, since these are orders, not results: orders

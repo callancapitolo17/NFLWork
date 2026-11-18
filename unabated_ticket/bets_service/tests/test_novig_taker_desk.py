@@ -1,8 +1,11 @@
 """novig_taker_desk.py on a fake Novig client: the stop files, freshness of
-the held Novig bets, the cross-venue unseen-fill rule, the $1,000 ceiling in 1c
+the held Novig bets, the cross-venue unseen-fill rule, the $2,400 ceiling in 1c
 contracts, insert-before-send, one IOC send never retried, the read to final
 and its fills, lost sends looked up by clientId, and settlement."""
 from datetime import datetime, timedelta, timezone
+
+import re
+from pathlib import Path
 
 import pytest
 
@@ -421,3 +424,13 @@ def test_the_service_says_why_the_novig_desk_is_off_and_routes_orders_on_loopbac
         server.server_close()
         bets_store.close()
         taker_store.close()
+
+
+def test_the_ceiling_is_three_fifths_of_the_kelly_bankroll_taker_js_sizes_novig_on():
+    # Cal (2026-11-18): Novig Kelly bankroll $4,000, open cost capped at 60% of it, as Kalshi's is.
+    # The runner's taker.js sizes every Novig stake on NOVIG_KELLY_BANKROLL: the two must not drift apart.
+    taker_js = (Path(__file__).resolve().parents[2] / "server" / "taker.js").read_text()
+    declared = re.search(r"^const NOVIG_KELLY_BANKROLL = (\d+);$", taker_js, re.MULTILINE)
+    assert declared, "taker.js no longer declares const NOVIG_KELLY_BANKROLL = <dollars>;"
+    assert float(declared.group(1)) == 4000.0
+    assert desk_module.OPEN_COST_CEILING == pytest.approx(0.6 * float(declared.group(1)))
