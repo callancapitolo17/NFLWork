@@ -311,8 +311,9 @@ bets it read while confirming into bets.duckdb::bets, so the panel's next poll h
 ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions to
 taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
 POST /ladders.json (loopback only, the runner's) INSERTs each game's opener and
-UPSERTs its newest pregame close into ladders.duckdb::ladder_readings
-(ladder_store.py; its own file, config.LADDER_DB_PATH; issue #264).
+UPSERTs its newest pregame close (an unchanged one moves only its times) into
+ladders.duckdb::ladder_readings (ladder_store.py; its own file,
+config.LADDER_DB_PATH, compacted at start when mostly free blocks; issue #264).
 POST /edge_segments.json (loopback only, the runner's) INSERTs each new edge
 segment and moves a known one's last_seen forward in ladders.duckdb::edge_segments.
 POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /
@@ -402,7 +403,7 @@ from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
 from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
                                                       validate_order_request)
 from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStore
-from unabated_ticket.bets_service.ladder_store import READINGS, LadderStore
+from unabated_ticket.bets_service.ladder_store import READINGS, LadderStore, compact_file
 
 log = logging.getLogger(__name__)
 
@@ -2701,6 +2702,10 @@ def open_ladder_store(db_path: Path) -> LadderStore | None:
     """The fair-ladder store, or None (logged) when its file cannot be opened:
     it is research data, so a bad path must not take Cal's bets down with it;
     the runner keeps its rows unsent and POST /ladders.json 503s."""
+    try:
+        compact_file(db_path)
+    except Exception as error:  # duckdb raises its own IOException family, not OSError
+        log.error("ladder store %s could not be compacted, opening it as it is: %s", db_path, error)
     try:
         return LadderStore(db_path)
     except Exception as error:  # duckdb raises its own IOException family, not OSError

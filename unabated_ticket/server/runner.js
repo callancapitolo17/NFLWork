@@ -51,8 +51,8 @@
 //   POST <bets service>/ladders.json every 30 s — Unabated's full-game fair
 //       ladder (spread, total, moneyline) of every NFL / CFB / CBB game still
 //       to start (server/laddersnapshot.js): an opener once per game and
-//       market, then the close whenever the ladder changes or every 10 min
-//       unchanged; ladders.duckdb keeps the first opener and the newest
+//       market, then, in the 2 h before the start, the close whenever the ladder
+//       changes or every 10 min unchanged; ladders.duckdb keeps the first opener and the newest
 //       pregame close (issue #264). Stored only, nothing reads it back.
 //   POST <bets service>/edge_segments.json every 30 s — every NFL / CFB / CBB
 //       full-game line showing a 1%+ edge, as segments at one number, price,
@@ -2281,7 +2281,7 @@ function createRunner(deps) {
     const queue = [];
     for (const row of rows) {
       const known = polymarketLineContracts.get(polymarketLineKey(row));
-      if (known) found.push({ row, slug: known.slug, side: known.side });
+      if (known) found.push({ row, slug: known.slug, side: known.side, feeCoefficient: known.feeCoefficient });
       else queue.push(row);
     }
     // One read per list a pass, shared by the rows that need it, so two lookups of one game spend one read.
@@ -2300,9 +2300,12 @@ function createRunner(deps) {
     const lookUp = async (row) => {
       const contract = await polymarketContractOfRow(row, readEventsWithinBudget);
       if (contract.reason) return noteUnchecked(counts, `${row.key}: ${contract.detail}`);
-      const { slug, side } = contract.contract;
-      polymarketLineContracts.set(polymarketLineKey(row), { slug, side, startMs: contract.startMs });
-      found.push({ row, slug, side });
+      const { slug, side, market } = contract.contract;
+      const fee = polymarket.feeCoefficientOf(market);
+      if (fee.reason) return noteUnchecked(counts, `${row.key}: ${fee.detail}`);
+      const { feeCoefficient } = fee;
+      polymarketLineContracts.set(polymarketLineKey(row), { slug, side, feeCoefficient, startMs: contract.startMs });
+      found.push({ row, slug, side, feeCoefficient });
     };
     const worker = async () => {
       while (queue.length) await lookUp(queue.shift());
@@ -2311,7 +2314,7 @@ function createRunner(deps) {
     await Promise.all(Array.from({ length: POLYMARKET_CONTRACT_LOOKUPS_AT_ONCE }, worker));
     const slugs = Array.from(new Set(found.map((entry) => entry.slug))).slice(0, POLYMARKET_BOOK_SLUGS_PER_ASK);
     const books = await readPolymarketStreamBooks(slugs, ticket ? { priority: true } : { background: true });
-    for (const { row, slug, side } of found) {
+    for (const { row, slug, side, feeCoefficient } of found) {
       const read = books.get(slug) || { error: `${slug}: more than ${POLYMARKET_BOOK_SLUGS_PER_ASK} markets in one pass` };
       if (read.error) {
         noteUnchecked(counts, `${slug}: ${read.error}`);
@@ -2326,7 +2329,7 @@ function createRunner(deps) {
         noteUnchecked(counts, `${slug}: ${quote.detail}`);
         continue;
       }
-      const allIn = polymarket.allInOf(quote.ask);
+      const allIn = polymarket.allInOf(quote.ask, feeCoefficient);
       noteRead(counts, row, polymarket.VENUE, { allIn, depthDollars: quote.depth * allIn }, now(), requestedAt, streamPass);
     }
     return counts;
@@ -3022,9 +3025,12 @@ function createRunner(deps) {
     const { book } = read;
     const quote = polymarket.quoteOf(book, contract.side);
     if (quote.reason) return { ok: false, ...position, reason: quote.reason, detail: `${contract.slug}: ${quote.detail}` };
+    // Read off this Place's own fresh event list, so a fee Polymarket US changed is already in it.
+    const fee = polymarket.feeCoefficientOf(contract.market);
+    if (fee.reason) return { ok: false, ...position, reason: fee.reason, detail: fee.detail };
     return {
-      ok: true, ...position, ask: quote.ask, allIn: polymarket.allInOf(quote.ask), depth: quote.depth, bookFrom: read.from,
-      feeTheta: polymarket.TAKER_FEE_THETA, polymarketGatewayUrl, line: taker.novigLineOf(row),
+      ok: true, ...position, ask: quote.ask, allIn: polymarket.allInOf(quote.ask, fee.feeCoefficient), depth: quote.depth,
+      bookFrom: read.from, feeCoefficient: fee.feeCoefficient, polymarketGatewayUrl, line: taker.novigLineOf(row),
     };
   }
 
