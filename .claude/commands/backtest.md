@@ -11,9 +11,8 @@ Examples:
 ## Steps
 
 ### 1. Identify the right backtest script
-- CBB: `CBB Answer Key/CBB_Backtest.R` or `CBB_Backtest_v2.R`
+- CBB: `CBB Answer Key/CBB_Backtest.R` (`run --label X`, then `report --labels a,b`; sample-size sweeps are one run per `--sample-pct`, single-book runs use `--books`; see `CBB Answer Key/README.md` § Backtest)
 - CBB with correlation: `CBB_Backtest_Correlation.R`
-- CBB parameter sweep: `CBB_Parameter_Sweep.R`
 - NFL: `NFL Answer Key/Spreads_Totals_Backtest.R` or `All_Quarters_Backtest.R`
 
 ### 2. Configure parameters

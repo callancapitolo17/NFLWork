@@ -86,7 +86,7 @@ kelly_stake_p <- function(p, book_odds, bankroll, kelly_mult, alpha = 1) {
 }
 
 # =============================================================================
-# LOAD + PREP (mirror CBB_Backtest_Parallel.R, add game_date)
+# LOAD + PREP (add game_date)
 # =============================================================================
 cat("Loading data (read-only) from main checkout...\n")
 con <- dbConnect(duckdb(), dbdir = MAIN_DB, read_only = TRUE)
