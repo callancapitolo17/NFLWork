@@ -8,10 +8,14 @@
 //           never overwritten (the service keeps the first row ever stored,
 //           so a restart's re-send is a no-op; a game already on the board
 //           when storing began has its first sighting, not Unabated's opener)
-//   close   the newest pregame reading: sent when the ladder changes, and
-//           re-sent unchanged every CLOSE_CONFIRM_MS so the stored
-//           observed_at stays near kickoff; the service keeps the newest
-//           observation before the start. Whether it was near enough to the
+//   close   the newest pregame reading, sent only in the CLOSE_WINDOW_MS
+//           before the start: on every change, and re-sent unchanged every
+//           CLOSE_CONFIRM_MS so the stored observed_at stays near kickoff;
+//           the service keeps the newest observation before the start, and an
+//           unchanged one moves only its observed_at. Days of rewrites while
+//           a game sat on the board filled ladders.duckdb with dead space
+//           (116 MB in its first week, 2026-11-13) for a row only its last
+//           reading matters in. Whether that reading was near enough to the
 //           start to count as the close is decided in analysis.
 // Read-only: nothing here or downstream touches a stake or an order.
 //
@@ -40,6 +44,9 @@ const READING_CLOSE = "close";
 // An unchanged close is re-sent this often, so its observed_at trails the
 // last pregame snapshot by at most this much.
 const CLOSE_CONFIRM_MS = 10 * 60 * 1000;
+// Closes are sent only this close to the start (the close of 2026-11-06..13
+// landed a median 1.4 min, at most 11 min, before it).
+const CLOSE_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 function isUsableFair(line) {
   return line.isBlurred !== true && fillfair.isWholeAmerican(line.bacr) && !feed.isClampedFair(line.bacr);
@@ -134,9 +141,9 @@ function rowOf(ladder, reading) {
   };
 }
 
-// The rows to POST now: each ladder's opener until one was taken, and its
-// close when the ladder changed since the last close taken or that one is
-// CLOSE_CONFIRM_MS old. A game that started since its league's snapshot is
+// The rows to POST now: each ladder's opener until one was taken, and, once
+// its snapshot is within CLOSE_WINDOW_MS of the start, its close when the
+// ladder changed since the last close taken or that one is CLOSE_CONFIRM_MS old. A game that started since its league's snapshot is
 // left out (the service refuses a reading at or after the start anyway).
 //   ladders  leagueLadders' output for the leagues read
 //   sent     ladderKey -> {openerSent, closeSignature, closeObservedMs} (markSent)
@@ -146,6 +153,7 @@ function unsentRows(ladders, sent, now) {
     if (now >= ladder.eventStartMs) continue;
     const known = sent.get(ladderKeyOf(ladder)) || {};
     if (!known.openerSent) rows.push(rowOf(ladder, READING_OPENER));
+    if (ladder.eventStartMs - ladder.observedMs > CLOSE_WINDOW_MS) continue;
     const changed = known.closeSignature !== ladder.signature;
     const confirmDue = !Number.isFinite(known.closeObservedMs) || ladder.observedMs - known.closeObservedMs >= CLOSE_CONFIRM_MS;
     if (changed || confirmDue) rows.push({ ...rowOf(ladder, READING_CLOSE), signature: ladder.signature });
@@ -177,6 +185,6 @@ function wireRow(row) {
 }
 
 module.exports = {
-  LADDER_LEAGUE_IDS, CLOSE_CONFIRM_MS, READING_OPENER, READING_CLOSE,
+  LADDER_LEAGUE_IDS, CLOSE_CONFIRM_MS, CLOSE_WINDOW_MS, READING_OPENER, READING_CLOSE,
   marketLadderOf, leagueLadders, unsentRows, markSent, forgetStarted, wireRow,
 };

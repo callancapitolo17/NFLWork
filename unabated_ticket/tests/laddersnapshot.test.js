@@ -91,3 +91,15 @@ test("unsentRows: an opener once, a close on a change or every CLOSE_CONFIRM_MS,
   laddersnapshot.forgetStarted(sent, KICKOFF_MS);
   assert.equal(sent.size, 0);
 });
+
+test("unsentRows: a close only within CLOSE_WINDOW_MS of the start; the opener whenever the game is first seen", () => {
+  const sent = new Map();
+  const [spread] = sliceLadders().filter((l) => l.betTypeId === 2);
+  const early = { ...spread, observedMs: KICKOFF_MS - laddersnapshot.CLOSE_WINDOW_MS - 1 };
+  assert.deepEqual(laddersnapshot.unsentRows([early], sent, early.observedMs).map((row) => row.reading), ["opener"]);
+  laddersnapshot.markSent(laddersnapshot.unsentRows([early], sent, early.observedMs), sent);
+  const moved = { ...early, signature: `${spread.signature}x` };
+  assert.deepEqual(laddersnapshot.unsentRows([moved], sent, moved.observedMs), [], "a change far from the start is not written");
+  const inWindow = { ...spread, observedMs: KICKOFF_MS - laddersnapshot.CLOSE_WINDOW_MS };
+  assert.deepEqual(laddersnapshot.unsentRows([inWindow], sent, inWindow.observedMs).map((row) => row.reading), ["close"]);
+});

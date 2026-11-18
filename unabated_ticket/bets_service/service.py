@@ -402,7 +402,7 @@ from unabated_ticket.bets_service.store import EDGE_SETTINGS_FIELDS, BetsStore
 from unabated_ticket.bets_service.taker_orders import (KalshiOrderClient, TakerDesk, key_lock_problem,
                                                       validate_order_request)
 from unabated_ticket.bets_service.taker_store import DECISION_REASONS, TakerStore
-from unabated_ticket.bets_service.ladder_store import READINGS, LadderStore
+from unabated_ticket.bets_service.ladder_store import READINGS, LadderStore, compact_file
 
 log = logging.getLogger(__name__)
 
@@ -2701,6 +2701,10 @@ def open_ladder_store(db_path: Path) -> LadderStore | None:
     """The fair-ladder store, or None (logged) when its file cannot be opened:
     it is research data, so a bad path must not take Cal's bets down with it;
     the runner keeps its rows unsent and POST /ladders.json 503s."""
+    try:
+        compact_file(db_path)
+    except Exception as error:  # duckdb raises its own IOException family, not OSError
+        log.error("ladder store %s could not be compacted, opening it as it is: %s", db_path, error)
     try:
         return LadderStore(db_path)
     except Exception as error:  # duckdb raises its own IOException family, not OSError

@@ -20,6 +20,12 @@ Table:
                                    newer than the stored one; observed_at is
                                    always before event_start (validated), so
                                    the row left at the start is the close.
+                                   A close whose content (`content_hash`:
+                                   mains, rungs, start, teams) equals the
+                                   stored one moves only observed_at and
+                                   received_at: a whole-row rewrite leaves
+                                   dead space in the file (116 MB in the
+                                   first week, 2026-11-13).
                side 0 = away / Over, side 1 = home / Under (Unabated's
                sides). `rungs_json` is [[side, points, fair_american, books,
                agreeing], ...]: Unabated's fair for that side at that number
@@ -44,7 +50,10 @@ Table:
 The connection is shared by the HTTP handler threads behind one lock (DuckDB
 connections are not thread-safe).
 """
+import hashlib
 import json
+import logging
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +63,12 @@ import duckdb
 READING_OPENER = "opener"
 READING_CLOSE = "close"
 READINGS = (READING_OPENER, READING_CLOSE)
+# compact_file: a file this small is never worth a copy, and a copy is kept
+# only when it is at most this share of the original.
+COMPACT_MIN_BYTES = 32 * 1024 * 1024
+COMPACT_KEEP_RATIO = 0.9
+
+log = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ladder_readings (
@@ -74,13 +89,19 @@ CREATE TABLE IF NOT EXISTS ladder_readings (
     rung_count      INTEGER NOT NULL,
     rungs_json      VARCHAR NOT NULL,
     received_at     TIMESTAMPTZ NOT NULL,
+    content_hash    VARCHAR,               -- sha256 of what the row says besides its times (_content_hash)
     PRIMARY KEY (reading, event_id, period_type_id, bet_type_id)
 )
 """
 
+# Files made before content_hash: NULL there, so their first close rewrites once.
+_ADD_CONTENT_HASH = "ALTER TABLE ladder_readings ADD COLUMN IF NOT EXISTS content_hash VARCHAR"
+
 _COLUMNS = ("reading, event_id, period_type_id, bet_type_id, league_id, event_name, away_team_id, home_team_id, "
             "event_start, observed_at, main_points_0, main_fair_0, main_points_1, main_fair_1, rung_count, rungs_json, "
-            "received_at")
+            "received_at, content_hash")
+
+
 def _placeholders(columns: str) -> str:
     return ", ".join("?" for _ in columns.split(","))
 
@@ -99,8 +120,16 @@ ON CONFLICT (reading, event_id, period_type_id, bet_type_id) DO UPDATE SET
     home_team_id = excluded.home_team_id, event_start = excluded.event_start, observed_at = excluded.observed_at,
     main_points_0 = excluded.main_points_0, main_fair_0 = excluded.main_fair_0,
     main_points_1 = excluded.main_points_1, main_fair_1 = excluded.main_fair_1,
-    rung_count = excluded.rung_count, rungs_json = excluded.rungs_json, received_at = excluded.received_at
+    rung_count = excluded.rung_count, rungs_json = excluded.rungs_json, received_at = excluded.received_at,
+    content_hash = excluded.content_hash
 WHERE excluded.observed_at > ladder_readings.observed_at
+"""
+
+# An unchanged close: only its times move forward (no whole-row rewrite).
+_TOUCH_CLOSE = """
+UPDATE ladder_readings SET observed_at = ?, received_at = ?
+WHERE reading = 'close' AND event_id = ? AND period_type_id = ? AND bet_type_id = ?
+  AND content_hash = ? AND observed_at < ?
 """
 
 
@@ -147,11 +176,81 @@ WHERE excluded.last_seen > edge_segments.last_seen
 """
 
 
+def _rungs_json(row: dict) -> str:
+    return json.dumps(row["rungs"], separators=(",", ":"))
+
+
+def _content_hash(row: dict) -> str:
+    """sha256 of everything a ladder row says besides its reading and times."""
+    content = [row["leagueId"], row["eventName"], row["awayTeamId"], row["homeTeamId"], row["eventStart"].isoformat(),
+               row["mainPoints0"], row["mainFair0"], row["mainPoints1"], row["mainFair1"], row["rungs"]]
+    return hashlib.sha256(json.dumps(content, separators=(",", ":")).encode()).hexdigest()
+
+
+def _table_counts(con: duckdb.DuckDBPyConnection, database: str) -> dict[str, int]:
+    tables = [name for (name,) in con.execute(
+        "SELECT table_name FROM duckdb_tables() WHERE database_name = ? ORDER BY table_name", [database]).fetchall()]
+    return {table: con.execute(f'SELECT count(*) FROM "{database}"."{table}"').fetchone()[0] for table in tables}
+
+
+def compact_file(db_path: Path) -> None:
+    """Rewrite ladders.duckdb into a fresh file when that frees enough of it.
+
+    DuckDB never gives back the space a rewritten row leaves behind, so a
+    file that took many rewrites is mostly dead space. Run before the store
+    opens the file (the service's start, so every deploy): a file under
+    COMPACT_MIN_BYTES, or whose blocks in use fill more than
+    COMPACT_KEEP_RATIO of it, is left alone; otherwise it is copied table by table
+    (COPY FROM DATABASE keeps the schema and keys) to `<name>.compact`, the
+    row counts are checked equal, and the copy replaces the file only when it
+    is at most COMPACT_KEEP_RATIO of its size. Raises on any failure, leaving
+    the original file in place (the caller logs and opens it as it is)."""
+    if not db_path.exists():
+        return
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("CHECKPOINT")
+        [(used_blocks, block_size)] = con.execute(
+            "SELECT used_blocks, block_size FROM pragma_database_size()").fetchall()
+    before = db_path.stat().st_size
+    if before < COMPACT_MIN_BYTES:
+        return
+    # Most starts find a tight file: skip the copy (seconds on a big file)
+    # unless the blocks in use would fit the size check. File size, not
+    # total_blocks: DuckDB counts free blocks it has already cut off the end.
+    used_bytes = used_blocks * block_size
+    if used_bytes > before * COMPACT_KEEP_RATIO:
+        log.info("ladder store %s not compacted: %d of its %d bytes in use", db_path, used_bytes, before)
+        return
+    compact_path = db_path.with_name(db_path.name + ".compact")
+    for leftover in (compact_path, compact_path.with_name(compact_path.name + ".wal")):
+        leftover.unlink(missing_ok=True)
+    with duckdb.connect() as con:
+        con.execute("ATTACH ? AS old_db (READ_ONLY)", [str(db_path)])
+        con.execute("ATTACH ? AS new_db", [str(compact_path)])
+        con.execute("COPY FROM DATABASE old_db TO new_db")
+        old_counts = _table_counts(con, "old_db")
+        new_counts = _table_counts(con, "new_db")
+        con.execute("CHECKPOINT new_db")
+        con.execute("DETACH new_db")
+        con.execute("DETACH old_db")
+    if old_counts != new_counts:
+        compact_path.unlink(missing_ok=True)
+        raise RuntimeError(f"compacting {db_path}: expected row counts {old_counts} in the copy, got {new_counts}")
+    after = compact_path.stat().st_size
+    if after > before * COMPACT_KEEP_RATIO:
+        compact_path.unlink(missing_ok=True)
+        log.info("ladder store %s not compacted: a copy is %d bytes of %d", db_path, after, before)
+        return
+    os.replace(compact_path, db_path)
+    log.info("ladder store %s compacted from %d to %d bytes (%s)", db_path, before, after, new_counts)
+
+
 class LadderStore:
     def __init__(self, db_path: str | Path):
         self._lock = threading.Lock()
         self._con = duckdb.connect(str(db_path))
         self._con.execute(_SCHEMA)
+        self._con.execute(_ADD_CONTENT_HASH)
         self._con.execute(_EDGE_SEGMENT_SCHEMA)
 
     def close(self) -> None:
@@ -159,19 +258,29 @@ class LadderStore:
             self._con.close()
 
     def save_readings(self, rows: list[dict], received_at: datetime) -> int:
-        """INSERT each opener (the first one stored stays) and UPSERT each close
-        (kept only when newer). `rows` are service.validate_ladder_rows' output
-        (event_start / observed_at already datetimes). Returns how many rows
-        were written."""
+        """INSERT each opener (the first one stored stays) and write each close
+        kept only when newer: an unchanged one moves only its observed_at and
+        received_at, a changed one is UPSERTed whole. `rows` are
+        service.validate_ladder_rows' output (event_start / observed_at
+        already datetimes). Returns how many rows were written."""
         written = 0
         with self._lock:
             for row in rows:
+                content_hash = _content_hash(row)
+                if row["reading"] == READING_CLOSE:
+                    [touched] = self._con.execute(_TOUCH_CLOSE, [
+                        row["observedAt"], received_at, row["eventId"], row["periodTypeId"], row["betTypeId"],
+                        content_hash, row["observedAt"],
+                    ]).fetchone()
+                    if touched:
+                        written += touched
+                        continue
                 statement = _INSERT_OPENER if row["reading"] == READING_OPENER else _UPSERT_CLOSE
                 [count] = self._con.execute(statement, [
                     row["reading"], row["eventId"], row["periodTypeId"], row["betTypeId"], row["leagueId"],
                     row["eventName"], row["awayTeamId"], row["homeTeamId"], row["eventStart"], row["observedAt"],
                     row["mainPoints0"], row["mainFair0"], row["mainPoints1"], row["mainFair1"], len(row["rungs"]),
-                    json.dumps(row["rungs"], separators=(",", ":")), received_at,
+                    _rungs_json(row), received_at, content_hash,
                 ]).fetchone()
                 written += count
         return written
