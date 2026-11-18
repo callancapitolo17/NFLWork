@@ -46,8 +46,9 @@ unknown. An 'unknown' row blocks the next Place on the game until a
 polymarket_us read after it (rule 7); that read shows any fill as a position.
 
 Side effects: a Polymarket US order on Cal's main account (money); INSERT /
-UPDATE bets.duckdb::manual_orders (venue 'polymarket_us', incl. the fee
-coefficient priced at and the fill's average price and commission). Network: GET
+UPDATE bets.duckdb::manual_orders (venue 'polymarket_us', incl. the market's
+fee coefficient and the fill's average price and commission). Rule 4's price
+check runs last of the refusals, after rules 5-7. Network: GET
 <runner>/polymarket_quote.json, then Polymarket US REST signed with Place's key.
 """
 import logging

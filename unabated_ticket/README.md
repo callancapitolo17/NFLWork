@@ -3953,7 +3953,8 @@ signs (one balance read at start) and the service reads `polymarket_us`; else
    prices the next order at the charged one (`charged_fee_coefficient`): the
    Ticket's price, still on the market's, then reads as too cheap and Place
    at that coefficient refuses saying why, until Polymarket US's markets show
-   another number. Any fill that cost more than the Ticket answers `overpaid`
+   another number (to lift it by hand, after checking the fee with Polymarket
+   US: `UPDATE manual_orders SET fill_commission = NULL WHERE client_order_id = '<pman- id>'`). Any fill that cost more than the Ticket answers `overpaid`
    (its message stays on screen instead of fading, still counted as a fill;
    logged as an error and kept in `manual_orders.error`).
 3. It refuses, sending nothing, when: the game has started or its start is
