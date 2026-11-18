@@ -1,5 +1,5 @@
 # MLB F5 ROI Backtest
-# Leave-one-out backtest comparing algo F5 predictions to actual book F5 closing odds
+# Walk-forward backtest comparing algo F5 predictions to actual book F5 closing odds (each game priced only off games played before it)
 # Parallel version based on CBB_Backtest_Parallel.R
 #
 # Requires: pbp.duckdb/mlb_f5_odds_history (from fetch_mlb_f5_odds.py)
@@ -95,7 +95,7 @@ DT <- dbGetQuery(con, "
     actual_cover  = home_winner
   ) %>%
   mutate(
-    actual_over = ifelse(game_total_period_FG > total_line, 1, 0),
+    actual_over = ifelse(game_total_period_FG > total_line, 1, ifelse(game_total_period_FG == total_line, 0.5, 0)),
     game_id = game_pk
   ) %>%
   as.data.table()
@@ -206,9 +206,11 @@ cat("  F5 moneylines:", nrow(ml_f5), "\n")
 games_with_derivs <- unique(c(spreads_f5$game_pk, totals_f5$game_pk, ml_f5$game_pk))
 DT_test <- DT[DT$game_pk %in% games_with_derivs, ]
 cat("\nGames with F5 odds:", nrow(DT_test), "\n")
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 
 if (nrow(DT_test) == 0) {
-  cat("ERROR: No games matched between PBP and F5 odds.\n")
+  cat("ERROR: No walk-forward eligible games with F5 odds (none matched, or none have half the history behind them).\n")
   quit(save = "no", status = 1)
 }
 
@@ -226,9 +228,8 @@ if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
 disp <- compute_dispersion(DT, moneyline = TRUE)
 ss <- disp$ss
 st <- disp$st
-N <- round(nrow(DT) * SAMPLE_PCT, 0)
 
-cat("Sample size N:", N, "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of each test game's prior history\n\n")
 
 # =============================================================================
 # WORKER FUNCTION (processes a single game)
@@ -248,8 +249,9 @@ process_single_game <- function(test_id) {
   if (is.na(parent_spread) || is.na(parent_total)) return(NULL)
   if (is.na(target_cover) || is.na(target_over)) return(NULL)
 
-  # Leave-one-out
-  DT_train <- DT[DT$game_pk != test_id, ]
+  DT_train <- walk_forward_training_set(DT, test_game$game_date)
+  if (is.null(DT_train)) return(NULL)
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
 
   sample_result <- tryCatch({
     run_answer_key_sample(
@@ -259,7 +261,7 @@ process_single_game <- function(test_id) {
       target_cover = target_cover,
       target_over = target_over,
       DT = DT_train,
-      ss = ss, st = st, N = N,
+      ss = ss, st = st, N = N_game,
       use_spread_line = FALSE  # CRITICAL for MLB: match on ML probability
     )
   }, error = function(e) NULL)
@@ -393,7 +395,7 @@ start_time <- Sys.time()
 cl <- makeCluster(N_CORES)
 
 clusterExport(cl, c("DT", "DT_test", "spreads_f5", "totals_f5", "ml_f5",
-                    "ss", "st", "N", "devig_pair", "process_single_game",
+                    "ss", "st", "SAMPLE_PCT", "devig_pair", "process_single_game",
                     "american_to_prob"))
 
 clusterEvalQ(cl, {

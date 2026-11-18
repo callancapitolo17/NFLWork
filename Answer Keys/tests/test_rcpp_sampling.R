@@ -29,8 +29,8 @@ cat("=============================================================\n\n")
 con <- dbConnect(duckdb(), dbdir = "pbp.duckdb", read_only = TRUE)
 DT <- dbGetQuery(con, "SELECT * FROM nfl_betting_pbp") %>%
   mutate(
-    actual_over = ifelse(total_final_score > total_line, 1, 0),
-    actual_cover = ifelse(home_margin > -home_spread, 1, 0)
+    actual_over = ifelse(total_final_score > total_line, 1, ifelse(total_final_score == total_line, 0.5, 0)),
+    actual_cover = ifelse(home_margin > -home_spread, 1, ifelse(home_margin == -home_spread, 0.5, 0))
   ) %>%
   as.data.table()
 dbDisconnect(con)
@@ -97,15 +97,15 @@ target_over <- 0.50
 bal_cpp <- balance_sample(mm_cpp$dt, N, target_cover, target_over, tol_error = 1)
 
 if (abs(bal_cpp$cover_error) <= 1) {
-  pass(sprintf("C++ cover error = %d (within tolerance)", bal_cpp$cover_error))
+  pass(sprintf("C++ cover error = %.1f (within tolerance)", bal_cpp$cover_error))
 } else {
-  fail(sprintf("C++ cover error = %d (exceeds tolerance)", bal_cpp$cover_error))
+  fail(sprintf("C++ cover error = %.1f (exceeds tolerance)", bal_cpp$cover_error))
 }
 
 if (abs(bal_cpp$over_error) <= 1) {
-  pass(sprintf("C++ over error = %d (within tolerance)", bal_cpp$over_error))
+  pass(sprintf("C++ over error = %.1f (within tolerance)", bal_cpp$over_error))
 } else {
-  fail(sprintf("C++ over error = %d (exceeds tolerance)", bal_cpp$over_error))
+  fail(sprintf("C++ over error = %.1f (exceeds tolerance)", bal_cpp$over_error))
 }
 
 if (bal_cpp$converged) {

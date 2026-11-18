@@ -820,6 +820,27 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   About 60 games stay read within the 2 min a read stands. The taker's own reads count,
   so a 3%+ line is not read twice. A line whose market fails its check is
   never painted with that market's price.
+- **Stream pass (`liveStreamPass`, every 10 s; Cal, 2026-11-17).** Between
+  live price passes the lines the last live price pass picked (still on the
+  board at the same number, game not started; no board walk of its own, which is the cost #316
+  took out of `/edges.json`) are reread off the bets service's streams alone,
+  so a dead price leaves the phone's list within about 25 s (10 s pass plus
+  the 15 s `/edges.json` poll) instead of standing up to 2 min. It uses only
+  what the live price pass already holds: Kalshi lines with a market check
+  cached (stream book only, no REST book or parity check), Novig's catalog
+  as held up to 2 min (stream book only, no catalog read, no keyed REST
+  book), Polymarket US lines whose contract is already found (no event-list
+  read) and ProphetX's last reads. It sends no Kalshi, Novig, Polymarket US
+  or ProphetX request and builds no Edges list. Its reads are not full reads
+  (a read's `fullReadAtMs`), so the live price pass still rereads every line
+  on its own 20 s clock, renewing the market checks, the catalog and the
+  Kalshi parity checks; a REST book that replaced a disagreeing stream book
+  stands only until the next stream pass. A stream with no book for a line
+  leaves the last read standing (it ages out at 2 min) and counts the line
+  unchecked. It skips a tick while the live price pass, or the previous
+  stream pass, is running. `/health` `livePrices.streamPass` shows its last
+  run (`durationMs` is wall time, service round trips included; `rows`,
+  per-venue counts).
 - **The overlay (`extension/liveprices.js`).** A read under 2 min old at the
   line's own number reprices it: price = the live all-in (Kalshi's 7% fee and
   Polymarket US's 6% fee included; Novig charges none pregame), liquidity =
@@ -3348,6 +3369,16 @@ bot's subaccount (Kalshi nets per market within a subaccount: buying NO
 would sell that YES; across them the bot still never bets against a held bet). The desk also refuses a decision older than 60 s
 (`stale_decision`), a game that has started (`started`) and a runner priced
 on another Kalshi API than its own (`env_mismatch`).
+
+**A pass that never finishes (2026-11-13).** One pass at a time runs. On
+2026-11-13 a pass started at 04:40 UTC and never finished, with no error
+logged, and every later pass waited behind it for 17 hours. Since then a
+pass still running after 5 minutes (`TAKER_PASS_STUCK_MS`) is abandoned: the
+runner logs it, the next 30 s tick starts a new pass, and the abandoned one
+decides, confirms and sends nothing more if it resumes (an order already on
+its way to the desk still lands; the desk's own guards cover it). `/health` shows
+`taker.runningSince` (the pass in progress) and `taker.stuck` (how many were
+abandoned, and the last one's start).
 
 **Two clocks for "started" (2026-10-16, option B).** A backup to Unabated's
 eventStart, added after a suspected late start that turned out to be right

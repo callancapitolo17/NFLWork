@@ -54,8 +54,8 @@ DT <- betting_pbp %>%
     under_odds = consensus_devig_under_odds
   ) %>%
   mutate(
-    actual_over = ifelse(total_final_score > total_line, 1, 0),
-    actual_cover = ifelse(home_margin > -home_spread, 1, 0)
+    actual_over = ifelse(total_final_score > total_line, 1, ifelse(total_final_score == total_line, 0.5, 0)),
+    actual_cover = ifelse(home_margin > -home_spread, 1, ifelse(home_margin == -home_spread, 0.5, 0))
   ) %>%
   as.data.table()
 
