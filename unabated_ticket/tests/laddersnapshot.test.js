@@ -116,3 +116,12 @@ test("unsentRows: a close taken before a start that moved later is re-sent at on
   const later = { ...postponed, observedMs: postponed.observedMs + laddersnapshot.CLOSE_CONFIRM_MS, signature: `${spread.signature}x` };
   assert.deepEqual(laddersnapshot.unsentRows([later], sent, later.observedMs), [], "outside the new window, nothing until it opens");
 });
+
+test("unsentRows: a start that moves inside the window re-sends the close with an unchanged ladder", () => {
+  const sent = new Map();
+  const [spread] = sliceLadders().filter((l) => l.betTypeId === 2);
+  laddersnapshot.markSent(laddersnapshot.unsentRows([spread], sent, spread.observedMs), sent);
+  const earlier = { ...spread, eventStartMs: spread.eventStartMs - 30 * 60 * 1000, observedMs: spread.observedMs + 60 * 1000 };
+  const rows = laddersnapshot.unsentRows([earlier], sent, earlier.observedMs);
+  assert.deepEqual(rows.map((row) => [row.reading, row.eventStart]), [["close", new Date(earlier.eventStartMs).toISOString()]]);
+});
