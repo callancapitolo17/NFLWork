@@ -28,9 +28,10 @@
 //
 // Prices: Polymarket US trades ONE instrument per market, the YES contract;
 // its book's bids and offers are YES prices. YES costs the best offer; NO
-// costs 1 minus the best bid. Takers pay THETA x p x (1 - p) per contract
-// (the exchange's fee curve, CFTC filings; allInOf) — counted in the all-in
-// price the bets service holds against the Ticket's.
+// costs 1 minus the best bid. Takers pay feeCoefficient x p x (1 - p) per
+// contract, the coefficient read off each market's own `feeCoefficient`
+// (feeCoefficientOf; allInOf) — counted in the all-in price the bets service
+// holds against the Ticket's.
 //
 // Pure: no network, no clock. Reused by runner.js only.
 
@@ -57,12 +58,14 @@ const START_TOLERANCE_MS = 30 * 60 * 1000;
 // rather than miss the game or a second copy of it.
 const EVENTS_PAGE_LIMIT = 100;
 const MARKET_STATE_OPEN = "MARKET_STATE_OPEN";
-// Polymarket US's taker fee coefficient: fee per contract = THETA x p x (1 - p).
-// 0.06 is the exchange-wide coefficient of the July 2026 CFTC filing; a
-// sports-only 0.03 is reported second-hand, so the higher one is used:
-// overcounting the fee can only refuse a click, never overpay. The order's
-// own commission is read back and stored, so the first real fills show which.
-const TAKER_FEE_THETA = 0.06;
+// Polymarket US's taker fee per contract = feeCoefficient x p x (1 - p), the
+// coefficient on each market of the public event list (0.095 on every market
+// read 2026-11-13; fills charged 0.0695 until 2026-11-05 and 0.095 since
+// 2026-11-07, matching it). A hard-coded 0.06 once priced a live Place 0.9c
+// under what it cost, so the fee is read off the market, never assumed: a
+// market without a readable coefficient is not priced. Above this bound the
+// field is taken as misread, not as a fee.
+const MAX_FEE_COEFFICIENT = 0.25;
 
 function isPolymarketUsBook(book) {
   return Boolean(book) && book.name === BOOK_NAME;
@@ -272,12 +275,26 @@ function quoteOf(bookBody, side) {
   return { ask: Math.round((1 - best) * 1e6) / 1e6, depth: bids.filter((level) => level.price === best).reduce((sum, level) => sum + level.qty, 0) };
 }
 
+// The market's taker fee coefficient, or {reason, detail} when it has none
+// that reads as one.
+function feeCoefficientOf(market) {
+  const value = market && typeof market === "object" ? market.feeCoefficient : undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > MAX_FEE_COEFFICIENT) {
+    return { reason: "no_fee", detail: `market ${market && market.slug} has no fee coefficient that reads as one (feeCoefficient ${JSON.stringify(value)})` };
+  }
+  return { feeCoefficient: value };
+}
+
 // One contract's price with the taker fee, as a probability.
-function allInOf(ask) {
-  return Math.round((ask + TAKER_FEE_THETA * ask * (1 - ask)) * 1e6) / 1e6;
+//   feeCoefficient  the market's (feeCoefficientOf)
+function allInOf(ask, feeCoefficient) {
+  if (typeof feeCoefficient !== "number" || !Number.isFinite(feeCoefficient)) {
+    throw new Error(`allInOf needs the market's fee coefficient, got ${JSON.stringify(feeCoefficient)}`);
+  }
+  return Math.round((ask + feeCoefficient * ask * (1 - ask)) * 1e6) / 1e6;
 }
 
 module.exports = {
-  BOOK_NAME, VENUE, START_TOLERANCE_MS, EVENTS_PAGE_LIMIT, TAKER_FEE_THETA, MARKET_STATE_OPEN, oneTeamMatches,
-  isPolymarketUsBook, marketTypeOf, eventTeamsOf, matchingEvents, sideAndPointsOf, rowSideOf, contractOf, quoteOf, allInOf,
+  BOOK_NAME, VENUE, START_TOLERANCE_MS, EVENTS_PAGE_LIMIT, MAX_FEE_COEFFICIENT, MARKET_STATE_OPEN, oneTeamMatches,
+  isPolymarketUsBook, marketTypeOf, eventTeamsOf, matchingEvents, sideAndPointsOf, rowSideOf, contractOf, quoteOf, feeCoefficientOf, allInOf,
 };

@@ -318,6 +318,14 @@ ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 -- fee; the board-line columns above are kept for the log. Polymarket US
 -- takes no client order id: this row is the only guard against a resend.
 ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS polymarket_order_id VARCHAR;
+-- Polymarket US's fee (2026-11-17): the taker fee coefficient the market showed
+-- when the order was priced, and what the fill itself says it cost: its average
+-- price on the bought side and Polymarket US's commission in dollars. A fill
+-- charged above the coefficient its market showed holds the next Place to the
+-- charged one (polymarket_place.charged_fee_coefficient). NULL on other venues.
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS fee_coefficient DOUBLE;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS fill_avg_price DOUBLE;
+ALTER TABLE manual_orders ADD COLUMN IF NOT EXISTS fill_commission DOUBLE;
 -- ProphetX Place (prophetx_place.py): `ticker` is the ProphetX strike id,
 -- `contract_side` 'buy' (ProphetX orders only buy), `ask_price` =
 -- `all_in_price` the live implied probability of the American price sent
@@ -347,11 +355,25 @@ MANUAL_ORDER_NOVIG_LINE_COLUMNS = (
     "away_team_id", "home_team_id",
 )
 MANUAL_ORDER_UPDATE_COLUMNS = ("status", "kalshi_order_id", "novig_order_id", "polymarket_order_id",
-                               "prophetx_order_id", "count_filled", "cost_filled", "error")
+                               "prophetx_order_id", "count_filled", "cost_filled", "error", "fill_avg_price",
+                               "fill_commission")
 # Whether a BFA row bet free play; every other row leaves it false.
 MANUAL_ORDER_FREE_PLAY_COLUMN = "free_play"
+# The Polymarket US market's fee coefficient the order was priced at; NULL elsewhere.
+MANUAL_ORDER_FEE_COEFFICIENT_COLUMN = "fee_coefficient"
 _INSERT_MANUAL_ORDER_COLUMNS = (MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
-                                + (MANUAL_ORDER_FREE_PLAY_COLUMN,))
+                                + (MANUAL_ORDER_FREE_PLAY_COLUMN, MANUAL_ORDER_FEE_COEFFICIENT_COLUMN))
+# The newest Polymarket US Place fill priced at one market fee coefficient whose
+# contracts x p x (1 - p) is at least ?, with its fee said: what it cost
+# (polymarket_place.charged_fee_coefficient).
+_SELECT_LATEST_POLYMARKET_FEE_FILL = """
+SELECT fee_coefficient, fill_avg_price, fill_commission, count_filled
+FROM manual_orders
+WHERE venue = 'polymarket_us' AND abs(fee_coefficient - ?) < 1e-9 AND fill_avg_price IS NOT NULL
+  AND fill_commission IS NOT NULL AND count_filled * fill_avg_price * (1 - fill_avg_price) >= ?
+ORDER BY placed_at DESC, updated_at DESC
+LIMIT 1
+"""
 _INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
                         f"VALUES ({', '.join(['?'] * len(_INSERT_MANUAL_ORDER_COLUMNS))})")
 # Every Novig Place order Novig gave an id, as the sub-account read's
@@ -1401,7 +1423,8 @@ class BetsStore:
                 return False
             values = ([order[column] for column in MANUAL_ORDER_INSERT_COLUMNS]
                       + [order.get(column) for column in MANUAL_ORDER_NOVIG_LINE_COLUMNS]
-                      + [bool(order.get(MANUAL_ORDER_FREE_PLAY_COLUMN, False))])
+                      + [bool(order.get(MANUAL_ORDER_FREE_PLAY_COLUMN, False)),
+                         order.get(MANUAL_ORDER_FEE_COEFFICIENT_COLUMN)])
             self._con.execute(_INSERT_MANUAL_ORDER, values)
         return True
 
@@ -1484,6 +1507,18 @@ class BetsStore:
         with self._lock:
             self._con.execute(f"UPDATE manual_orders SET {assignments}, updated_at = ? WHERE client_order_id = ?",
                               [*fields.values(), at, client_order_id])
+
+    def latest_polymarket_fee_fill(self, fee_coefficient: float, min_spread: float) -> dict | None:
+        """The newest Polymarket US Place fill priced at `fee_coefficient` whose
+        contracts x p x (1 - p) is at least `min_spread`, with its fee recorded,
+        or None: {fee_coefficient, fill_avg_price, fill_commission,
+        count_filled}. Read-only."""
+        with self._lock:
+            row = self._con.execute(_SELECT_LATEST_POLYMARKET_FEE_FILL, [fee_coefficient, min_spread]).fetchone()
+        if row is None:
+            return None
+        keys = ("fee_coefficient", "fill_avg_price", "fill_commission", "count_filled")
+        return dict(zip(keys, row))
 
     def manual_orders_maybe_filled_since(self, event_id: int, since: datetime, venue: str | None = None) -> list[dict]:
         """Manual orders on this game that may hold contracts the read at

@@ -843,7 +843,8 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   per-venue counts).
 - **The overlay (`extension/liveprices.js`).** A read under 2 min old at the
   line's own number reprices it: price = the live all-in (Kalshi's 7% fee and
-  Polymarket US's 6% fee included; Novig charges none pregame), liquidity =
+  Polymarket US's fee at each market's own `feeCoefficient` included; Novig
+  charges none pregame), liquidity =
   the dollars resting at that price, edge = Unabated's fair against it. The
   fair is the taker's: Unabated's edge on the cheaper of its two shown prices.
   A read with nothing resting takes the line off the list and out of "best of
@@ -3968,12 +3969,33 @@ signs (one balance read at start) and the service reads `polymarket_us`; else
    instrument per market; every price is the YES price), and a market not
    `MARKET_STATE_OPEN` refuses. The quote carries the earlier of Unabated's
    and Polymarket US's start.
-2. The all-in price adds the taker fee, THETA x p x (1 - p) per contract with
-   THETA = 0.06 (the exchange-wide coefficient of the July 2026 CFTC filing;
-   a sports-only 0.03 is reported second-hand, so the higher one is used:
-   over-counting can only refuse a click). **Unverified:** whether Unabated's
-   Polymarket US price already includes the fee. If it does not, nearly every
-   click refuses as "more than 0.1c worse" and the refusal shows both prices.
+2. The all-in price adds the taker fee, `feeCoefficient` x p x (1 - p) per
+   contract, the coefficient read off the market itself in Polymarket US's
+   event list (`events[].markets[].feeCoefficient`; `polymarket.feeCoefficientOf`)
+   — on the Place quote's own fresh list, and on the live price pass's
+   remembered contract (held until the game starts, so a fee changed mid-day
+   reaches the Edges price late, never the Place check). A market with no
+   readable coefficient (missing, not a number, outside 0-0.25) is not priced:
+   the line reads `unchecked` and Place refuses `no_fee`. History (2026-11-08,
+   thread "Fix live Polymarket Place partial fill"): a fixed 0.06 priced a
+   live DEN@CAR Under at 49.0c; Polymarket US charged 0.095 (0.0695 until
+   2026-11-05, 0.095 on every fill since 2026-11-07), so it cost 49.9c and the
+   0.1c check, using the same 0.06, could not catch it. On 2026-11-13 every
+   one of 12,074 open markets read `feeCoefficient` 0.095.
+   **The fee Polymarket US actually charged** is kept per fill
+   (`manual_orders.fee_coefficient` = the market's, `fill_avg_price` and
+   `fill_commission` off the order's `avgPx` and
+   `commissionNotionalTotalCollected`). When the newest Place fill priced at
+   the market's current coefficient, large enough to read the rate
+   (contracts x p x (1 - p) >= 10, so the commission's cent rounding moves it
+   at most 0.001), was charged more than 0.002 over it, the bets service
+   prices the next order at the charged one (`charged_fee_coefficient`): the
+   Ticket's price, still on the market's, then reads as too cheap and Place
+   at that coefficient refuses saying why, until Polymarket US's markets show
+   another number (to lift it by hand, after checking the fee with Polymarket
+   US: `UPDATE manual_orders SET fill_commission = NULL WHERE client_order_id = '<pman- id>'`). Any fill that cost more than the Ticket answers `overpaid`
+   (its message stays on screen instead of fading, still counted as a fill;
+   logged as an error and kept in `manual_orders.error`).
 3. It refuses, sending nothing, when: the game has started or its start is
    unknown; the runner read another gateway; the live all-in is more than
    **0.1c worse** than the Ticket's price (better always goes); the other side
@@ -3984,7 +4006,8 @@ signs (one balance read at start) and the service reads `polymarket_us`; else
    `manual_orders.unseen_manual_fill`, which Kalshi and Novig Place now check
    for Polymarket US Place too); the click id was already sent.
 4. It buys `floor(stake / all-in)` contracts with ONE immediate-or-cancel limit
-   at the live ask (a NO buy is `ORDER_INTENT_BUY_SHORT` at the YES price 1 -
+   at the live ask (so a contract costs at most that all-in, which step 3
+   held within 0.1c of the Ticket) (a NO buy is `ORDER_INTENT_BUY_SHORT` at the YES price 1 -
    ask), row `pman-<clickId>` inserted before the send. Polymarket US takes
    **no client order id**, so that row is the only guard: nothing is ever
    re-sent. The order is read until final (6 reads a second apart, none
@@ -3995,7 +4018,9 @@ signs (one balance read at start) and the service reads `polymarket_us`; else
 
 ```sql
 SELECT placed_at, label, ticker AS slug, contract_side, ticket_all_in, ask_price, all_in_price, stake, count_requested,
-       count_filled, cost_filled, polymarket_order_id, status, error
+       count_filled, cost_filled, fee_coefficient, fill_avg_price, fill_commission,
+       fill_commission / (count_filled * fill_avg_price * (1 - fill_avg_price)) AS charged_fee_coefficient,
+       polymarket_order_id, status, error
 FROM manual_orders WHERE venue = 'polymarket_us' ORDER BY placed_at DESC;
 ```
 

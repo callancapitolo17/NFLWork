@@ -146,6 +146,18 @@ def order_fill_totals(order: dict, contract_side: str) -> tuple[float, float | N
     return filled, round(filled * side_price + commission, 5)
 
 
+def order_fill_fee(order: dict, contract_side: str) -> tuple[float, float] | None:
+    """(average price on the bought side, commission in dollars) of a filled
+    order, or None when the order does not say both."""
+    filled = quantity_of(order.get("cumQuantity"))
+    average = amount_of(order.get("avgPx"))
+    commission = amount_of(order.get("commissionNotionalTotalCollected"))
+    if not filled or average is None or commission is None:
+        return None
+    side_price = average if contract_side == "yes" else 1 - average
+    return round(side_price, 6), commission
+
+
 def requests_transport() -> Transport:
     session = requests.Session()
 
