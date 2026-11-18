@@ -507,7 +507,7 @@
   // (`isAlt` false) is the main number itself (distance 0: nothing to
   // shrink), and an alt is measured from even money, where a main number
   // sits. The raw edge stays on the row: the listing floor (Min edge, the
-  // bot's 3%) and every stake read it; the Min shrunk edge floor and the
+  // bot's 4%) and every stake read it; the Min shrunk edge floor and the
   // rank read this.
   function shrinkOfRow(row, measurement) {
     if (row.edgePct == null || row.edgePct <= 0 || !kelly.isAmericanPrice(row.price)) return null;

@@ -214,7 +214,10 @@
 //                    whose snapshot time on /health (rfq.leagueLoadedAt) moved.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices, rfq, taker}
 //                    taker.runningSince is the start of the pass in progress and
-//                    taker.stuck counts the passes abandoned after TAKER_PASS_STUCK_MS.
+//                    taker.stuck counts the passes abandoned after TAKER_PASS_STUCK_MS;
+//                    taker.decidedAt is each venue's last pass that decided its rows, and
+//                    taker.silent lists the venues past TAKER_SILENT_ALERT_MS without one
+//                    (also on /edges.json as taker.silent, for the phone's banner).
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Threads: main() runs createRunner on a worker thread (server/board_thread.js)
@@ -294,6 +297,13 @@ const TAKER_PASS_MS = 30 * 1000;
 // one. Every read in a pass has a timeout, and the slowest pass seen under
 // load took ~2.5 min (2026-11-13), so 5 min means a wait that will not return.
 const TAKER_PASS_STUCK_MS = 5 * 60 * 1000;
+// A venue whose bot has not decided a pass in this long is silent: /health
+// (taker.silent) and the phone's banner say so (Cal, 2026-11-18). Twice the
+// stuck limit, so one abandoned pass and its successor fit inside it.
+const TAKER_SILENT_ALERT_MS = 2 * TAKER_PASS_STUCK_MS;
+// A pass whose every row ended in one of these decided nothing: the board is
+// stale or no book could be read, so it does not count as a decided pass.
+const TAKER_UNDECIDED_REASONS = new Set(["stale_feed", "no_book"]);
 // Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
 const KALSHI_BOOK_READS_AT_ONCE = 2;
 // How long a Kalshi book ask for one line (a Place quote, a reread) may wait
@@ -713,6 +723,11 @@ function createRunner(deps) {
   let takerRunning = null;
   let takerPassCount = 0;
   let takerStuck = { count: 0, lastAt: null, lastStartedAt: null };
+  // Per venue (taker.VENUE_KALSHI / VENUE_NOVIG): when it last finished a pass
+  // that decided its rows (not skipped, failed or abandoned, and not every row
+  // stale_feed / no_book), null until the first; and why the last pass did not.
+  const takerDecidedAt = { [taker.VENUE_KALSHI]: null, [taker.VENUE_NOVIG]: null };
+  const takerUndecidedWhy = { [taker.VENUE_KALSHI]: null, [taker.VENUE_NOVIG]: null };
   let takerPostBusy = false;
   // `skipped` is the Kalshi side's (as before Novig), `novigSkipped` the Novig side's.
   let takerLastPass = { startedAt: null, finishedAt: null, skipped: "not run yet", novigSkipped: "not run yet", rows: 0, byReason: {}, coverage: {} };
@@ -1583,6 +1598,8 @@ function createRunner(deps) {
       // A Novig stake is sized on every held bet, Cal's Kalshi bets included: it needs the Kalshi poll fresh too.
       const novigSkip = blocker || novigBlocker();
       if (blocker && novigSkip) {
+        noteVenueDecided(taker.VENUE_KALSHI, blocker, []);
+        noteVenueDecided(taker.VENUE_NOVIG, novigSkip, []);
         takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: blocker, novigSkipped: novigSkip };
         return;
       }
@@ -1603,6 +1620,8 @@ function createRunner(deps) {
       await sendTakerOrders(decisions, rows, startedAt, isCurrent);
       if (!isCurrent()) return;
       queueChangedDecisions(takerDecisions);
+      noteVenueDecided(taker.VENUE_KALSHI, blocker, kalshiPart.decisions);
+      noteVenueDecided(taker.VENUE_NOVIG, novigSkip, novigPart.decisions);
       takerLastPass = {
         startedAt, finishedAt: now(), skipped: blocker, novigSkipped: novigSkip, rows: rows.length,
         byReason: countBy(takerDecisions, (decision) => decision.reason),
@@ -1610,7 +1629,11 @@ function createRunner(deps) {
       };
     } catch (error) {
       logWarning(`taker pass${isCurrent() ? "" : " (abandoned)"} failed: ${error.stack || error.message}`);
-      if (isCurrent()) takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}`, novigSkipped: `the pass failed: ${error.message}` };
+      if (isCurrent()) {
+        noteVenueDecided(taker.VENUE_KALSHI, `the pass failed: ${error.message}`, []);
+        noteVenueDecided(taker.VENUE_NOVIG, `the pass failed: ${error.message}`, []);
+        takerLastPass = { ...takerLastPass, startedAt, finishedAt: now(), skipped: `the pass failed: ${error.message}`, novigSkipped: `the pass failed: ${error.message}` };
+      }
     } finally {
       if (isCurrent()) takerRunning = null;
     }
@@ -1710,8 +1733,8 @@ function createRunner(deps) {
   // exchange's own book here and the reads are laid over the board for the
   // Edges list (/edges.json here, /live_prices.json for the panel). The
   // taker decides on its own reads as before (Cal, 2026-11-02: the bot stays
-  // as it is); the reads it already made count here, so the 3%+ lines are not
-  // read twice. Each venue's line is shown at its book only when the book's
+  // as it is); the reads it already made count here, so its lines (4%+, within
+  // 72 h) are not read twice. Each venue's line is shown at its book only when the book's
   // market is the line's (Kalshi's market check, Novig's listed market and
   // outcome name, Polymarket US's own sides): a rung Unabated filed under the
   // wrong contract stays unchecked rather than painting that contract's price.
@@ -3446,7 +3469,7 @@ function createRunner(deps) {
       novigDesk: novigDeskStatus,
       rules: {
         kellyBankroll: taker.KELLY_BANKROLL, novigKellyBankroll: taker.NOVIG_KELLY_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
-        priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
+        maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
       },
       pass: { ...takerLastPass, startedAt: isoOrNull(takerLastPass.startedAt), finishedAt: isoOrNull(takerLastPass.finishedAt) },
       decisions,
@@ -3488,7 +3511,7 @@ function createRunner(deps) {
   function edgesPayloadNow() {
     const at = now();
     const lineView = liveLineView();
-    return edgesPayload.buildEdgesPayload({
+    const payload = edgesPayload.buildEdgesPayload({
       feedState, scannerStatus, history, betRecords: held.records, fillFairIndex, knownStarts,
       stakeSettings: settings.stakeSettings, edgeSettings: settings.edgeSettings,
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
@@ -3500,6 +3523,8 @@ function createRunner(deps) {
         selectEdges: (state, options) => edgeSelector(state, options, leagueBoard()),
       } : {}),
     });
+    // The phone's banners read the bots' silence off the list it already polls.
+    return { ...payload, taker: { silent: takerSilentVenues(at) } };
   }
 
   // Both football boards in, or failed (panel.js teaserBoardReady): before
@@ -3604,6 +3629,48 @@ function createRunner(deps) {
     };
   }
 
+  // A finished pass's verdict for one venue: decided, or why not (its skip
+  // reason, or every row stale_feed / no_book).
+  function noteVenueDecided(venue, skipped, decisions) {
+    if (skipped) {
+      takerUndecidedWhy[venue] = skipped;
+      return;
+    }
+    const undecided = decisions.length > 0 && decisions.every((decision) => TAKER_UNDECIDED_REASONS.has(decision.reason));
+    if (undecided) {
+      const first = decisions[0];
+      takerUndecidedWhy[venue] = `all ${decisions.length} rows were ${Array.from(new Set(decisions.map((decision) => decision.reason))).join(" / ")}: ${first.detail || "no detail"}`;
+      return;
+    }
+    takerDecidedAt[venue] = now();
+    takerUndecidedWhy[venue] = null;
+  }
+
+  // A venue whose bot the bets service does not read (no bot key there: the
+  // desk is off by design, as the Bot tab says) is never silent.
+  function venueBotIsRead(venue) {
+    const sources = betsStatus.sources || {};
+    return venue === taker.VENUE_KALSHI ? Boolean(sources.kalshi) : Boolean(sources.novig_bot);
+  }
+
+  // The venues whose bot has not decided a pass within TAKER_SILENT_ALERT_MS
+  // (counted from the runner's start before the first), each with why: a pass
+  // running longer than a tick, else why the last pass did not decide.
+  //   [{venue, since (ISO, the last decided pass or null), reason}]
+  function takerSilentVenues(at) {
+    const silent = [];
+    for (const venue of [taker.VENUE_KALSHI, taker.VENUE_NOVIG]) {
+      const decidedAt = takerDecidedAt[venue];
+      if (at - (decidedAt ?? startedAt) <= TAKER_SILENT_ALERT_MS || !venueBotIsRead(venue)) continue;
+      const longPass = takerRunning && at - takerRunning.startedAt > TAKER_PASS_MS;
+      const reason = longPass
+        ? `a pass has been running since ${new Date(takerRunning.startedAt).toISOString()}`
+        : takerUndecidedWhy[venue] || "no pass has finished";
+      silent.push({ venue, since: isoOrNull(decidedAt), reason });
+    }
+    return silent;
+  }
+
   function health() {
     return {
       ok: true, generatedAt: new Date(now()).toISOString(), uptimeSec: Math.round((now() - startedAt) / 1000),
@@ -3620,6 +3687,8 @@ function createRunner(deps) {
       taker: {
         desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
         runningSince: takerRunning ? isoOrNull(takerRunning.startedAt) : null,
+        decidedAt: { kalshi: isoOrNull(takerDecidedAt[taker.VENUE_KALSHI]), novig: isoOrNull(takerDecidedAt[taker.VENUE_NOVIG]) },
+        silent: takerSilentVenues(now()),
         stuck: { count: takerStuck.count, lastAt: isoOrNull(takerStuck.lastAt), lastStartedAt: isoOrNull(takerStuck.lastStartedAt) },
         skipped: takerLastPass.skipped, novigSkipped: takerLastPass.novigSkipped,
         rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, dropped: takerLogStatus.dropped, unsent: takerUnsent.length },

@@ -926,7 +926,7 @@
     return { first: activityWindow.first, last, empty: activityWindow.first !== null && activityWindow.first > last };
   }
 
-  // taker.js REASONS, in Cal's words.
+  // taker.js REASONS in Cal's words, plus price_moved (retired 2026-11-18) for stored rows.
   const BOT_REASON_NAMES = {
     stale_feed: "Unabated feed stale", no_ticker: "No Kalshi contract", no_outcome: "No Novig outcome",
     no_book: "Nothing to buy", price_moved: "Price moved", edge_short: "Edge too small", not_best: "Another book better",

@@ -997,10 +997,10 @@ test("a bet Dismissed on either page stops needing a game in edges.json, and lis
 
 // ---- the automated taker (server/taker.js, T1: decides, places nothing) ----
 // The CFB venue-id slice (Duquesne @ Washington State, Kalshi rung ids) served
-// as league 2, the clock four days before its kickoff, a 5% Unabated edge set
+// as league 2, the clock two days before its kickoff (inside the bots' 72 h window), a 5% Unabated edge set
 // on Kalshi's WSU -35.5 alt (-143, 0.587157 all-in) and every other book at
 // that number made worse, so the row is the best price.
-const TAKER_NOW = Date.parse("2026-09-15T19:00:00Z");
+const TAKER_NOW = Date.parse("2026-09-17T19:00:00Z");
 const TAKER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
 
 function takerVenueSlice() {
@@ -1183,7 +1183,7 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
 });
 
 test("taker: Kalshi's start, when earlier than Unabated's, is the one the order carries, so the desk refuses a started game", async () => {
-  // Unabated still lists the game four days out; Kalshi says it kicked off a minute ago.
+  // Unabated still lists the game two days out; Kalshi says it kicked off a minute ago.
   const kickedOff = new Date(TAKER_NOW - 60 * 1000).toISOString();
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const runner = runnerLib.createRunner({
@@ -1330,6 +1330,56 @@ test("taker: a pass that never finishes is abandoned after 5 min, the next pass 
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, ordersAfterNewPass, "the abandoned pass sent nothing");
   assert.equal(runner.health().taker.lastPassAt, new Date(newPassAt).toISOString(), "and did not stamp itself as the last pass");
   assert.equal(runner.health().taker.runningSince, null);
+  runner.stop();
+});
+
+// ---- taker: a bot with no decided pass for 10 min is silent (2026-11-18 bot audit) ----
+test("taker: a venue whose bot has not decided a pass in 10 min is listed silent on /health and /edges.json, with why", async () => {
+  let clock = TAKER_NOW;
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  // Before any pass, inside 10 min of the start: nothing is silent yet.
+  assert.deepEqual(runner.health().taker.silent, []);
+  await runner.takerPass();
+  assert.equal(runner.health().taker.decidedAt.kalshi, new Date(TAKER_NOW).toISOString());
+  assert.deepEqual(runner.edgesPayload().taker.silent.filter((entry) => entry.venue === "kalshi"), []);
+  // 10 min on, the Kalshi poll gone stale: the passes skip, so Kalshi falls silent.
+  clock = TAKER_NOW + 10 * 60 * 1000 + 1000;
+  await runner.takerPass();
+  const kalshiSilent = runner.health().taker.silent.find((entry) => entry.venue === "kalshi");
+  assert.ok(kalshiSilent, JSON.stringify(runner.health().taker.silent));
+  assert.equal(kalshiSilent.since, new Date(TAKER_NOW).toISOString());
+  assert.match(kalshiSilent.reason, /Kalshi poll is older than/);
+  // Novig is never listed: this bets service does not read novig_bot (its desk is off by design).
+  assert.deepEqual(runner.health().taker.silent, [kalshiSilent]);
+  assert.deepEqual(runner.edgesPayload().taker.silent, [kalshiSilent]);
+  runner.stop();
+});
+
+test("taker: passes whose every row is no_book do not count as decided, and the silent reason says so", async () => {
+  let clock = TAKER_NOW;
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const books = kalshiFetch();
+  const failingBooks = async (url) => (url.endsWith("/orderbook")
+    ? response({ status: 500, body: JSON.stringify({ error: "down" }) })
+    : books(url));
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: failingBooks, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  assert.equal(runner.health().taker.decidedAt.kalshi, null);
+  clock = TAKER_NOW + 10 * 60 * 1000 + 1000;
+  const silent = runner.health().taker.silent;
+  assert.equal(silent.length, 1, JSON.stringify(silent));
+  assert.equal(silent[0].venue, "kalshi");
+  assert.equal(silent[0].since, null);
+  assert.match(silent[0].reason, /^all \d+ rows were no_book: /);
   runner.stop();
 });
 

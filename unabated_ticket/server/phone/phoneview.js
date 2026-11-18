@@ -250,6 +250,17 @@
     return `${what} unreachable since ${fmtClock(since)} (${betsView.fmtAgeShort(now - since)}): ${poll.error}`;
   }
 
+  const BOT_NAMES = { kalshi: "Kalshi bot", novig: "Novig bot" };
+
+  // One silent bot (the runner's taker.silent entry) as a banner line:
+  //   "Kalshi bot has not run since 2:14 PM (84h): <why>"
+  function botSilentText(silent, now) {
+    const name = BOT_NAMES[silent.venue] || `${silent.venue} bot`;
+    const sinceMs = silent.since ? Date.parse(silent.since) : NaN;
+    const since = Number.isFinite(sinceMs) ? `since ${fmtClock(sinceMs)} (${betsView.fmtAgeShort(now - sinceMs)})` : "since the runner started";
+    return `${name} has not run ${since}: ${silent.reason}`;
+  }
+
   // The red / amber strips above the views, worst first: the page's own two
   // reads, then what the runner says about its feed, the bets service and
   // its settings. [{level: "bad" | "warn", text}]
@@ -265,6 +276,7 @@
       const since = service.unreachableSince != null ? ` since ${fmtClock(service.unreachableSince)}` : "";
       out.push({ level: "bad", text: `Runner cannot read the bets service${since}: stakes ignore your open bets. ${service.error}` });
     }
+    for (const silent of (payload.taker && payload.taker.silent) || []) out.push({ level: "bad", text: botSilentText(silent, now) });
     const settings = payload.settings || {};
     if (settings.error) out.push({ level: "warn", text: `Runner is using its ${settings.source} settings: ${settings.error}` });
     if (edgesPoll.okAt != null && now - edgesPoll.okAt > EDGES_STALE_MS && !edgesPoll.error) {

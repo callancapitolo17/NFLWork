@@ -157,6 +157,19 @@ test("the runner names the open bets no board game matches; the Bets tab groups 
   assert.match(unread.matchNote, /not checked/);
 });
 
+test("banners: a silent bot is a red banner naming the bot, since when and why", () => {
+  const since = NOW - 84 * 3600 * 1000;
+  const edgesPoll = { okAt: NOW, error: null, payload: { taker: { silent: [
+    { venue: "kalshi", since: new Date(since).toISOString(), reason: "a pass has been running since 2026-11-14T08:58:33.000Z" },
+    { venue: "novig", since: null, reason: "no pass has finished" },
+  ] } } };
+  const banners = phoneView.banners(edgesPoll, { okAt: NOW, error: null }, NOW);
+  assert.deepEqual(banners.map((banner) => banner.level), ["bad", "bad"]);
+  assert.match(banners[0].text, /^Kalshi bot has not run since .* \(4 d\): a pass has been running since 2026-11-14T08:58:33\.000Z$/);
+  assert.equal(banners[1].text, "Novig bot has not run since the runner started: no pass has finished");
+  assert.deepEqual(phoneView.banners({ okAt: NOW, error: null, payload: { taker: { silent: [] } } }, null, NOW), []);
+});
+
 test("banners: the page's failed reads, then what the runner reports, worst first", () => {
   const since = NOW - 6 * 60000;
   const edgesPoll = {
