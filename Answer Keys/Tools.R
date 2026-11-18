@@ -506,6 +506,53 @@ distance_index_generic <- function(dt, ps, pt, ss, st, spread_col = "home_ml_odd
   invisible(dt)
 }
 
+# Final-score columns used to grade historical games against the parent line.
+# Sport scripts name them differently, so try the known names in order.
+MARGIN_COL_CANDIDATES <- c("home_margin", "game_home_margin_period_FG", "game_home_margin_fg")
+TOTAL_COL_CANDIDATES  <- c("total_final_score", "game_total_period_FG", "game_total_fg")
+
+resolve_outcome_col <- function(dt, col, candidates) {
+  if (!is.null(col)) {
+    if (!col %in% names(dt)) stop(paste("Column", col, "not found in dt"))
+    return(col)
+  }
+  hit <- intersect(candidates, names(dt))
+  if (length(hit) == 0) return(NULL)
+  hit[1]
+}
+
+# Re-grade every historical game against the PARENT line before balancing.
+#
+# Per Feustel, the sample should cover the parent line at the no-vig rate
+# (e.g. home -3.5 covers 52.1%), so its median margin lands on the parent.
+# The stored actual_cover/actual_over columns grade each game against its own
+# closing line instead, which balances the wrong thing: a -3.5/145 target ended
+# up covering -3.5 at 52.7% on cbb.duckdb.
+#
+# Spread mode: cover = home_margin > -parent_spread. Moneyline mode
+# (parent_spread is a win probability): cover = home win (margin > 0).
+# Over = total > parent_total. Modifies dt by reference.
+# If the score columns are missing, keeps the stored columns and warns.
+set_parent_line_outcomes <- function(dt, parent_spread, parent_total,
+                                     use_spread_line,
+                                     margin_col = NULL, total_col = NULL) {
+  m_col <- resolve_outcome_col(dt, margin_col, MARGIN_COL_CANDIDATES)
+  t_col <- resolve_outcome_col(dt, total_col, TOTAL_COL_CANDIDATES)
+
+  if (is.null(m_col)) {
+    warning("No home margin column found; balancing on stored actual_cover (own closing line)")
+  } else {
+    cover_line <- if (use_spread_line) -parent_spread else 0
+    set(dt, j = "actual_cover", value = as.integer(dt[[m_col]] > cover_line))
+  }
+  if (is.null(t_col)) {
+    warning("No final total column found; balancing on stored actual_over (own closing line)")
+  } else {
+    set(dt, j = "actual_over", value = as.integer(dt[[t_col]] > parent_total))
+  }
+  invisible(dt)
+}
+
 # Function 2: balance sample by greedy remove/add
 # Per Feustel spec: if both add and remove fail, return converged=FALSE
 # and let caller restart with smaller N
@@ -648,6 +695,8 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
 #' @param st Total line standard deviation for distance weighting
 #' @param N Target sample size
 #' @param use_spread_line If TRUE, match on spread line; if FALSE, match on moneyline probability
+#' @param margin_col,total_col Final home margin / total columns used to grade games against the
+#'   parent line for balancing. NULL auto-detects (MARGIN_COL_CANDIDATES / TOTAL_COL_CANDIDATES).
 #' @return List containing: sample (data frame), final_N, cover_error, over_error, converged, metadata
 run_answer_key_sample <- function(
     id,
@@ -662,7 +711,9 @@ run_answer_key_sample <- function(
     tol_error = NULL,   # NULL = auto-scale to 0.2% of N per Feustel spec
     use_spread_line = FALSE,
     shrink_factor = 0.9,
-    min_N = 50
+    min_N = 50,
+    margin_col = NULL,  # NULL = auto-detect (see resolve_outcome_col)
+    total_col = NULL
 ) {
   # Defensive: ensure N is valid
   N <- as.integer(N)
@@ -702,6 +753,10 @@ run_answer_key_sample <- function(
     # tolerance to 0.2% of current_N (recomputed each shrink iteration so it
     # tightens back to 1 at N=500). Explicit tol_error (e.g. from tests) wins.
     effective_tol <- if (is.null(tol_error)) max(1L, as.integer(round(0.002 * current_N))) else tol_error
+    # Per Feustel: balance on whether each historical game covered the PARENT
+    # line, not its own closing line (see set_parent_line_outcomes).
+    set_parent_line_outcomes(mm$dt, parent_spread, parent_total,
+                             use_spread_line, margin_col, total_col)
     bal <- balance_sample(mm$dt, current_N, target_cover, target_over, effective_tol)
 
     if (bal$converged) {
