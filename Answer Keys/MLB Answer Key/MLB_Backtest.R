@@ -36,7 +36,7 @@ DT <- dbGetQuery(con, "
     actual_cover  = home_winner
   ) %>%
   mutate(
-    actual_over = ifelse(game_total_period_FG > total_line, 1, 0),
+    actual_over = ifelse(game_total_period_FG > total_line, 1, ifelse(game_total_period_FG == total_line, 0.5, 0)),
     # Backtest needs a game_id column
     game_id = game_pk
   )

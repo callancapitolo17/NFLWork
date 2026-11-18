@@ -113,21 +113,31 @@ Rcpp::List mean_match_cpp(
 }
 
 
+// Push weights (e.g. 0.55) are inexact in binary, so running sums drift by
+// ~1e-14. Rounding the error keeps the sign and tol checks identical to the
+// pure-R fallback (Tools.R::balance_sample, which rounds the same way).
+static double round_balance_error(double error) {
+    return std::round(error * 1e9) / 1e9;
+}
+
 // [[Rcpp::export]]
 Rcpp::List balance_sample_cpp(
     Rcpp::IntegerVector order_indices,
-    Rcpp::IntegerVector actual_cover,
-    Rcpp::IntegerVector actual_over,
+    Rcpp::NumericVector actual_cover,   // 1 / 0, a push already weighted by target_cover
+    Rcpp::NumericVector actual_over,    // 1 / 0, a push already weighted by target_over
     int N,
     double target_cover,
     double target_over,
     int tol_error
 ) {
+    // Pushes (weighted values strictly between 0 and 1) are never picked as a
+    // helpful add/remove: only strict 1s and 0s move the error.
+
     int M = order_indices.size();
 
     // included[i] tracks whether position i in the distance-sorted order is in the sample
     std::vector<bool> included(M, false);
-    int sum_cover = 0, sum_over = 0;
+    double sum_cover = 0.0, sum_over = 0.0;
 
     // Initialize: first N positions are included
     for (int i = 0; i < N && i < M; ++i) {
@@ -139,8 +149,8 @@ Rcpp::List balance_sample_cpp(
 
     int target_cover_count = (int)std::round(target_cover * N);
     int target_over_count = (int)std::round(target_over * N);
-    int cover_error = sum_cover - target_cover_count;
-    int over_error = sum_over - target_over_count;
+    double cover_error = round_balance_error(sum_cover - target_cover_count);
+    double over_error = round_balance_error(sum_over - target_over_count);
 
     bool converged = false;
 
@@ -159,8 +169,8 @@ Rcpp::List balance_sample_cpp(
         for (int i = N - 1; i >= 0; --i) {
             if (!included[i]) continue;
             int row = order_indices[i] - 1;
-            int cov = actual_cover[row];
-            int ov = actual_over[row];
+            double cov = actual_cover[row];
+            double ov = actual_over[row];
             bool cov_helps = (cover_error > 0 && cov == 1) || (cover_error < 0 && cov == 0);
             bool ov_helps = (over_error > 0 && ov == 1) || (over_error < 0 && ov == 0);
 
@@ -175,8 +185,8 @@ Rcpp::List balance_sample_cpp(
             // Incremental update: O(1) instead of O(M) rescan
             sum_cover -= actual_cover[row];
             sum_over -= actual_over[row];
-            cover_error = sum_cover - target_cover_count;
-            over_error = sum_over - target_over_count;
+            cover_error = round_balance_error(sum_cover - target_cover_count);
+            over_error = round_balance_error(sum_over - target_over_count);
             removal_failed = false;
         }
 
@@ -186,8 +196,8 @@ Rcpp::List balance_sample_cpp(
         for (int i = N; i < M; ++i) {
             if (included[i]) continue;
             int row = order_indices[i] - 1;
-            int cov = actual_cover[row];
-            int ov = actual_over[row];
+            double cov = actual_cover[row];
+            double ov = actual_over[row];
             bool cov_helps = (cover_error > 0 && cov == 0) || (cover_error < 0 && cov == 1);
             bool ov_helps = (over_error > 0 && ov == 0) || (over_error < 0 && ov == 1);
 
@@ -202,8 +212,8 @@ Rcpp::List balance_sample_cpp(
             // Incremental update: O(1) instead of O(M) rescan
             sum_cover += actual_cover[row];
             sum_over += actual_over[row];
-            cover_error = sum_cover - target_cover_count;
-            over_error = sum_over - target_over_count;
+            cover_error = round_balance_error(sum_cover - target_cover_count);
+            over_error = round_balance_error(sum_over - target_over_count);
             addition_failed = false;
         }
 
