@@ -997,10 +997,10 @@ test("a bet Dismissed on either page stops needing a game in edges.json, and lis
 
 // ---- the automated taker (server/taker.js, T1: decides, places nothing) ----
 // The CFB venue-id slice (Duquesne @ Washington State, Kalshi rung ids) served
-// as league 2, the clock four days before its kickoff, a 5% Unabated edge set
+// as league 2, the clock two days before its kickoff (inside the bots' 72 h window), a 5% Unabated edge set
 // on Kalshi's WSU -35.5 alt (-143, 0.587157 all-in) and every other book at
 // that number made worse, so the row is the best price.
-const TAKER_NOW = Date.parse("2026-09-15T19:00:00Z");
+const TAKER_NOW = Date.parse("2026-09-17T19:00:00Z");
 const TAKER_TICKER = "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36";
 
 function takerVenueSlice() {
@@ -1330,6 +1330,31 @@ test("taker: a pass that never finishes is abandoned after 5 min, the next pass 
   assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, ordersAfterNewPass, "the abandoned pass sent nothing");
   assert.equal(runner.health().taker.lastPassAt, new Date(newPassAt).toISOString(), "and did not stamp itself as the last pass");
   assert.equal(runner.health().taker.runningSince, null);
+  runner.stop();
+});
+
+// ---- taker: a bot with no decided pass for 10 min is silent (2026-11-18 bot audit) ----
+test("taker: a venue whose bot has not decided a pass in 10 min is listed silent on /health and /edges.json, with why", async () => {
+  let clock = TAKER_NOW;
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  // Before any pass, inside 10 min of the start: nothing is silent yet.
+  assert.deepEqual(runner.health().taker.silent, []);
+  await runner.takerPass();
+  assert.equal(runner.health().taker.decidedAt.kalshi, new Date(TAKER_NOW).toISOString());
+  assert.deepEqual(runner.edgesPayload().taker.silent.filter((entry) => entry.venue === "kalshi"), []);
+  // 10 min on, the Kalshi poll gone stale: the passes skip, so Kalshi falls silent.
+  clock = TAKER_NOW + 10 * 60 * 1000 + 1000;
+  await runner.takerPass();
+  const kalshiSilent = runner.health().taker.silent.find((entry) => entry.venue === "kalshi");
+  assert.ok(kalshiSilent, JSON.stringify(runner.health().taker.silent));
+  assert.equal(kalshiSilent.since, new Date(TAKER_NOW).toISOString());
+  assert.match(kalshiSilent.reason, /Kalshi poll is older than/);
+  assert.deepEqual(runner.edgesPayload().taker.silent.find((entry) => entry.venue === "kalshi"), kalshiSilent);
   runner.stop();
 });
 

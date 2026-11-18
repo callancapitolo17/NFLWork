@@ -12,7 +12,8 @@
 //     shows Kalshi) at most 0.1c worse than Unabated's shown price, and at
 //     most 1c better: a price that ran away from Unabated's since its
 //     snapshot is news Unabated's fair has not caught up with, not an edge;
-//   - live edge at least 3% and at most 20%;
+//   - Unabated's edge and the live edge at least 4% (3% before 2026-11-18), the live edge at most 20%;
+//   - the game starts within 72 hours (2026-11-18);
 //   - no live book beats the price at that number (pricecheck.js, strictly:
 //     one better book is enough to skip, a thin one under pricecheck's $30
 //     floor too; outliers and Cal's Skips trade);
@@ -89,7 +90,10 @@ const KELLY_BANKROLL = 10000;
 // Novig's Kelly bankroll (Cal, 2026-10-16: $2,000, Kalshi's then), its own parameter, apart from the Novig desk's $1,000 cap.
 const NOVIG_KELLY_BANKROLL = 2000;
 const BOT_KELLY = 0.25;
-const MIN_LIVE_EDGE = 0.03;
+// Both Unabated's edge (candidateRows) and the live edge (decideRow) must reach it.
+// Cal, 2026-11-18 (bot audit): 4%, as his manual floor; 3% before. Novig's 3-5% bets
+// closed at about +1% CLV while its cap was full every day.
+const MIN_LIVE_EDGE = 0.04;
 const MAX_LIVE_EDGE = 0.20;
 // Unabated's Kalshi price sometimes lags the book by a tick; 0.1c worse still trades (Cal, 2026-10-14).
 const PRICE_TOLERANCE = 0.001;
@@ -100,6 +104,12 @@ const BETTER_PRICE_TOLERANCE = 0.01;
 // Kalshi's market status that takes orders (GET /markets/<ticker>).
 const MARKET_STATUS_ACTIVE = "active";
 const MAX_LINE_AGE_MS = 7 * 24 * 3600 * 1000;
+// Neither bot takes a line whose game starts more than this far out (Cal,
+// 2026-11-18, bot audit): next week's NFL lines bet during this week's games
+// closed at -4.3% CLV (an injury the fair has not caught up with), and money
+// held a week earns little a day while the bots' caps bind.
+const MAX_HOURS_TO_START = 72;
+const MAX_TIME_TO_START_MS = MAX_HOURS_TO_START * 3600 * 1000;
 // Kalshi's taker fee per contract is 0.07 * P * (1 - P); Unabated adds it unrounded.
 const KALSHI_TAKER_FEE_RATE = 0.07;
 // Unabated's sourceFormat for a price sent as a probability (Kalshi's all-in).
@@ -163,8 +173,10 @@ function unabatedAllInOf(row) {
 
 // The rows the taker looks at: Kalshi lines at MIN_LIVE_EDGE and up by
 // Unabated's own edge, in the settings' leagues and periods, alts included,
-// every market, lines changed within MAX_LINE_AGE_MS. No liquidity gate: the
-// live depth sizes the order instead.
+// every market, lines changed within MAX_LINE_AGE_MS, on games starting
+// within MAX_TIME_TO_START_MS (a later game's rows are left out before any
+// book read, so they log no decision). No liquidity gate: the live depth
+// sizes the order instead.
 //   edgeSettings  the settings the runner holds (edgerows.js shape)
 //   bookId        KALSHI_BOOK_ID (default) or NOVIG_BOOK_ID
 function candidateRows(feedState, edgeSettings, now, bookId = KALSHI_BOOK_ID) {
@@ -179,7 +191,14 @@ function candidateRows(feedState, edgeSettings, now, bookId = KALSHI_BOOK_ID) {
     includeAlts: true,
     minLiquidityToWin: null,
     minEdge: MIN_LIVE_EDGE,
-  });
+  }).filter((row) => startsWithinTakerWindow(row, now));
+}
+
+// True when the row's game starts within MAX_TIME_TO_START_MS of now. A row
+// with no start never trades (selectEdges already drops a game without one).
+function startsWithinTakerWindow(row, now) {
+  if (typeof row.eventStartMs !== "number") return false;
+  return row.eventStartMs - now <= MAX_TIME_TO_START_MS;
 }
 
 // The Kalshi contract a spread or total row buys, off the rung ids
@@ -1179,7 +1198,7 @@ function decisionSignature(decision) {
 
 module.exports = {
   KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, NOVIG_EVENT_INGAME, NOVIG_MARKET_OPEN, NOVIG_QTY_PER_DOLLAR, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
-  MAX_LINE_AGE_MS, KALSHI_TAKER_FEE_RATE, REASONS,
+  MAX_LINE_AGE_MS, MAX_HOURS_TO_START, MAX_TIME_TO_START_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, derivedSpreadFromTeamCodes, resolveKalshiContract,
   parseKalshiOrderbook, quoteOf, decideRow, decisionSignature, kalshiYesTeamSide, marketMismatch, clientOrderIdOf,

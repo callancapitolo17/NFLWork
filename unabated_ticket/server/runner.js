@@ -214,7 +214,10 @@
 //                    whose snapshot time on /health (rfq.leagueLoadedAt) moved.
 //   GET /health      {ok, generatedAt, uptimeSec, scanner, betsService, settings, closingFairs, closeSnapshots, tauPool, livePrices, rfq, taker}
 //                    taker.runningSince is the start of the pass in progress and
-//                    taker.stuck counts the passes abandoned after TAKER_PASS_STUCK_MS.
+//                    taker.stuck counts the passes abandoned after TAKER_PASS_STUCK_MS;
+//                    taker.decidedAt is each venue's last pass that decided its rows, and
+//                    taker.silent lists the venues past TAKER_SILENT_ALERT_MS without one
+//                    (also on /edges.json as taker.silent, for the phone's banner).
 //   Every request whose Host header is not a name this runner serves on is
 //   refused with 403 (DNS rebinding, #125); any verb but GET is 405.
 // Threads: main() runs createRunner on a worker thread (server/board_thread.js)
@@ -294,6 +297,12 @@ const TAKER_PASS_MS = 30 * 1000;
 // one. Every read in a pass has a timeout, and the slowest pass seen under
 // load took ~2.5 min (2026-11-13), so 5 min means a wait that will not return.
 const TAKER_PASS_STUCK_MS = 5 * 60 * 1000;
+// A venue whose bot has not decided a pass in this long is silent: /health
+// (taker.silent) and the phone's banner say so (Cal, 2026-11-18 bot audit:
+// both bots went 84 h without a pass, 11-14 to 11-17, and nothing showed it).
+// Twice the stuck limit, so one abandoned pass and its successor fit inside it.
+const TAKER_SILENT_ALERT_MS = 2 * TAKER_PASS_STUCK_MS;
+const TAKER_VENUES = ["kalshi", "novig"];
 // Two reads in flight stay well under Kalshi's 20 reads/s basic limit at ~100 ms a read.
 const KALSHI_BOOK_READS_AT_ONCE = 2;
 // How long a Kalshi book ask for one line (a Place quote, a reread) may wait
@@ -713,6 +722,9 @@ function createRunner(deps) {
   let takerRunning = null;
   let takerPassCount = 0;
   let takerStuck = { count: 0, lastAt: null, lastStartedAt: null };
+  // When each venue last finished a pass that decided its rows (not skipped,
+  // not failed, not abandoned); null until the first one.
+  const takerDecidedAt = { kalshi: null, novig: null };
   let takerPostBusy = false;
   // `skipped` is the Kalshi side's (as before Novig), `novigSkipped` the Novig side's.
   let takerLastPass = { startedAt: null, finishedAt: null, skipped: "not run yet", novigSkipped: "not run yet", rows: 0, byReason: {}, coverage: {} };
@@ -1603,6 +1615,8 @@ function createRunner(deps) {
       await sendTakerOrders(decisions, rows, startedAt, isCurrent);
       if (!isCurrent()) return;
       queueChangedDecisions(takerDecisions);
+      if (!blocker) takerDecidedAt.kalshi = now();
+      if (!novigSkip) takerDecidedAt.novig = now();
       takerLastPass = {
         startedAt, finishedAt: now(), skipped: blocker, novigSkipped: novigSkip, rows: rows.length,
         byReason: countBy(takerDecisions, (decision) => decision.reason),
@@ -3440,7 +3454,7 @@ function createRunner(deps) {
       novigDesk: novigDeskStatus,
       rules: {
         kellyBankroll: taker.KELLY_BANKROLL, novigKellyBankroll: taker.NOVIG_KELLY_BANKROLL, kelly: taker.BOT_KELLY, minLiveEdge: taker.MIN_LIVE_EDGE, maxLiveEdge: taker.MAX_LIVE_EDGE,
-        priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS,
+        priceTolerance: taker.PRICE_TOLERANCE, maxLineAgeHours: taker.MAX_LINE_AGE_MS / HOUR_MS, maxHoursToStart: taker.MAX_HOURS_TO_START,
       },
       pass: { ...takerLastPass, startedAt: isoOrNull(takerLastPass.startedAt), finishedAt: isoOrNull(takerLastPass.finishedAt) },
       decisions,
@@ -3482,7 +3496,7 @@ function createRunner(deps) {
   function edgesPayloadNow() {
     const at = now();
     const lineView = liveLineView();
-    return edgesPayload.buildEdgesPayload({
+    const payload = edgesPayload.buildEdgesPayload({
       feedState, scannerStatus, history, betRecords: held.records, fillFairIndex, knownStarts,
       stakeSettings: settings.stakeSettings, edgeSettings: settings.edgeSettings,
       settingsStatus: { source: settings.source, error: settings.error, okAt: settings.okAt, updatedAt: settings.updatedAt },
@@ -3494,6 +3508,8 @@ function createRunner(deps) {
         selectEdges: (state, options) => edgeSelector(state, options, leagueBoard()),
       } : {}),
     });
+    // The phone's banners read the bots' silence off the list it already polls.
+    return { ...payload, taker: { silent: takerSilentVenues(at) } };
   }
 
   // Both football boards in, or failed (panel.js teaserBoardReady): before
@@ -3598,6 +3614,24 @@ function createRunner(deps) {
     };
   }
 
+  // The venues whose bot has not decided a pass within TAKER_SILENT_ALERT_MS
+  // (counted from the runner's start before the first), each with why:
+  // the pass in progress since when, else the last pass's skip reason.
+  //   [{venue, since (ISO, the last decided pass or null), reason}]
+  function takerSilentVenues(at) {
+    const silent = [];
+    for (const venue of TAKER_VENUES) {
+      const decidedAt = takerDecidedAt[venue];
+      if (at - (decidedAt ?? startedAt) <= TAKER_SILENT_ALERT_MS) continue;
+      const skipped = venue === "kalshi" ? takerLastPass.skipped : takerLastPass.novigSkipped;
+      const reason = takerRunning
+        ? `a pass has been running since ${new Date(takerRunning.startedAt).toISOString()}`
+        : skipped || "no pass has finished";
+      silent.push({ venue, since: isoOrNull(decidedAt), reason });
+    }
+    return silent;
+  }
+
   function health() {
     return {
       ok: true, generatedAt: new Date(now()).toISOString(), uptimeSec: Math.round((now() - startedAt) / 1000),
@@ -3614,6 +3648,8 @@ function createRunner(deps) {
       taker: {
         desk: takerDeskStatus, novigDesk: novigDeskStatus, lastPassAt: isoOrNull(takerLastPass.finishedAt),
         runningSince: takerRunning ? isoOrNull(takerRunning.startedAt) : null,
+        decidedAt: { kalshi: isoOrNull(takerDecidedAt.kalshi), novig: isoOrNull(takerDecidedAt.novig) },
+        silent: takerSilentVenues(now()),
         stuck: { count: takerStuck.count, lastAt: isoOrNull(takerStuck.lastAt), lastStartedAt: isoOrNull(takerStuck.lastStartedAt) },
         skipped: takerLastPass.skipped, novigSkipped: takerLastPass.novigSkipped,
         rows: takerLastPass.rows, byReason: takerLastPass.byReason, log: { okAt: takerLogStatus.okAt, error: takerLogStatus.error, dropped: takerLogStatus.dropped, unsent: takerUnsent.length },

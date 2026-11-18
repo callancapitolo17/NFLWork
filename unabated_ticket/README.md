@@ -622,7 +622,7 @@ Unabated fair p = (1 + edge) / decimal:
   its $375 against about −$3.2 for the −24.5 on its raw $314), and at a 1%
   floor the −24.5 does not list.
 
-The **Min edge** gate, the bot's 3% floor and 20% cap and the Live block read
+The **Min edge** gate, the bot's 4% floor and 20% cap and the Live block read
 the raw edge; live rows and a live Ticket have no shrunk edge (the live fair
 is Unabated's in-game read, not a tail) and are never gated by the floor.
 
@@ -818,7 +818,7 @@ exchange's own book (Cal, 2026-11-04: "build it"):
   live) and no fee (ProphetX publishes none). Without that key pair the
   service answers 503 and ProphetX lines stay at Unabated's price, untagged.
   About 60 games stay read within the 2 min a read stands. The taker's own reads count,
-  so a 3%+ line is not read twice. A line whose market fails its check is
+  so a 4%+ line is not read twice. A line whose market fails its check is
   never painted with that market's price.
 - **Stream pass (`liveStreamPass`, every 10 s; Cal, 2026-11-17).** Between
   live price passes the lines the last live price pass picked (still on the
@@ -3316,8 +3316,8 @@ the "nothing public listens" check: `deploy/README.md`.
 ### Automated taker: Kalshi, live (`server/taker.js`, `bets_service/taker_orders.py`)
 
 Plan: `automated_taker_plan.md` in the project folder. Every 30 s the runner
-looks at each Kalshi line Unabated shows at 3%+ (the settings' leagues and
-periods, every market, alts included), reads Kalshi's public orderbook for it,
+looks at each Kalshi line Unabated shows at 4%+ (the settings' leagues and
+periods, every market, alts included) on a game starting within 72 hours, reads Kalshi's public orderbook for it,
 decides, and sends each bet to the bets service's order desk, which places it
 on Kalshi with **real money** on the bot's own key, from the bot's own Kalshi
 subaccount. No shadow mode (Cal, 2026-10-14).
@@ -3327,7 +3327,8 @@ subaccount. No shadow mode (Cal, 2026-10-14).
 | Bankroll / Kelly | $10,000 at 0.25 (Cal, 2026-11-06; $7,500 from 2026-11-04, $5,000 from 2026-10-28, $2,000 from 2026-10-16), `KELLY_BANKROLL` in both `server/taker.js` and `taker_orders.py` (a test holds them equal), conditional on every open bet (the panel's sizing; bot fills reach it through the Kalshi source). What Kelly divides by, not the money at risk: the Ceiling row caps that |
 | Ceiling | open bot cost (unsettled markets) never above 60% of the Kelly bankroll, $6,000 (`MAX_OPEN_COST_FRACTION`, Cal 2026-11-03; $4,500 on the $7,500 bankroll until 2026-11-06; $3,000 on the $5,000 bankroll until 2026-11-04; 40% = $2,000 from 2026-11-02, 20% = $1,000 from 2026-10-28, a flat $500 before); contracts cut to fit, else refused. The setup still funds a new subaccount $500 once (`SETUP_FUNDING`); the subaccount must hold the ceiling or Kalshi refuses the order |
 | Price | Kalshi's live ask + 7% fee no more than 0.1c worse than Unabated's shown price, and no more than 1c better (a price that ran away from Unabated's snapshot is news its fair has not caught up with) |
-| Edge | 3% to 20% at that live price (fair read off Unabated's cheaper of its two prices) |
+| Edge | 4% to 20% at that live price (fair read off Unabated's cheaper of its two prices); Unabated's own edge must reach 4% too (`MIN_LIVE_EDGE`; Cal 2026-11-18, bot audit: his manual floor; 3% before) |
+| Time to start | the game starts within 72 hours (`MAX_HOURS_TO_START`, Cal 2026-11-18, bot audit: next week's NFL lines bet during this week's games closed at -4.3% CLV, and money held a week earns little a day while the caps bind); a later game's rows are left out before any book read and log no decision. Both bots |
 | Best price | no live book beats it at the number (one is enough to skip, a thin one under $30 too; ties trade); outliers and Skips trade |
 | Line age | changed within 7 days; right up to the start |
 | Board age | the runner re-downloads every league's snapshot every 60 s (the panel's size tiers go up to 5 min); a row whose league snapshot landed over 3 min ago, is a stale build or failed to load is `stale_feed` |
@@ -3371,6 +3372,15 @@ decides, confirms and sends nothing more if it resumes (an order already on
 its way to the desk still lands; the desk's own guards cover it). `/health` shows
 `taker.runningSince` (the pass in progress) and `taker.stuck` (how many were
 abandoned, and the last one's start).
+
+**A silent bot shows (2026-11-18, bot audit).** Both bots then went 84 hours
+(11-14 08:58Z to the 11-17 20:40Z deploy) without a pass and nothing showed it.
+`/health` now carries `taker.decidedAt` (each venue's last pass that decided its
+rows: not skipped, failed or abandoned) and `taker.silent`, the venues without one
+for 10 minutes (`TAKER_SILENT_ALERT_MS`, twice the stuck limit; counted from the
+runner's start before the first pass), each with why (the pass running since when,
+else the last skip reason). `/edges.json` carries the same `taker.silent`, and the
+phone shows each as a red banner: `Kalshi bot has not run since 12:58 AM (3 d): ...`.
 
 **Two clocks for "started" (2026-10-16, option B).** A backup to Unabated's
 eventStart, added after a suspected late start that turned out to be right

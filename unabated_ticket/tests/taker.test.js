@@ -209,15 +209,31 @@ test("price rule: up to 1c better than Unabated trades (with the bigger edge); m
   assert.match(ranAway.detail, /better than Unabated/);
 });
 
-test("edge floor 3%, cap 20%, at the live price", () => {
-  const short = boardWithEdge(WSU_ALT_KEY, 0.031);
-  // 57.08c: inside the 0.1c tolerance, but 3.1% shrinks to 2.95% there.
+test("edge floor 4%, cap 20%, at the live price", () => {
+  const short = boardWithEdge(WSU_ALT_KEY, 0.041);
+  // 57.08c: inside the 0.1c tolerance, but 4.1% shrinks to 3.96% there.
   assert.equal(decide(short, WSU_ALT_KEY, { ask: 0.5708, depth: 1000 }).reason, "edge_short");
   const big = boardWithEdge(WSU_ALT_KEY, 0.25);
   for (const key of Object.keys(big.lines)) {
     if (!key.includes("ms105") && key.includes("si1:tid717:alt-35.5")) moveLine(big, key, { price: -200 });
   }
   assert.equal(decide(big, WSU_ALT_KEY, { ask: 0.57, depth: 1000 }).reason, "cap");
+});
+
+test("a row under the 4% floor by Unabated's own edge is no candidate", () => {
+  const state = boardWithEdge(WSU_ALT_KEY, 0.035);
+  assert.equal(taker.MIN_LIVE_EDGE, 0.04);
+  assert.ok(!taker.candidateRows(state, EDGE_SETTINGS, NOW).some((row) => row.key === WSU_ALT_KEY));
+});
+
+test("a game more than 72 hours out is no candidate; inside 72 hours it is", () => {
+  const state = boardWithEdge(WSU_ALT_KEY, 0.05);
+  const hasRow = (now) => taker.candidateRows(state, EDGE_SETTINGS, now).some((row) => row.key === WSU_ALT_KEY);
+  const HOUR_MS = 3600 * 1000;
+  assert.equal(taker.MAX_HOURS_TO_START, 72);
+  assert.equal(hasRow(EVENT_START_MS - 72 * HOUR_MS), true);
+  assert.equal(hasRow(EVENT_START_MS - 72 * HOUR_MS - 1000), false);
+  assert.equal(hasRow(EVENT_START_MS - 100 * HOUR_MS), false);
 });
 
 test("one live book better at the number is not_best", () => {
