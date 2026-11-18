@@ -51,8 +51,8 @@
 //   POST <bets service>/ladders.json every 30 s — Unabated's full-game fair
 //       ladder (spread, total, moneyline) of every NFL / CFB / CBB game still
 //       to start (server/laddersnapshot.js): an opener once per game and
-//       market, then the close whenever the ladder changes or every 10 min
-//       unchanged; ladders.duckdb keeps the first opener and the newest
+//       market, then, in the 2 h before the start, the close whenever the ladder
+//       changes or every 10 min unchanged; ladders.duckdb keeps the first opener and the newest
 //       pregame close (issue #264). Stored only, nothing reads it back.
 //   POST <bets service>/edge_segments.json every 30 s — every NFL / CFB / CBB
 //       full-game line showing a 1%+ edge, as segments at one number, price,

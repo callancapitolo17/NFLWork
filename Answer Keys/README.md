@@ -8,6 +8,7 @@ The "Answer Key" algorithm:
 1. For each upcoming game, compute the Pythagorean distance between its pregame line and every historical game
 2. Select the N closest matches (default ~500 games)
 3. Iteratively balance the sample so the mean spread/total converges to the target line (±1)
+   and the sample covers the parent spread and goes over the parent total at the no-vig rates (each game is graded against the parent line, not its own closing line)
 4. Price any derivative market (1H, quarters, team totals, alt lines) directly from sample outcomes
 5. Compare fair price to posted odds across books → flag +EV opportunities
 

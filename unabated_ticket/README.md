@@ -2502,9 +2502,17 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.nflwork.bets-service.p
   side 0 away/Over, `received_at`): `opener` is INSERTed once and never
   overwritten (a game already on the board when storing began has its first
   sighting, not Unabated's opener); `close` is UPSERTed only forward in time
-  and always before the start, re-sent on every change and every 10 min
-  unchanged, so the row left at kickoff is the last pregame ladder (whether
-  it was near enough to the start is for the analysis). Raw: deep rungs can
+  and always before the start, sent only in the 2 h before it, on every
+  change and every 10 min unchanged, so the row left at kickoff is the last
+  pregame ladder (whether it was near enough to the start is for the
+  analysis; a close taken before a start that then moved later is re-sent
+  at once); an unchanged close (same `content_hash`, everything but the
+  reading and times) moves only `observed_at` and `received_at`. Each
+  service start checks the file (`ladder_store.compact_file`): over 32 MiB
+  with at most 90% of it in use, it is copied table by table to
+  `ladders.duckdb.compact`, row counts checked, and swapped in; any failure
+  removes the copy, logs, and opens the file as it is. Most of the file is
+  `edge_segments` below (1.24M rows and its key index, 2026-11-18). Raw: deep rungs can
   carry junk fairs (an NFL total at 7.5 priced -265651); filter in analysis.
   Never pruned; nothing reads it back. The runner always loads CBB for this,
   outside the Edges settings (it never reaches the list or the bots).
