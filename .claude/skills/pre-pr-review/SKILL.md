@@ -86,3 +86,36 @@ When a finding repeats from an earlier branch, or a bug reaches main that this r
 - A cloud clone has no local `main` ahead of `origin`: use `git diff $(git merge-base origin/main HEAD)..HEAD` as the diff base.
 - `/security-review` needs `origin/HEAD`, which a fresh clone may lack: run `git remote set-head origin main` first (or point it at the merge-base) and run it before the PR is called ready, not after merge (#271 ran it late).
 - High tier: before merging, or calling the PR ready to merge, get Cal's explicit word that he read the diff and the step-0 output. A bare "go" or "merge" is not that.
+
+### Review recap
+
+Before asking Cal to push, merge or approve a PR, write a short review in this shape and save it as its own .md file:
+- Title: "Review: <what changed> (commit <sha>, branch <name>)"
+- **Verdict:** ready to push or not, the risk tier, and the scope (what is and isn't affected).
+- **In plain English:** a couple of sentences on what the fix does, as Cal would explain it to a friend. No file names, function names, or jargon.
+- **What changed:** plain bullets naming files and functions, and what each change does.
+- **Risks checked:** each real risk (rate limits, concurrency, money, stale data, etc.) and why it's safe or bounded.
+- **Checks:** lint and tests run with their results. Say what didn't run and why, and list the new tests.
+- **After deploy:** exactly what to look at (health fields, screens) to confirm it works.
+
+Keep it brief, with plain sentences. Save the file in this session's scratchpad folder as `review-<sha>.md`, never in the repo. In chat, give the one-line verdict and a link to the file using its full path, not the whole review. Once the PR is reviewed and merged, delete every review file made for it.
+
+Example (match this length and tone):
+
+```
+Review: Novig live prices fall back to keyed REST (commit 98ffd91, branch claude/project-thread-509nbi)
+Verdict: ready to push. High tier (runner.js). Display only: the taker and Place are unchanged.
+In plain English: when Novig's live feed can't give a price for a line, the board now asks Novig directly instead of leaving that price blank.
+What changed:
+- server/runner.js liveNovigReads: markets whose stream answer is a non-final error are read off GET /v3/catalog/markets/<id>/book through POST /novig_read.json, using the same keyed route and parsing as Place's fallback.
+- Limits: at most 60 markets a pass, oldest first, one at a time. The first failed read ends the pass.
+- A stream book, or a stream "went live / not OPEN" answer, reads no REST book.
+Risks checked:
+- Read budget: 60 reads per 30 s is about 2/s, against the key's 16/s bucket.
+- Session pool: serial reads leave 3 of 4 sessions free. Stop-at-first-failure ends a slow pass early.
+- Market state: REST has no live flag. Worst case, a just-started game shows one in-game price for up to 2 minutes. Place still checks before any order.
+Checks:
+- check.sh: ESLint ok; node tests ok (746+3 pass). pytest didn't run (not installed in the container); no Python was touched.
+- New tests: stream waiting falls back to REST; a live market reads no REST; a REST 429 leaves the line unchecked; a stream book reads no REST.
+After deploy: /health livePrices.byVenue.novig shows unchecked near 0 within a couple of minutes, with live + empty about equal to rows.
+```
