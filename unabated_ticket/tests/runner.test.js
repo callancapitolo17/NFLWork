@@ -1183,7 +1183,7 @@ test("taker: a best-price Kalshi edge at the live ask is sent as one ubot- limit
 });
 
 test("taker: Kalshi's start, when earlier than Unabated's, is the one the order carries, so the desk refuses a started game", async () => {
-  // Unabated still lists the game four days out; Kalshi says it kicked off a minute ago.
+  // Unabated still lists the game two days out; Kalshi says it kicked off a minute ago.
   const kickedOff = new Date(TAKER_NOW - 60 * 1000).toISOString();
   const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
   const runner = runnerLib.createRunner({
@@ -1354,7 +1354,32 @@ test("taker: a venue whose bot has not decided a pass in 10 min is listed silent
   assert.ok(kalshiSilent, JSON.stringify(runner.health().taker.silent));
   assert.equal(kalshiSilent.since, new Date(TAKER_NOW).toISOString());
   assert.match(kalshiSilent.reason, /Kalshi poll is older than/);
-  assert.deepEqual(runner.edgesPayload().taker.silent.find((entry) => entry.venue === "kalshi"), kalshiSilent);
+  // Novig is never listed: this bets service does not read novig_bot (its desk is off by design).
+  assert.deepEqual(runner.health().taker.silent, [kalshiSilent]);
+  assert.deepEqual(runner.edgesPayload().taker.silent, [kalshiSilent]);
+  runner.stop();
+});
+
+test("taker: passes whose every row is no_book do not count as decided, and the silent reason says so", async () => {
+  let clock = TAKER_NOW;
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const books = kalshiFetch();
+  const failingBooks = async (url) => (url.endsWith("/orderbook")
+    ? response({ status: 500, body: JSON.stringify({ error: "down" }) })
+    : books(url));
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: failingBooks, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.takerPass();
+  assert.equal(runner.health().taker.decidedAt.kalshi, null);
+  clock = TAKER_NOW + 10 * 60 * 1000 + 1000;
+  const silent = runner.health().taker.silent;
+  assert.equal(silent.length, 1, JSON.stringify(silent));
+  assert.equal(silent[0].venue, "kalshi");
+  assert.equal(silent[0].since, null);
+  assert.match(silent[0].reason, /^all \d+ rows were no_book: /);
   runner.stop();
 });
 

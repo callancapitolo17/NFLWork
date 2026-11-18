@@ -230,7 +230,7 @@ test("a game more than 72 hours out is no candidate; inside 72 hours it is", () 
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   const hasRow = (now) => taker.candidateRows(state, EDGE_SETTINGS, now).some((row) => row.key === WSU_ALT_KEY);
   const HOUR_MS = 3600 * 1000;
-  assert.equal(taker.MAX_HOURS_TO_START, 72);
+  assert.equal(taker.MAX_TIME_TO_START_MS, 72 * HOUR_MS);
   assert.equal(hasRow(EVENT_START_MS - 72 * HOUR_MS), true);
   assert.equal(hasRow(EVENT_START_MS - 72 * HOUR_MS - 1000), false);
   assert.equal(hasRow(EVENT_START_MS - 100 * HOUR_MS), false);
