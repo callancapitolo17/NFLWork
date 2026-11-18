@@ -125,7 +125,7 @@ predictions under a label in `Answer Keys/cbb_backtest.duckdb` (gitignored;
 `backtest_predictions`, `backtest_runs`; a rerun replaces its label).
 
 ```bash
-# price the current code (~9,800 games; a few minutes on 4 cores)
+# price the current code (~9,600 games priced; a few minutes on 4-8 cores)
 Rscript "Answer Keys/CBB Answer Key/CBB_Backtest.R" run --label main
 # price another commit on the same data: point --code-dir at a worktree
 git worktree add /tmp/ak-before <commit>
@@ -142,14 +142,25 @@ The report, on the lines every label priced (pushes dropped):
   probit devig over 2+ books), and of full-game main and alt lines.
 - **Paired log loss change** vs the baseline label, by-game bootstrap 95%.
 - **Flat $100 bets** at the best closing price where the claimed edge >=
-  `--edge` (default 3%), ROI with a by-game bootstrap 95% interval.
+  `--edge` (default 3%; live `CBB.R` bets at 5%), one side per line, ROI per
+  graded bet with a by-game bootstrap 95% interval. Pushed lines are neither
+  staked nor counted, so ROI and claimed edge leave out the push share
+  (about 4% of 1H moneylines, 1.5% of 1H spreads).
+
+Each game's sample comes from the games dated before it (distance weights
+too), and its probabilities from `Tools.R`'s `predict_spreads_from_sample` /
+`predict_totals_from_sample`, so `--code-dir` tests those as well. A game whose
+`mean_match` does not converge is skipped (as live skips it) and counted; a
+sampler error on any game stops the run with that game and the message.
 
 Other options: `--max-games N` (random subset, for a quick check),
 `--sample-pct P` (a sample-size sweep is one run per value under its own
-label), `--books betonline` (1H fair and price from those books only),
+label), `--books betonline` (1H fair and price from those books only; one
+named book keeps its one-book lines, several still need 2+ of them),
 `--cores N`. The code under test must include the walk-forward helpers
-(PR #332 or later). If a change adds a column to the saved tables, delete
-`cbb_backtest.duckdb` and rerun the labels you need.
+(PR #332 or later). When this script changes the saved tables' columns, a run
+stops before pricing and asks you to delete `cbb_backtest.duckdb` and rerun
+the labels you need.
 
 ## Prerequisites
 

@@ -17,13 +17,16 @@
 #   --code-dir DIR      "Answer Keys" folder whose Tools.R is the code under
 #                       test (default: this repo's). Point it at a worktree of
 #                       another commit to compare code versions on the same data.
-#   --max-games N       random subset of the eligible games (default 0 = all,
-#                       ~9,600 games, ~3 min on 4 cores)
-#   --sample-pct P      N as a share of each game's prior history (default 0.02, as CBB.R)
+#   --max-games N       random subset of the eligible games (default 0 = all:
+#                       ~9,800 eligible, ~9,600 priced, a few minutes on 4-8 cores)
+#   --sample-pct P      N as a share of each game's prior history, 0 < P < 1
+#                       (default 0.02, as CBB.R)
 #   --cores N           parallel workers (default 4)
 #   --books a,b         1H fair and best price from these bookmaker_keys only
-#                       (e.g. betonline); default every book, a line needing 2+
-#   --edge E            claimed-edge threshold for the flat-bet table (default 0.03)
+#                       (e.g. betonline); a line needs 2+ of them, or the one
+#                       book when only one is named. Default: every book, 2+
+#   --edge E            claimed-edge threshold for the flat-bet table (default 0.03;
+#                       live CBB.R bets at 0.05)
 # report options: --labels a,b,... (first is the baseline), --edge E
 #
 # Reads (read-only): this repo's "Answer Keys/cbb.duckdb" — cbb_betting_pbp
@@ -49,29 +52,38 @@ DATA_DB_PATH <- file.path(answer_keys_dir, "cbb.duckdb")
 BACKTEST_DB_PATH <- file.path(answer_keys_dir, "cbb_backtest.duckdb")
 source(file.path(dirname(script_path), "cbb_backtest_lib.R"))
 
-parse_cli <- function(args) {
-  if (length(args) == 0 || !args[1] %in% c("run", "report")) {
-    stop("usage: CBB_Backtest.R run --label NAME [options] | report --labels a,b [--edge E]")
+USAGE <- "usage: CBB_Backtest.R run --label NAME [options] | report --labels a,b [--edge E]"
+
+parse_number <- function(key, value, integer = FALSE, min = -Inf, max = Inf) {
+  number <- suppressWarnings(as.numeric(value))
+  if (is.na(number) || number < min || number > max || (integer && number != round(number))) {
+    stop("--", key, " expects ", if (integer) "a whole number" else "a number",
+         " in [", min, ", ", max, "], got: ", value)
   }
-  opts <- list(command = args[1], code_dir = answer_keys_dir, max_games = 0,
-               sample_pct = SAMPLE_PCT_DEFAULT, cores = 4, edge = EDGE_THRESHOLD_DEFAULT)
+  if (integer) as.integer(number) else number
+}
+
+parse_cli <- function(args) {
+  if (length(args) == 0 || !args[1] %in% c("run", "report")) stop(USAGE)
+  opts <- list(command = args[1], code_dir = answer_keys_dir, max_games = 0L,
+               sample_pct = SAMPLE_PCT_DEFAULT, cores = 4L, edge = EDGE_THRESHOLD_DEFAULT)
   rest <- args[-1]
   if (length(rest) %% 2 != 0) stop("every option needs a value, got: ", paste(rest, collapse = " "))
-  for (i in seq(1, length(rest), by = 2)) {
+  for (i in seq_len(length(rest) / 2) * 2 - 1) {
     key <- sub("^--", "", rest[i]); value <- rest[i + 1]
     switch(key,
       "label"      = opts$label <- value,
       "labels"     = opts$labels <- strsplit(value, ",", fixed = TRUE)[[1]],
       "code-dir"   = opts$code_dir <- normalizePath(value, mustWork = TRUE),
-      "max-games"  = opts$max_games <- as.integer(value),
-      "sample-pct" = opts$sample_pct <- as.numeric(value),
-      "cores"      = opts$cores <- as.integer(value),
+      "max-games"  = opts$max_games <- parse_number(key, value, integer = TRUE, min = 0),
+      "sample-pct" = opts$sample_pct <- parse_number(key, value, min = 1e-6, max = 0.999),
+      "cores"      = opts$cores <- parse_number(key, value, integer = TRUE, min = 1),
       "books"      = opts$books <- strsplit(value, ",", fixed = TRUE)[[1]],
-      "edge"       = opts$edge <- as.numeric(value),
-      stop("unknown option --", key))
+      "edge"       = opts$edge <- parse_number(key, value, min = 0),
+      stop("unknown option --", key, "\n", USAGE))
   }
-  if (opts$command == "run" && is.null(opts$label)) stop("run needs --label")
-  if (opts$command == "report" && is.null(opts$labels)) stop("report needs --labels a,b,...")
+  if (opts$command == "run" && is.null(opts$label)) stop("run needs --label NAME\n", USAGE)
+  if (opts$command == "report" && is.null(opts$labels)) stop("report needs --labels a,b,...\n", USAGE)
   opts
 }
 
@@ -82,7 +94,10 @@ source_code_under_test <- function(code_dir) {
   old_wd <- setwd(code_dir)
   on.exit(setwd(old_wd))
   source(tools_path)
-  needed <- c("run_answer_key_sample", "compute_dispersion",
+  # The book fair uses this Tools.R's devig_american too, so a devig change
+  # moves both sides of the comparison.
+  needed <- c("run_answer_key_sample", "compute_dispersion", "predict_spreads_from_sample",
+              "predict_totals_from_sample", "devig_american", "duckdb_connect_retry",
               "walk_forward_training_set", "has_walk_forward_history")
   missing <- needed[!vapply(needed, exists, logical(1))]
   if (length(missing) > 0) {
@@ -99,10 +114,17 @@ git_commit_of <- function(dir) {
 
 run_command <- function(opts) {
   source_code_under_test(opts$code_dir)
-  data_con <- dbConnect(duckdb(), dbdir = DATA_DB_PATH, read_only = TRUE)
-  history <- load_cbb_history(data_con)
-  h1_lines <- load_h1_closing_lines(data_con, books = opts$books)
-  dbDisconnect(data_con, shutdown = TRUE)
+  out_con <- duckdb_connect_retry(BACKTEST_DB_PATH)
+  on.exit(dbDisconnect(out_con, shutdown = TRUE))
+  check_saved_schema(out_con)  # before pricing, so a stale file costs nothing
+
+  data_con <- duckdb_connect_retry(DATA_DB_PATH, read_only = TRUE)
+  inputs <- tryCatch(
+    list(history = load_cbb_history(data_con),
+         h1_lines = load_h1_closing_lines(data_con, books = opts$books)),
+    finally = dbDisconnect(data_con, shutdown = TRUE))
+  history <- inputs$history
+  h1_lines <- inputs$h1_lines
 
   test_idx <- select_test_games(history, h1_lines, opts$max_games)
   cat(sprintf("%s: %d games of history, pricing %d walk-forward games with 1H closing lines\n",
@@ -110,18 +132,17 @@ run_command <- function(opts) {
   started <- Sys.time()
   priced <- price_test_games(history, h1_lines, test_idx, opts$sample_pct, opts$cores)
   minutes <- as.numeric(difftime(Sys.time(), started, units = "mins"))
-  cat(sprintf("priced %d games (%d the sampler could not price) in %.1f min\n",
-              uniqueN(priced$predictions$odds_id), priced$unpriced_games, minutes))
-  if (nrow(priced$predictions) == 0) stop("no game could be priced; nothing saved")
+  games_priced <- uniqueN(priced$predictions$odds_id)
+  cat(sprintf("priced %d games (%d where mean_match did not converge, as live skips them) in %.1f min\n",
+              games_priced, priced$not_converged_games, minutes))
+  if (games_priced == 0) stop("no game could be priced; nothing saved")
 
   run_info <- list(run_at = Sys.time(), code_dir = opts$code_dir,
                    code_commit = git_commit_of(opts$code_dir), sample_pct = opts$sample_pct,
                    max_games = opts$max_games,
                    books = if (is.null(opts$books)) "all" else paste(opts$books, collapse = ","),
-                   games_priced = uniqueN(priced$predictions$odds_id),
-                   games_unpriced = priced$unpriced_games, minutes = round(minutes, 1))
-  out_con <- dbConnect(duckdb(), dbdir = BACKTEST_DB_PATH)
-  on.exit(dbDisconnect(out_con, shutdown = TRUE))
+                   games_priced = games_priced, games_not_converged = priced$not_converged_games,
+                   minutes = round(minutes, 1))
   save_backtest_run(out_con, opts$label, priced$predictions, run_info)
   cat(sprintf("saved label '%s' to %s\n", opts$label, BACKTEST_DB_PATH))
   saved <- load_backtest_runs(out_con, opts$label)
@@ -132,7 +153,6 @@ report_command <- function(opts) {
   con <- dbConnect(duckdb(), dbdir = BACKTEST_DB_PATH, read_only = TRUE)
   on.exit(dbDisconnect(con, shutdown = TRUE))
   saved <- load_backtest_runs(con, opts$labels)
-  saved$runs <- saved$runs[order(match(label, opts$labels))]
   print_backtest_report(saved$predictions, saved$runs, opts$edge)
 }
 

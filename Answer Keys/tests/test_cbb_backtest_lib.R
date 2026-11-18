@@ -75,46 +75,98 @@ test_that("a single named book keeps its one-book lines; an unknown book fails l
   expect_error(load_h1_closing_lines(db$con, books = "nope"), "no 1H prices for book")
 })
 
-test_that("devig_probit_side1 matches Tools.R::devig_american", {
-  odds1 <- c(-110, 150, -250, 105); odds2 <- c(-110, -170, 200, -125)
-  expect_equal(devig_probit_side1(odds1, odds2), devig_american(odds1, odds2)$p1, tolerance = 1e-12)
-  expect_true(is.na(devig_probit_side1(0, -110)))
-})
-
-test_that("sample probabilities drop pushes and need enough games", {
-  expect_equal(sample_prob_over(c(1, 2, 3, 3, 4), 3, min_nonpush = 1), 1 / 3)  # 4 of {1, 2, 4}
-  expect_true(is.na(sample_prob_over(c(1, 5), 3, min_nonpush = 3)))
+test_that("sample probabilities come from Tools.R's predictors and drop pushes", {
+  sample <- data.table(game_home_margin_h1 = c(-3, 0, 2, 3, 5), game_total_h1 = c(60, 65, 65, 70, 71))
+  # home -2.5 covers when margin > 2.5: {3, 5} of 5; home 0 (moneyline): {2, 3, 5} of 4 non-ties
+  expect_equal(sample_home_cover_probs(sample, c(-2.5, 0, -2.5), "h1"), c(2 / 5, 3 / 4, 2 / 5))
+  # over 65 drops the two 65s: {70, 71} of 3
+  expect_equal(sample_over_probs(sample, c(65, 80), "h1"), c(2 / 3, 0))
+  expect_true(is.na(sample_home_cover_probs(data.table(game_home_margin_h1 = c(1, 1)), -1, "h1")))
   expect_equal(outcome_vs_threshold(c(4, 3, 2, NA), 3), c(1, NA, 0, NA))
 })
 
-test_that("a test game is priced only off earlier games and grades each line", {
-  history <- data.table(
+.mock_sampler <- function(result_fn) {
+  real_sampler <- run_answer_key_sample
+  assign("run_answer_key_sample", result_fn, envir = globalenv())
+  function() assign("run_answer_key_sample", real_sampler, envir = globalenv())
+}
+
+.four_game_history <- function() {
+  data.table(
     odds_id = sprintf("e%d", 1:4), game_date = as.Date("2024-01-01") + 0:3,
-    home_spread = -2, total_line = 140, consensus_devig_home_odds = 0.5, consensus_devig_over_odds = 0.5,
+    home_spread = c(-2, -3, -1, -2), total_line = c(140, 150, 135, 140),
+    consensus_devig_home_odds = 0.5, consensus_devig_over_odds = 0.5,
     home_margin = c(5, -5, 1, 3), total_final_score = c(150, 130, 141, 139),
     game_home_margin_h1 = c(2, -1, 0, 0), game_total_h1 = c(75, 64, 70, 69))
+}
+
+test_that("a test game is priced only off earlier games and grades each line", {
+  history <- .four_game_history()
+  history[, `:=`(game_home_margin_fg = home_margin, game_total_fg = total_final_score)]
   seen_train_dates <- NULL
-  local_mocked <- function(id, parent_spread, parent_total, target_cover, target_over, DT, ss, st, N, ...) {
+  restore <- .mock_sampler(function(id, parent_spread, parent_total, target_cover, target_over,
+                                    DT, ss, st, N, ...) {
     seen_train_dates <<- DT$game_date
     list(sample = DT, final_N = nrow(DT), converged = TRUE)
-  }
-  real_sampler <- run_answer_key_sample
-  assign("run_answer_key_sample", local_mocked, envir = globalenv())
-  on.exit(assign("run_answer_key_sample", real_sampler, envir = globalenv()))
-  h1 <- data.table(event_id = "e4", market = c("spreads_h1", "h2h_h1"), line = c(-0.5, 0),
-                   book_fair_prob = c(0.5, 0.55), n_books = 2L,
-                   best_side1_american_odds = c(-105, -120), best_side2_american_odds = c(-105, 110))
-  rows <- price_test_game(history[4], history, h1, list(ss = 1, st = 1), sample_pct = 1)
+  })
+  on.exit(restore())
+  h1 <- data.table(event_id = "e4", market = c("spreads_h1", "h2h_h1", "totals_h1"),
+                   line = c(-0.5, 0, 69.5), book_fair_prob = c(0.5, 0.55, 0.5), n_books = 2L,
+                   best_side1_american_odds = c(-105, -120, -110),
+                   best_side2_american_odds = c(-105, 110, -110))
+  priced <- price_test_game(history[4], history, h1, sample_pct = 1)
+  expect_equal(priced$status, "priced")
+  rows <- priced$predictions
+  expect_identical(names(rows), PREDICTION_COLUMNS)
   expect_true(all(seen_train_dates < as.Date("2024-01-04")))
   spread <- rows[market == "spreads_h1"]
-  expect_equal(spread$model_prob, NA_real_)  # 3 sample games < MIN_NONPUSH_SAMPLE_GAMES
-  expect_equal(spread$outcome, 0)            # home -0.5 in the half: margin 0 does not cover
-  expect_equal(rows[market == "h2h_h1"]$outcome, NA_real_)  # tied half = push
+  expect_equal(spread$model_prob, 1 / 3)  # 1H margins 2, -1, 0: only 2 covers -0.5
+  expect_equal(spread$outcome, 0)         # test game's 1H margin 0 does not cover -0.5
+  ml <- rows[market == "h2h_h1"]
+  expect_equal(ml$model_prob, 1 / 2)      # 2 and -1; the tied half drops out
+  expect_equal(ml$outcome, NA_real_)      # tied half = push
+  total <- rows[market == "totals_h1"]
+  expect_equal(total$model_prob, 2 / 3)   # 75, 70 over 69.5; 64 under
+  expect_equal(total$outcome, 0)          # 69 < 69.5
   main <- rows[market == "fg_spread_+0"]
   expect_equal(main$book_fair_prob, 0.5)
-  expect_equal(main$outcome, 1)  # margin 3 beats -2
+  expect_equal(main$outcome, 1)           # margin 3 beats -2
+  expect_true(all(is.na(rows[market == "fg_spread_+3"]$book_fair_prob)))
+  expect_equal(nrow(rows), 3 + length(FG_SPREAD_OFFSETS) + length(FG_TOTAL_OFFSETS))
   expect_equal(rows$target_N[1], 3)
   expect_equal(rows$sample_median_margin_miss[1], median(c(5, -5, 1)) - 2)
+})
+
+test_that("sampler failures are told apart: no convergence is skipped, an error is kept", {
+  history <- .four_game_history()
+  history[, `:=`(game_home_margin_fg = home_margin, game_total_fg = total_final_score)]
+  restore <- .mock_sampler(function(...) NULL)
+  expect_equal(price_test_game(history[4], history, data.table(), sample_pct = 1)$status, "not_converged")
+  restore()
+  restore <- .mock_sampler(function(...) stop("boom"))
+  on.exit(restore())
+  failed <- price_test_game(history[4], history, data.table(), sample_pct = 1)
+  expect_equal(failed[c("status", "message")], list(status = "error", message = "boom"))
+  expect_equal(price_test_game(history[1], history, data.table())$status, "no_history")
+})
+
+test_that("a sampler error anywhere stops the whole run, naming the game", {
+  history <- .four_game_history()
+  history[, `:=`(game_home_margin_fg = home_margin, game_total_fg = total_final_score)]
+  restore <- .mock_sampler(function(id, ...) if (id == "e4") stop("bad game") else NULL)
+  on.exit(restore())
+  h1 <- data.table(event_id = c("e3", "e4"), market = "h2h_h1", line = 0, book_fair_prob = 0.5,
+                   n_books = 2L, best_side1_american_odds = -110, best_side2_american_odds = -110)
+  setkey(h1, event_id)
+  expect_error(price_test_games(history, h1, 3:4, sample_pct = 1, cores = 1), "e4\\): bad game")
+})
+
+test_that("test games need half the history behind them and 1H lines; max_games subsets", {
+  history <- data.table(odds_id = sprintf("e%d", 1:10), game_date = as.Date("2024-01-01") + 0:9)
+  h1 <- data.table(event_id = c("e2", "e7", "e8", "e9"))
+  expect_equal(select_test_games(history, h1), c(7L, 8L, 9L))
+  expect_length(select_test_games(history, h1, max_games = 2), 2)
+  expect_equal(select_test_games(history, h1, max_games = 50), c(7L, 8L, 9L))
 })
 
 .graded_fixture <- function() {
@@ -122,16 +174,27 @@ test_that("a test game is priced only off earlier games and grades each line", {
                      market = c("spreads_h1", "fg_spread_+0", "totals_h1"), line = c(-1.5, -3, 70),
                      model_prob = c(0.60, 0.51, 0.40), book_fair_prob = c(0.50, 0.50, 0.50),
                      best_side1_american_odds = c(100, NA, -110), best_side2_american_odds = c(-120, NA, 110),
-                     n_books = 2L, outcome = c(1, 1, 0), parent_spread = -3, parent_total = 140,
-                     target_N = 100, final_N = 100, converged = TRUE, sample_median_margin_miss = 0.5,
-                     sample_median_total_miss = -0.5, sample_mean_spread_drift = 0)
+                     outcome = c(1, 1, 0), target_N = 100, final_N = 100, converged = TRUE,
+                     sample_median_margin_miss = 0.5, sample_median_total_miss = -0.5,
+                     sample_mean_spread_drift = 0)
+  setcolorder(base, PREDICTION_COLUMNS)
   rbind(copy(base)[, label := "a"], copy(base)[, label := "b"][market != "totals_h1"])
 }
+
+.run_info <- function() list(run_at = Sys.time(), code_dir = "x", code_commit = "abc", sample_pct = 0.02,
+                             max_games = 0L, books = "all", games_priced = 2L,
+                             games_not_converged = 0L, minutes = 1)
 
 test_that("labels are compared only on lines every label priced", {
   graded <- common_graded_lines(.graded_fixture())
   expect_setequal(unique(graded$market), c("spreads_h1", "fg_spread_+0"))
   expect_equal(graded[market == "fg_spread_+0"]$market_group[1], "fg_spread_main")
+})
+
+test_that("a label with no graded lines stops the report by name", {
+  preds <- .graded_fixture()
+  preds[label == "b", model_prob := NA_real_]
+  expect_error(common_graded_lines(preds), "no graded lines for label\\(s\\): b")
 })
 
 test_that("flat bets take the side with the edge at the best price", {
@@ -144,20 +207,65 @@ test_that("flat bets take the side with the edge at the best price", {
   expect_equal(bets[market_group == "totals_h1"]$pnl, 110)
   summary <- summarise_flat_bets(bets, by = "label")
   expect_equal(summary$roi, 1.05)
+  expect_equal(summary$bets, 2L)
+})
+
+test_that("a line where best prices let both sides clear the edge bets only the bigger one", {
+  graded <- common_graded_lines(.graded_fixture()[label == "a"])
+  graded[market == "spreads_h1", `:=`(model_prob = 0.52, best_side1_american_odds = 110,
+                                      best_side2_american_odds = 110)]
+  bets <- flat_bets(graded, edge_threshold = 0.03)[market_group == "spreads_h1"]
+  expect_equal(nrow(bets), 1)
+  expect_equal(bets$claimed_edge, 0.52 * 2.1 - 1)
+})
+
+test_that("log loss change is to minus from, so negative means the second label is better", {
+  preds <- .graded_fixture()[market != "totals_h1"]
+  preds[label == "b" & market == "spreads_h1", model_prob := 0.9]  # outcome 1: b is better
+  graded <- common_graded_lines(preds)
+  change <- compare_logloss(graded, "a", "b")
+  expect_equal(change[market_group == "spreads_h1"]$logloss_change, log(0.6) - log(0.9))
+  expect_equal(change[market_group == "fg_spread_main"]$logloss_change, 0)
+})
+
+test_that("centring and accuracy summaries report the gap to the no-vig target", {
+  graded <- common_graded_lines(.graded_fixture()[label == "a"])
+  centring <- summarise_sample_centring(graded)
+  expect_equal(centring$main_line_gaps$mean_gap, 0.01)
+  expect_equal(centring$diagnostics$mean_abs_median_margin_miss, 0.5)
+  accuracy <- summarise_accuracy(graded)
+  expect_equal(accuracy[market_group == "spreads_h1"]$model_logloss, -log(0.6))
+  expect_equal(accuracy[market_group == "spreads_h1"]$book_logloss, -log(0.5))
+})
+
+test_that("the report prints for two labels and with no bets over the edge", {
+  preds <- .graded_fixture()
+  runs <- data.table(label = c("a", "b"))
+  expect_output(print_backtest_report(preds, runs, edge_threshold = 0.03), "Paired log loss change vs a")
+  expect_output(print_backtest_report(preds, runs, edge_threshold = 0.9), "no line cleared the edge threshold")
 })
 
 test_that("saving a label replaces only that label's rows", {
   path <- tempfile(fileext = ".duckdb")
   con <- dbConnect(duckdb(), dbdir = path); on.exit(dbDisconnect(con, shutdown = TRUE))
   preds <- .graded_fixture()[label == "a"][, label := NULL]
-  info <- list(run_at = Sys.time(), code_dir = "x", code_commit = "abc", sample_pct = 0.02,
-               max_games = 0, books = "all", games_priced = 2L, games_unpriced = 0L, minutes = 1)
-  save_backtest_run(con, "a", preds, info)
-  save_backtest_run(con, "b", preds, info)
-  save_backtest_run(con, "a", preds[1], info)
-  saved <- load_backtest_runs(con, c("a", "b"))
+  save_backtest_run(con, "a", preds, .run_info())
+  save_backtest_run(con, "b", preds, .run_info())
+  save_backtest_run(con, "a", preds[1], .run_info())
+  saved <- load_backtest_runs(con, c("b", "a"))
   expect_equal(nrow(saved$predictions[label == "a"]), 1)
   expect_equal(nrow(saved$predictions[label == "b"]), 3)
-  expect_equal(nrow(saved$runs), 2)
+  expect_equal(saved$runs$label, c("b", "a"))
   expect_error(load_backtest_runs(con, "zzz"), "no saved run for label")
+})
+
+test_that("a saved table with other columns stops the run before pricing", {
+  path <- tempfile(fileext = ".duckdb")
+  con <- dbConnect(duckdb(), dbdir = path); on.exit(dbDisconnect(con, shutdown = TRUE))
+  dbWriteTable(con, RUNS_TABLE, data.frame(label = "old", run_at = Sys.time()))
+  expect_error(check_saved_schema(con), "backtest_runs was saved with columns")
+  info <- .run_info(); info$books <- NULL
+  expect_error(save_backtest_run(dbConnect(duckdb(), dbdir = tempfile(fileext = ".duckdb")), "a",
+                                 .graded_fixture()[label == "a"][, label := NULL], info),
+               "run_info must have")
 })

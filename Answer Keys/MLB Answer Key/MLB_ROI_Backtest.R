@@ -1,6 +1,6 @@
 # MLB F5 ROI Backtest
 # Walk-forward backtest comparing algo F5 predictions to actual book F5 closing odds (each game priced only off games played before it)
-# Parallel version based on CBB_Backtest_Parallel.R
+# Parallel version based on the old CBB_Backtest_Parallel.R (now CBB_Backtest.R)
 #
 # Requires: pbp.duckdb/mlb_f5_odds_history (from fetch_mlb_f5_odds.py)
 #

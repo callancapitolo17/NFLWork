@@ -23,13 +23,13 @@
 suppressMessages({
   library(data.table)
   library(DBI)
+  library(tidyverse)  # Tools.R's predict_*_from_sample use purrr / tibble, as CBB.R loads them
 })
 
 # CBB.R sizes N as round(nrow(DT) * 0.02); the backtest sizes it off each test
 # game's prior history the same way.
 SAMPLE_PCT_DEFAULT <- 0.02
 MIN_BOOKS_PER_LINE <- 2          # a 1H line needs 2+ books for a closing fair
-MIN_NONPUSH_SAMPLE_GAMES <- 10   # fewer non-push sample games -> no probability
 EDGE_THRESHOLD_DEFAULT <- 0.03
 FLAT_STAKE <- 100
 BOOTSTRAP_DRAWS <- 2000
@@ -59,8 +59,7 @@ RUNS_TABLE <- "backtest_runs"
 #'   targets, full-game and 1H scores, actual_cover / actual_over (push = 0.5)
 load_cbb_history <- function(con) {
   games <- as.data.table(dbGetQuery(con, "
-    SELECT odds_id, game_id, game_date, home_team, away_team,
-           home_spread, total_line,
+    SELECT odds_id, game_date, home_spread, total_line,
            consensus_devig_home_odds, consensus_devig_over_odds,
            game_home_margin_fg, game_total_fg,
            game_home_margin_h1, game_total_h1
@@ -73,25 +72,11 @@ load_cbb_history <- function(con) {
   if (nrow(games) == 0) stop("load_cbb_history: cbb_betting_pbp returned no complete games")
   games[, game_date := as.Date(game_date)]
   # Same column names and push grading as CBB.R
-  games[, `:=`(home_margin = game_home_margin_fg, total_final_score = game_total_fg,
-               home_spread_odds = consensus_devig_home_odds, over_odds = consensus_devig_over_odds)]
+  games[, `:=`(home_margin = game_home_margin_fg, total_final_score = game_total_fg)]
   games[, actual_cover := ifelse(home_margin > -home_spread, 1, ifelse(home_margin == -home_spread, 0.5, 0))]
   games[, actual_over  := ifelse(total_final_score > total_line, 1, ifelse(total_final_score == total_line, 0.5, 0))]
   setorder(games, game_date, odds_id)
   games[]
-}
-
-#' Two-way probit devig, vectorised; matches Tools.R::devig_american's p1.
-#' @return fair probability of side 1 (NA where either price is NA or 0)
-devig_probit_side1 <- function(side1_american_odds, side2_american_odds, eps = 1e-9) {
-  implied <- function(odds) ifelse(odds > 0, 100 / (odds + 100), -odds / (-odds + 100))
-  bad <- is.na(side1_american_odds) | is.na(side2_american_odds) |
-    side1_american_odds == 0 | side2_american_odds == 0
-  z1 <- qnorm(pmin(pmax(implied(side1_american_odds), eps), 1 - eps))
-  z2 <- qnorm(pmin(pmax(implied(side2_american_odds), eps), 1 - eps))
-  fair <- pnorm(z1 - (z1 + z2) / 2)
-  fair[bad] <- NA_real_
-  fair
 }
 
 #' 1H closing lines with a book fair and the best price on each side.
@@ -105,7 +90,9 @@ devig_probit_side1 <- function(side1_american_odds, side2_american_odds, eps = 1
 #' @return data.table: event_id, market, line, book_fair_prob (median over
 #'   books), n_books, best_side1_american_odds, best_side2_american_odds
 load_h1_closing_lines <- function(con, books = NULL, min_books = MIN_BOOKS_PER_LINE) {
-  # One price per book, market, outcome and point (a handful of duplicate rows)
+  # One price per book, market, outcome and point. About 250 of ~800k rows are
+  # duplicates; the table has no fetch time, so the lowest price is kept,
+  # which can pair the two sides from different snapshots of one book.
   book_pairs <- as.data.table(dbGetQuery(con, "
     WITH quotes AS (
       SELECT event_id, bookmaker_key, market, outcome_name, outcome_price, outcome_point,
@@ -140,7 +127,7 @@ load_h1_closing_lines <- function(con, books = NULL, min_books = MIN_BOOKS_PER_L
     book_pairs <- book_pairs[bookmaker_key %in% books]
     min_books <- min(min_books, length(books))
   }
-  book_pairs[, side1_fair_prob := devig_probit_side1(side1_american_odds, side2_american_odds)]
+  book_pairs[, side1_fair_prob := devig_american(side1_american_odds, side2_american_odds)$p1]
   lines <- book_pairs[is.finite(side1_fair_prob), .(
     book_fair_prob = median(side1_fair_prob),
     n_books = .N,
@@ -157,11 +144,26 @@ load_h1_closing_lines <- function(con, books = NULL, min_books = MIN_BOOKS_PER_L
 # Pricing
 # -----------------------------------------------------------------------------
 
-#' Share of non-push sample games above `threshold`; NA when too few.
-sample_prob_over <- function(values, threshold, min_nonpush = MIN_NONPUSH_SAMPLE_GAMES) {
-  non_push <- values[!is.na(values) & values != threshold]
-  if (length(non_push) < min_nonpush) return(NA_real_)
-  mean(non_push > threshold)
+#' Sample probability that the home side covers each home spread in `lines`,
+#' through Tools.R's predict_spreads_from_sample (as live prices), so a change
+#' to it in --code-dir shows up. Pushes are left out; a line no non-push sample
+#' game decides is NA. `period` "h1" / "fg" picks game_home_margin_<period>.
+sample_home_cover_probs <- function(sample, lines, period) {
+  # The predictor names a column per line, so it is asked once per distinct line
+  distinct_lines <- unique(lines)
+  probs <- unlist(predict_spreads_from_sample(sample, distinct_lines, margin_col = "game_home_margin",
+                                              period = period), use.names = FALSE)
+  probs[!is.finite(probs)] <- NA_real_
+  probs[match(lines, distinct_lines)]
+}
+
+#' Sample probability of over each total in `lines` (predict_totals_from_sample).
+sample_over_probs <- function(sample, lines, period) {
+  distinct_lines <- unique(lines)
+  probs <- unlist(predict_totals_from_sample(sample, distinct_lines, total_col = "game_total",
+                                             period = period), use.names = FALSE)
+  probs[!is.finite(probs)] <- NA_real_
+  probs[match(lines, distinct_lines)]
 }
 
 #' 1 above the threshold, 0 below, NA on a push.
@@ -181,95 +183,114 @@ select_test_games <- function(history, h1_lines, max_games = 0, seed = 42) {
   test_idx
 }
 
+# One row per priced line; save_backtest_run checks a saved table against this
+# before pricing starts.
+PREDICTION_COLUMNS <- c(
+  "odds_id", "game_date", "market", "line", "model_prob", "book_fair_prob",
+  "best_side1_american_odds", "best_side2_american_odds", "outcome",
+  "target_N", "final_N", "converged",
+  "sample_median_margin_miss", "sample_median_total_miss", "sample_mean_spread_drift")
+
+#' Prediction rows for one game's sample: its 1H closing lines, and full-game
+#' lines around the parent (book fair only at the parent line itself, the
+#' no-vig target).
+prediction_rows <- function(test_game, sample, game_h1_lines) {
+  h1 <- copy(game_h1_lines)
+  h1[, model_prob := NA_real_]
+  h1[, outcome := NA_real_]
+  # h2h_h1 is the home side at spread 0: a tied half is a push
+  is_spread <- h1$market %in% c("spreads_h1", "h2h_h1")
+  h1[is_spread, model_prob := sample_home_cover_probs(sample, line, "h1")]
+  h1[is_spread, outcome := outcome_vs_threshold(test_game$game_home_margin_h1, -line)]
+  h1[market == "totals_h1", model_prob := sample_over_probs(sample, line, "h1")]
+  h1[market == "totals_h1", outcome := outcome_vs_threshold(test_game$game_total_h1, line)]
+
+  spread_lines <- test_game$home_spread + FG_SPREAD_OFFSETS
+  total_lines <- test_game$total_line + FG_TOTAL_OFFSETS
+  fg <- rbind(
+    data.table(market = sprintf("fg_spread_%+d", FG_SPREAD_OFFSETS), line = spread_lines,
+               model_prob = sample_home_cover_probs(sample, spread_lines, "fg"),
+               book_fair_prob = ifelse(FG_SPREAD_OFFSETS == 0, test_game$consensus_devig_home_odds, NA_real_),
+               outcome = outcome_vs_threshold(test_game$home_margin, -spread_lines)),
+    data.table(market = sprintf("fg_total_%+d", FG_TOTAL_OFFSETS), line = total_lines,
+               model_prob = sample_over_probs(sample, total_lines, "fg"),
+               book_fair_prob = ifelse(FG_TOTAL_OFFSETS == 0, test_game$consensus_devig_over_odds, NA_real_),
+               outcome = outcome_vs_threshold(test_game$total_final_score, total_lines)))
+  rbind(h1[, .(market, line, model_prob, book_fair_prob, best_side1_american_odds,
+               best_side2_american_odds, outcome)], fg, fill = TRUE)
+}
+
 #' Price one test game off the games dated before it.
+#'
+#' The distance weights (compute_dispersion) come from the training games
+#' too, so nothing after the test date reaches the sample.
 #'
 #' @param test_game one row of load_cbb_history()
 #' @param history all of load_cbb_history()
 #' @param game_h1_lines this game's rows of load_h1_closing_lines()
-#' @param dispersion compute_dispersion() output (list with ss, st)
-#' @return data.table of predictions (one row per line priced) with the game's
-#'   sample diagnostics repeated on each row, or NULL when the game cannot be
-#'   priced (not enough history, or the sampler failed)
-price_test_game <- function(test_game, history, game_h1_lines, dispersion,
-                            sample_pct = SAMPLE_PCT_DEFAULT) {
+#' @return list(status, predictions, message). status is "priced",
+#'   "no_history" (under half the history behind it), "not_converged" (the
+#'   sampler returned nothing, as live skips such a game) or "error" (the
+#'   sampler threw; message holds why)
+price_test_game <- function(test_game, history, game_h1_lines, sample_pct = SAMPLE_PCT_DEFAULT) {
   train <- walk_forward_training_set(history, test_game$game_date)
-  if (is.null(train)) return(NULL)
+  if (is.null(train)) return(list(status = "no_history"))
+  dispersion <- compute_dispersion(train, moneyline = FALSE,
+                                   spread_col = "home_spread", total_col = "total_line")
   target_N <- round(nrow(train) * sample_pct)
   result <- tryCatch(
     suppressWarnings(run_answer_key_sample(
       test_game$odds_id, test_game$home_spread, test_game$total_line,
       test_game$consensus_devig_home_odds, test_game$consensus_devig_over_odds,
       train, dispersion$ss, dispersion$st, target_N, use_spread_line = TRUE)),
-    error = function(e) NULL)
-  if (is.null(result) || is.null(result$sample) || nrow(result$sample) == 0) return(NULL)
-  sample <- result$sample
-
-  rows <- list()
-  add_row <- function(market, line, model_prob, book_fair_prob, best1, best2, n_books, outcome) {
-    rows[[length(rows) + 1]] <<- data.table(
-      market = market, line = line, model_prob = model_prob, book_fair_prob = book_fair_prob,
-      best_side1_american_odds = best1, best_side2_american_odds = best2,
-      n_books = n_books, outcome = outcome)
+    error = function(e) e)
+  if (inherits(result, "error")) return(list(status = "error", message = conditionMessage(result)))
+  if (is.null(result) || is.null(result$sample) || nrow(result$sample) == 0) {
+    return(list(status = "not_converged"))
   }
+  sample <- as.data.table(result$sample)
 
-  for (j in seq_len(nrow(game_h1_lines))) {
-    quote <- game_h1_lines[j]
-    if (quote$market == "spreads_h1") {
-      values <- sample$game_home_margin_h1; actual <- test_game$game_home_margin_h1; threshold <- -quote$line
-    } else if (quote$market == "totals_h1") {
-      values <- sample$game_total_h1; actual <- test_game$game_total_h1; threshold <- quote$line
-    } else {  # h2h_h1: home leads at the half; a tied half is a push
-      values <- sample$game_home_margin_h1; actual <- test_game$game_home_margin_h1; threshold <- 0
-    }
-    add_row(quote$market, quote$line, sample_prob_over(values, threshold), quote$book_fair_prob,
-            quote$best_side1_american_odds, quote$best_side2_american_odds, quote$n_books,
-            outcome_vs_threshold(actual, threshold))
-  }
-
-  # Full-game lines: book fair only at the parent line (the no-vig target)
-  for (offset in FG_SPREAD_OFFSETS) {
-    line <- test_game$home_spread + offset
-    add_row(sprintf("fg_spread_%+d", offset), line, sample_prob_over(sample$home_margin, -line),
-            if (offset == 0) test_game$consensus_devig_home_odds else NA_real_, NA, NA, NA,
-            outcome_vs_threshold(test_game$home_margin, -line))
-  }
-  for (offset in FG_TOTAL_OFFSETS) {
-    line <- test_game$total_line + offset
-    add_row(sprintf("fg_total_%+d", offset), line, sample_prob_over(sample$total_final_score, line),
-            if (offset == 0) test_game$consensus_devig_over_odds else NA_real_, NA, NA, NA,
-            outcome_vs_threshold(test_game$total_final_score, line))
-  }
-
-  predictions <- rbindlist(rows)
+  predictions <- prediction_rows(test_game, sample, game_h1_lines)
   predictions[, `:=`(
     odds_id = test_game$odds_id, game_date = test_game$game_date,
-    parent_spread = test_game$home_spread, parent_total = test_game$total_line,
     target_N = target_N, final_N = result$final_N, converged = isTRUE(result$converged),
     sample_median_margin_miss = median(sample$home_margin) + test_game$home_spread,
     sample_median_total_miss = median(sample$total_final_score) - test_game$total_line,
     sample_mean_spread_drift = mean(sample$home_spread) - test_game$home_spread)]
-  setcolorder(predictions, c("odds_id", "game_date", "market", "line"))
-  predictions[]
+  setcolorder(predictions, PREDICTION_COLUMNS)
+  list(status = "priced", predictions = predictions)
 }
 
 #' Price every test game, in parallel (forked; Tools.R must be sourced).
-#' @return list(predictions, unpriced_games = games the sampler could not price)
+#'
+#' Stops when any game's sampler threw or a worker died, naming the first
+#' error, so a run never saves a survivor subset as if it were complete.
+#' @return list(predictions, not_converged_games)
 price_test_games <- function(history, h1_lines, test_idx, sample_pct = SAMPLE_PCT_DEFAULT,
                              cores = 4) {
-  dispersion <- compute_dispersion(history, moneyline = FALSE,
-                                   spread_col = "home_spread", total_col = "total_line")
   price_one <- function(i) {
     game <- history[i]
-    price_test_game(game, history, h1_lines[.(game$odds_id), nomatch = NULL], dispersion, sample_pct)
+    price_test_game(game, history, h1_lines[.(game$odds_id), nomatch = NULL], sample_pct)
   }
   per_game <- parallel::mclapply(test_idx, price_one, mc.cores = cores, mc.preschedule = TRUE)
-  failed <- vapply(per_game, function(x) inherits(x, "try-error"), logical(1))
-  if (any(failed)) {
-    stop("price_test_games: ", sum(failed), " workers errored; first: ",
-         as.character(per_game[[which(failed)[1]]]))
+  status <- vapply(per_game, function(x) if (is.list(x) && !is.null(x$status)) x$status else "worker_died",
+                   character(1))
+  if (any(status == "worker_died")) {
+    stop("price_test_games: ", sum(status == "worker_died"), " games came back from a worker that ",
+         "errored or died (out of memory?); first: ", as.character(per_game[[which(status == "worker_died")[1]]]))
   }
-  unpriced <- sum(vapply(per_game, is.null, logical(1)))
-  list(predictions = rbindlist(per_game), unpriced_games = unpriced)
+  if (any(status == "error")) {
+    first <- per_game[[which(status == "error")[1]]]
+    stop("price_test_games: the sampler threw on ", sum(status == "error"), " games; first (",
+         history$odds_id[test_idx[which(status == "error")[1]]], "): ", first$message)
+  }
+  if (any(status == "no_history")) {
+    stop("price_test_games: ", sum(status == "no_history"), " test games have under half the history ",
+         "behind them; select them with select_test_games()")
+  }
+  priced <- per_game[status == "priced"]
+  list(predictions = rbindlist(lapply(priced, `[[`, "predictions")),
+       not_converged_games = sum(status == "not_converged"))
 }
 
 
@@ -277,15 +298,43 @@ price_test_games <- function(history, h1_lines, test_idx, sample_pct = SAMPLE_PC
 # Storage (cbb_backtest.duckdb)
 # -----------------------------------------------------------------------------
 
+# One row per run; run_info passed to save_backtest_run has these names, in order.
+RUN_COLUMNS <- c("label", "run_at", "code_dir", "code_commit", "sample_pct", "max_games",
+                 "books", "games_priced", "games_not_converged", "minutes")
+
+# Appends are positional, so a table saved by an older version of this script
+# must be rebuilt rather than appended to. Call before pricing, so a mismatch
+# costs nothing.
+stop_if_columns_changed <- function(con, table, columns) {
+  if (!dbExistsTable(con, table)) return(invisible(TRUE))
+  saved_columns <- dbListFields(con, table)
+  if (!identical(saved_columns, columns)) {
+    stop(table, " was saved with columns (", paste(saved_columns, collapse = ", "),
+         ") but this run has (", paste(columns, collapse = ", "),
+         "); delete cbb_backtest.duckdb and rerun the labels you need")
+  }
+  invisible(TRUE)
+}
+
 #' Save one run's predictions under `label`, replacing that label's old rows.
 #'
 #' Side effect: writes PREDICTIONS_TABLE and RUNS_TABLE in the DB at `con`
 #' (DELETE that label's rows, then append), inside one transaction.
+check_saved_schema <- function(con) {
+  stop_if_columns_changed(con, PREDICTIONS_TABLE, c("label", PREDICTION_COLUMNS))
+  stop_if_columns_changed(con, RUNS_TABLE, RUN_COLUMNS)
+}
+
 save_backtest_run <- function(con, label, predictions, run_info) {
   predictions <- copy(predictions)
   predictions[, label := label]
-  setcolorder(predictions, "label")
+  setcolorder(predictions, c("label", PREDICTION_COLUMNS))
   run_row <- as.data.table(c(list(label = label), run_info))
+  if (!identical(names(run_row), RUN_COLUMNS)) {
+    stop("save_backtest_run: run_info must have ", paste(RUN_COLUMNS[-1], collapse = ", "),
+         " in that order; got ", paste(names(run_info), collapse = ", "))
+  }
+  check_saved_schema(con)
   dbWithTransaction(con, {
     for (table in c(PREDICTIONS_TABLE, RUNS_TABLE)) {
       if (dbExistsTable(con, table)) {
@@ -309,13 +358,18 @@ load_backtest_runs <- function(con, labels) {
   }
   placeholders <- paste(rep("?", length(labels)), collapse = ", ")
   predictions <- as.data.table(dbGetQuery(
-    con, sprintf("SELECT * FROM %s WHERE label IN (%s)", PREDICTIONS_TABLE, placeholders),
+    con, sprintf("SELECT %s FROM %s WHERE label IN (%s)",
+                 paste(c("label", PREDICTION_COLUMNS), collapse = ", "), PREDICTIONS_TABLE, placeholders),
     params = as.list(labels)))
   predictions[, game_date := as.Date(game_date)]
   runs <- as.data.table(dbGetQuery(
-    con, sprintf("SELECT * FROM %s WHERE label IN (%s)", RUNS_TABLE, placeholders),
+    con, sprintf("SELECT %s FROM %s WHERE label IN (%s)",
+                 paste(RUN_COLUMNS, collapse = ", "), RUNS_TABLE, placeholders),
     params = as.list(labels)))
-  list(predictions = predictions, runs = runs)
+  if (!setequal(runs$label, labels)) {
+    stop("backtest_runs has no row for label(s): ", paste(setdiff(labels, runs$label), collapse = ", "))
+  }
+  list(predictions = predictions, runs = runs[order(match(label, labels))])
 }
 
 
@@ -327,8 +381,10 @@ load_backtest_runs <- function(con, labels) {
 #' are compared on the same games and lines.
 common_graded_lines <- function(predictions) {
   graded <- predictions[!is.na(model_prob) & !is.na(outcome)]
+  empty <- setdiff(unique(predictions$label), graded$label)
+  if (length(empty) > 0) stop("no graded lines for label(s): ", paste(empty, collapse = ", "))
   graded[, line_key := paste(odds_id, market, line)]
-  n_labels <- uniqueN(graded$label)
+  n_labels <- uniqueN(predictions$label)
   keep <- graded[, .(n = uniqueN(label)), by = line_key][n == n_labels, line_key]
   graded <- graded[line_key %in% keep]
   graded[, market_group := fifelse(market %in% H1_MARKETS, market,
@@ -360,8 +416,8 @@ bootstrap_ratio_by_game <- function(game, numerator, denominator, draws = BOOTST
 }
 
 #' Sample centring per label: does the sample land on the parent line?
-#' cover_gap = sample's non-push cover rate of the parent spread minus the
-#' no-vig target; mean_cover_gap > 0 is a home lean, mean_over_gap > 0 an over lean.
+#' gap = sample's non-push cover (over) rate of the parent spread (total)
+#' minus the no-vig target; mean_gap > 0 is a home (over) lean.
 summarise_sample_centring <- function(graded) {
   per_game <- unique(graded[, .(label, odds_id, target_N, final_N, converged,
                                 sample_median_margin_miss, sample_median_total_miss,
@@ -390,26 +446,27 @@ summarise_accuracy <- function(graded) {
     book_logloss = if (all(is.na(book_fair_prob))) NA_real_ else mean(log_loss(book_fair_prob, outcome), na.rm = TRUE),
     mean_abs_vs_book = mean(abs(model_prob - book_fair_prob)),
     mean_model_minus_book = mean(model_prob - book_fair_prob)
-  ), by = .(label, market_group)][order(market_group, label)]
+  ), by = .(label, market_group)]
 }
 
 #' Flat bets at the best closing price where the model's edge >= threshold.
-#' One 1H line can give a bet on either side, never both.
+#' At most one side per line: when best prices across books let both sides
+#' clear it, only the bigger edge is bet. EV is per graded bet, so a line that
+#' pushed is neither staked nor counted (pushes are dropped upstream).
 flat_bets <- function(graded, edge_threshold = EDGE_THRESHOLD_DEFAULT) {
   h1 <- graded[market_group %in% H1_MARKETS]
   h1[, `:=`(side1_ev = model_prob * american_to_decimal(best_side1_american_odds) - 1,
             side2_ev = (1 - model_prob) * american_to_decimal(best_side2_american_odds) - 1)]
-  side1 <- h1[side1_ev >= edge_threshold, .(
+  side1 <- h1[side1_ev >= edge_threshold & side1_ev >= side2_ev, .(
     label, market_group, odds_id, claimed_edge = side1_ev,
     pnl = FLAT_STAKE * ifelse(outcome == 1, american_to_decimal(best_side1_american_odds) - 1, -1))]
-  side2 <- h1[side2_ev >= edge_threshold, .(
+  side2 <- h1[side2_ev >= edge_threshold & side2_ev > side1_ev, .(
     label, market_group, odds_id, claimed_edge = side2_ev,
     pnl = FLAT_STAKE * ifelse(outcome == 0, american_to_decimal(best_side2_american_odds) - 1, -1))]
   rbind(side1, side2)
 }
 
 summarise_flat_bets <- function(bets, by = c("label", "market_group")) {
-  if (nrow(bets) == 0) return(data.table())
   bets[, {
     interval <- bootstrap_ratio_by_game(odds_id, pnl, rep(FLAT_STAKE, .N))
     .(bets = .N, claimed_edge = mean(claimed_edge), roi = sum(pnl) / (FLAT_STAKE * .N),
@@ -431,9 +488,9 @@ compare_logloss <- function(graded, from, to) {
   }, by = market_group][order(market_group)]
 }
 
-#' Print the whole report for the labels in `predictions` (first label = baseline).
+#' Print the whole report; runs' label order sets the order (first = baseline).
 print_backtest_report <- function(predictions, runs, edge_threshold = EDGE_THRESHOLD_DEFAULT) {
-  labels <- unique(runs$label)
+  labels <- runs$label
   graded <- common_graded_lines(predictions)
   if (nrow(graded) == 0) stop("print_backtest_report: no graded lines common to all labels")
   order_labels <- function(dt) if ("label" %in% names(dt)) dt[order(match(label, labels))] else dt
@@ -451,9 +508,13 @@ print_backtest_report <- function(predictions, runs, edge_threshold = EDGE_THRES
     print(rbindlist(lapply(labels[-1], function(l) compare_logloss(graded, labels[1], l))), digits = 3)
   }
   bets <- flat_bets(graded, edge_threshold)
-  cat(sprintf("\n== Flat $%d bets at best closing price, claimed edge >= %.0f%% (1H) ==\n",
+  cat(sprintf("\n== Flat $%d bets at best closing price, claimed edge >= %.1f%% (1H) ==\n",
               FLAT_STAKE, 100 * edge_threshold))
-  print(order_labels(summarise_flat_bets(bets))[order(market_group, match(label, labels))], digits = 3)
-  print(order_labels(summarise_flat_bets(bets, by = "label")), digits = 3)
+  if (nrow(bets) == 0) {
+    cat("no line cleared the edge threshold\n")
+  } else {
+    print(summarise_flat_bets(bets)[order(market_group, match(label, labels))], digits = 3)
+    print(order_labels(summarise_flat_bets(bets, by = "label")), digits = 3)
+  }
   invisible(graded)
 }
