@@ -12,6 +12,9 @@ library(parallel)
 # Source Tools.R from worktree (has bet_to_leg, multivariate_kelly, etc.)
 WORKTREE_TOOLS <- "~/NFLWork/.claude/worktrees/correlation-kelly/Answer Keys/Tools.R"
 source(WORKTREE_TOOLS)
+if (!exists("walk_forward_training_set")) {
+  stop(WORKTREE_TOOLS, " has no walk_forward_training_set(); rebase that worktree on main")
+}
 
 # =============================================================================
 # CONFIGURATION
@@ -199,6 +202,8 @@ games_with_derivs <- unique(c(
   ml_h1$event_id, ml_h2$event_id
 ))
 DT_test <- DT %>% filter(odds_id %in% games_with_derivs)
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 cat("Games with derivative odds:", nrow(DT_test), "\n")
 
 if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
@@ -214,8 +219,7 @@ if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
 disp <- compute_dispersion(DT, moneyline = FALSE, spread_col = "home_spread", total_col = "total_line")
 ss <- disp$ss
 st <- disp$st
-N <- round(nrow(DT) * SAMPLE_PCT, 0)
-cat("Sample size N:", N, "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of each test game's prior history\n\n")
 
 # =============================================================================
 # WORKER FUNCTION (processes a single game, returns predictions + sample)
@@ -236,12 +240,13 @@ process_single_game <- function(test_id) {
 
   DT_train <- walk_forward_training_set(DT, test_game$game_date)
   if (is.null(DT_train)) return(NULL)
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
 
   sample_result <- tryCatch({
     run_answer_key_sample(
       id = test_id, parent_spread = parent_spread, parent_total = parent_total,
       target_cover = target_cover, target_over = target_over,
-      DT = DT_train, ss = ss, st = st, N = N, use_spread_line = TRUE
+      DT = DT_train, ss = ss, st = st, N = N_game, use_spread_line = TRUE
     )
   }, error = function(e) NULL)
 
@@ -377,7 +382,7 @@ start_time <- Sys.time()
 cl <- makeCluster(N_CORES)
 clusterExport(cl, c("DT", "DT_test", "spreads_h1", "spreads_h2",
                      "totals_h1", "totals_h2", "ml_h1", "ml_h2",
-                     "ss", "st", "N", "devig_pair", "process_single_game",
+                     "ss", "st", "SAMPLE_PCT", "devig_pair", "process_single_game",
                      "american_to_prob", "WORKTREE_TOOLS"))
 clusterEvalQ(cl, {
   library(data.table)

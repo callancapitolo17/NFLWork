@@ -115,6 +115,8 @@ SAMPLE_PCT <- 0.05   # Use 5% sample instead of 10% (faster)
 if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT)) {
   set.seed(42)  # For reproducibility
   all_game_ids <- unique(DT$game_id)
+  # Sample only games with enough walk-forward history, so all N_TEST_GAMES get priced
+  all_game_ids <- all_game_ids[has_walk_forward_history(DT, DT$game_date[match(all_game_ids, DT$game_id)])]
   test_ids <- sample(all_game_ids, min(N_TEST_GAMES, length(all_game_ids)))
   cat("Testing on random sample of", length(test_ids), "games (out of", nrow(DT), ")\n\n")
 } else {
@@ -139,7 +141,7 @@ cbb_config <- list(
   )
 )
 
-# Run the backtest - uses FULL dataset for training, but only tests subset
+# Run the backtest - each test game trains only on games dated before it
 results <- run_derivative_backtest(
   pbp_data = DT,
   sport_config = cbb_config,

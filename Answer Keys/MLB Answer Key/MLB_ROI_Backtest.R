@@ -205,6 +205,8 @@ cat("  F5 moneylines:", nrow(ml_f5), "\n")
 # Games that have F5 derivative odds
 games_with_derivs <- unique(c(spreads_f5$game_pk, totals_f5$game_pk, ml_f5$game_pk))
 DT_test <- DT[DT$game_pk %in% games_with_derivs, ]
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 cat("\nGames with F5 odds:", nrow(DT_test), "\n")
 
 if (nrow(DT_test) == 0) {
@@ -226,9 +228,8 @@ if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
 disp <- compute_dispersion(DT, moneyline = TRUE)
 ss <- disp$ss
 st <- disp$st
-N <- round(nrow(DT) * SAMPLE_PCT, 0)
 
-cat("Sample size N:", N, "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of each test game's prior history\n\n")
 
 # =============================================================================
 # WORKER FUNCTION (processes a single game)
@@ -250,6 +251,7 @@ process_single_game <- function(test_id) {
 
   DT_train <- walk_forward_training_set(DT, test_game$game_date)
   if (is.null(DT_train)) return(NULL)
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
 
   sample_result <- tryCatch({
     run_answer_key_sample(
@@ -259,7 +261,7 @@ process_single_game <- function(test_id) {
       target_cover = target_cover,
       target_over = target_over,
       DT = DT_train,
-      ss = ss, st = st, N = N,
+      ss = ss, st = st, N = N_game,
       use_spread_line = FALSE  # CRITICAL for MLB: match on ML probability
     )
   }, error = function(e) NULL)
@@ -393,7 +395,7 @@ start_time <- Sys.time()
 cl <- makeCluster(N_CORES)
 
 clusterExport(cl, c("DT", "DT_test", "spreads_f5", "totals_f5", "ml_f5",
-                    "ss", "st", "N", "devig_pair", "process_single_game",
+                    "ss", "st", "SAMPLE_PCT", "devig_pair", "process_single_game",
                     "american_to_prob"))
 
 clusterEvalQ(cl, {

@@ -168,6 +168,8 @@ games_with_derivs <- unique(c(spreads_h1$event_id, totals_h1$event_id, ml_h1$eve
 
 # Match to our PBP data via odds_id
 DT_test <- DT %>% filter(odds_id %in% games_with_derivs)
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 cat("Games with derivative odds:", nrow(DT_test), "\n")
 
 # Sample if needed
@@ -184,9 +186,8 @@ if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
 disp <- compute_dispersion(DT, moneyline = FALSE, spread_col = "home_spread", total_col = "total_line")
 ss <- disp$ss
 st <- disp$st
-N <- round(nrow(DT) * SAMPLE_PCT, 0)
 
-cat("Sample size N:", N, "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of each test game's prior history\n\n")
 
 # Run predictions
 all_results <- list()
@@ -208,6 +209,7 @@ for (i in seq_along(test_ids)) {
 
   DT_train <- walk_forward_training_set(DT, test_game$game_date)
   if (is.null(DT_train)) next
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
 
   # Run answer key sampling
   sample_result <- tryCatch({
@@ -218,7 +220,7 @@ for (i in seq_along(test_ids)) {
       target_cover = target_cover,
       target_over = target_over,
       DT = DT_train,
-      ss = ss, st = st, N = N,
+      ss = ss, st = st, N = N_game,
       use_spread_line = TRUE
     )
   }, error = function(e) NULL)

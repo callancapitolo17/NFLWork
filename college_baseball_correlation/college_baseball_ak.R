@@ -1,5 +1,5 @@
 # College Baseball Answer Key Backtest
-# Leave-one-out validation: verify correlation factors match expectations
+# Walk-forward validation: verify correlation factors match expectations
 # Medium totals (12-13.5) should show CFs of 1.11-1.17 for positively-correlated combos
 
 setwd("~/NFLWork/Answer Keys")
@@ -42,6 +42,7 @@ matched <- dbGetQuery(con, "
   )
   SELECT
     g.game_id,
+    g.date AS game_date,
     g.home_team, g.away_team,
     g.home_score, g.away_score,
     g.total_runs, g.home_margin,
@@ -82,6 +83,7 @@ probs <- devig_ml(matched$home_ml, matched$away_ml)
 
 DT <- data.table(
   id = matched$game_id,
+  game_date = as.Date(matched$game_date),
   home_team = matched$home_team,
   away_team = matched$away_team,
   home_spread = qlogis(probs$p_home),  # logit of P(home) as pseudo-spread
@@ -105,23 +107,23 @@ ss <- disp$ss
 st <- disp$st
 cat(sprintf("Dispersion: ss=%.2f, st=%.2f\n", ss, st))
 
-N <- max(50, round(nrow(DT) * 0.05))
-cat(sprintf("Sample size N=%d (5%% of pool)\n", N))
+cat("Sample size N = 5% of each test game's prior history (min 50)\n")
 
 # =============================================================================
-# LEAVE-ONE-OUT BACKTEST
+# WALK-FORWARD BACKTEST
 # =============================================================================
 
-cat("\nRunning leave-one-out backtest...\n")
+cat("\nRunning walk-forward backtest...\n")
 
 results <- list()
 n_total <- nrow(DT)
 t0 <- Sys.time()
 
 for (i in seq_len(n_total)) {
-  # Leave this game out
   game <- DT[i, ]
-  pool <- DT[-i, ]
+  pool <- walk_forward_training_set(DT, game$game_date)
+  if (is.null(pool)) next
+  N_game <- max(50, round(nrow(pool) * 0.05))
 
   # Generate sample for this game's line
   sample_result <- tryCatch({
@@ -132,7 +134,7 @@ for (i in seq_len(n_total)) {
       target_cover = 0.5,  # Neutral (no prior on who wins)
       target_over = 0.5,   # Neutral
       DT = pool,
-      ss = ss, st = st, N = N,
+      ss = ss, st = st, N = N_game,
       use_spread_line = FALSE,
       max_iter_mean = 300,
       tol_mean = 0.01,
