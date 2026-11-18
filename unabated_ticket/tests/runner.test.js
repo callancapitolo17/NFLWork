@@ -3576,3 +3576,130 @@ test("kalshi stream: the open Ticket's refresh reads its Kalshi line off the str
   assert.equal(runner.health().livePrices.kalshiStreamParity.checked, 0);
   runner.stop();
 });
+
+// ---- the stream pass (liveStreamPass, every 10 s between live price passes) ----
+
+// A live runner on Kalshi's and Novig's streams whose clock and books the test moves.
+function streamPassRunner() {
+  const clock = { now: TAKER_NOW };
+  // streamsDown: both streams answer an error for every market, as a silent or reconnecting stream does.
+  const prices = { kalshiNo: "0.4300", novigDuq: "0.445", streamsDown: false };
+  const kalshi = kalshiFetch();
+  const novig = novigFetch();
+  const service = takerService({
+    "/bets.json": novigTakerBetsBody(), "/settings.json": LIVE_SETTINGS,
+    "/kalshi_books.json": (body) => (prices.streamsDown
+      ? { stream: { connected: false, error: "silent 25 s" }, books: Object.fromEntries(body.tickers.map((ticker) => [ticker, { error: "Kalshi's stream is down" }])) }
+      : kalshiStreamBooks(prices.kalshiNo)(body)),
+    "/novig_books.json": (body) => (prices.streamsDown
+      ? { stream: { connected: false, error: "silent 25 s" }, books: Object.fromEntries(body.marketIds.map((marketId) => [marketId, { error: "Novig's stream is down" }])) }
+      : novigStreamBooks({ orders: { [NOVIG_DUQ_OUTCOME]: [{ order: "r1", price: prices.novigDuq, qty: 500000 }], [NOVIG_WSU_OUTCOME]: [] } })(body)),
+  });
+  const runner = runnerLib.createRunner({
+    fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers, ...quiet,
+  });
+  return { runner, service, kalshi, novig, clock, prices };
+}
+
+test("stream pass: Kalshi and Novig lines are reread off the streams 10 s later, with no Kalshi or Novig request", async () => {
+  const { runner, kalshi, novig, clock, prices } = streamPassRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const kalshiCallsBefore = kalshi.calls.length;
+  const novigCallsBefore = novig.calls.length;
+  prices.kalshiNo = "0.4100";
+  prices.novigDuq = "0.450";
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  assert.equal(kalshi.calls.length, kalshiCallsBefore, "no Kalshi REST read: no market check, book or parity read");
+  assert.equal(novig.calls.length, novigCallsBefore, "no keyed Novig read: the held catalog, no REST book");
+  const rows = edgeRowsOf(runner.edgesPayload());
+  const kalshiRow = rows.find((row) => WSU36_KALSHI_KEY_RE.test(row.key));
+  // 59c ask plus Kalshi's 7% x p x (1 - p) fee.
+  assert.equal(kalshiRow.sourcePrice, Math.round((0.59 + 0.07 * 0.59 * 0.41) * 1e6) / 1e6);
+  assert.equal(kalshiRow.liveCheck, "live");
+  const novigRow = rows.find((row) => row.book.id === 89);
+  assert.equal(novigRow.sourcePrice, 0.55);
+  const reads = runner.livePricesPayload().reads;
+  assert.equal(reads[kalshiRow.key].readAtMs, clock.now);
+  assert.equal(reads[novigRow.key].readAtMs, clock.now);
+  const streamPass = runner.health().livePrices.streamPass;
+  assert.equal(streamPass.error, null);
+  assert.equal(streamPass.byVenue.kalshi.live >= 1, true);
+  assert.equal(streamPass.byVenue.novig.live, 1);
+  runner.stop();
+});
+
+test("stream pass: its reads do not count as the live price pass's, so that pass still rereads on its own clock (parity check included)", async () => {
+  const { runner, kalshi, clock } = streamPassRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const parityBefore = runner.health().livePrices.kalshiStreamParity.checked;
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  clock.now += 15 * 1000;
+  const bookReadsBefore = kalshiBookReadsOf(kalshi, TAKER_TICKER);
+  await runner.livePricePass();
+  const health = runner.health().livePrices;
+  assert.equal(health.rows >= 2, true);
+  assert.equal(health.due, health.rows, "25 s after their last full read every line (Kalshi and Novig) is due, though the stream pass read them 15 s ago");
+  assert.equal(runner.health().livePrices.kalshiStreamParity.checked, parityBefore + 1);
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), bookReadsBefore + 1, "the parity check's one REST read");
+  runner.stop();
+});
+
+test("stream pass: before any live price pass it has no lines to read, and sends nothing", async () => {
+  const { runner, kalshi, novig, service } = streamPassRunner();
+  await runner.start();
+  const kalshiCallsBefore = kalshi.calls.length;
+  const novigCallsBefore = novig.calls.length;
+  await runner.liveStreamPass();
+  assert.equal(kalshi.calls.length, kalshiCallsBefore);
+  assert.equal(novig.calls.length, novigCallsBefore);
+  assert.deepEqual(runner.livePricesPayload().reads, {});
+  assert.equal(service.posts.some((post) => post.route === "/novig_books.json"), false, "no catalog held: no stream ask either");
+  runner.stop();
+});
+
+test("stream pass: a Polymarket US line whose contract was found is reread off the stream with no gateway read", async () => {
+  const poly = polymarketFetch();
+  const clock = { now: TAKER_NOW };
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS, "/polymarket_books.json": polymarketStreamBooks });
+  const runner = runnerLib.createRunner({
+    fetchImpl: polymarketUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY, betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.livePricePass();
+  const gatewayCallsBefore = poly.calls.length;
+  const streamAsksBefore = service.posts.filter((post) => post.route === "/polymarket_books.json").length;
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  assert.equal(poly.calls.length, gatewayCallsBefore, "no gateway read");
+  assert.equal(service.posts.filter((post) => post.route === "/polymarket_books.json").length, streamAsksBefore + 1);
+  const [, read] = Object.entries(runner.livePricesPayload().reads).find(([, entry]) => entry.venue === "polymarket_us");
+  assert.equal(read.readAtMs, clock.now);
+  runner.stop();
+});
+
+test("stream pass: with both streams down it reads no REST book, leaves the last reads standing and shows the error on /health", async () => {
+  const { runner, kalshi, novig, clock, prices } = streamPassRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const readsBefore = runner.livePricesPayload().reads;
+  const kalshiCallsBefore = kalshi.calls.length;
+  const novigCallsBefore = novig.calls.length;
+  prices.streamsDown = true;
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  assert.equal(kalshi.calls.length, kalshiCallsBefore, "no Kalshi REST book in place of the stream's");
+  assert.equal(novig.calls.length, novigCallsBefore, "no keyed Novig book in place of the stream's");
+  assert.deepEqual(runner.livePricesPayload().reads, readsBefore, "the last reads stand (and age out at 2 min)");
+  const byVenue = runner.health().livePrices.streamPass.byVenue;
+  assert.equal(byVenue.kalshi.unchecked >= 1, true);
+  assert.match(byVenue.kalshi.lastError, /stream is down/);
+  assert.equal(byVenue.novig.unchecked, 1);
+  assert.match(byVenue.novig.lastError, /stream is down/);
+  runner.stop();
+});
