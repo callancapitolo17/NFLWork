@@ -25,7 +25,7 @@ import uuid
 from typing import Hashable
 
 from mlb_sgp.betmgm_client import BetMGMClient
-from nfl_specials.books import NFL, BookGame, LegMarket, Outcome, TeamKey, next_game
+from nfl_specials.books import NFL, BookGame, LegMarket, Outcome, RequestPacer, TeamKey, next_game
 from nfl_specials.special_parser import Leg
 from nfl_specials.teams import ODDS_API_NAME_TO_ABBR
 
@@ -37,13 +37,18 @@ TOTAL_OPTION_RE = re.compile(r"^(Over|Under) (\d+(?:\.\d+)?)$")
 # "Seattle Seahawks -7.5" / "Los Angeles Chargers (+6)"
 OPTION_RE = re.compile(r"^(.+?)\s*\(?([+-]\d+(?:\.\d+)?)\)?\s*$")
 PRICED_STATE = "MarketUnsuspended"
+# No BetMGM limit has shown up at our volume, so no gap: its pacer only
+# stops it after a block.
+MIN_SECONDS_BETWEEN_PRICE_CALLS = 0.0
 
 
 class BetMgmBook:
     name = "BetMGM"
 
-    def __init__(self, league: str = NFL) -> None:
+    def __init__(self, league: str = NFL, pacer: RequestPacer | None = None) -> None:
+        """`pacer`: shared by every BetMgmBook of one refresh; None = its own."""
         self.league = league
+        self.pacer = pacer if pacer is not None else RequestPacer(self.name, MIN_SECONDS_BETWEEN_PRICE_CALLS)
         self.client = BetMGMClient()
         self._games = self._list_games()
         self._markets: dict[str, list[dict]] = {}
@@ -54,7 +59,7 @@ class BetMgmBook:
                f"&fixtureTypes=Standard&state=Latest&offerMapping=Filtered"
                f"&offerCategories=Gridable&fixtureCategories=Gridable"
                f"&sportIds={MGM_FOOTBALL_SPORT_ID}&skip=0&take=200&sortBy=Tags")
-        resp = self.client.session.get(url, timeout=60)
+        resp = self.pacer.guard(lambda: self.client.session.get(url, timeout=60), "fixture listing")
         if resp.status_code != 200:
             raise RuntimeError(f"BetMGM fixture listing returned HTTP {resp.status_code}")
         games = []
@@ -84,7 +89,7 @@ class BetMgmBook:
         if game.book_event_id not in self._markets:
             url = (f"{self.client._base}/bettingoffer/fixtures?{self.client._common_q()}"
                    f"&fixtureIds={game.book_event_id}&offerMapping=All&state=Latest")
-            resp = self.client.session.get(url, timeout=60)
+            resp = self.pacer.guard(lambda: self.client.session.get(url, timeout=60), "market tree")
             if resp.status_code != 200:
                 raise RuntimeError(f"BetMGM market tree {game.book_event_id} returned HTTP {resp.status_code}")
             fixtures = resp.json().get("fixtures") or [{}]
@@ -118,7 +123,7 @@ class BetMgmBook:
              "useLiveFallback": False, "pickGroupId": pick_group}
             for market_id, option_id in refs]}
         url = f"{self.client._base}/bettingoffer/picks?{self.client._common_q()}"
-        resp = self.client.session.post(url, json=body, timeout=30)
+        resp = self.pacer.call(lambda: self.client.session.post(url, json=body, timeout=30), "picks")
         if resp.status_code != 200:
             raise RuntimeError(f"BetMGM picks returned HTTP {resp.status_code}: {resp.text[:200]}")
         groups = resp.json().get("betBuilderPricingGroups") or {}

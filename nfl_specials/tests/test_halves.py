@@ -8,6 +8,7 @@ import pytest
 from scipy.stats import norm
 
 from nfl_specials import halves_board
+from nfl_specials.board import new_book_turns, new_fd_price_window
 from nfl_specials.board import Board, FectaLine, Sizing
 from nfl_specials.books import BookGame, LegMarket, Outcome
 from nfl_specials.halves_board import (HalfBoard, HalfBookFair, HalfLine, HeldHalfParlay,
@@ -219,7 +220,9 @@ class ThreeWayBook:
         return LegMarket.single(over, (over, under))
 
     def price(self, game, refs):
-        return 1.0 / norm.cdf(norm.ppf(self.TRUE[refs]) + 0.1)
+        # A parlay is a set of legs: price_partition may send the spread last.
+        spread_first = refs if refs[0] in ("away", "tie", "home") else refs[::-1]
+        return 1.0 / norm.cdf(norm.ppf(self.TRUE[spread_first]) + 0.1)
 
 
 def test_a_three_way_widened_spread_puts_the_tie_on_the_plus_half_side():
@@ -298,7 +301,7 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
         def games(self):
             return [BOOK_GAME]
 
-    monkeypatch.setattr(halves_board, "open_books", lambda: (
+    monkeypatch.setattr(halves_board, "open_books", lambda _turns: (
         {("FanDuel", "NFL"): ListedBook("FanDuel", TRUE_CORNERS)}, {"FanDuel NFL": "ok"}))
 
     class MemoryStore:
@@ -308,7 +311,7 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
             self.rows += rows
 
     store = MemoryStore()
-    board = halves_board.refresh_halves(store, lambda _board: None)
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns(new_fd_price_window()))
     assert [(l.game.wz_game_id, l.status, l.note) for l in board.lines] == [
         (6118382, "priced", None), (2, "unpriced", "whole-number line priced by FanDuel only; needs 2 books")]
     assert board.lines[1].fair_prob("home_under") is None
@@ -318,6 +321,153 @@ def test_refresh_prices_whole_numbers_too_and_each_partition_once(monkeypatch):
     assert board.progress_done == board.progress_total == 2
     assert sorted({row["book"] for row in store.rows}) == ["FanDuel", "Wagerzon"]
     assert len(store.rows) == 16
+
+
+def test_wagerzon_previews_run_with_the_books_for_listed_games_only(monkeypatch):
+    """Previews start with the book lanes (the book's price calls wait for
+    them) and skip games no book lists."""
+    import threading
+    listed, unlisted = _game(), _game(wz_game_id=3, away="DAL", home="PHI")
+    monkeypatch.setattr(halves_board.wz_halves, "fetch_half_games", lambda: [listed, unlisted])
+    book_may_finish = threading.Event()
+    previewed = []
+
+    def price_corners(games):
+        previewed.extend(g.wz_game_id for g in games)
+        book_may_finish.set()       # the book lane is still pricing: it waits for this
+        return {(g.wz_game_id, c): WzParlayPrice(3.64) for g in games for c in CORNERS}
+
+    monkeypatch.setattr(halves_board.wz_halves, "price_corners", price_corners)
+
+    class SlowListedBook(CorrelatedBook):
+        def games(self):
+            return [BOOK_GAME]
+
+        def price(self, game, refs):
+            assert book_may_finish.wait(timeout=5), "previews never ran while the book priced"
+            return super().price(game, refs)
+
+    class MemoryStore:
+        rows: list = []
+
+        def append_half_quotes(self, rows):
+            self.rows += rows
+
+    store = MemoryStore()
+    book = SlowListedBook("FanDuel", TRUE_CORNERS)
+    monkeypatch.setattr(halves_board, "open_books", lambda _turns: ({("FanDuel", "NFL"): book}, {"FanDuel NFL": "ok"}))
+    board = halves_board.refresh_halves(store, lambda _board: None, new_book_turns(new_fd_price_window()))
+    assert previewed == [listed.wz_game_id]
+    assert [line.status for line in board.lines] == ["priced", "unpriced"]
+    wz_rows = [r for r in store.rows if r["book"] == "Wagerzon"]
+    assert [r["wz_game_id"] for r in wz_rows] == [listed.wz_game_id] * 4
+    assert all(r["wz_decimal"] == 3.64 for r in wz_rows)
+
+
+def test_a_failed_wagerzon_preview_fails_the_1h_board(monkeypatch):
+    monkeypatch.setattr(halves_board.wz_halves, "fetch_half_games", lambda: [_game()])
+
+    def preview_down(games):
+        raise ConnectionError("Wagerzon preview timed out")
+
+    monkeypatch.setattr(halves_board.wz_halves, "price_corners", preview_down)
+
+    class ListedBook(CorrelatedBook):
+        def games(self):
+            return [BOOK_GAME]
+
+    monkeypatch.setattr(halves_board, "open_books", lambda _turns: (
+        {("FanDuel", "NFL"): ListedBook("FanDuel", TRUE_CORNERS)}, {"FanDuel NFL": "ok"}))
+
+    class MemoryStore:
+        def append_half_quotes(self, rows):
+            pass
+
+    with pytest.raises(ConnectionError, match="preview timed out"):
+        halves_board.refresh_halves(MemoryStore(), lambda _board: None, new_book_turns(new_fd_price_window()))
+
+
+def test_both_boards_give_each_book_one_turn_at_a_time(monkeypatch):
+    """The fecta and 1H boards price at once; a book's lock keeps its work
+    one game or special at a time across both, and both boards' DraftKings
+    books get the refresh's one pacer."""
+    import threading
+    import time as time_module
+    from nfl_specials import board as board_module
+    turns = new_book_turns(new_fd_price_window())
+    inside = {name: 0 for name in turns.locks}
+    most_inside = {name: 0 for name in turns.locks}
+    count_lock = threading.Lock()
+
+    def busy(name):
+        with count_lock:
+            inside[name] += 1
+            most_inside[name] = max(most_inside[name], inside[name])
+        time_module.sleep(0.01)
+        with count_lock:
+            inside[name] -= 1
+
+    def fecta_lane_task(book, line):
+        busy(book.name)
+        return board_module.BookFair(book.name, None, None, None, 0, reason="test")
+
+    class Named:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(halves_board, "price_half_at_book",
+                        lambda book, book_game, game: (busy(book.name), HalfBookFair(book.name, None, None, "t"))[1])
+    monkeypatch.setattr(board_module, "_price_partition", fecta_lane_task)
+    half_lines = [halves_board.HalfLine(_game(wz_game_id=i), "pricing") for i in range(6)]
+    fecta_lines = [object() for _ in range(6)]
+
+    class NoStore:
+        def append_quotes(self, rows):
+            pass
+
+        def append_half_quotes(self, rows):
+            pass
+
+    monkeypatch.setattr(board_module, "_quote_row", lambda *args, **kwargs: {})
+    fake_fecta_board = board_module.Board(datetime.now(timezone.utc), None, [], {})
+    fake_fecta_board.book_progress = {name: {"done": 0, "total": 6} for name in turns.locks}
+    fake_half_board = halves_board.HalfBoard(datetime.now(timezone.utc), None, half_lines, {})
+
+    class FectaLineStub:
+        book_fairs: dict
+
+        def __init__(self):
+            self.book_fairs = {}
+
+        def is_superfecta(self):
+            return False
+
+    stubs = [FectaLineStub() for _ in fecta_lines]
+    threads = []
+    for name in turns.locks:
+        book = Named(name)
+        threads.append(threading.Thread(target=board_module._price_lane, args=(
+            name, book, [("partition", stub) for stub in stubs], fake_fecta_board, threading.Lock(),
+            turns.locks[name], NoStore(), lambda _b: None)))
+        threads.append(threading.Thread(target=halves_board._price_lane, args=(
+            name, [(book, BOOK_GAME, line) for line in half_lines], fake_half_board, threading.Lock(),
+            turns.locks[name], NoStore(), lambda _b: None)))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert most_inside == {name: 1 for name in turns.locks}
+
+    opened = {}
+    monkeypatch.setattr(halves_board, "DraftKingsBook", lambda **kwargs: opened.setdefault(kwargs["league"], kwargs))
+    fd_pacers, mgm_pacers = [], []
+    monkeypatch.setattr(halves_board, "FanDuelBook", lambda league, pacer: fd_pacers.append(pacer))
+    monkeypatch.setattr(halves_board, "BetMgmBook", lambda league, pacer: mgm_pacers.append(pacer))
+    halves_board.open_books(turns)
+    assert {league: kwargs["pacer"] for league, kwargs in opened.items()} == {
+        "NFL": turns.pacers["DraftKings"], "CFB": turns.pacers["DraftKings"]}
+    assert fd_pacers == [turns.pacers["FanDuel"]] * 2
+    assert mgm_pacers == [turns.pacers["BetMGM"]] * 2
 
 
 # --- placing -----------------------------------------------------------------------
@@ -441,16 +591,39 @@ def test_place_refuses_a_changed_price_a_big_stake_and_too_much_cash(half_app):
 
 
 def test_a_failed_1h_refresh_clears_the_board(half_app, monkeypatch):
-    monkeypatch.setattr(app_module, "refresh_board", lambda store, publish: None)
+    monkeypatch.setattr(app_module, "refresh_board", lambda store, publish, turns: None)
     monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
 
-    def broken(store, publish):
+    def broken(store, publish, turns):
         raise app_module.wz.CatalogUnavailable("catalog did not load")
 
     monkeypatch.setattr(app_module, "refresh_halves", broken)
     half_app._run_refresh()
     assert half_app._halves is None
     assert half_app._last_error == "1H parlays: CatalogUnavailable: catalog did not load"
+
+
+def test_refresh_prices_both_boards_at_once_on_shared_turns(half_app, monkeypatch):
+    """Each board waits for the other to start: run one after the other, this
+    would time out. Both get the same BookTurns, so a book stays one request at a time."""
+    import threading
+    started = {"fectas": threading.Event(), "1H parlays": threading.Event()}
+    turns_seen = []
+
+    def board(name, other):
+        def run(store, publish, turns):
+            turns_seen.append(turns)
+            started[name].set()
+            if not started[other].wait(timeout=5):
+                raise TimeoutError(f"{other} never started while {name} ran")
+        return run
+
+    monkeypatch.setattr(app_module, "refresh_board", board("fectas", "1H parlays"))
+    monkeypatch.setattr(app_module, "refresh_halves", board("1H parlays", "fectas"))
+    monkeypatch.setattr(app_module.wz, "read_balances", lambda: {})
+    half_app._run_refresh()
+    assert half_app._last_error is None
+    assert len(turns_seen) == 2 and turns_seen[0] is turns_seen[1]
 
 
 def test_a_failure_before_the_submit_is_a_refusal_not_a_maybe(placer, monkeypatch):

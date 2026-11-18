@@ -194,7 +194,9 @@ def test_a_three_way_half_point_spread_adds_the_tie_cells():
             return LegMarket.single(over, (over, under))
 
         def price(self, book_game, refs):
-            return 1.0 / norm.cdf(norm.ppf(three_way[refs]) + 0.1)
+            # A parlay is a set of legs: price_partition may send the spread last.
+            spread_first = refs if refs[0] in ("away", "tie", "home") else refs[::-1]
+            return 1.0 / norm.cdf(norm.ppf(three_way[spread_first]) + 0.1)
 
     fair = price_half_at_book(ThreeWayBook(), BOOK_GAME, _game(away_spread=-0.5, total=26.5))
     assert fair.corner_fairs == pytest.approx({"away_over": 0.25, "away_under": 0.20,

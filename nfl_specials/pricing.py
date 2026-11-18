@@ -87,9 +87,14 @@ def price_partition(book: SgpBook, game: BookGame, leg_markets: list[LegMarket])
     and probit-devig across them. A declined cell or an implied sum outside
     [1, 1 + PARTITION_OVERROUND_PER_LEG x legs] prices nothing."""
     cells = tuple(itertools.product(*(m.group for m in leg_markets)))
+    # The leg with the most outcomes goes LAST in each request: DraftKings
+    # prices every outcome of the last leg in one request, so a 3 x 3 x 2
+    # partition costs 6 requests instead of 9. FanDuel and BetMGM price
+    # the legs as a set, so the order changes nothing there.
+    request_order = sorted(range(len(leg_markets)), key=lambda index: len(leg_markets[index].group))
     implied = []
     for cell in cells:
-        decimal = book.price(game, tuple(outcome.ref for outcome in cell))
+        decimal = book.price(game, tuple(cell[index].ref for index in request_order))
         if decimal is None:
             labels = " + ".join(outcome.label for outcome in cell)
             return PartitionFair(cells, None, tuple(implied), None, reason=f"declined cell: {labels}")

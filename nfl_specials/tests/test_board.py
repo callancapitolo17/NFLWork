@@ -139,7 +139,7 @@ def _patch_refresh(monkeypatch, descriptions: list[str]) -> None:
     specials = [WzSpecial(wz_game_id=i, rotation=i, description=d, wz_american=400,
                           week_date=date(2098, 12, 31)) for i, d in enumerate(descriptions, start=1)]
     books = {"FanDuel": object(), "BetMGM": object()}
-    monkeypatch.setattr(board_module, "open_books", lambda: (books, {name: "ok" for name in books}))
+    monkeypatch.setattr(board_module, "open_books", lambda _turns: (books, {name: "ok" for name in books}))
     monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
     monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
     monkeypatch.setattr(board_module, "_price_partition",
@@ -150,7 +150,7 @@ def _patch_refresh(monkeypatch, descriptions: list[str]) -> None:
 def test_refresh_prices_every_book_in_its_own_lane(monkeypatch):
     _patch_refresh(monkeypatch, ["CHARGERS TRIFECTA (1Q, 1H & GM)", "SEAHAWKS TRIFECTA (1Q, 1H & GM)"])
     store = _FakeStore()
-    board = refresh_board(store, lambda snapshot: None)
+    board = refresh_board(store, lambda snapshot: None, board_module.new_book_turns(board_module.new_fd_price_window()))
     assert board.progress_done == board.progress_total == 4
     assert sorted((row["book"], row["rotation"]) for row in store.rows) == [
         ("BetMGM", 1), ("BetMGM", 2), ("FanDuel", 1), ("FanDuel", 2)]
@@ -160,7 +160,7 @@ def test_refresh_prices_every_book_in_its_own_lane(monkeypatch):
 def test_a_crashed_lane_fails_the_refresh(monkeypatch):
     _patch_refresh(monkeypatch, ["CHARGERS TRIFECTA (1Q, 1H & GM)"])
     with pytest.raises(RuntimeError, match="BetMGM pricing lane crashed"):
-        refresh_board(_FakeStore(fail_for_book="BetMGM"), lambda snapshot: None)
+        refresh_board(_FakeStore(fail_for_book="BetMGM"), lambda snapshot: None, board_module.new_book_turns(board_module.new_fd_price_window()))
 
 
 def test_refresh_counts_progress_per_book(monkeypatch):
@@ -168,7 +168,7 @@ def test_refresh_counts_progress_per_book(monkeypatch):
                 for r, d in [(1, "CHARGERS TRIFECTA (1Q, 1H & GM)"),
                              (2, "CHARGERS SUPERFECTA (SCR 1ST, 1Q, 1H & GM)")]]
     books = {"FanDuel": object(), "BetMGM": object(), "DraftKings": object()}
-    monkeypatch.setattr(board_module, "open_books", lambda: (books, {name: "ok" for name in books}))
+    monkeypatch.setattr(board_module, "open_books", lambda _turns: (books, {name: "ok" for name in books}))
     monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
     monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
     monkeypatch.setattr(board_module, "_price_partition",
@@ -181,7 +181,7 @@ def test_refresh_counts_progress_per_book(monkeypatch):
             pass
 
     published = []
-    board_module.refresh_board(NoStore(), published.append)
+    board_module.refresh_board(NoStore(), published.append, board_module.new_book_turns(board_module.new_fd_price_window()))
     # Trifecta at FD + MGM; superfecta's partition + scores-first share at DK.
     assert published[0].book_progress == {"FanDuel": {"done": 0, "total": 1}, "BetMGM": {"done": 0, "total": 1},
                                            "DraftKings": {"done": 0, "total": 2}}
@@ -201,7 +201,7 @@ def _refresh_with_draftkings_down(monkeypatch, books: dict, fairs: dict[str, flo
     specials = [WzSpecial(wz_game_id=1, rotation=1, description=SUPERFECTA, wz_american=900,
                           week_date=date(2098, 12, 31))]
     status = {name: "ok" for name in books} | {"DraftKings": "error: HTTP 403"}
-    monkeypatch.setattr(board_module, "open_books", lambda: (books, status))
+    monkeypatch.setattr(board_module, "open_books", lambda _turns: (books, status))
     monkeypatch.setattr(board_module.wz, "fetch_fecta_specials", lambda: specials)
     monkeypatch.setattr(board_module, "_locate_game", lambda fecta, special, books: GAME)
 
@@ -214,7 +214,7 @@ def _refresh_with_draftkings_down(monkeypatch, books: dict, fairs: dict[str, flo
 
     monkeypatch.setattr(board_module, "_price_partition", price_partition)
     store = _FakeStore()
-    return refresh_board(store, lambda snapshot: None), store
+    return refresh_board(store, lambda snapshot: None, board_module.new_book_turns(board_module.new_fd_price_window())), store
 
 
 def _expected_row(board, *, book, quote_kind, fair_prob=None, overround=None, n_cells, sf_share=None, reason=None):
@@ -332,7 +332,20 @@ def test_books_open_with_draftkings_through_the_configured_proxy(monkeypatch):
     monkeypatch.setattr(board_module, "BetMgmBook", fake("BetMGM"))
     monkeypatch.setattr(board_module, "DraftKingsBook", fake("DraftKings"))
     monkeypatch.setattr(board_module.config, "DK_PROXY_URL", "http://100.120.136.59:8097")
-    books, status = board_module.open_books()
+    turns = board_module.new_book_turns(board_module.new_fd_price_window())
+    books, status = board_module.open_books(turns)
     assert books == {"FanDuel": "FanDuel", "BetMGM": "BetMGM", "DraftKings": "DraftKings"}
     assert status == {"FanDuel": "ok", "BetMGM": "ok", "DraftKings": "ok"}
-    assert opened == {"FanDuel": {}, "BetMGM": {}, "DraftKings": {"proxy_url": "http://100.120.136.59:8097"}}
+    assert opened == {"FanDuel": {"pacer": turns.pacers["FanDuel"]}, "BetMGM": {"pacer": turns.pacers["BetMGM"]},
+                      "DraftKings": {"proxy_url": "http://100.120.136.59:8097", "pacer": turns.pacers["DraftKings"]}}
+
+
+def test_a_line_still_pricing_has_no_fair_and_no_stake():
+    """FanDuel's budget can hold its fair back for minutes; the books that
+    answered first must not size a stake that skips the worst case."""
+    from dataclasses import replace
+    line = _line(1, "SEAHAWKS TRIFECTA (1Q, 1H & GM)", 900, 0.15)
+    pricing = replace(line, status="pricing")
+    assert pricing.answered_fair() == pytest.approx(0.15) and pricing.fair_prob() is None
+    assert size_board(_board(pricing), 5000, 0.25, None)[0].recommended_stake == 0.0
+    assert size_board(_board(line), 5000, 0.25, None)[0].recommended_stake > 0

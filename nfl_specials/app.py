@@ -30,11 +30,13 @@ import json
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from nfl_specials import config, wz, wz_halves
-from nfl_specials.board import Board, HeldPlacement, refresh_board, size_board
+from nfl_specials.board import (Board, HeldPlacement, new_book_turns, new_fd_price_window, refresh_board,
+                                size_board)
 from nfl_specials.books import parse_start
 from nfl_specials.halves_board import (CfbSlate, HalfBoard, HeldHalfParlay, cfb_slates, conservative_american,
                                        refresh_halves, size_half_board)
@@ -67,6 +69,9 @@ class SpecialsApp:
         self._board: Board | None = None
         self._halves: HalfBoard | None = None
         self._refreshing = False
+        # True from a refresh's start until its fecta board is done (or failed):
+        # 1H stakes wait for it (_cash_for_halves).
+        self._fectas_pricing = False
         self._last_error: str | None = None
         self._place_lock = threading.Lock()   # one Wagerzon submission at a time
         # Wagerzon account -> cash 'available' (the budget), read when a
@@ -75,6 +80,9 @@ class SpecialsApp:
         # Wagerzon account -> free play balance (the budget with Use free play
         # on), read and lowered the same way by free play placements.
         self._free_play: dict[str, float | None] = {}
+        # FanDuel's implyBets budget (fd_book.FD_PRICE_CALLS_PER_WINDOW): its
+        # WAF window spans refreshes, so the app keeps it.
+        self.fd_price_window = new_fd_price_window()
 
     # --- refresh -----------------------------------------------------------
     def publish(self, board: Board) -> None:
@@ -91,6 +99,7 @@ class SpecialsApp:
             if self._refreshing:
                 return False
             self._refreshing = True
+            self._fectas_pricing = True
         threading.Thread(target=self._run_refresh, name="refresh", daemon=True).start()
         return True
 
@@ -101,30 +110,46 @@ class SpecialsApp:
             self._free_play = {label: pots.free_play for label, pots in balances.items()}
 
     def _run_refresh(self) -> None:
-        """Fectas, then 1H parlays (one after the other, so each book's
-        request pacing holds); one board failing does not stop the other."""
+        """Fectas and 1H parlays side by side, on one BookTurns so each book
+        still answers one request at a time (and DraftKings' pacing holds)
+        across both; one board failing does not stop the other."""
         try:
             self._read_balances()
-            errors = []
-            for name, run in (("fectas", lambda: refresh_board(self.store, self.publish)),
-                              ("1H parlays", lambda: refresh_halves(self.store, self.publish_halves))):
+            turns = new_book_turns(self.fd_price_window)
+            errors: dict[str, str] = {}
+
+            def run_board(name: str, run: Callable[[], object]) -> None:
                 try:
                     run()
                 except Exception as exc:
                     log.exception("%s refresh failed", name)
-                    errors.append(f"{name}: {type(exc).__name__}: {exc}")
+                    errors[name] = f"{name}: {type(exc).__name__}: {exc}"
                     if name == "1H parlays":
                         # Its old fairs must not stay placeable after a failed refresh.
                         with self._lock:
                             self._halves = None
+                finally:
+                    if name == "fectas":
+                        with self._lock:
+                            self._fectas_pricing = False
+
+            boards = (("fectas", lambda: refresh_board(self.store, self.publish, turns)),
+                      ("1H parlays", lambda: refresh_halves(self.store, self.publish_halves, turns)))
+            threads = [threading.Thread(target=run_board, args=board, name=f"refresh-{board[0]}", daemon=True)
+                       for board in boards]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
             self._read_balances()   # bets may have settled while it priced
-            self._last_error = "; ".join(errors)[:300] or None
+            self._last_error = "; ".join(errors[name] for name, _run in boards if name in errors)[:300] or None
         except Exception as exc:
             log.exception("refresh failed")
             self._last_error = f"{type(exc).__name__}: {exc}"[:300]
         finally:
             with self._lock:
                 self._refreshing = False
+                self._fectas_pricing = False
 
     # --- read --------------------------------------------------------------
     def budget(self, account: str, use_free_play: bool = False) -> float | None:
@@ -203,12 +228,25 @@ class SpecialsApp:
         }
         return payload
 
+    def _cash_for_halves(self, account: str | None) -> float | None:
+        """The cash 1H parlays are fitted to: the account's cash 'available',
+        or 0 while this refresh's fecta board is still pricing (from the
+        refresh's start, before its first publish) and fectas draw on cash.
+        The two boards price side by side, so the 1H board can finish first,
+        and a fecta not priced yet has no stake to set aside: sized then, 1H
+        stakes would take cash the fectas get first call on."""
+        with self._lock:
+            fectas_pricing = self._fectas_pricing
+        if fectas_pricing and not self.store.settings()["use_free_play"]:
+            return 0.0
+        return self.budget(account)
+
     def half_budget(self, account: str, fecta_sizing: list) -> float | None:
         """Cash left for NFL 1H parlays: the account's cash 'available' less the
         fectas' recommended stakes (fectas get first call; with Use free play
         on they draw on the free play balance, not this one). None = unknown.
         College 1H parlays don't use it (cfb_slates_for)."""
-        cash = self.budget(account)
+        cash = self._cash_for_halves(account)
         if cash is None:
             return None
         fecta_cash = 0.0 if self.store.settings()["use_free_play"] else sum(s.recommended_stake for s in fecta_sizing)
@@ -219,7 +257,8 @@ class SpecialsApp:
         """This account's college slates, each on the whole cash less fectas
         due before its halftime (none when fectas draw on free play)."""
         fectas_use_cash = not self.store.settings()["use_free_play"]
-        return cfb_slates(halves, self.budget(account), fecta_board if fectas_use_cash else None,
+        return cfb_slates(halves, self._cash_for_halves(account),
+                          fecta_board if fectas_use_cash else None,
                           fecta_sizing if fectas_use_cash else [])
 
     def size_halves_for(self, halves: HalfBoard, fecta_board: Board | None, fecta_sizing: list,
@@ -265,6 +304,8 @@ class SpecialsApp:
         line = next((l for l in (board.lines if board else []) if l.special.wz_game_id == wz_game_id), None)
         if line is None or line.game is None:
             raise ValueError(f"special {wz_game_id!r} is not on the current board")
+        if line.status != "priced":
+            raise ValueError(f"special {wz_game_id!r} is not priced on the current board (status {line.status})")
         if line.special.wz_american != shown_american:
             raise ValueError(f"price on the board is {line.special.wz_american:+d}, page showed "
                              f"{shown_american:+d} — refresh the page")
