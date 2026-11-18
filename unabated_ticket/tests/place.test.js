@@ -127,6 +127,8 @@ test("no amount or no read at the venue is an error in words, nothing to send", 
 test("reply tones", () => {
   assert.deepEqual(["filled", "partial", "unfilled", "rejected", "unknown", "refused"].map(place.replyTone),
     ["ok", "ok", "bad", "bad", "warn", "refused"]);
+  assert.equal(place.replyTone("filled", true), "bad", "a fill that cost more than the Ticket stays red");
+  assert.equal(place.replyTone("partial", false), "ok");
 });
 
 test("Novig's read is the oldest of the app, Place and (when read) bot reads, null until both required land", () => {

@@ -2508,7 +2508,7 @@ function polymarketEvent(fields = {}) {
   return {
     slug: "cfb-duq-wst-2026-09-19", startTime: "2026-09-19T19:30:00Z", teams: [duq, wst],
     markets: [{
-      slug: POLY_SLUG, sportsMarketType: "football_team_full_game_spread", line: 35.5,
+      slug: POLY_SLUG, sportsMarketType: "football_team_full_game_spread", line: 35.5, feeCoefficient: 0.095,
       marketSides: [{ long: true, description: "+35.50", teamId: 501, team: duq }, { long: false, description: "-35.50", teamId: 502, team: wst }],
     }],
     ...fields,
@@ -2555,7 +2555,8 @@ test("polymarket_quote: the board's Polymarket US line is found in Polymarket US
   assert.deepEqual(
     { ok: quote.ok, slug: quote.slug, side: quote.side, ask: quote.ask, depth: quote.depth, eventStart: quote.eventStart, gateway: quote.polymarketGatewayUrl },
     { ok: true, slug: POLY_SLUG, side: "no", ask: 0.63, depth: 500, eventStart: WSU_UNABATED_START, gateway: POLY_GATEWAY });
-  assert.equal(quote.allIn, Math.round((0.63 + 0.06 * 0.63 * 0.37) * 1e6) / 1e6);
+  assert.equal(quote.allIn, Math.round((0.63 + 0.095 * 0.63 * 0.37) * 1e6) / 1e6);
+  assert.equal(quote.feeCoefficient, 0.095);
   assert.deepEqual([quote.line.betType, quote.line.side, quote.line.points], ["spread", "home", -35.5]);
   const eventsUrl = new URL(poly.calls[0]);
   assert.equal(eventsUrl.searchParams.get("sportsMarketTypes"), "football_team_full_game_spread");
@@ -2628,6 +2629,16 @@ test("polymarket_quote: a game Polymarket US lists with its teams swapped, at an
   const noMarket = await run([{ ...event, markets: [{ ...event.markets[0], line: 34.5, marketSides: [
     { ...event.markets[0].marketSides[0], description: "+34.50" }, { ...event.markets[0].marketSides[1], description: "-34.50" }] }] }]);
   assert.match(noMarket.detail, /no football_team_full_game_spread market on cfb-duq-wst-2026-09-19 reads as home -35.5/);
+});
+
+test("polymarket_quote: a market with no fee coefficient is not priced, so Place refuses rather than guess the fee", async () => {
+  const event = polymarketEvent();
+  const { runner } = await quoteRunner({}, { fetchImpl: polymarketUnabatedFetch(),
+    polymarketFetch: polymarketFetch([{ ...event, markets: [{ ...event.markets[0], feeCoefficient: undefined }] }]), polymarketGatewayUrl: POLY_GATEWAY });
+  const quote = await runner.polymarketQuote(new URLSearchParams(POLY_LINE_PARAMS));
+  runner.stop();
+  assert.deepEqual([quote.ok, quote.reason, quote.allIn], [false, "no_fee", undefined]);
+  assert.match(quote.detail, /no fee coefficient/);
 });
 
 test("polymarket_quote: a college name nothing resolves matches by its other team and start, and is saved to the crosswalk", async () => {
@@ -2887,7 +2898,7 @@ test("live prices: a Polymarket US line is priced off the stream's book with the
   });
   await runner.start();
   await runner.livePricePass();
-  const allIn = Math.round((0.63 + 0.06 * 0.63 * 0.37) * 1e6) / 1e6;
+  const allIn = Math.round((0.63 + 0.095 * 0.63 * 0.37) * 1e6) / 1e6;
   const [key, read] = Object.entries(runner.livePricesPayload().reads).find(([, entry]) => entry.venue === "polymarket_us");
   assert.deepEqual(read, { venue: "polymarket_us", points: -35.5, allIn, depthDollars: Math.round(500 * allIn * 100) / 100, readAtMs: TAKER_NOW });
   const row = edgeRowsOf(runner.edgesPayload()).find((entry) => entry.key === key);

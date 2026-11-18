@@ -39,7 +39,7 @@ test("a moneyline is the side whose team the row backs; an away/home that disagr
   assert.equal(polymarket.sideAndPointsOf(flipped, "yes", 1, TEAMS), null);
 });
 
-test("YES costs the best offer, NO 1 minus the best bid; the all-in adds theta p (1 - p)", () => {
+test("YES costs the best offer, NO 1 minus the best bid", () => {
   const book = { marketData: { state: "MARKET_STATE_OPEN",
     bids: [{ px: { value: "0.4100" }, qty: "10" }, { px: { value: "0.4150" }, qty: "7" }],
     offers: [{ px: { value: "0.4300" }, qty: "3" }, { px: { value: "0.4300" }, qty: "2" }, { px: { value: "0.4500" }, qty: "9" }] } };
@@ -47,5 +47,15 @@ test("YES costs the best offer, NO 1 minus the best bid; the all-in adds theta p
   assert.deepEqual(polymarket.quoteOf(book, "no"), { ask: 0.585, depth: 7 });
   assert.equal(polymarket.quoteOf({ marketData: { ...book.marketData, offers: [] } }, "yes").reason, "no_book");
   assert.equal(polymarket.quoteOf({}, "yes").reason, "no_book");
-  assert.equal(polymarket.allInOf(0.5), 0.515);
+});
+
+test("the all-in adds the market's own fee coefficient x p (1 - p); no coefficient, no price", () => {
+  assert.deepEqual(polymarket.feeCoefficientOf({ slug: "m", feeCoefficient: 0.095 }), { feeCoefficient: 0.095 });
+  // The DEN@CAR live fill (2026-11-08): ask 47.5c at 0.095 is 49.87c all-in, not the 48.996c a fixed 0.06 gave.
+  assert.equal(polymarket.allInOf(0.475, 0.095), 0.498691);
+  for (const feeCoefficient of [undefined, null, "0.095", -0.01, 0.3, Number.NaN]) {
+    assert.equal(polymarket.feeCoefficientOf({ slug: "m", feeCoefficient }).reason, "no_fee");
+  }
+  assert.equal(polymarket.feeCoefficientOf(null).reason, "no_fee");
+  assert.throws(() => polymarket.allInOf(0.5), /fee coefficient/);
 });

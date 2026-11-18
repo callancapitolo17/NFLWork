@@ -18,7 +18,14 @@ Rules, in order, for every request (validate_polymarket_place_request's shape):
      live board, Polymarket US's event live and the panel's in-game fair read
      within 90 s (manual_orders.start_refusal);
   4. the live all-in price (ask + the taker fee) is at most PRICE_TOLERANCE
-     (0.1c) worse than the Ticket's; a better one is taken;
+     (0.1c) worse than the Ticket's; a better one is taken. The fee is the
+     market's own `feeCoefficient` x p x (1 - p), read on this quote (no
+     coefficient, no order) — unless Polymarket US charged more than its
+     market showed on the newest Place fill of at least FEE_LEARN_MIN_CONTRACTS
+     at that same coefficient: then the charged one prices the order
+     (charged_fee_coefficient), so a fee the market misstates costs at most
+     that one fill. The order's limit is the ask, so this all-in is the most a
+     contract can cost;
   5. the other side of the market is not held: buying NO against a held YES
      sells it (one instrument per market);
   6. the polymarket_us read the stake counted is ok and fresh;
@@ -29,6 +36,8 @@ Rules, in order, for every request (validate_polymarket_place_request's shape):
  10. ONE immediate-or-cancel limit buy at the live ask (polymarket_orders.py),
      never re-sent; then the order is read until final for what filled. An
      order Polymarket US shows resting (an IOC never should) gets one cancel.
+     A fill that cost more than the Ticket's price answers `overpaid` (red on
+     the Ticket) and is logged as an error.
 
 Order statuses (manual_orders.status on a 'polymarket_us' row): as Kalshi
 Place's (manual_orders.py): sending, filled, partial, unfilled, rejected,
@@ -36,7 +45,8 @@ unknown. An 'unknown' row blocks the next Place on the game until a
 polymarket_us read after it (rule 7); that read shows any fill as a position.
 
 Side effects: a Polymarket US order on Cal's main account (money); INSERT /
-UPDATE bets.duckdb::manual_orders (venue 'polymarket_us'). Network: GET
+UPDATE bets.duckdb::manual_orders (venue 'polymarket_us', incl. the fee
+coefficient priced at and the fill's average price and commission). Network: GET
 <runner>/polymarket_quote.json, then Polymarket US REST signed with Place's key.
 """
 import logging
@@ -53,7 +63,7 @@ from unabated_ticket.bets_service.manual_orders import (
 )
 from unabated_ticket.bets_service.polymarket_orders import (
     FINAL_ORDER_STATES, MAX_PRICE, MIN_PRICE, RESTING_ORDER_STATES, PolymarketError, PolymarketOrderClient,
-    order_fill_totals,
+    order_fill_fee, order_fill_totals,
 )
 from unabated_ticket.bets_service.store import BetsStore
 from unabated_ticket.bets_service.taker_orders import DEFINITE_REJECTION_STATUSES
@@ -76,6 +86,16 @@ POLYMARKET_READ_MAX_AGE = timedelta(minutes=5)
 POLYMARKET_PLACE_BET_TYPES = (1, 2, 3)
 BET_TYPE_MONEYLINE = 1
 CONTRACT_SIDES = ("yes", "no")
+# A market's feeCoefficient above this is taken as misread, not as a fee (server/polymarket.js MAX_FEE_COEFFICIENT).
+MAX_FEE_COEFFICIENT = 0.25
+# Commission is rounded to the cent per order, so a fill this small says little about the rate
+# (fills under ~17 contracts read 0.0 to 0.12 on 2026-11-08); only larger ones correct the market's.
+FEE_LEARN_MIN_CONTRACTS = 50
+# A charged coefficient this far over the market's is a real difference, not that rounding
+# (0.0948-0.0951 on 15 fills charged 0.095).
+FEE_LEARN_SLACK = 0.002
+# The commission's cent rounding a fill may show above the all-in it was priced at, in dollars per order.
+COMMISSION_ROUNDING_DOLLARS = 0.01
 
 
 def validate_polymarket_place_request(body: object) -> dict | str:
@@ -126,6 +146,36 @@ def validate_polymarket_place_request(body: object) -> dict | str:
             "prophetx_read_at": read_ats["prophetxReadAt"], "bfa_read_at": read_ats["bfaReadAt"]}
 
 
+def all_in_of(ask: float, fee_coefficient: float) -> float:
+    """One contract's price with Polymarket US's taker fee (server/polymarket.js allInOf)."""
+    return round(ask + fee_coefficient * ask * (1 - ask), 6)
+
+
+def fee_coefficient_of_fill(fill_avg_price: float, fill_commission: float, count_filled: float) -> float | None:
+    """The coefficient Polymarket US charged on one fill: commission / (contracts x p x (1 - p)), or None."""
+    spread = count_filled * fill_avg_price * (1 - fill_avg_price)
+    if spread <= 0:
+        return None
+    return fill_commission / spread
+
+
+def charged_fee_coefficient(market_coefficient: float, latest_fill: dict | None) -> tuple[float, str | None]:
+    """The coefficient to price this order at, and words when it is not the market's.
+
+    The newest sizable Place fill (store.latest_polymarket_fee_fill) overrides the
+    market's coefficient only when it was priced at that same coefficient and charged
+    more than it: Polymarket US misstated its fee, so its word no longer holds. A
+    market showing another coefficient since is a new word and is taken."""
+    if latest_fill is None or abs(latest_fill["fee_coefficient"] - market_coefficient) > 1e-9:
+        return market_coefficient, None
+    charged = fee_coefficient_of_fill(latest_fill["fill_avg_price"], latest_fill["fill_commission"],
+                                      latest_fill["count_filled"])
+    if charged is None or charged <= market_coefficient + FEE_LEARN_SLACK:
+        return market_coefficient, None
+    return charged, (f"your last Polymarket US fill was charged a {charged:.4f} fee rate, above the "
+                     f"{market_coefficient:.4f} its market shows, so this one is priced at {charged:.4f}")
+
+
 def held_id_of(slug: str, contract_side: str) -> str:
     """The bets row id the polymarket_us source gives a held side (sources/polymarket_us.py)."""
     return f"{POLYMARKET_READ_SOURCE}:{slug}:{contract_side}"
@@ -162,16 +212,18 @@ class ManualPolymarketDesk:
         refusal = self._refusal(request, quote)
         if refusal:
             return {"status": STATUS_REFUSED, "message": f"Not placed: {refusal}"}
-        count = math.floor(request["stake"] / quote["allIn"])
+        all_in = quote["chargedAllIn"]
+        count = math.floor(request["stake"] / all_in)
         if count < 1:
             return {"status": STATUS_REFUSED,
-                    "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(quote['allIn'])}."}
+                    "message": f"Not placed: ${request['stake']:.2f} buys no contract at {_cents(all_in)}."}
         line = quote.get("line") if isinstance(quote.get("line"), dict) else {}
         inserted = self._store.insert_manual_order({
             "client_order_id": client_order_id, "placed_at": self._now(), "venue": VENUE_POLYMARKET,
             "event_id": request["eventId"], "ticker": quote["slug"], "contract_side": quote["side"],
             "label": quote.get("label"), "ticket_all_in": request["ticket_all_in"], "ask_price": quote["ask"],
-            "all_in_price": quote["allIn"], "stake": request["stake"], "count_requested": count, "status": "sending",
+            "all_in_price": all_in, "fee_coefficient": quote["feeCoefficient"],
+            "stake": request["stake"], "count_requested": count, "status": "sending",
             "updated_at": self._now(), "event_start": _iso_time(quote.get("eventStart")),
             "league": line.get("league"), "bet_type": line.get("betType"), "period": line.get("period"),
             "side": line.get("side"), "points": line.get("points"), "away_team": line.get("awayTeam"),
@@ -180,9 +232,10 @@ class ManualPolymarketDesk:
         })
         if not inserted:
             return {"status": STATUS_REFUSED, "message": "Not placed: this click was already sent."}
-        log.info("polymarket place %s: %s %s x%d @ %s (all-in %s, Ticket %s)", client_order_id, quote["slug"],
-                 quote["side"], count, quote["ask"], quote["allIn"], request["ticket_all_in"])
-        return self._send(client_order_id, quote, count)
+        log.info("polymarket place %s: %s %s x%d @ %s (all-in %s at fee %s, market fee %s, Ticket %s)", client_order_id,
+                 quote["slug"], quote["side"], count, quote["ask"], all_in, quote["chargedFeeCoefficient"],
+                 quote["feeCoefficient"], request["ticket_all_in"])
+        return self._send(client_order_id, {**quote, "ticketAllIn": request["ticket_all_in"]}, count)
 
     def _refusal(self, request: dict, quote: dict) -> str | None:
         """Why this click must not become an order, in words, or None."""
@@ -196,12 +249,22 @@ class ManualPolymarketDesk:
                     f"{self._client.gateway_url}.")
         if not isinstance(quote.get("slug"), str) or not quote["slug"] or quote.get("side") not in CONTRACT_SIDES:
             return "the runner did not name the market and its side."
-        ask, all_in = quote.get("ask"), quote.get("allIn")
-        if not _is_number(ask) or not MIN_PRICE <= ask <= MAX_PRICE or not _is_number(all_in) or all_in < ask:
-            return f"Polymarket US's ask {ask!r} (all-in {all_in!r}) is not a price."
+        ask, fee_coefficient = quote.get("ask"), quote.get("feeCoefficient")
+        if not _is_number(ask) or not MIN_PRICE <= ask <= MAX_PRICE:
+            return f"Polymarket US's ask {ask!r} is not a price."
+        if not _is_number(fee_coefficient) or not 0 <= fee_coefficient <= MAX_FEE_COEFFICIENT:
+            return f"the runner did not say Polymarket US's fee on this market (feeCoefficient {fee_coefficient!r})."
+        if not _is_number(quote.get("allIn")) or abs(quote["allIn"] - all_in_of(ask, fee_coefficient)) > 1e-6:
+            return (f"the runner's all-in {quote.get('allIn')!r} is not {_cents(ask)} plus the market's "
+                    f"{fee_coefficient} fee.")
+        charged, why = charged_fee_coefficient(fee_coefficient,
+                                               self._store.latest_polymarket_fee_fill(FEE_LEARN_MIN_CONTRACTS))
+        all_in = all_in_of(ask, charged)
         if all_in > request["ticket_all_in"] + PRICE_TOLERANCE:
+            reason = f" ({why})" if why else ""
             return (f"Polymarket US is at {_cents(all_in)} all-in now ({_cents(ask)} + fee), more than 0.1¢ worse "
-                    f"than the Ticket's {_cents(request['ticket_all_in'])}.")
+                    f"than the Ticket's {_cents(request['ticket_all_in'])}{reason}.")
+        quote["chargedFeeCoefficient"], quote["chargedAllIn"] = charged, all_in
         other_side = "no" if quote["side"] == "yes" else "yes"
         if self._store.bet_is_open(held_id_of(quote["slug"], other_side)):
             return (f"you hold the {other_side.upper()} side of {quote['slug']}; buying {quote['side'].upper()} "
@@ -306,11 +369,21 @@ class ManualPolymarketDesk:
             outcome = STATUS_REJECTED
         else:
             outcome = STATUS_UNFILLED if filled <= 0 else STATUS_FILLED if filled >= count else STATUS_PARTIAL
-        self._update(client_order_id, {"status": outcome, "count_filled": filled, "cost_filled": paid,
-                                       "error": None if outcome != STATUS_REJECTED else f"rejected: {str(order)[:300]}"})
-        log.info("polymarket place %s: %s, %s of %d for %s", client_order_id, outcome, filled, count, paid)
+        fee = order_fill_fee(order, quote["side"]) if filled > 0 else None
+        overpaid = _overpaid_words(filled, paid, quote["ticketAllIn"])
+        error = f"rejected: {str(order)[:300]}" if outcome == STATUS_REJECTED else overpaid
+        self._update(client_order_id, {"status": outcome, "count_filled": filled, "cost_filled": paid, "error": error,
+                                       "fill_avg_price": fee[0] if fee else None,
+                                       "fill_commission": fee[1] if fee else None})
+        log.info("polymarket place %s: %s, %s of %d for %s (fill fee %s)", client_order_id, outcome, filled, count, paid,
+                 fee)
+        if overpaid:
+            log.error("polymarket place %s: %s", client_order_id, overpaid)
+        message = _outcome_message(outcome, quote, count, filled, paid)
+        if overpaid:
+            message += f" {overpaid[0].upper()}{overpaid[1:]}."
         return {"status": outcome, "slug": quote["slug"], "side": quote["side"], "count": count, "filled": filled,
-                "cost": paid, "message": _outcome_message(outcome, quote, count, filled, paid)}
+                "cost": paid, "overpaid": bool(overpaid), "message": message}
 
     def _update(self, client_order_id: str, fields: dict) -> None:
         self._store.update_manual_order(client_order_id, fields, self._now())
@@ -327,15 +400,28 @@ def _error_text(reply: object) -> str:
     return ""
 
 
+def _overpaid_words(filled: float, paid: float | None, ticket_all_in: float) -> str | None:
+    """Words when a fill cost more a contract than the Ticket's price (past the 0.1c tolerance and the
+    commission's cent rounding), else None."""
+    if not filled or filled <= 0 or paid is None:
+        return None
+    each = paid / filled
+    if each <= ticket_all_in + PRICE_TOLERANCE + COMMISSION_ROUNDING_DOLLARS / filled:
+        return None
+    return (f"this cost {_cents(each)} a contract with Polymarket US's fee, more than the Ticket's "
+            f"{_cents(ticket_all_in)}: its fee was above what the market showed, so Place there now prices at the "
+            f"fee it charged")
+
+
 def _outcome_message(outcome: str, quote: dict, count: int, filled: float, paid: float | None) -> str:
     """A Polymarket US contract pays $1, so a fill pays back `filled` dollars.
     Without the cost it says what filled, at the quoted price."""
-    price = _cents(quote["allIn"])
+    price = _cents(quote["chargedAllIn"])
     if outcome == STATUS_REJECTED:
         return "Polymarket US rejected the order. Nothing was placed."
     if outcome not in (STATUS_FILLED, STATUS_PARTIAL):
         return f"Nothing filled at {price}: the price was gone. Nothing rests."
     rest = "." if outcome == STATUS_FILLED else "; the rest was not there. Nothing rests."
     if paid is None:
-        return unpriced_fill_message("Polymarket US", quote.get("label"), filled, count, quote["allIn"], rest)
+        return unpriced_fill_message("Polymarket US", quote.get("label"), filled, count, quote["chargedAllIn"], rest)
     return filled_bet_message(quote.get("label"), paid, filled, contracts_detail(filled, count, paid)) + rest

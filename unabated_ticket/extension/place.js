@@ -170,7 +170,10 @@
   // How the reply reads: "ok" (contracts bought), "bad" (the venue refused or
   // nothing filled), "warn" (no definite answer: check the venue), "refused"
   // (nothing sent; the button comes back).
-  function replyTone(status) {
+  // overpaid: the bets service says the fill cost more than the Ticket's price
+  // (a Polymarket US fee above its market's), which stays red, never fades.
+  function replyTone(status, overpaid = false) {
+    if (overpaid === true) return "bad";
     if (FILLED_STATUSES.includes(status)) return "ok";
     if (status === "unknown") return "warn";
     if (status === "refused") return "refused";
