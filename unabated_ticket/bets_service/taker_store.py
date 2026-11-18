@@ -46,7 +46,8 @@ from pathlib import Path
 
 import duckdb
 
-# taker.js REASONS: a reason outside it is a runner the service does not know.
+# taker.js REASONS, plus price_moved (retired 2026-11-18, kept for stored rows):
+# a reason outside it is a runner the service does not know.
 DECISION_REASONS = ("stale_feed", "no_ticker", "no_outcome", "no_book", "price_moved", "edge_short", "not_best",
                     "cap", "size_declined", "size_zero", "market_mismatch", "bet")
 

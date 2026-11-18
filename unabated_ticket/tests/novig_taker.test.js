@@ -105,13 +105,14 @@ test("a Novig row meets the Min shrunk edge floor too (issue #208): the shrunk l
 });
 
 test("a Novig live price away from Unabated's is decided on its live edge alone (2026-11-18)", () => {
-  const atShown = decide(board(), { ask: 0.555, depth: 100000 });
+  // Unabated shows 0.56; fair 0.593.
   const better = decide(board(), { ask: 0.545, depth: 100000 });
   assert.equal(better.reason, "bet", better.detail);
-  assert.ok(better.liveEdge > atShown.liveEdge, `${better.liveEdge} vs ${atShown.liveEdge}`);
+  assert.ok(better.liveEdge > 0.085 && better.liveEdge < 0.09, String(better.liveEdge));
+  // 0.5c worse (refused before 2026-11-18): live edge 4.96%, bet.
   const worse = decide(board(), { ask: 0.565, depth: 100000 });
-  assert.ok(["bet", "edge_short"].includes(worse.reason), worse.reason);
-  assert.equal(worse.reason, worse.liveEdge >= taker.MIN_LIVE_EDGE ? "bet" : "edge_short");
+  assert.equal(worse.reason, "bet", worse.detail);
+  assert.ok(worse.liveEdge > 0.049 && worse.liveEdge < 0.05, String(worse.liveEdge));
   assert.equal(decide(board(), null).reason, "no_book");
 });
 

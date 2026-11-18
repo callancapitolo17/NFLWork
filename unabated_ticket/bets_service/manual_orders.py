@@ -61,7 +61,8 @@ MANUAL_ORDER_ID_PREFIX = "uman-"
 # The click's own id, made by the page: letters, digits and dashes.
 CLICK_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{8,48}$")
 # Unabated's Kalshi price sometimes lags the book by a tick: 0.1c worse still
-# places (Cal, 2026-10-16, the bot's own tolerance); a better live price is taken.
+# places (Cal, 2026-10-16); a better live price is taken. Place's own rule: the
+# bot has had no price tolerance since 2026-11-18.
 PRICE_TOLERANCE = 0.001
 MIN_PRICE = 0.01
 MAX_PRICE = 0.99

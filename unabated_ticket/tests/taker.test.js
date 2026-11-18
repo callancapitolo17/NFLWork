@@ -189,6 +189,10 @@ test("a live price away from Unabated's is bet at the live price while the live 
     if (!key.includes("ms105") && key.includes("si1:tid717:alt-35.5")) moveLine(state, key, { price: -200 });
   }
   // Unabated shows 0.587157 all-in; fair = 1.05 x 0.587157 = 0.6165.
+  // 57.4c ask: all-in 0.5911, 0.4c worse (refused before 2026-11-18), live edge 4.3%: bet.
+  const worse = decide(state, WSU_ALT_KEY, { ask: 0.574, depth: 1000 });
+  assert.equal(worse.reason, "bet", worse.detail);
+  assert.ok(worse.liveEdge > 0.04 && worse.liveEdge < 0.045, String(worse.liveEdge));
   // 58c ask: all-in 0.597, 1c worse, live edge 3.3%: under the floor.
   assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.58, depth: 1000 }).reason, "edge_short");
   // 55c ask: all-in 0.567325, 1.98c better (refused as a stale fair before 2026-11-18): bet, live edge 8.7%.
@@ -199,7 +203,7 @@ test("a live price away from Unabated's is bet at the live price while the live 
   const atShown = decide(state, WSU_ALT_KEY, { ask: 0.5708, depth: 1000 });
   assert.equal(atShown.reason, "bet");
   assert.ok(better.stake > atShown.stake, `${better.stake} vs ${atShown.stake}`);
-  // 50c ask: all-in 0.5175, live edge 19.1%: still bet; 48c (22%) is over the cap.
+  // 50c ask: all-in 0.5175, live edge 19.1%: still bet; 48c (23.9%) is over the cap.
   assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.5, depth: 1000 }).reason, "bet");
   assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.48, depth: 1000 }).reason, "cap");
 });
