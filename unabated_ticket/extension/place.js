@@ -171,9 +171,10 @@
   // nothing filled), "warn" (no definite answer: check the venue), "refused"
   // (nothing sent; the button comes back).
   // overpaid: the bets service says the fill cost more than the Ticket's price
-  // (a Polymarket US fee above its market's), which stays red, never fades.
+  // (a Polymarket US fee above its market's). Still a fill, so the caller
+  // treats it as one, but "warn" keeps it on screen instead of fading.
   function replyTone(status, overpaid = false) {
-    if (overpaid === true) return "bad";
+    if (overpaid === true && FILLED_STATUSES.includes(status)) return "warn";
     if (FILLED_STATUSES.includes(status)) return "ok";
     if (status === "unknown") return "warn";
     if (status === "refused") return "refused";

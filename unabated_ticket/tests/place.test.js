@@ -127,7 +127,8 @@ test("no amount or no read at the venue is an error in words, nothing to send", 
 test("reply tones", () => {
   assert.deepEqual(["filled", "partial", "unfilled", "rejected", "unknown", "refused"].map(place.replyTone),
     ["ok", "ok", "bad", "bad", "warn", "refused"]);
-  assert.equal(place.replyTone("filled", true), "bad", "a fill that cost more than the Ticket stays red");
+  assert.equal(place.replyTone("filled", true), "warn", "a fill that cost more than the Ticket stays on screen, still a fill");
+  assert.equal(place.replyTone("unfilled", true), "bad");
   assert.equal(place.replyTone("partial", false), "ok");
 });
 

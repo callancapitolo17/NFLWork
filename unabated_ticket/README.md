@@ -3946,14 +3946,16 @@ signs (one balance read at start) and the service reads `polymarket_us`; else
    **The fee Polymarket US actually charged** is kept per fill
    (`manual_orders.fee_coefficient` = the market's, `fill_avg_price` and
    `fill_commission` off the order's `avgPx` and
-   `commissionNotionalTotalCollected`). When the newest Place fill of at least
-   50 contracts was charged more than 0.002 over the coefficient its market
-   showed, and the market still shows that coefficient, the bets service
+   `commissionNotionalTotalCollected`). When the newest Place fill priced at
+   the market's current coefficient, large enough to read the rate
+   (contracts x p x (1 - p) >= 10, so the commission's cent rounding moves it
+   at most 0.001), was charged more than 0.002 over it, the bets service
    prices the next order at the charged one (`charged_fee_coefficient`): the
    Ticket's price, still on the market's, then reads as too cheap and Place
-   refuses saying why, until Polymarket US's market shows another number.
-   Such a fill answers `overpaid` (the Ticket's message stays red, logged as
-   an error).
+   at that coefficient refuses saying why, until Polymarket US's markets show
+   another number. Any fill that cost more than the Ticket answers `overpaid`
+   (its message stays on screen instead of fading, still counted as a fill;
+   logged as an error and kept in `manual_orders.error`).
 3. It refuses, sending nothing, when: the game has started or its start is
    unknown; the runner read another gateway; the live all-in is more than
    **0.1c worse** than the Ticket's price (better always goes); the other side

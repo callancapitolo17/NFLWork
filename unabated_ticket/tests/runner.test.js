@@ -2915,6 +2915,22 @@ test("live prices: a Polymarket US line is priced off the stream's book with the
   runner.stop();
 });
 
+test("live prices: a Polymarket US market with no fee coefficient leaves its line unchecked, never priced at a guessed fee", async () => {
+  const event = polymarketEvent();
+  const poly = polymarketFetch([{ ...event, markets: [{ ...event.markets[0], feeCoefficient: undefined }] }]);
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS, "/polymarket_books.json": polymarketStreamBooks });
+  const runner = runnerLib.createRunner({
+    fetchImpl: polymarketUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY, betsServiceUrl: SERVICE_URL, now: () => TAKER_NOW, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.livePricePass();
+  const reads = Object.values(runner.livePricesPayload().reads).filter((entry) => entry.venue === "polymarket_us");
+  assert.deepEqual(reads, []);
+  assert.equal(service.posts.filter((post) => post.route === "/polymarket_books.json").length, 0, "no book asked for an unpriceable market");
+  runner.stop();
+});
+
 test("live prices: a Polymarket US line's market is remembered past its event list's reuse, so later passes read no event list", async () => {
   const poly = polymarketFetch();
   const clock = { now: TAKER_NOW };

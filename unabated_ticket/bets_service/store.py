@@ -363,14 +363,15 @@ MANUAL_ORDER_FREE_PLAY_COLUMN = "free_play"
 MANUAL_ORDER_FEE_COEFFICIENT_COLUMN = "fee_coefficient"
 _INSERT_MANUAL_ORDER_COLUMNS = (MANUAL_ORDER_INSERT_COLUMNS + MANUAL_ORDER_NOVIG_LINE_COLUMNS
                                 + (MANUAL_ORDER_FREE_PLAY_COLUMN, MANUAL_ORDER_FEE_COEFFICIENT_COLUMN))
-# The newest Polymarket US Place fill of at least ? contracts whose fee it said:
-# what the market showed and what the fill cost (polymarket_place.charged_fee_coefficient).
+# The newest Polymarket US Place fill priced at one market fee coefficient whose
+# contracts x p x (1 - p) is at least ?, with its fee said: what it cost
+# (polymarket_place.charged_fee_coefficient).
 _SELECT_LATEST_POLYMARKET_FEE_FILL = """
-SELECT client_order_id, fee_coefficient, fill_avg_price, fill_commission, count_filled
+SELECT fee_coefficient, fill_avg_price, fill_commission, count_filled
 FROM manual_orders
-WHERE venue = 'polymarket_us' AND fee_coefficient IS NOT NULL AND fill_avg_price IS NOT NULL
-  AND fill_commission IS NOT NULL AND count_filled >= ?
-ORDER BY placed_at DESC
+WHERE venue = 'polymarket_us' AND abs(fee_coefficient - ?) < 1e-9 AND fill_avg_price IS NOT NULL
+  AND fill_commission IS NOT NULL AND count_filled * fill_avg_price * (1 - fill_avg_price) >= ?
+ORDER BY placed_at DESC, updated_at DESC
 LIMIT 1
 """
 _INSERT_MANUAL_ORDER = (f"INSERT INTO manual_orders ({', '.join(_INSERT_MANUAL_ORDER_COLUMNS)}) "
@@ -1507,15 +1508,16 @@ class BetsStore:
             self._con.execute(f"UPDATE manual_orders SET {assignments}, updated_at = ? WHERE client_order_id = ?",
                               [*fields.values(), at, client_order_id])
 
-    def latest_polymarket_fee_fill(self, min_contracts: float) -> dict | None:
-        """The newest Polymarket US Place fill of at least `min_contracts` that
-        recorded its fee, or None: {client_order_id, fee_coefficient,
-        fill_avg_price, fill_commission, count_filled}. Read-only."""
+    def latest_polymarket_fee_fill(self, fee_coefficient: float, min_spread: float) -> dict | None:
+        """The newest Polymarket US Place fill priced at `fee_coefficient` whose
+        contracts x p x (1 - p) is at least `min_spread`, with its fee recorded,
+        or None: {fee_coefficient, fill_avg_price, fill_commission,
+        count_filled}. Read-only."""
         with self._lock:
-            row = self._con.execute(_SELECT_LATEST_POLYMARKET_FEE_FILL, [min_contracts]).fetchone()
+            row = self._con.execute(_SELECT_LATEST_POLYMARKET_FEE_FILL, [fee_coefficient, min_spread]).fetchone()
         if row is None:
             return None
-        keys = ("client_order_id", "fee_coefficient", "fill_avg_price", "fill_commission", "count_filled")
+        keys = ("fee_coefficient", "fill_avg_price", "fill_commission", "count_filled")
         return dict(zip(keys, row))
 
     def manual_orders_maybe_filled_since(self, event_id: int, since: datetime, venue: str | None = None) -> list[dict]:

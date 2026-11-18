@@ -147,7 +147,6 @@ def test_the_row_is_held_before_the_send_and_the_same_click_is_never_sent_twice(
     ({"ok": False, "reason": "no_market", "detail": "0 of Polymarket US's 3 events are X at its start"}, "0 of Polymarket"),
     ({"polymarketGatewayUrl": "https://gateway.test"}, "this desk trades"),
     ({"ask": None}, "is not a price"),
-    ({"allIn": 0.6}, "plus the market's 0.06 fee"),
     ({"feeCoefficient": None}, "did not say Polymarket US's fee"),
     ({"feeCoefficient": 0.3}, "did not say Polymarket US's fee"),
     ({"side": "maybe"}, "the market and its side"),
@@ -425,12 +424,12 @@ def test_a_fill_charged_above_the_market_fee_reads_red_and_prices_the_next_place
                                                                           average="0.5250", commission="9.69")})])
     first = desk_with(store, client, understated).place(request(stake=275, ticketAllIn=0.490196))
     assert first["status"] == "partial" and first["overpaid"] is True
-    assert "more than the Ticket's 49.0¢" in first["message"]
+    assert first["message"].endswith("more than the Ticket's 49.0¢: Polymarket US charged a higher fee than its market shows.")
     assert "more than the Ticket" in manual_fee_columns(store, "pman-abc12345-0001")[3]
     # The next click at that market, still showing 0.06, is priced at the 0.095 charged: 49.87c, refused.
     later = {"clickId": "abc12345-0002", "polymarketReadAt": (NOW + timedelta(seconds=1)).isoformat()}
     second = desk_with(store, client, understated).place(request(stake=275, ticketAllIn=0.490196, **later))
-    assert second["status"] == "refused" and "fee rate, above the 0.0600 its market shows" in second["message"]
+    assert second["status"] == "refused" and "charged a 0.0950 rate, above the 0.0600 its markets show" in second["message"]
     assert len(client.calls) == 1
     # Once the market shows another coefficient, its word is taken again.
     third = desk_with(store, client, DEN_CAR_QUOTE).place(request(stake=275, ticketAllIn=0.498691, **later))
@@ -442,16 +441,46 @@ def test_a_small_fill_does_not_override_the_market_fee(store):
     understated = {**DEN_CAR_QUOTE, "feeCoefficient": 0.06, "allIn": 0.489963}
     client = ScriptedPolymarket(order_reads=[(200, {"order": final_order(20, 10, state="ORDER_STATE_CANCELED",
                                                                           average="0.5250", commission="0.30")})])
-    desk_with(store, client, understated).place(request(stake=10, ticketAllIn=0.490196))
+    first = desk_with(store, client, understated).place(request(stake=10, ticketAllIn=0.490196))
+    assert first["overpaid"] is True and "charged a higher fee than its market shows" in first["message"]
     later = {"clickId": "abc12345-0002", "polymarketReadAt": (NOW + timedelta(seconds=1)).isoformat()}
     assert desk_with(store, client, understated).place(request(stake=10, ticketAllIn=0.490196, **later))["status"] == "filled"
 
 
-def test_charged_fee_coefficient_reads_the_fill_only_at_the_same_market_coefficient():
+def test_charged_fee_coefficient_overrides_only_a_real_overcharge():
     fill = {"fee_coefficient": 0.06, "fill_avg_price": 0.475, "fill_commission": 9.69, "count_filled": 409}
     charged, why = charged_fee_coefficient(0.06, fill)
     assert charged == pytest.approx(0.095, abs=1e-4) and "0.0950" in why
-    assert charged_fee_coefficient(0.095, fill) == (0.095, None)
     assert charged_fee_coefficient(0.06, None) == (0.06, None)
     # Charged within the rounding slack of what the market showed: the market's stands.
     assert charged_fee_coefficient(0.06, {**fill, "fill_commission": 409 * 0.475 * 0.525 * 0.0615}) == (0.06, None)
+
+
+def test_a_fill_at_another_market_coefficient_does_not_clear_the_override(store):
+    understated = {**DEN_CAR_QUOTE, "feeCoefficient": 0.06, "allIn": 0.489963}
+    overcharged = (200, {"order": final_order(561, 409, state="ORDER_STATE_CANCELED", average="0.5250", commission="9.69")})
+    client = ScriptedPolymarket(order_reads=[overcharged])
+    desk_with(store, client, understated).place(request(stake=275, ticketAllIn=0.490196))
+    # A later fill on a market showing 0.095, charged 0.095, at a later clock.
+    later = NOW + timedelta(seconds=5)
+    read_at = {"polymarketReadAt": later.isoformat()}
+    assert desk_with(store, client, DEN_CAR_QUOTE, now=later).place(
+        request(stake=275, ticketAllIn=0.498691, clickId="abc12345-0002", **read_at))["status"] == "filled"
+    after = {"polymarketReadAt": (later + timedelta(seconds=1)).isoformat()}
+    again = desk_with(store, client, understated, now=later).place(request(stake=275, ticketAllIn=0.490196, clickId="abc12345-0003", **after))
+    assert again["status"] == "refused" and "0.0950 rate" in again["message"]
+
+
+# Asks where JS's Math.round and Python's round() split a 7th-decimal half at 0.095 (2026-11-17 review).
+@pytest.mark.parametrize("ask, runner_all_in", [(0.41, 0.432981), (0.85, 0.862113), (0.13, 0.140745)])
+def test_a_ticket_at_the_runners_rounded_all_in_places(store, ask, runner_all_in):
+    client = ScriptedPolymarket()
+    quote = {**QUOTE, "ask": ask, "feeCoefficient": 0.095, "allIn": runner_all_in}
+    assert desk_with(store, client, quote).place(request(ticketAllIn=runner_all_in))["status"] == "filled"
+
+
+def test_order_fill_fee_reads_each_side_in_its_own_price():
+    from unabated_ticket.bets_service.polymarket_orders import order_fill_fee
+    assert order_fill_fee(final_order(10, 10, average="0.3700", commission="0.22"), "yes") == (0.37, 0.22)
+    assert order_fill_fee(final_order(10, 10, average="0.3700", commission="0.22"), "no") == (0.63, 0.22)
+    assert order_fill_fee(final_order(10, 0), "yes") is None

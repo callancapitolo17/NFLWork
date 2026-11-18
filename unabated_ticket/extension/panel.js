@@ -758,7 +758,7 @@
     let next;
     try {
       const reply = await serviceRequest("POST", request.path, request.body);
-      next = { message: reply.message, tone: venuePlace.replyTone(reply.status, reply.overpaid) };
+      next = { message: reply.message, tone: venuePlace.replyTone(reply.status, reply.overpaid), overpaid: reply.overpaid === true };
     } catch (error) {
       // A 4xx is the service refusing before the venue; a 5xx (a gateway losing the service mid-send) may have placed.
       next = error.status >= 400 && error.status < 500
@@ -769,7 +769,7 @@
     if (placeState.ticketAt !== ticketAt) return;
     Object.assign(placeState, { phase: "done", ...next });
     renderPlaceControls();
-    if (next.tone === "ok") pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
+    if (next.tone === "ok" || next.overpaid) pollBets().catch((error) => console.error("[unabated-ticket] bets poll failed", error));
   }
 
   function smallEl(text) {

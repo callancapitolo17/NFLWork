@@ -20,11 +20,12 @@ Rules, in order, for every request (validate_polymarket_place_request's shape):
   4. the live all-in price (ask + the taker fee) is at most PRICE_TOLERANCE
      (0.1c) worse than the Ticket's; a better one is taken. The fee is the
      market's own `feeCoefficient` x p x (1 - p), read on this quote (no
-     coefficient, no order) — unless Polymarket US charged more than its
-     market showed on the newest Place fill of at least FEE_LEARN_MIN_CONTRACTS
-     at that same coefficient: then the charged one prices the order
-     (charged_fee_coefficient), so a fee the market misstates costs at most
-     that one fill. The order's limit is the ask, so this all-in is the most a
+     coefficient, no order) — unless the newest Place fill priced at that same
+     coefficient, large enough to read the rate (FEE_LEARN_MIN_SPREAD), was
+     charged more: then the charged one prices the order
+     (charged_fee_coefficient). The Ticket still shows the market's, so Place
+     at that coefficient refuses until Polymarket US's markets show another
+     number. The order's limit is the ask, so this all-in is the most a
      contract can cost;
   5. the other side of the market is not held: buying NO against a held YES
      sells it (one instrument per market);
@@ -88,12 +89,13 @@ BET_TYPE_MONEYLINE = 1
 CONTRACT_SIDES = ("yes", "no")
 # A market's feeCoefficient above this is taken as misread, not as a fee (server/polymarket.js MAX_FEE_COEFFICIENT).
 MAX_FEE_COEFFICIENT = 0.25
-# Commission is rounded to the cent per order, so a fill this small says little about the rate
-# (fills under ~17 contracts read 0.0 to 0.12 on 2026-11-08); only larger ones correct the market's.
-FEE_LEARN_MIN_CONTRACTS = 50
-# A charged coefficient this far over the market's is a real difference, not that rounding
+# A charged coefficient this far over the market's is a real difference, not rounding
 # (0.0948-0.0951 on 15 fills charged 0.095).
 FEE_LEARN_SLACK = 0.002
+# Commission is rounded to the cent per order, which moves the charged coefficient by up to
+# 0.01 / (contracts x p x (1 - p)); a fill reads the rate only when that is at most half the
+# slack (fills under ~17 contracts read 0.0 to 0.12 on 2026-11-08).
+FEE_LEARN_MIN_SPREAD = 0.01 / (FEE_LEARN_SLACK / 2)
 # The commission's cent rounding a fill may show above the all-in it was priced at, in dollars per order.
 COMMISSION_ROUNDING_DOLLARS = 0.01
 
@@ -147,8 +149,9 @@ def validate_polymarket_place_request(body: object) -> dict | str:
 
 
 def all_in_of(ask: float, fee_coefficient: float) -> float:
-    """One contract's price with Polymarket US's taker fee (server/polymarket.js allInOf)."""
-    return round(ask + fee_coefficient * ask * (1 - ask), 6)
+    """One contract's price with Polymarket US's taker fee, unrounded (server/polymarket.js allInOf
+    rounds to 1e-6; the two languages split a 7th-decimal half differently, so nothing compares them)."""
+    return ask + fee_coefficient * ask * (1 - ask)
 
 
 def fee_coefficient_of_fill(fill_avg_price: float, fill_commission: float, count_filled: float) -> float | None:
@@ -162,18 +165,19 @@ def fee_coefficient_of_fill(fill_avg_price: float, fill_commission: float, count
 def charged_fee_coefficient(market_coefficient: float, latest_fill: dict | None) -> tuple[float, str | None]:
     """The coefficient to price this order at, and words when it is not the market's.
 
-    The newest sizable Place fill (store.latest_polymarket_fee_fill) overrides the
-    market's coefficient only when it was priced at that same coefficient and charged
-    more than it: Polymarket US misstated its fee, so its word no longer holds. A
-    market showing another coefficient since is a new word and is taken."""
-    if latest_fill is None or abs(latest_fill["fee_coefficient"] - market_coefficient) > 1e-9:
+    latest_fill is the newest Place fill priced at this same market coefficient and
+    large enough to read the rate (store.latest_polymarket_fee_fill). Charged more
+    than it, Polymarket US misstated its fee, so its word no longer holds; a market
+    showing another coefficient is a new word and finds no such fill."""
+    if latest_fill is None:
         return market_coefficient, None
     charged = fee_coefficient_of_fill(latest_fill["fill_avg_price"], latest_fill["fill_commission"],
                                       latest_fill["count_filled"])
     if charged is None or charged <= market_coefficient + FEE_LEARN_SLACK:
         return market_coefficient, None
-    return charged, (f"your last Polymarket US fill was charged a {charged:.4f} fee rate, above the "
-                     f"{market_coefficient:.4f} its market shows, so this one is priced at {charged:.4f}")
+    return charged, (f"your last Polymarket US fill at this fee was charged a {charged:.4f} rate, above the "
+                     f"{market_coefficient:.4f} its markets show, so Place there prices at {charged:.4f} until "
+                     f"Polymarket US shows another rate")
 
 
 def held_id_of(slug: str, contract_side: str) -> str:
@@ -212,7 +216,14 @@ class ManualPolymarketDesk:
         refusal = self._refusal(request, quote)
         if refusal:
             return {"status": STATUS_REFUSED, "message": f"Not placed: {refusal}"}
-        all_in = quote["chargedAllIn"]
+        charged, why = charged_fee_coefficient(quote["feeCoefficient"], self._store.latest_polymarket_fee_fill(
+            quote["feeCoefficient"], FEE_LEARN_MIN_SPREAD))
+        all_in = all_in_of(quote["ask"], charged)
+        if all_in > request["ticket_all_in"] + PRICE_TOLERANCE:
+            reason = f" ({why})" if why else ""
+            return {"status": STATUS_REFUSED, "message": (
+                f"Not placed: Polymarket US is at {_cents(all_in)} all-in now ({_cents(quote['ask'])} + fee), more "
+                f"than 0.1¢ worse than the Ticket's {_cents(request['ticket_all_in'])}{reason}.")}
         count = math.floor(request["stake"] / all_in)
         if count < 1:
             return {"status": STATUS_REFUSED,
@@ -232,10 +243,11 @@ class ManualPolymarketDesk:
         })
         if not inserted:
             return {"status": STATUS_REFUSED, "message": "Not placed: this click was already sent."}
-        log.info("polymarket place %s: %s %s x%d @ %s (all-in %s at fee %s, market fee %s, Ticket %s)", client_order_id,
-                 quote["slug"], quote["side"], count, quote["ask"], all_in, quote["chargedFeeCoefficient"],
+        log.info("polymarket place %s: %s %s x%d @ %s (all-in %.6f at fee %s, market fee %s, Ticket %s)",
+                 client_order_id, quote["slug"], quote["side"], count, quote["ask"], all_in, charged,
                  quote["feeCoefficient"], request["ticket_all_in"])
-        return self._send(client_order_id, {**quote, "ticketAllIn": request["ticket_all_in"]}, count)
+        # The order carries the all-in it was sized at (the charged fee's) and the Ticket's, for its outcome.
+        return self._send(client_order_id, {**quote, "allIn": all_in, "ticketAllIn": request["ticket_all_in"]}, count)
 
     def _refusal(self, request: dict, quote: dict) -> str | None:
         """Why this click must not become an order, in words, or None."""
@@ -254,17 +266,6 @@ class ManualPolymarketDesk:
             return f"Polymarket US's ask {ask!r} is not a price."
         if not _is_number(fee_coefficient) or not 0 <= fee_coefficient <= MAX_FEE_COEFFICIENT:
             return f"the runner did not say Polymarket US's fee on this market (feeCoefficient {fee_coefficient!r})."
-        if not _is_number(quote.get("allIn")) or abs(quote["allIn"] - all_in_of(ask, fee_coefficient)) > 1e-6:
-            return (f"the runner's all-in {quote.get('allIn')!r} is not {_cents(ask)} plus the market's "
-                    f"{fee_coefficient} fee.")
-        charged, why = charged_fee_coefficient(fee_coefficient,
-                                               self._store.latest_polymarket_fee_fill(FEE_LEARN_MIN_CONTRACTS))
-        all_in = all_in_of(ask, charged)
-        if all_in > request["ticket_all_in"] + PRICE_TOLERANCE:
-            reason = f" ({why})" if why else ""
-            return (f"Polymarket US is at {_cents(all_in)} all-in now ({_cents(ask)} + fee), more than 0.1¢ worse "
-                    f"than the Ticket's {_cents(request['ticket_all_in'])}{reason}.")
-        quote["chargedFeeCoefficient"], quote["chargedAllIn"] = charged, all_in
         other_side = "no" if quote["side"] == "yes" else "yes"
         if self._store.bet_is_open(held_id_of(quote["slug"], other_side)):
             return (f"you hold the {other_side.upper()} side of {quote['slug']}; buying {quote['side'].upper()} "
@@ -409,19 +410,18 @@ def _overpaid_words(filled: float, paid: float | None, ticket_all_in: float) -> 
     if each <= ticket_all_in + PRICE_TOLERANCE + COMMISSION_ROUNDING_DOLLARS / filled:
         return None
     return (f"this cost {_cents(each)} a contract with Polymarket US's fee, more than the Ticket's "
-            f"{_cents(ticket_all_in)}: its fee was above what the market showed, so Place there now prices at the "
-            f"fee it charged")
+            f"{_cents(ticket_all_in)}: Polymarket US charged a higher fee than its market shows")
 
 
 def _outcome_message(outcome: str, quote: dict, count: int, filled: float, paid: float | None) -> str:
     """A Polymarket US contract pays $1, so a fill pays back `filled` dollars.
     Without the cost it says what filled, at the quoted price."""
-    price = _cents(quote["chargedAllIn"])
+    price = _cents(quote["allIn"])
     if outcome == STATUS_REJECTED:
         return "Polymarket US rejected the order. Nothing was placed."
     if outcome not in (STATUS_FILLED, STATUS_PARTIAL):
         return f"Nothing filled at {price}: the price was gone. Nothing rests."
     rest = "." if outcome == STATUS_FILLED else "; the rest was not there. Nothing rests."
     if paid is None:
-        return unpriced_fill_message("Polymarket US", quote.get("label"), filled, count, quote["chargedAllIn"], rest)
+        return unpriced_fill_message("Polymarket US", quote.get("label"), filled, count, quote["allIn"], rest)
     return filled_bet_message(quote.get("label"), paid, filled, contracts_detail(filled, count, paid)) + rest
