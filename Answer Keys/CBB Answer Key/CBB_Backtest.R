@@ -114,9 +114,10 @@ git_commit_of <- function(dir) {
 
 run_command <- function(opts) {
   source_code_under_test(opts$code_dir)
-  out_con <- duckdb_connect_retry(BACKTEST_DB_PATH)
-  on.exit(dbDisconnect(out_con, shutdown = TRUE))
-  check_saved_schema(out_con)  # before pricing, so a stale file costs nothing
+  # Schema check before pricing, so a stale file costs nothing; the connection
+  # is closed again so a second run or a report can open the file meanwhile.
+  schema_con <- duckdb_connect_retry(BACKTEST_DB_PATH)
+  tryCatch(check_saved_schema(schema_con), finally = dbDisconnect(schema_con, shutdown = TRUE))
 
   data_con <- duckdb_connect_retry(DATA_DB_PATH, read_only = TRUE)
   inputs <- tryCatch(
@@ -143,6 +144,8 @@ run_command <- function(opts) {
                    books = if (is.null(opts$books)) "all" else paste(opts$books, collapse = ","),
                    games_priced = games_priced, games_not_converged = priced$not_converged_games,
                    minutes = round(minutes, 1))
+  out_con <- duckdb_connect_retry(BACKTEST_DB_PATH, max_retries = 30)
+  on.exit(dbDisconnect(out_con, shutdown = TRUE))
   save_backtest_run(out_con, opts$label, priced$predictions, run_info)
   cat(sprintf("saved label '%s' to %s\n", opts$label, BACKTEST_DB_PATH))
   saved <- load_backtest_runs(out_con, opts$label)
@@ -150,7 +153,10 @@ run_command <- function(opts) {
 }
 
 report_command <- function(opts) {
-  con <- dbConnect(duckdb(), dbdir = BACKTEST_DB_PATH, read_only = TRUE)
+  con <- tryCatch(dbConnect(duckdb(), dbdir = BACKTEST_DB_PATH, read_only = TRUE), error = function(e) {
+    stop("cannot open ", BACKTEST_DB_PATH, " (a run may be saving to it; retry in a minute): ",
+         conditionMessage(e))
+  })
   on.exit(dbDisconnect(con, shutdown = TRUE))
   saved <- load_backtest_runs(con, opts$labels)
   print_backtest_report(saved$predictions, saved$runs, opts$edge)

@@ -104,9 +104,11 @@ test_that("a test game is priced only off earlier games and grades each line", {
   history <- .four_game_history()
   history[, `:=`(game_home_margin_fg = home_margin, game_total_fg = total_final_score)]
   seen_train_dates <- NULL
+  seen_dispersion <- NULL
   restore <- .mock_sampler(function(id, parent_spread, parent_total, target_cover, target_over,
                                     DT, ss, st, N, ...) {
     seen_train_dates <<- DT$game_date
+    seen_dispersion <<- c(ss = ss, st = st)
     list(sample = DT, final_N = nrow(DT), converged = TRUE)
   })
   on.exit(restore())
@@ -119,6 +121,10 @@ test_that("a test game is priced only off earlier games and grades each line", {
   rows <- priced$predictions
   expect_identical(names(rows), PREDICTION_COLUMNS)
   expect_true(all(seen_train_dates < as.Date("2024-01-04")))
+  # distance weights off the 3 training games, not all 4
+  train_dispersion <- compute_dispersion(history[1:3], moneyline = FALSE)
+  expect_equal(seen_dispersion, c(ss = train_dispersion$ss, st = train_dispersion$st))
+  expect_false(isTRUE(all.equal(seen_dispersion[["ss"]], compute_dispersion(history, moneyline = FALSE)$ss)))
   spread <- rows[market == "spreads_h1"]
   expect_equal(spread$model_prob, 1 / 3)  # 1H margins 2, -1, 0: only 2 covers -0.5
   expect_equal(spread$outcome, 0)         # test game's 1H margin 0 does not cover -0.5
@@ -159,6 +165,32 @@ test_that("a sampler error anywhere stops the whole run, naming the game", {
                    n_books = 2L, best_side1_american_odds = -110, best_side2_american_odds = -110)
   setkey(h1, event_id)
   expect_error(price_test_games(history, h1, 3:4, sample_pct = 1, cores = 1), "e4\\): bad game")
+})
+
+test_that("non-converged games are counted, and a game without history stops the run", {
+  history <- .four_game_history()
+  history[, `:=`(game_home_margin_fg = home_margin, game_total_fg = total_final_score)]
+  restore <- .mock_sampler(function(...) NULL)
+  on.exit(restore())
+  h1 <- data.table(event_id = c("e1", "e3", "e4"), market = "h2h_h1", line = 0, book_fair_prob = 0.5,
+                   n_books = 2L, best_side1_american_odds = -110, best_side2_american_odds = -110)
+  setkey(h1, event_id)
+  priced <- price_test_games(history, h1, 3:4, sample_pct = 1, cores = 1)
+  expect_equal(priced$not_converged_games, 2L)
+  expect_equal(nrow(priced$predictions), 0)
+  expect_error(price_test_games(history, h1, c(1L, 4L), sample_pct = 1, cores = 1),
+               "1 test games have under half the history")
+})
+
+test_that("an error outside the sampler is also caught per game", {
+  history <- .four_game_history()  # no game_home_margin_fg: the full-game predictor fails
+  restore <- .mock_sampler(function(id, parent_spread, parent_total, target_cover, target_over,
+                                    DT, ...) list(sample = DT, final_N = nrow(DT), converged = TRUE))
+  on.exit(restore())
+  result <- suppressWarnings(price_test_game(history[4], history, data.table(
+    event_id = "e4", market = "h2h_h1", line = 0, book_fair_prob = 0.5, n_books = 2L,
+    best_side1_american_odds = -110, best_side2_american_odds = -110), sample_pct = 1))
+  expect_equal(result$status, "error")
 })
 
 test_that("test games need half the history behind them and 1H lines; max_games subsets", {
@@ -212,11 +244,12 @@ test_that("flat bets take the side with the edge at the best price", {
 
 test_that("a line where best prices let both sides clear the edge bets only the bigger one", {
   graded <- common_graded_lines(.graded_fixture()[label == "a"])
-  graded[market == "spreads_h1", `:=`(model_prob = 0.52, best_side1_american_odds = 110,
-                                      best_side2_american_odds = 110)]
+  # 0.51 at +115 / +115: side 1 EV 0.0965, side 2 EV 0.0535, both over 3%
+  graded[market == "spreads_h1", `:=`(model_prob = 0.51, best_side1_american_odds = 115,
+                                      best_side2_american_odds = 115)]
   bets <- flat_bets(graded, edge_threshold = 0.03)[market_group == "spreads_h1"]
   expect_equal(nrow(bets), 1)
-  expect_equal(bets$claimed_edge, 0.52 * 2.1 - 1)
+  expect_equal(bets$claimed_edge, 0.51 * 2.15 - 1)
 })
 
 test_that("log loss change is to minus from, so negative means the second label is better", {
@@ -264,8 +297,14 @@ test_that("a saved table with other columns stops the run before pricing", {
   con <- dbConnect(duckdb(), dbdir = path); on.exit(dbDisconnect(con, shutdown = TRUE))
   dbWriteTable(con, RUNS_TABLE, data.frame(label = "old", run_at = Sys.time()))
   expect_error(check_saved_schema(con), "backtest_runs was saved with columns")
+  old_predictions <- .graded_fixture()[label == "a"][, outcome := NULL]
+  setcolorder(old_predictions, "label")
+  dbWriteTable(con, PREDICTIONS_TABLE, old_predictions)
+  expect_error(check_saved_schema(con), "backtest_predictions was saved with columns")
+
+  fresh <- dbConnect(duckdb(), dbdir = tempfile(fileext = ".duckdb"))
+  on.exit(dbDisconnect(fresh, shutdown = TRUE), add = TRUE)
   info <- .run_info(); info$books <- NULL
-  expect_error(save_backtest_run(dbConnect(duckdb(), dbdir = tempfile(fileext = ".duckdb")), "a",
-                                 .graded_fixture()[label == "a"][, label := NULL], info),
+  expect_error(save_backtest_run(fresh, "a", .graded_fixture()[label == "a"][, label := NULL], info),
                "run_info must have")
 })

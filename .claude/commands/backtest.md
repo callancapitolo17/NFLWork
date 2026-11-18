@@ -4,8 +4,8 @@ Run a backtesting analysis. Parameters: $ARGUMENTS
 
 Expected format: `<sport> [date_range] [market_types] [parameters]`
 Examples:
-- `/backtest cbb 2024-11-01 to 2025-03-01`
-- `/backtest cbb --sample-pct 0.01,0.02,0.03` (CBB: one labelled run per value, then one report)
+- `/backtest cbb` (walk-forward over all CBB games with 1H closing lines)
+- `/backtest cbb sample-pct 0.01, 0.02, 0.03` (one labelled `run --sample-pct P` per value, then one `report --labels`)
 - `/backtest nfl spreads,totals`
 
 ## Steps
@@ -23,7 +23,7 @@ Examples:
 Execute the R script with configured parameters.
 
 ### 4. Analyze results
-Report:
+For CBB, report what `CBB_Backtest.R` prints (sample centring, log loss vs the book close, paired change between labels, flat-bet ROI by market with intervals) and name the items below it cannot produce (CLV, by book, drawdown, Kelly) instead of estimating them. For other sports, report:
 - **Overall ROI** — net profit / total wagered
 - **CLV** — average closing line value
 - **Hit rate** — wins / total bets

@@ -16,8 +16,8 @@
 #   3. Betting: flat $100 bets at the best closing price wherever the model
 #      claims an edge >= the threshold, ROI with a by-game bootstrap interval.
 #
-# The run needs Tools.R already sourced (run_answer_key_sample,
-# compute_dispersion, walk_forward_training_set, has_walk_forward_history).
+# The run needs Tools.R already sourced; CBB_Backtest.R's
+# source_code_under_test() lists the functions it needs and checks them.
 # =============================================================================
 
 suppressMessages({
@@ -118,6 +118,9 @@ load_h1_closing_lines <- function(con, books = NULL, min_books = MIN_BOOKS_PER_L
        OR (s1.market = 'totals_h1' AND s1.outcome_name = 'Over'
            AND s2.outcome_name = 'Under' AND s2.outcome_point = s1.outcome_point)
   "))
+  if (nrow(book_pairs) == 0) {
+    stop("load_h1_closing_lines: cbb_derivative_closing_odds has no paired spreads_h1 / totals_h1 / h2h_h1 prices")
+  }
   if (!is.null(books)) {
     unknown <- setdiff(books, book_pairs$bookmaker_key)
     if (length(unknown) > 0) {
@@ -144,26 +147,38 @@ load_h1_closing_lines <- function(con, books = NULL, min_books = MIN_BOOKS_PER_L
 # Pricing
 # -----------------------------------------------------------------------------
 
+# predict_*_from_sample returns an empty tibble, with only a warning, when
+# the sample lacks the column; that must not become a run of NA probabilities.
+stop_unless_one_prob_per_line <- function(probs, lines, period) {
+  if (length(probs) != length(lines)) {
+    stop("expected ", length(lines), " sample probabilities for period '", period, "', got ",
+         length(probs), " (is the sample missing that period's column?)")
+  }
+}
+
 #' Sample probability that the home side covers each home spread in `lines`,
 #' through Tools.R's predict_spreads_from_sample (as live prices), so a change
 #' to it in --code-dir shows up. Pushes are left out; a line no non-push sample
 #' game decides is NA. `period` "h1" / "fg" picks game_home_margin_<period>.
 sample_home_cover_probs <- function(sample, lines, period) {
-  # The predictor names a column per line, so it is asked once per distinct line
-  distinct_lines <- unique(lines)
+  # The predictor names a column per line (as.character), so it is asked once
+  # per distinct name
+  distinct_lines <- lines[!duplicated(as.character(lines))]
   probs <- unlist(predict_spreads_from_sample(sample, distinct_lines, margin_col = "game_home_margin",
                                               period = period), use.names = FALSE)
+  stop_unless_one_prob_per_line(probs, distinct_lines, period)
   probs[!is.finite(probs)] <- NA_real_
-  probs[match(lines, distinct_lines)]
+  probs[match(as.character(lines), as.character(distinct_lines))]
 }
 
 #' Sample probability of over each total in `lines` (predict_totals_from_sample).
 sample_over_probs <- function(sample, lines, period) {
-  distinct_lines <- unique(lines)
+  distinct_lines <- lines[!duplicated(as.character(lines))]
   probs <- unlist(predict_totals_from_sample(sample, distinct_lines, total_col = "game_total",
                                              period = period), use.names = FALSE)
+  stop_unless_one_prob_per_line(probs, distinct_lines, period)
   probs[!is.finite(probs)] <- NA_real_
-  probs[match(lines, distinct_lines)]
+  probs[match(as.character(lines), as.character(distinct_lines))]
 }
 
 #' 1 above the threshold, 0 below, NA on a push.
@@ -183,8 +198,7 @@ select_test_games <- function(history, h1_lines, max_games = 0, seed = 42) {
   test_idx
 }
 
-# One row per priced line; save_backtest_run checks a saved table against this
-# before pricing starts.
+# One row per priced line; check_saved_schema() compares a saved table to this.
 PREDICTION_COLUMNS <- c(
   "odds_id", "game_date", "market", "line", "model_prob", "book_fair_prob",
   "best_side1_american_odds", "best_side2_american_odds", "outcome",
@@ -230,21 +244,23 @@ prediction_rows <- function(test_game, sample, game_h1_lines) {
 #' @param game_h1_lines this game's rows of load_h1_closing_lines()
 #' @return list(status, predictions, message). status is "priced",
 #'   "no_history" (under half the history behind it), "not_converged" (the
-#'   sampler returned nothing, as live skips such a game) or "error" (the
-#'   sampler threw; message holds why)
+#'   sampler returned nothing, as live skips such a game) or "error" (any
+#'   step threw; message holds why)
 price_test_game <- function(test_game, history, game_h1_lines, sample_pct = SAMPLE_PCT_DEFAULT) {
+  tryCatch(price_test_game_unguarded(test_game, history, game_h1_lines, sample_pct),
+           error = function(e) list(status = "error", message = conditionMessage(e)))
+}
+
+price_test_game_unguarded <- function(test_game, history, game_h1_lines, sample_pct) {
   train <- walk_forward_training_set(history, test_game$game_date)
   if (is.null(train)) return(list(status = "no_history"))
   dispersion <- compute_dispersion(train, moneyline = FALSE,
                                    spread_col = "home_spread", total_col = "total_line")
   target_N <- round(nrow(train) * sample_pct)
-  result <- tryCatch(
-    suppressWarnings(run_answer_key_sample(
-      test_game$odds_id, test_game$home_spread, test_game$total_line,
-      test_game$consensus_devig_home_odds, test_game$consensus_devig_over_odds,
-      train, dispersion$ss, dispersion$st, target_N, use_spread_line = TRUE)),
-    error = function(e) e)
-  if (inherits(result, "error")) return(list(status = "error", message = conditionMessage(result)))
+  result <- suppressWarnings(run_answer_key_sample(
+    test_game$odds_id, test_game$home_spread, test_game$total_line,
+    test_game$consensus_devig_home_odds, test_game$consensus_devig_over_odds,
+    train, dispersion$ss, dispersion$st, target_N, use_spread_line = TRUE))
   if (is.null(result) || is.null(result$sample) || nrow(result$sample) == 0) {
     return(list(status = "not_converged"))
   }
@@ -281,7 +297,7 @@ price_test_games <- function(history, h1_lines, test_idx, sample_pct = SAMPLE_PC
   }
   if (any(status == "error")) {
     first <- per_game[[which(status == "error")[1]]]
-    stop("price_test_games: the sampler threw on ", sum(status == "error"), " games; first (",
+    stop("price_test_games: pricing threw on ", sum(status == "error"), " games; first (",
          history$odds_id[test_idx[which(status == "error")[1]]], "): ", first$message)
   }
   if (any(status == "no_history")) {
@@ -316,15 +332,16 @@ stop_if_columns_changed <- function(con, table, columns) {
   invisible(TRUE)
 }
 
-#' Save one run's predictions under `label`, replacing that label's old rows.
-#'
-#' Side effect: writes PREDICTIONS_TABLE and RUNS_TABLE in the DB at `con`
-#' (DELETE that label's rows, then append), inside one transaction.
+#' Stop when a saved table's columns differ from this version's (read only).
 check_saved_schema <- function(con) {
   stop_if_columns_changed(con, PREDICTIONS_TABLE, c("label", PREDICTION_COLUMNS))
   stop_if_columns_changed(con, RUNS_TABLE, RUN_COLUMNS)
 }
 
+#' Save one run's predictions under `label`, replacing that label's old rows.
+#'
+#' Side effect: writes PREDICTIONS_TABLE and RUNS_TABLE in the DB at `con`
+#' (DELETE that label's rows, then append), inside one transaction.
 save_backtest_run <- function(con, label, predictions, run_info) {
   predictions <- copy(predictions)
   predictions[, label := label]
