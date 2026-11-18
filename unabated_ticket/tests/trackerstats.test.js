@@ -184,6 +184,7 @@ test("a bet the source could not place gets its market from the venue's own text
     ["bfa", { description: "[309011] EASTERN ILLINOIS +35½-110" }, "Spread"],
     ["bfa", { description: "Detroit Lions vs Carolina Panthers Bryce Young (CAR) 234+ Passing Yards" }, "Player prop"],
     ["bfa", { description: "Florida Panthers vs San Jose Sharks First Goalscorer - Will Smith (FLA @ SJ)" }, "Player prop"],
+    ["bfa", { description: "Las Vegas Raiders vs San Francisco 49Ers First Touchdown Scorer - Kyle Juszczyk (LVR @ SF)" }, "Player prop"],
     ["wagerzon", { sportCode: "PROP", description: "[777045] GIANTS SUPERFECTA (SCR 1ST, 1Q, 1H & GM +7½) +1935" }, "Special"],
     ["wagerzon", { sportCode: "RBL", description: "George Kittle (SF) 1+ Touchdowns <br /> Miami Dolphins vs San Francisco 49Ers" }, "Player prop"],
     ["bet105", { market: "Tulsa team total" }, "Team total"],
