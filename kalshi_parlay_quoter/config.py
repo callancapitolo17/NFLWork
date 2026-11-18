@@ -52,13 +52,20 @@ MIN_RFQ_TARGET_COST_USD = float(_get("PARLAY_MIN_RFQ_TARGET_COST_USD", "50"))
 # The runner's leg pricers (#282), loopback only.
 RUNNER_URL = _get("UNABATED_RUNNER_URL", "http://127.0.0.1:8095").rstrip("/")
 
-# Leg table (legtable.py): every leg seen in the last LEG_TTL is re-priced
-# every REFRESH_SEC in one pass of board-only runner calls.
+# Leg table (legtable.py): every REFRESH_SEC the runner's league snapshot
+# times are read off /health, and the legs seen in the last LEG_TTL whose
+# league changed are re-priced by board-only runner calls.
 TABLE_REFRESH_SEC = float(_get("PARLAY_TABLE_REFRESH_SEC", "2"))
+TABLE_HEALTH_TIMEOUT_SEC = float(_get("PARLAY_TABLE_HEALTH_TIMEOUT_SEC", "3"))
+# A leg is re-priced when its league's snapshot changes, and at the latest
+# this long after it was priced.
+TABLE_MAX_REUSE_SEC = float(_get("PARLAY_TABLE_MAX_REUSE_SEC", "90"))
 TABLE_LEG_TTL_SEC = float(_get("PARLAY_TABLE_LEG_TTL_SEC", "600"))
-# A fair older than this is not priced on. 15 s, not 2x the refresh: the
-# runner's board thread is busy for 5-14 s at a time building Edges, and a
-# refresh waits behind that. Every row logs the fair's true age.
+# Fairs are served while the snapshot times were read under this long ago,
+# and for this long after a league's snapshot changed while its legs are
+# re-priced. 15 s, not 2x the refresh: the runner's board thread is busy for
+# 5-14 s at a time building Edges, and /health and a re-price wait behind
+# that. Every row logs the fair's true age.
 TABLE_MAX_AGE_SEC = float(_get("PARLAY_TABLE_MAX_AGE_SEC", "15"))
 TABLE_FETCH_TIMEOUT_SEC = float(_get("PARLAY_TABLE_FETCH_TIMEOUT_SEC", "15"))
 # An RFQ with a leg the table has not priced yet waits this long for it
@@ -75,8 +82,11 @@ MAX_BACKLOG = int(_get("PARLAY_MAX_BACKLOG", "2000"))
 # /rfq_price.json, which reads Kalshi's market, book and start per leg. Those
 # reads share Kalshi's 20 reads/s limit with the taker bot, so only this many
 # would-quote parlays a second are confirmed; the rest are counted
-# would_quote_unconfirmed.
-CONFIRMS_PER_SEC = float(_get("PARLAY_CONFIRMS_PER_SEC", "1"))
+# would_quote_unconfirmed. Off (0) by default since 2026-11-13: on the VM
+# most confirms timed out (16 confirmed, 288 timed out in 80 minutes) and
+# their reads run on the taker's thread. To come back reading the runner's
+# Kalshi book stream instead.
+CONFIRMS_PER_SEC = float(_get("PARLAY_CONFIRMS_PER_SEC", "0"))
 CONFIRM_WORKERS = int(_get("PARLAY_CONFIRM_WORKERS", "2"))
 CONFIRM_TIMEOUT_SEC = float(_get("PARLAY_CONFIRM_TIMEOUT_SEC", "3"))
 # After a confirm the runner failed or timed out on, no confirm is sent for
