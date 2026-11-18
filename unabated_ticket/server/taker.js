@@ -84,8 +84,8 @@ const NOVIG_BOOK_ID = 89;
 // What Kalshi's Kelly divides by (Cal, 2026-11-06: $10,000; $7,500 from 2026-11-04, $5,000 from 2026-10-28, $2,000 before); the money at risk is the
 // order desk's ceiling, 60% of it (taker_orders.MAX_OPEN_COST). taker_orders.KELLY_BANKROLL must match.
 const KELLY_BANKROLL = 10000;
-// Novig's Kelly bankroll (Cal, 2026-10-16: $2,000, Kalshi's then), its own parameter, apart from the Novig desk's $1,000 cap.
-const NOVIG_KELLY_BANKROLL = 2000;
+// Novig's Kelly bankroll (Cal, 2026-11-18: $4,000; $2,000 from 2026-10-16, Kalshi's then), its own parameter, apart from the Novig desk's $2,400 cap.
+const NOVIG_KELLY_BANKROLL = 4000;
 const BOT_KELLY = 0.25;
 // Both Unabated's edge (candidateRows) and the live edge (decideRow) must reach it.
 // Cal, 2026-11-18 (bot audit): 4%, as his manual floor; 3% before. Novig's 3-5% bets

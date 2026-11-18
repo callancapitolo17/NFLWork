@@ -1,7 +1,7 @@
 """The automated taker's Novig order desk (automated_taker_plan.md § Novig):
 the only place a bot order is sent to Novig. The server runner
 (server/runner.js + server/taker.js) decides; this module checks the stop
-files, the holdings' freshness and the Novig $1,000 ceiling, sends ONE
+files, the holdings' freshness and the Novig $2,400 ceiling, sends ONE
 immediate-or-cancel buy at the ask the decision was checked at, and reads what
 filled. Kalshi's desk (taker_orders.py) is untouched apart from asking this
 module about Novig bot orders on the same game.
@@ -80,9 +80,10 @@ log = logging.getLogger(__name__)
 
 # Cal: Novig's own cap on open cost, apart from Kalshi's ($500 from 2026-10-16;
 # $850 from 2026-11-04, the sub-account's idle cash put to work; $1,000 from
-# 2026-11-10, with $150 more moved in). The
+# 2026-11-10, with $150 more moved in; $2,400 from 2026-11-18, 60% of the
+# $4,000 Kelly bankroll like Kalshi's, with $1,400 more moved in). The
 # Kelly bankroll that sizes the stake is the runner's (taker.js NOVIG_KELLY_BANKROLL).
-OPEN_COST_CEILING = 1000.0
+OPEN_COST_CEILING = 2400.0
 # The bot subaccount's bets are recorded as "novig:<order id>:bot" (sources/novig_subaccount.py).
 BOT_ACCOUNT_NAME = "bot"
 # Novig's 422 code for an order the subaccount's cash cannot pay for.
