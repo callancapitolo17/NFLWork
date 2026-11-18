@@ -177,6 +177,8 @@ cat("H1 moneylines:", nrow(ml_h1), "\n")
 games_with_derivs <- unique(c(spreads_h1$event_id, totals_h1$event_id, ml_h1$event_id))
 DT_test <- DT %>% filter(odds_id %in% games_with_derivs)
 cat("\nGames with BetOnline derivative odds:", nrow(DT_test), "\n")
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 
 test_ids <- unique(DT_test$odds_id)
 cat("Testing on all", length(test_ids), "games\n")
@@ -185,8 +187,7 @@ cat("Testing on all", length(test_ids), "games\n")
 disp <- compute_dispersion(DT, moneyline = FALSE, spread_col = "home_spread", total_col = "total_line")
 ss <- disp$ss
 st <- disp$st
-N_SAMPLE <- round(nrow(DT) * SAMPLE_PCT, 0)
-cat("Sample size N:", N_SAMPLE, "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of each test game's prior history\n\n")
 
 # =============================================================================
 # WORKER FUNCTION
@@ -205,7 +206,9 @@ process_single_game <- function(test_id) {
   if (is.na(parent_spread) || is.na(parent_total)) return(NULL)
   if (is.na(target_cover) || is.na(target_over)) return(NULL)
 
-  DT_train <- DT[DT$odds_id != test_id, ]
+  DT_train <- walk_forward_training_set(DT, test_game$game_date)
+  if (is.null(DT_train)) return(NULL)
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
 
   sample_result <- tryCatch({
     run_answer_key_sample(
@@ -215,7 +218,7 @@ process_single_game <- function(test_id) {
       target_cover = target_cover,
       target_over = target_over,
       DT = DT_train,
-      ss = ss, st = st, N = N_SAMPLE,
+      ss = ss, st = st, N = N_game,
       use_spread_line = TRUE
     )
   }, error = function(e) NULL)
@@ -341,7 +344,7 @@ start_time <- Sys.time()
 cl <- makeCluster(N_CORES)
 
 clusterExport(cl, c("DT", "DT_test", "spreads_h1", "totals_h1", "ml_h1",
-                    "ss", "st", "N_SAMPLE", "devig_pair", "process_single_game",
+                    "ss", "st", "SAMPLE_PCT", "devig_pair", "process_single_game",
                     "american_to_prob"))
 
 clusterEvalQ(cl, {

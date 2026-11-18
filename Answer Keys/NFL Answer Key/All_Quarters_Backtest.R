@@ -63,7 +63,7 @@ print(derivative_odds %>% count(market))
 disp <- compute_dispersion(DT_2020_plus, moneyline = FALSE)
 ss <- disp$ss
 st <- disp$st
-N <- round(nrow(DT_all) * 0.10, 0)
+SAMPLE_PCT <- 0.10  # N = 10% of each test game's prior history
 
 # Helper functions
 # devig_american() (2-way pair) is sourced from Tools.R (probit-based,
@@ -105,13 +105,15 @@ market_to_period <- list(
 # Get all test games
 all_test_games <- unique(derivative_odds$game_id)
 all_test_games <- all_test_games[all_test_games %in% DT_2020_plus$game_id]
+test_game_dates <- DT_2020_plus$game_date[match(all_test_games, DT_2020_plus$game_id)]
+all_test_games <- all_test_games[has_walk_forward_history(DT_all, test_game_dates)]
 
 cat("\n=========================================\n")
 cat("ALL QUARTERS BACKTEST\n")
 cat("=========================================\n\n")
 
 cat("Test games:", length(all_test_games), "\n")
-cat("Sample size N:", N, "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of each test game's prior history\n\n")
 
 cat("Running predictions for all games...\n")
 
@@ -126,7 +128,9 @@ for (i in seq_along(all_test_games)) {
   game_odds <- derivative_odds %>% filter(game_id == test_game_id)
   if (nrow(game_odds) == 0) next
 
-  DT_train <- DT_all[DT_all$game_id != test_game_id, ]
+  DT_train <- walk_forward_training_set(DT_all, test_game$game_date)
+  if (is.null(DT_train)) next
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
 
   parent_spread <- test_game$home_spread
   parent_total <- test_game$total_line
@@ -140,7 +144,7 @@ for (i in seq_along(all_test_games)) {
     run_answer_key_sample(
       id = test_game_id, parent_spread = parent_spread, parent_total = parent_total,
       target_cover = target_cover, target_over = target_over,
-      DT = DT_train, ss = ss, st = st, N = N,
+      DT = DT_train, ss = ss, st = st, N = N_game,
       use_spread_line = TRUE
     )
   }, error = function(e) NULL)

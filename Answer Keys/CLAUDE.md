@@ -208,6 +208,7 @@ mlb_triple_play.R (standalone pricer)
     ~100 of 110 Wagerzon rows were a two-month-old slate. A new scraper must write `game_start_time TIMESTAMPTZ` UTC and
     wire `.drop_past_games()` into its `get_*_odds()` helper. Regression
     test: `tests/test_drop_past_games.R`.
+12. **Backtests are walk-forward, never leave-one-out (2026-11-17)** — every backtest prices a test game off `Tools.R::walk_forward_training_set(DT, test_game$game_date)` (games dated strictly before it; NULL when under `WALK_FORWARD_MIN_TRAIN_SHARE` = half the history precedes it), filters its test pool with `has_walk_forward_history()` before sampling test ids, and sizes N per test game as `pct * nrow(DT_train)`, the way live sizes it off all history to date. CBB and NFL game_date is a UTC date, so an early-evening ET game can still train a later game the same night. Backtest numbers from before this change (e.g. the 2026-06-15 extreme-samples holdout) were leave-one-out with N off the full history.
 
 ## Known model biases
 

@@ -174,6 +174,8 @@ cat("H1 moneylines:", nrow(ml_h1), "\n")
 games_with_derivs <- unique(c(spreads_h1$event_id, totals_h1$event_id, ml_h1$event_id))
 DT_test <- DT %>% filter(odds_id %in% games_with_derivs)
 cat("\nGames with derivative odds:", nrow(DT_test), "\n")
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 
 set.seed(RANDOM_SEED)
 if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
@@ -205,7 +207,9 @@ process_single_game <- function(test_id) {
   if (is.na(parent_spread) || is.na(parent_total)) return(NULL)
   if (is.na(target_cover) || is.na(target_over)) return(NULL)
 
-  DT_train <- DT[DT$odds_id != test_id, ]
+  DT_train <- walk_forward_training_set(DT, test_game$game_date)
+  if (is.null(DT_train)) return(NULL)
+  N_game <- round(nrow(DT_train) * sample_pct, 0)  # live sizes N off all history to date
 
   sample_result <- tryCatch({
     run_answer_key_sample(
@@ -215,7 +219,7 @@ process_single_game <- function(test_id) {
       target_cover = target_cover,
       target_over = target_over,
       DT = DT_train,
-      ss = ss, st = st, N = N_SAMPLE,
+      ss = ss, st = st, N = N_game,
       use_spread_line = TRUE
     )
   }, error = function(e) NULL)
@@ -339,8 +343,7 @@ for (sample_pct in SAMPLE_PCTS) {
   cat("SAMPLE SIZE:", sample_pct * 100, "%\n")
   cat("===========================================\n")
 
-  N_SAMPLE <- round(nrow(DT) * sample_pct, 0)
-  cat("N_SAMPLE:", N_SAMPLE, "\n")
+  cat("N: ", sample_pct * 100, "% of each test game's prior history\n", sep = "")
 
   start_time <- Sys.time()
 
@@ -349,7 +352,7 @@ for (sample_pct in SAMPLE_PCTS) {
 
   # Export data and functions to workers
   clusterExport(cl, c("DT", "DT_test", "spreads_h1", "totals_h1", "ml_h1",
-                      "ss", "st", "N_SAMPLE", "devig_pair", "process_single_game",
+                      "ss", "st", "sample_pct", "devig_pair", "process_single_game",
                       "american_to_prob"))
 
   # Load packages and source Tools.R on workers

@@ -1,5 +1,5 @@
 # MLB Answer Key Backtest
-# Leave-one-out backtest of F5 derivative markets against historical data
+# Walk-forward backtest of F5 derivative markets against historical data (each game priced only off games played before it)
 # Uses run_derivative_backtest() from Tools.R
 
 setwd("~/NFLWork/Answer Keys")
@@ -52,10 +52,14 @@ config <- get_sport_backtest_config("mlb")
 args <- commandArgs(trailingOnly = TRUE)
 n_test <- if (length(args) > 0) as.integer(args[1]) else 500
 
+# Sample only games with enough walk-forward history, so all n_test get priced
+all_game_ids <- unique(DT$game_id)
+all_game_ids <- all_game_ids[has_walk_forward_history(DT, DT$game_date[match(all_game_ids, DT$game_id)])]
 set.seed(42)
-test_ids <- sample(unique(DT$game_id), min(n_test, length(unique(DT$game_id))))
+test_ids <- sample(all_game_ids, min(n_test, length(all_game_ids)))
 
-cat(sprintf("Testing %d games (of %d total).\n", length(test_ids), length(unique(DT$game_id))))
+cat(sprintf("Testing %d games (of %d walk-forward eligible, %d total).\n",
+            length(test_ids), length(all_game_ids), length(unique(DT$game_id))))
 
 results <- run_derivative_backtest(
   pbp_data     = DT,

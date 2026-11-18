@@ -33,6 +33,9 @@ suppressMessages({
   library(DBI); library(parallel)
 })
 source("Tools.R")
+if (!exists("walk_forward_training_set")) {
+  stop(WORKTREE_AK, "/Tools.R has no walk_forward_training_set(); rebase that worktree on main")
+}
 
 # =============================================================================
 # CONFIG
@@ -136,6 +139,8 @@ ml_h1 <- deriv_odds %>% filter(market=="h2h_h1") %>%
 games_with_derivs <- unique(c(spreads_h1$event_id, totals_h1$event_id, ml_h1$event_id))
 DT_test <- DT %>% filter(odds_id %in% games_with_derivs)
 cat("Games with derivative odds:", nrow(DT_test), "\n")
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 
 if (!is.na(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
   set.seed(42); test_ids <- sample(unique(DT_test$odds_id), N_TEST_GAMES)
@@ -144,8 +149,7 @@ cat("Pricing", length(test_ids), "games\n")
 
 disp <- compute_dispersion(DT, moneyline=FALSE, spread_col="home_spread", total_col="total_line")
 ss <- disp$ss; st <- disp$st
-N  <- round(nrow(DT) * SAMPLE_PCT, 0)
-cat("Sample size N:", N, "| ss:", round(ss,3), "st:", round(st,3), "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of prior history | ss:", round(ss,3), "st:", round(st,3), "\n\n")
 
 # Support guard reference: 99th pct of historical lines
 P99_SPREAD <- quantile(abs(DT$home_spread), 0.99, na.rm=TRUE)
@@ -161,22 +165,24 @@ process_single_game <- function(test_id) {
   target_cover  <- tg$consensus_home_cover_prob; target_over <- tg$consensus_over_prob
   if (is.na(parent_spread)||is.na(parent_total)||is.na(target_cover)||is.na(target_over)) return(NULL)
 
-  DT_train <- DT[DT$odds_id != test_id, ]
+  DT_train <- walk_forward_training_set(DT, tg$game_date)
+  if (is.null(DT_train)) return(NULL)
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
   sr <- tryCatch(run_answer_key_sample(id=test_id, parent_spread=parent_spread, parent_total=parent_total,
-            target_cover=target_cover, target_over=target_over, DT=DT_train, ss=ss, st=st, N=N,
+            target_cover=target_cover, target_over=target_over, DT=DT_train, ss=ss, st=st, N=N_game,
             use_spread_line=TRUE), error=function(e) NULL)
   if (is.null(sr)) return(NULL)
   smp <- sr$sample; final_N <- sr$final_N
   gdate <- as.character(tg$game_date)
-  is_extreme <- (abs(parent_spread) > P99_SPREAD) || (parent_total > P99_TOTAL) || (final_N < 0.5*N)
+  is_extreme <- (abs(parent_spread) > P99_SPREAD) || (parent_total > P99_TOTAL) || (final_N < 0.5*N_game)
 
   add_row <- function(market, line, side, x, n, p_mkt, book_odds, actual) {
     out[[length(out)+1]] <<- data.frame(game_id=test_id, game_date=gdate, market=market, line=line,
       side=side, x=x, n=n, algo_prob=x/n, book_prob=p_mkt, book_odds=book_odds, actual=actual,
       final_N=final_N, is_extreme=is_extreme,
-      # production guard signal: matched-sample COLLAPSE only (final_N<0.5*N),
+      # production guard signal: matched-sample COLLAPSE only (final_N<0.5*N_game),
       # NOT the p99-line terms in is_extreme. Mirrors Tools.R low_confidence.
-      low_conf=(final_N < 0.5*N), stringsAsFactors=FALSE)
+      low_conf=(final_N < 0.5*N_game), stringsAsFactors=FALSE)
   }
 
   # H1 SPREADS
@@ -227,7 +233,7 @@ process_single_game <- function(test_id) {
 cat("Running parallel pricing...\n")
 t0 <- Sys.time()
 cl <- makeCluster(N_CORES)
-clusterExport(cl, c("DT","DT_test","spreads_h1","totals_h1","ml_h1","ss","st","N",
+clusterExport(cl, c("DT","DT_test","spreads_h1","totals_h1","ml_h1","ss","st","SAMPLE_PCT",
                     "devig_pair","american_to_prob","process_single_game",
                     "MIN_NONPUSH","P99_SPREAD","P99_TOTAL"))
 clusterEvalQ(cl, { library(data.table); library(dplyr)
