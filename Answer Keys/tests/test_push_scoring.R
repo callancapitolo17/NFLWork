@@ -66,6 +66,24 @@ for (targets in list(c(0.5, 0.5), c(0.60, 0.40), c(0.45, 0.58))) {
         sprintf("R fallback returns the stored 0 / 0.5 / 1 columns unchanged (%s)", label))
 }
 
+# 1b. C++ and R agree across many small random pools
+mismatches <- 0
+for (seed in 1:200) {
+  set.seed(seed)
+  small <- data.table(
+    actual_cover = sample(c(1, 0.5, 0), 400, replace = TRUE, prob = c(0.4, 0.2, 0.4)),
+    actual_over  = sample(c(1, 0.5, 0), 400, replace = TRUE, prob = c(0.4, 0.2, 0.4)),
+    included     = c(rep(TRUE, 100), rep(FALSE, 300))
+  )
+  .use_rcpp <<- TRUE
+  a <- balance_sample(small, 100L, 0.55, 0.45, 1L)
+  .use_rcpp <<- FALSE
+  b <- balance_sample(small, 100L, 0.55, 0.45, 1L)
+  .use_rcpp <<- TRUE
+  if (!identical(a$dt$included, b$dt$included)) mismatches <- mismatches + 1
+}
+check(mismatches == 0, sprintf("C++ and R pick the same sample on 200 random pools (%d differ)", mismatches))
+
 # 2. The old push = 0 scoring biases the same pool toward cover/over
 pool <- make_pool(1)
 old <- copy(pool)[, `:=`(actual_cover = as.numeric(actual_cover == 1),
@@ -77,7 +95,6 @@ check(non_push_share(inc_old$actual_over) > 0.52,
 
 # 3. Data with no pushes balances as before (pushes are the only change)
 pool01 <- make_pool(2)[, `:=`(actual_cover = round(actual_cover), actual_over = round(actual_over))]
-pool01[actual_cover == 0.5, actual_cover := 0]
 res01 <- balance_sample(pool01, N, 0.52, 0.5, TOL)
 check(res01$converged && abs(res01$cover_error) <= TOL && abs(res01$over_error) <= TOL,
       "0/1 data still balances within tol")

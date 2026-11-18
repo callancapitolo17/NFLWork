@@ -517,6 +517,8 @@ weight_pushes_by_target <- function(outcome, target) {
   weighted[!is.na(weighted) & weighted == 0.5] <- target
   weighted
 }
+# The pure-R path below rounds each error to 9 decimals, as sampling.cpp does,
+# so float drift from push weights never flips a sign or tol check.
 
 balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
   cover_weighted <- weight_pushes_by_target(dt[["actual_cover"]], target_cover)
@@ -553,10 +555,10 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
   set(dt, j = ".over_w",  value = over_weighted)
   n_sample <- N
 
-  cover_error <- dt[included == TRUE, sum(.cover_w, na.rm = T)] -
-    round(target_cover * n_sample)
-  over_error <- dt[included == TRUE, sum(.over_w, na.rm = T)] -
-    round(target_over * n_sample)
+  cover_error <- round(dt[included == TRUE, sum(.cover_w, na.rm = T)] -
+    round(target_cover * n_sample), 9)
+  over_error <- round(dt[included == TRUE, sum(.over_w, na.rm = T)] -
+    round(target_over * n_sample), 9)
   M <- nrow(dt)
 
   repeat {
@@ -595,10 +597,10 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     }
 
     if (!removal_failed) {
-      cover_error <- dt[included == TRUE, sum(.cover_w, na.rm = T)] -
-        round(target_cover * n_sample)
-      over_error <- dt[included == TRUE, sum(.over_w, na.rm = T)] -
-        round(target_over * n_sample)
+      cover_error <- round(dt[included == TRUE, sum(.cover_w, na.rm = T)] -
+        round(target_cover * n_sample), 9)
+      over_error <- round(dt[included == TRUE, sum(.over_w, na.rm = T)] -
+        round(target_over * n_sample), 9)
     }
 
     # ---- add one game from (n_sample+1)..M ----
@@ -623,10 +625,10 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     }
 
     if (!addition_failed) {
-      cover_error <- dt[included == TRUE, sum(.cover_w, na.rm = T)] -
-        round(target_cover * n_sample)
-      over_error <- dt[included == TRUE, sum(.over_w, na.rm = T)] -
-        round(target_over * n_sample)
+      cover_error <- round(dt[included == TRUE, sum(.cover_w, na.rm = T)] -
+        round(target_cover * n_sample), 9)
+      over_error <- round(dt[included == TRUE, sum(.over_w, na.rm = T)] -
+        round(target_over * n_sample), 9)
     }
 
     # Per Feustel: "restart the procedure looking for a smaller sample"
