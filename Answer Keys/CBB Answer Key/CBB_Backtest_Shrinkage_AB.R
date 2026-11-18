@@ -109,8 +109,8 @@ consensus <- closing_odds %>% group_by(odds_id) %>% summarize(
 pbp <- pbp %>% select(-any_of(c("home_spread","total_line")))  # avoid join collision (pbp has its own)
 DT <- pbp %>% inner_join(consensus, by="odds_id") %>%
   filter(!is.na(home_spread), !is.na(total_line), !is.na(game_home_margin_h1), !is.na(game_home_margin_h2)) %>%
-  mutate(actual_cover=ifelse(game_home_margin_fg > -home_spread,1,0),
-         actual_over =ifelse(game_total_fg > total_line,1,0)) %>%
+  mutate(actual_cover=ifelse(game_home_margin_fg > -home_spread, 1, ifelse(game_home_margin_fg == -home_spread, 0.5, 0)),
+         actual_over =ifelse(game_total_fg > total_line, 1, ifelse(game_total_fg == total_line, 0.5, 0))) %>%
   as.data.table()
 cat("Games with full data:", nrow(DT), "\n")
 

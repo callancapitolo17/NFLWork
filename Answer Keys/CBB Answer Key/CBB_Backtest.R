@@ -95,9 +95,9 @@ DT <- pbp %>%
   # Add actual_cover and actual_over columns required by balance_sample
   mutate(
     # Home covers if margin > -spread
-    actual_cover = ifelse(game_home_margin_fg > -home_spread, 1, 0),
+    actual_cover = ifelse(game_home_margin_fg > -home_spread, 1, ifelse(game_home_margin_fg == -home_spread, 0.5, 0)),
     # Over hits if total > line
-    actual_over = ifelse(game_total_fg > total_line, 1, 0)
+    actual_over = ifelse(game_total_fg > total_line, 1, ifelse(game_total_fg == total_line, 0.5, 0))
   ) %>%
   as.data.table()
 

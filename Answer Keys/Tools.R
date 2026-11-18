@@ -515,8 +515,8 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
   if (.use_rcpp) {
     result <- balance_sample_cpp(
       order_indices = seq_len(nrow(dt)),  # dt is already sorted by distance from mean_match
-      actual_cover  = as.integer(dt[["actual_cover"]]),
-      actual_over   = as.integer(dt[["actual_over"]]),
+      actual_cover  = as.numeric(dt[["actual_cover"]]),  # 0 / 0.5 (push) / 1
+      actual_over   = as.numeric(dt[["actual_over"]]),
       N             = as.integer(N),
       target_cover  = target_cover,
       target_over   = target_over,
