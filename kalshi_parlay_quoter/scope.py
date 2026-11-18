@@ -67,6 +67,13 @@ def classify_leg(leg: dict) -> LegInfo:
     return LegInfo(ticker, side, series, league, market, f"{league}:{parts[1]}")
 
 
+def league_of_leg(key: tuple[str, str]) -> str | None:
+    """The league label of a (market_ticker, side) leg, e.g. "NFL"; None when
+    it is not a leg classify_leg places. The labels are the runner's own
+    (extension/feed.js LEAGUES), which keys its snapshot times by them."""
+    return classify_leg({"market_ticker": key[0], "side": key[1]}).league
+
+
 def evaluate(legs: list[dict] | None) -> ScopeVerdict:
     if not legs:
         return ScopeVerdict(False, "no_legs", None, [], [], 0, False)

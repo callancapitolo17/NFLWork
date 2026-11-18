@@ -1279,7 +1279,135 @@ test("taker: each order carries its market's Kalshi cash pot (exchange_index), n
   runner.stop();
 });
 
-// ---- GET /rfq_price.json: RFQ legs priced off Unabated (#282, places nothing) ----
+// ---- taker: a pass that never finishes is abandoned (2026-11-13) ----
+test("taker: a pass that never finishes is abandoned after 5 min, the next pass runs, and the stuck one sends nothing when it wakes", async () => {
+  let clock = TAKER_NOW;
+  const kalshi = kalshiFetch();
+  // The first orderbook read hangs until released; every later read answers at once.
+  let release = null;
+  let held = false;
+  const hangingKalshi = (url) => {
+    if (!held && url.endsWith("/orderbook")) {
+      held = true;
+      return new Promise((resolve) => { release = () => resolve(kalshi(url)); });
+    }
+    return kalshi(url);
+  };
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const warnings = [];
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: hangingKalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => clock, timers: noTimers, logInfo: () => {}, logWarning: (text) => warnings.push(text),
+  });
+  await runner.start();
+  const stuckPass = runner.takerPass();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(runner.health().taker.runningSince, new Date(TAKER_NOW).toISOString());
+  // Under 5 min: the running pass keeps the turn.
+  clock = TAKER_NOW + 4 * 60 * 1000;
+  await runner.takerPass();
+  assert.equal(runner.health().taker.stuck.count, 0);
+  assert.equal(runner.health().taker.lastPassAt, null);
+  // Over 5 min: abandoned, and this tick's pass runs whole. The bets poll is
+  // re-read so the new pass is not blocked on a stale holdings read.
+  clock = TAKER_NOW + 5 * 60 * 1000 + 1000;
+  service.script["/bets.json"] = { ...takerBetsBody(), sources: { ...takerBetsBody().sources, kalshi: { ok: true, fetchedAt: new Date(clock - 30 * 1000).toISOString(), error: null, count: 0 } } };
+  await runner.scanner.resync();
+  await runner.pollBets();
+  await runner.takerPass();
+  const health = runner.health().taker;
+  assert.deepEqual({ count: health.stuck.count, lastStartedAt: health.stuck.lastStartedAt, runningSince: health.runningSince },
+    { count: 1, lastStartedAt: new Date(TAKER_NOW).toISOString(), runningSince: null });
+  assert.equal(health.lastPassAt, new Date(clock).toISOString());
+  assert.ok(warnings.some((text) => /taker pass 1 .* abandoned/.test(text)), warnings.join("\n"));
+  const ordersAfterNewPass = service.posts.filter((post) => post.route === "/taker/order.json").length;
+  assert.ok(ordersAfterNewPass >= 1, "the new pass sent its orders");
+  // The stuck read answers at last: its pass ends without deciding, sending or touching the pass state.
+  const newPassAt = clock;
+  clock += 20 * 1000;
+  release();
+  await stuckPass;
+  assert.equal(service.posts.filter((post) => post.route === "/taker/order.json").length, ordersAfterNewPass, "the abandoned pass sent nothing");
+  assert.equal(runner.health().taker.lastPassAt, new Date(newPassAt).toISOString(), "and did not stamp itself as the last pass");
+  assert.equal(runner.health().taker.runningSince, null);
+  runner.stop();
+});
+
+// A taker runner whose Kalshi reads matching `hangs(url)` wait until released
+// (in order, at most `count` of them), for the abandoned-pass tests.
+async function hangingTakerRunner(hangs, count = 1) {
+  const state = { clock: TAKER_NOW, releases: [], warnings: [] };
+  const kalshi = kalshiFetch();
+  const hangingKalshi = (url) => {
+    if (state.releases.length < count && hangs(url)) {
+      return new Promise((resolve) => {
+        state.releases.push({ answer: () => resolve(kalshi(url)) });
+      });
+    }
+    return kalshi(url);
+  };
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": TAKER_SETTINGS });
+  const runner = runnerLib.createRunner({
+    fetchImpl: takerUnabatedFetch(), serviceFetch: service, kalshiFetch: hangingKalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    betsServiceUrl: SERVICE_URL, now: () => state.clock, timers: noTimers, logInfo: () => {}, logWarning: (text) => state.warnings.push(text),
+  });
+  await runner.start();
+  // Move the clock and re-read what a pass needs fresh (snapshots, the bets poll).
+  const advance = async (ms) => {
+    state.clock += ms;
+    service.script["/bets.json"] = { ...takerBetsBody(), sources: { ...takerBetsBody().sources, kalshi: { ok: true, fetchedAt: new Date(state.clock - 30 * 1000).toISOString(), error: null, count: 0 } } };
+    await runner.scanner.resync();
+    await runner.pollBets();
+  };
+  const settle = async (held) => {
+    for (let turn = 0; turn < 50 && state.releases.length < held; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(state.releases.length, held, "the read is hanging");
+  };
+  const orders = () => service.posts.filter((post) => post.route === "/taker/order.json").length;
+  return { runner, state, advance, settle, orders };
+}
+
+test("taker: an abandoned pass that wakes while a newer pass is running leaves that pass the turn", async () => {
+  const { runner, state, advance, settle } = await hangingTakerRunner((url) => url.endsWith(`/markets/${TAKER_TICKER}/orderbook`), 2);
+  const first = runner.takerPass();
+  await settle(1);
+  await advance(5 * 60 * 1000 + 1000);
+  const secondAt = state.clock;
+  const second = runner.takerPass();
+  await settle(2);
+  state.releases[0].answer();
+  await first;
+  const health = runner.health().taker;
+  assert.deepEqual({ runningSince: health.runningSince, stuck: health.stuck.count, lastPassAt: health.lastPassAt },
+    { runningSince: new Date(secondAt).toISOString(), stuck: 1, lastPassAt: null }, "the abandoned pass did not clear or finish the running one");
+  state.clock += 1000;
+  await runner.takerPass();
+  assert.equal(runner.health().taker.runningSince, new Date(secondAt).toISOString(), "so no third pass starts beside it");
+  state.releases[1].answer();
+  await second;
+  assert.deepEqual([runner.health().taker.runningSince, runner.health().taker.stuck.count], [null, 1]);
+  assert.equal(runner.health().taker.lastPassAt, new Date(state.clock).toISOString());
+  runner.stop();
+});
+
+test("taker: a pass abandoned while it confirms a market sends no order when it wakes", async () => {
+  const { runner, state, advance, settle, orders } = await hangingTakerRunner((url) => url.endsWith(`/markets/${TAKER_TICKER}`));
+  const stuck = runner.takerPass();
+  await settle(1);
+  await advance(5 * 60 * 1000 + 1000);
+  await runner.takerPass();
+  const sent = orders();
+  const lastPassAt = runner.health().taker.lastPassAt;
+  assert.ok(sent >= 1, "the new pass sent its orders");
+  state.clock += 20 * 1000;
+  state.releases[0].answer();
+  await stuck;
+  assert.equal(orders(), sent, "the abandoned pass confirmed its market and still sent nothing");
+  assert.equal(runner.health().taker.lastPassAt, lastPassAt);
+  runner.stop();
+});
+
+// ---- GET /rfq_price.json, /rfq_fairs.json: RFQ legs priced off Unabated (#282, places nothing) ----
 test("rfq_fairs: the same fairs off the board alone, with no Kalshi read and at most 200 legs", async () => {
   const { runner, kalshi } = await quoteRunner({}, { now: () => TAKER_NOW });
   const legs = `${TAKER_TICKER}:yes,KXNCAAFTOTAL-26SEP19DUQWSU-53:no,KXNFL1HSPREAD-26NOV09KCDEN-KC4:yes`;
@@ -1287,6 +1415,9 @@ test("rfq_fairs: the same fairs off the board alone, with no Kalshi read and at 
   const out = await runner.rfqFairs(new URLSearchParams({ legs }));
   assert.equal(kalshi.calls.length, reads, "the table refresh reads nothing at Kalshi");
   assert.equal(out.priced_at_ms, TAKER_NOW);
+  // When each league's snapshot landed: the quoter re-prices a leg only when its league's entry changes.
+  assert.deepEqual(Object.keys(out.league_loaded_at), ["CFB"]);
+  assert.deepEqual(runner.health().rfq.leagueLoadedAt, out.league_loaded_at);
   const [spread, total, half] = out.legs;
   const checked = (await runner.rfqPrice(new URLSearchParams({ legs: `${TAKER_TICKER}:yes` }))).legs[0];
   assert.deepEqual([spread.ok, spread.fair, spread.sigma, spread.kickoff_ms], [true, checked.fair, checked.sigma, checked.kickoff_ms]);
@@ -1296,6 +1427,33 @@ test("rfq_fairs: the same fairs off the board alone, with no Kalshi read and at 
   assert.deepEqual([half.ok, half.reason], [false, "unsupported_series"]);
   const many = Array.from({ length: 201 }, (_, index) => `KXNCAAFTOTAL-26SEP19DUQWSU-${index + 1}:yes`).join(",");
   await assert.rejects(() => Promise.resolve().then(() => runner.rfqFairs(new URLSearchParams({ legs: many }))), /201 legs, at most 200/);
+  runner.stop();
+});
+
+test("rfq_fairs: a league the runner would decline as stale is left out of league_loaded_at", async () => {
+  let clock = TAKER_NOW;
+  const { runner } = await quoteRunner({}, { now: () => clock });
+  const legs = new URLSearchParams({ legs: `${TAKER_TICKER}:yes` });
+  assert.deepEqual(Object.keys(runner.rfqFairs(legs).league_loaded_at), ["CFB"]);
+  // Over 3 min with no new snapshot: the leg declines, and the quoter sees its league go.
+  clock += 3 * 60 * 1000 + 1000;
+  const out = runner.rfqFairs(legs);
+  assert.deepEqual([out.legs[0].ok, out.legs[0].reason, out.league_loaded_at], [false, "stale_feed", {}]);
+  assert.deepEqual(runner.health().rfq.leagueLoadedAt, {});
+  runner.stop();
+});
+
+test("rfq_fairs: league_loaded_at is as of the time the legs were priced at, not a later clock read", async () => {
+  // The snapshot turns 3 min old while the answer is built: the first clock read is just before, the rest after.
+  // Relies on rfqFairsNow reading the clock first for pricedAt; an extra read before it would shift this.
+  let reads = null;
+  let base = TAKER_NOW;
+  const { runner } = await quoteRunner({}, { now: () => { if (reads === null) return base; reads += 1; return reads === 1 ? base : base + 2000; } });
+  const legs = new URLSearchParams({ legs: `${TAKER_TICKER}:yes` });
+  base = runner.rfqFairs(legs).league_loaded_at.CFB + 3 * 60 * 1000;
+  reads = 0;
+  const out = runner.rfqFairs(legs);
+  assert.deepEqual([out.legs[0].ok, Object.keys(out.league_loaded_at)], [true, ["CFB"]], "a leg priced ok has its league listed");
   runner.stop();
 });
 
@@ -3601,5 +3759,132 @@ test("kalshi stream: the open Ticket's refresh reads its Kalshi line off the str
     [{ tickers: [TAKER_TICKER], waitMs: 1500, priority: true, background: false }]);
   assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), 0);
   assert.equal(runner.health().livePrices.kalshiStreamParity.checked, 0);
+  runner.stop();
+});
+
+// ---- the stream pass (liveStreamPass, every 10 s between live price passes) ----
+
+// A live runner on Kalshi's and Novig's streams whose clock and books the test moves.
+function streamPassRunner() {
+  const clock = { now: TAKER_NOW };
+  // streamsDown: both streams answer an error for every market, as a silent or reconnecting stream does.
+  const prices = { kalshiNo: "0.4300", novigDuq: "0.445", streamsDown: false };
+  const kalshi = kalshiFetch();
+  const novig = novigFetch();
+  const service = takerService({
+    "/bets.json": novigTakerBetsBody(), "/settings.json": LIVE_SETTINGS,
+    "/kalshi_books.json": (body) => (prices.streamsDown
+      ? { stream: { connected: false, error: "silent 25 s" }, books: Object.fromEntries(body.tickers.map((ticker) => [ticker, { error: "Kalshi's stream is down" }])) }
+      : kalshiStreamBooks(prices.kalshiNo)(body)),
+    "/novig_books.json": (body) => (prices.streamsDown
+      ? { stream: { connected: false, error: "silent 25 s" }, books: Object.fromEntries(body.marketIds.map((marketId) => [marketId, { error: "Novig's stream is down" }])) }
+      : novigStreamBooks({ orders: { [NOVIG_DUQ_OUTCOME]: [{ order: "r1", price: prices.novigDuq, qty: 500000 }], [NOVIG_WSU_OUTCOME]: [] } })(body)),
+  });
+  const runner = runnerLib.createRunner({
+    fetchImpl: novigTakerUnabatedFetch(), serviceFetch: service, kalshiFetch: kalshi, kalshiBaseUrl: "https://kalshi.test/v2",
+    novigRead: keyedNovigRead(novig), novigBaseUrl: "https://novig.test", betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers, ...quiet,
+  });
+  return { runner, service, kalshi, novig, clock, prices };
+}
+
+test("stream pass: Kalshi and Novig lines are reread off the streams 10 s later, with no Kalshi or Novig request", async () => {
+  const { runner, kalshi, novig, clock, prices } = streamPassRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const kalshiCallsBefore = kalshi.calls.length;
+  const novigCallsBefore = novig.calls.length;
+  prices.kalshiNo = "0.4100";
+  prices.novigDuq = "0.450";
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  assert.equal(kalshi.calls.length, kalshiCallsBefore, "no Kalshi REST read: no market check, book or parity read");
+  assert.equal(novig.calls.length, novigCallsBefore, "no keyed Novig read: the held catalog, no REST book");
+  const rows = edgeRowsOf(runner.edgesPayload());
+  const kalshiRow = rows.find((row) => WSU36_KALSHI_KEY_RE.test(row.key));
+  // 59c ask plus Kalshi's 7% x p x (1 - p) fee.
+  assert.equal(kalshiRow.sourcePrice, Math.round((0.59 + 0.07 * 0.59 * 0.41) * 1e6) / 1e6);
+  assert.equal(kalshiRow.liveCheck, "live");
+  const novigRow = rows.find((row) => row.book.id === 89);
+  assert.equal(novigRow.sourcePrice, 0.55);
+  const reads = runner.livePricesPayload().reads;
+  assert.equal(reads[kalshiRow.key].readAtMs, clock.now);
+  assert.equal(reads[novigRow.key].readAtMs, clock.now);
+  const streamPass = runner.health().livePrices.streamPass;
+  assert.equal(streamPass.error, null);
+  assert.equal(streamPass.byVenue.kalshi.live >= 1, true);
+  assert.equal(streamPass.byVenue.novig.live, 1);
+  runner.stop();
+});
+
+test("stream pass: its reads do not count as the live price pass's, so that pass still rereads on its own clock (parity check included)", async () => {
+  const { runner, kalshi, clock } = streamPassRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const parityBefore = runner.health().livePrices.kalshiStreamParity.checked;
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  clock.now += 15 * 1000;
+  const bookReadsBefore = kalshiBookReadsOf(kalshi, TAKER_TICKER);
+  await runner.livePricePass();
+  const health = runner.health().livePrices;
+  assert.equal(health.rows >= 2, true);
+  assert.equal(health.due, health.rows, "25 s after their last full read every line (Kalshi and Novig) is due, though the stream pass read them 15 s ago");
+  assert.equal(runner.health().livePrices.kalshiStreamParity.checked, parityBefore + 1);
+  assert.equal(kalshiBookReadsOf(kalshi, TAKER_TICKER), bookReadsBefore + 1, "the parity check's one REST read");
+  runner.stop();
+});
+
+test("stream pass: before any live price pass it has no lines to read, and sends nothing", async () => {
+  const { runner, kalshi, novig, service } = streamPassRunner();
+  await runner.start();
+  const kalshiCallsBefore = kalshi.calls.length;
+  const novigCallsBefore = novig.calls.length;
+  await runner.liveStreamPass();
+  assert.equal(kalshi.calls.length, kalshiCallsBefore);
+  assert.equal(novig.calls.length, novigCallsBefore);
+  assert.deepEqual(runner.livePricesPayload().reads, {});
+  assert.equal(service.posts.some((post) => post.route === "/novig_books.json"), false, "no catalog held: no stream ask either");
+  runner.stop();
+});
+
+test("stream pass: a Polymarket US line whose contract was found is reread off the stream with no gateway read", async () => {
+  const poly = polymarketFetch();
+  const clock = { now: TAKER_NOW };
+  const service = takerService({ "/bets.json": takerBetsBody(), "/settings.json": LIVE_SETTINGS, "/polymarket_books.json": polymarketStreamBooks });
+  const runner = runnerLib.createRunner({
+    fetchImpl: polymarketUnabatedFetch({ ge: 0.05, bacr: -160 }), serviceFetch: service, kalshiFetch: kalshiFetch(), kalshiBaseUrl: "https://kalshi.test/v2",
+    polymarketFetch: poly, polymarketGatewayUrl: POLY_GATEWAY, betsServiceUrl: SERVICE_URL, now: () => clock.now, timers: noTimers, ...quiet,
+  });
+  await runner.start();
+  await runner.livePricePass();
+  const gatewayCallsBefore = poly.calls.length;
+  const streamAsksBefore = service.posts.filter((post) => post.route === "/polymarket_books.json").length;
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  assert.equal(poly.calls.length, gatewayCallsBefore, "no gateway read");
+  assert.equal(service.posts.filter((post) => post.route === "/polymarket_books.json").length, streamAsksBefore + 1);
+  const [, read] = Object.entries(runner.livePricesPayload().reads).find(([, entry]) => entry.venue === "polymarket_us");
+  assert.equal(read.readAtMs, clock.now);
+  runner.stop();
+});
+
+test("stream pass: with both streams down it reads no REST book, leaves the last reads standing and shows the error on /health", async () => {
+  const { runner, kalshi, novig, clock, prices } = streamPassRunner();
+  await runner.start();
+  await runner.livePricePass();
+  const readsBefore = runner.livePricesPayload().reads;
+  const kalshiCallsBefore = kalshi.calls.length;
+  const novigCallsBefore = novig.calls.length;
+  prices.streamsDown = true;
+  clock.now += 10 * 1000;
+  await runner.liveStreamPass();
+  assert.equal(kalshi.calls.length, kalshiCallsBefore, "no Kalshi REST book in place of the stream's");
+  assert.equal(novig.calls.length, novigCallsBefore, "no keyed Novig book in place of the stream's");
+  assert.deepEqual(runner.livePricesPayload().reads, readsBefore, "the last reads stand (and age out at 2 min)");
+  const byVenue = runner.health().livePrices.streamPass.byVenue;
+  assert.equal(byVenue.kalshi.unchecked >= 1, true);
+  assert.match(byVenue.kalshi.lastError, /stream is down/);
+  assert.equal(byVenue.novig.unchecked, 1);
+  assert.match(byVenue.novig.lastError, /stream is down/);
   runner.stop();
 });
