@@ -20,12 +20,10 @@ Table:
                                    newer than the stored one; observed_at is
                                    always before event_start (validated), so
                                    the row left at the start is the close.
-                                   A close whose content (`content_hash`:
-                                   mains, rungs, start, teams) equals the
+                                   A close whose `content_hash` (everything
+                                   but its reading and times) equals the
                                    stored one moves only observed_at and
-                                   received_at: a whole-row rewrite leaves
-                                   dead space in the file (116 MB in the
-                                   first week, 2026-11-13).
+                                   received_at instead of rewriting the row.
                side 0 = away / Over, side 1 = home / Under (Unabated's
                sides). `rungs_json` is [[side, points, fair_american, books,
                agreeing], ...]: Unabated's fair for that side at that number
@@ -63,8 +61,8 @@ import duckdb
 READING_OPENER = "opener"
 READING_CLOSE = "close"
 READINGS = (READING_OPENER, READING_CLOSE)
-# compact_file: a file this small is never worth a copy, and a copy is kept
-# only when it is at most this share of the original.
+# compact_file: a file this small is never worth a copy, and one whose
+# blocks in use fill more than this share of it is left as it is.
 COMPACT_MIN_BYTES = 32 * 1024 * 1024
 COMPACT_KEEP_RATIO = 0.9
 
@@ -176,10 +174,6 @@ WHERE excluded.last_seen > edge_segments.last_seen
 """
 
 
-def _rungs_json(row: dict) -> str:
-    return json.dumps(row["rungs"], separators=(",", ":"))
-
-
 def _content_hash(row: dict) -> str:
     """sha256 of everything a ladder row says besides its reading and times."""
     content = [row["leagueId"], row["eventName"], row["awayTeamId"], row["homeTeamId"], row["eventStart"].isoformat(),
@@ -194,55 +188,50 @@ def _table_counts(con: duckdb.DuckDBPyConnection, database: str) -> dict[str, in
 
 
 def compact_file(db_path: Path) -> None:
-    """Rewrite ladders.duckdb into a fresh file when that frees enough of it.
+    """Rewrite a DuckDB file into a fresh one when that frees enough of it.
 
-    DuckDB never gives back the space a rewritten row leaves behind, so a
-    file that took many rewrites is mostly dead space. Run before the store
-    opens the file (the service's start, so every deploy): a file under
-    COMPACT_MIN_BYTES, or whose blocks in use fill more than
-    COMPACT_KEEP_RATIO of it, is left alone; otherwise it is copied table by table
-    (COPY FROM DATABASE keeps the schema and keys) to `<name>.compact`, the
-    row counts are checked equal, and the copy replaces the file only when it
-    is at most COMPACT_KEEP_RATIO of its size. Raises on any failure, leaving
-    the original file in place (the caller logs and opens it as it is)."""
-    if not db_path.exists():
+    DuckDB keeps a file's free blocks (left by rewritten or deleted rows) as
+    file size. Run before the store opens ladders.duckdb (the service's
+    start, so every deploy): a file under COMPACT_MIN_BYTES, or whose blocks
+    in use fill more than COMPACT_KEEP_RATIO of it, is left alone; otherwise
+    it is copied table by table (COPY FROM DATABASE keeps the schema and
+    keys) to `<name>.compact`, the row counts are checked equal, and the copy
+    replaces the file. Raises on any failure, leaving the original in place
+    and no copy behind (the caller logs and opens the file as it is)."""
+    if not db_path.exists() or db_path.stat().st_size < COMPACT_MIN_BYTES:
         return
     with duckdb.connect(str(db_path)) as con:
         con.execute("CHECKPOINT")
         [(used_blocks, block_size)] = con.execute(
             "SELECT used_blocks, block_size FROM pragma_database_size()").fetchall()
     before = db_path.stat().st_size
-    if before < COMPACT_MIN_BYTES:
-        return
-    # Most starts find a tight file: skip the copy (seconds on a big file)
-    # unless the blocks in use would fit the size check. File size, not
-    # total_blocks: DuckDB counts free blocks it has already cut off the end.
     used_bytes = used_blocks * block_size
     if used_bytes > before * COMPACT_KEEP_RATIO:
-        log.info("ladder store %s not compacted: %d of its %d bytes in use", db_path, used_bytes, before)
+        log.info("%s not compacted: %d of its %d bytes in use", db_path, used_bytes, before)
         return
     compact_path = db_path.with_name(db_path.name + ".compact")
-    for leftover in (compact_path, compact_path.with_name(compact_path.name + ".wal")):
+    leftovers = (compact_path, compact_path.with_name(compact_path.name + ".wal"))
+    for leftover in leftovers:
         leftover.unlink(missing_ok=True)
-    with duckdb.connect() as con:
-        con.execute("ATTACH ? AS old_db (READ_ONLY)", [str(db_path)])
-        con.execute("ATTACH ? AS new_db", [str(compact_path)])
-        con.execute("COPY FROM DATABASE old_db TO new_db")
-        old_counts = _table_counts(con, "old_db")
-        new_counts = _table_counts(con, "new_db")
-        con.execute("CHECKPOINT new_db")
-        con.execute("DETACH new_db")
-        con.execute("DETACH old_db")
-    if old_counts != new_counts:
-        compact_path.unlink(missing_ok=True)
-        raise RuntimeError(f"compacting {db_path}: expected row counts {old_counts} in the copy, got {new_counts}")
-    after = compact_path.stat().st_size
-    if after > before * COMPACT_KEEP_RATIO:
-        compact_path.unlink(missing_ok=True)
-        log.info("ladder store %s not compacted: a copy is %d bytes of %d", db_path, after, before)
-        return
-    os.replace(compact_path, db_path)
-    log.info("ladder store %s compacted from %d to %d bytes (%s)", db_path, before, after, new_counts)
+    try:
+        with duckdb.connect() as con:
+            con.execute("ATTACH ? AS old_db (READ_ONLY)", [str(db_path)])
+            con.execute("ATTACH ? AS new_db", [str(compact_path)])
+            con.execute("COPY FROM DATABASE old_db TO new_db")
+            old_counts = _table_counts(con, "old_db")
+            new_counts = _table_counts(con, "new_db")
+            con.execute("CHECKPOINT new_db")
+            con.execute("DETACH new_db")
+            con.execute("DETACH old_db")
+        if old_counts != new_counts:
+            raise RuntimeError(f"compacting {db_path}: expected row counts {old_counts} in the copy, got {new_counts}")
+        after = compact_path.stat().st_size
+        os.replace(compact_path, db_path)
+    finally:
+        # A failed copy can be as big as the file: never leave it on the volume.
+        for leftover in leftovers:
+            leftover.unlink(missing_ok=True)
+    log.info("%s compacted from %d to %d bytes (%s)", db_path, before, after, new_counts)
 
 
 class LadderStore:
@@ -280,7 +269,7 @@ class LadderStore:
                     row["reading"], row["eventId"], row["periodTypeId"], row["betTypeId"], row["leagueId"],
                     row["eventName"], row["awayTeamId"], row["homeTeamId"], row["eventStart"], row["observedAt"],
                     row["mainPoints0"], row["mainFair0"], row["mainPoints1"], row["mainFair1"], len(row["rungs"]),
-                    _rungs_json(row), received_at, content_hash,
+                    json.dumps(row["rungs"], separators=(",", ":")), received_at, content_hash,
                 ]).fetchone()
                 written += count
         return written

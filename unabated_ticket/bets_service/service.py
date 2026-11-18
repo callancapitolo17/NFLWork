@@ -311,8 +311,9 @@ bets it read while confirming into bets.duckdb::bets, so the panel's next poll h
 ticket. POST /taker_decisions.json APPENDs the server runner's taker decisions to
 taker.duckdb::taker_decisions (taker_store.py; a separate file from bets.duckdb).
 POST /ladders.json (loopback only, the runner's) INSERTs each game's opener and
-UPSERTs its newest pregame close into ladders.duckdb::ladder_readings
-(ladder_store.py; its own file, config.LADDER_DB_PATH; issue #264).
+UPSERTs its newest pregame close (an unchanged one moves only its times) into
+ladders.duckdb::ladder_readings (ladder_store.py; its own file,
+config.LADDER_DB_PATH, compacted at start when mostly free blocks; issue #264).
 POST /edge_segments.json (loopback only, the runner's) INSERTs each new edge
 segment and moves a known one's last_seen forward in ladders.duckdb::edge_segments.
 POST /place_kalshi.json places Cal's own Kalshi order (money) and INSERTs /

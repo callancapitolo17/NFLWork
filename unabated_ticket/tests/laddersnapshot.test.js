@@ -103,3 +103,16 @@ test("unsentRows: a close only within CLOSE_WINDOW_MS of the start; the opener w
   const inWindow = { ...spread, observedMs: KICKOFF_MS - laddersnapshot.CLOSE_WINDOW_MS };
   assert.deepEqual(laddersnapshot.unsentRows([inWindow], sent, inWindow.observedMs).map((row) => row.reading), ["close"]);
 });
+
+test("unsentRows: a close taken before a start that moved later is re-sent at once, then waits for the new window", () => {
+  const sent = new Map();
+  const [spread] = sliceLadders().filter((l) => l.betTypeId === 2);
+  laddersnapshot.markSent(laddersnapshot.unsentRows([spread], sent, spread.observedMs), sent);
+  const dayMs = 24 * 3600 * 1000;
+  const postponed = { ...spread, eventStartMs: spread.eventStartMs + dayMs, observedMs: spread.observedMs + 60 * 1000 };
+  const rows = laddersnapshot.unsentRows([postponed], sent, postponed.observedMs);
+  assert.deepEqual(rows.map((row) => [row.reading, row.eventStart]), [["close", new Date(postponed.eventStartMs).toISOString()]]);
+  laddersnapshot.markSent(rows, sent);
+  const later = { ...postponed, observedMs: postponed.observedMs + laddersnapshot.CLOSE_CONFIRM_MS, signature: `${spread.signature}x` };
+  assert.deepEqual(laddersnapshot.unsentRows([later], sent, later.observedMs), [], "outside the new window, nothing until it opens");
+});

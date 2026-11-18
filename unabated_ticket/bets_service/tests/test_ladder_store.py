@@ -9,12 +9,11 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 
+import duckdb
 import pytest
 
-from unabated_ticket.bets_service import service
-import duckdb
-
 from unabated_ticket.bets_service import ladder_store as ladder_store_module
+from unabated_ticket.bets_service import service
 from unabated_ticket.bets_service.ladder_store import LadderStore, compact_file
 from unabated_ticket.bets_service.store import BetsStore
 
@@ -132,7 +131,10 @@ def test_an_unchanged_close_moves_only_its_times(stores):
     later = {**SPREAD_CLOSE, "observedAt": "2026-09-13T16:50:00.000Z"}
     validated = service.validate_ladder_rows({"rows": [later]})
     received_later = datetime(2026, 9, 13, 16, 50, 5, tzinfo=timezone.utc)
+    # Mark the stored rungs: a touch leaves them, a whole-row rewrite would not.
+    ladder_store._con.execute("UPDATE ladder_readings SET rungs_json = 'touched-not-rewritten'")
     assert ladder_store.save_readings(validated, received_later) == 1
+    assert stored(ladder_store)[0][5] == "touched-not-rewritten"
     [(observed, received, content_hash)] = ladder_store._con.execute(
         "SELECT CAST(observed_at AS VARCHAR), CAST(received_at AS VARCHAR), content_hash FROM ladder_readings").fetchall()
     assert (observed, received) == ("2026-09-13 16:50:00+00", "2026-09-13 16:50:05+00")
@@ -194,15 +196,62 @@ def test_compaction_shrinks_a_bloated_file_and_keeps_rows_and_keys(tmp_path, mon
         store.close()
 
 
+def test_a_changed_rung_alone_rewrites_the_close(stores):
+    _, ladder_store = stores
+    save(ladder_store, [SPREAD_CLOSE])
+    rung_moved = [[0, -3.5, 115, 9, 9], [0, -3, -103, 12, 11], [1, 3, 103, 12, 12], [1, 3.5, -120, 4, 4]]
+    assert save(ladder_store, [{**SPREAD_CLOSE, "observedAt": "2026-09-13T16:50:00.000Z", "rungs": rung_moved}]) == 1
+    [row] = stored(ladder_store)
+    assert row[4] == 4 and json.loads(row[5]) == rung_moved
+
+
+def test_an_opener_is_never_touched_by_a_close_of_the_same_content(stores):
+    _, ladder_store = stores
+    save(ladder_store, [SPREAD_OPENER, SPREAD_CLOSE])
+    save(ladder_store, [{**SPREAD_CLOSE, "observedAt": "2026-09-13T16:50:00.000Z"}])
+    assert [(row[0], row[2]) for row in stored(ladder_store)] == [
+        ("close", "2026-09-13 16:50:00+00"), ("opener", "2026-09-13 16:00:00+00")]
+
+
 def test_compaction_leaves_a_small_or_tight_file_alone(tmp_path, monkeypatch):
     db_path = tmp_path / "ladders.duckdb"
-    bloated_file(db_path, 0)
+    bloated_file(db_path, 500_000)
     size = db_path.stat().st_size
-    compact_file(db_path)  # under COMPACT_MIN_BYTES
+    compact_file(db_path)  # bloated, but under COMPACT_MIN_BYTES
     assert db_path.stat().st_size == size
+    tight_path = tmp_path / "tight.duckdb"
+    bloated_file(tight_path, 0)
     monkeypatch.setattr(ladder_store_module, "COMPACT_MIN_BYTES", 0)
-    monkeypatch.setattr(ladder_store_module, "COMPACT_KEEP_RATIO", 0.0)
-    compact_file(db_path)  # a copy is never 0% of the file
-    assert db_path.stat().st_size == size
-    assert not (tmp_path / "ladders.duckdb.compact").exists()
+    copies = []
+    monkeypatch.setattr(ladder_store_module, "_table_counts", lambda *args: copies.append(args) or {})
+    compact_file(tight_path)  # nearly every block in use at the real COMPACT_KEEP_RATIO: no copy made
+    assert copies == []
+    assert not (tmp_path / "tight.duckdb.compact").exists()
     compact_file(tmp_path / "missing.duckdb")
+
+
+@pytest.mark.parametrize("failing_counts, message", [
+    (lambda con, database: 1 / 0, "division by zero"),
+    (lambda con, database: {"ladder_readings": 2 if database == "old_db" else 1}, "expected row counts"),
+])
+def test_a_failed_compaction_keeps_the_file_and_leaves_no_copy(tmp_path, monkeypatch, failing_counts, message):
+    db_path = tmp_path / "ladders.duckdb"
+    bloated_file(db_path, 500_000)
+    size = db_path.stat().st_size
+    monkeypatch.setattr(ladder_store_module, "COMPACT_MIN_BYTES", 0)
+    monkeypatch.setattr(ladder_store_module, "_table_counts", failing_counts)
+    with pytest.raises(Exception, match=message):
+        compact_file(db_path)
+    assert db_path.stat().st_size == size
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["ladders.duckdb"]
+
+
+def test_the_service_opens_the_store_when_compaction_fails(tmp_path, monkeypatch):
+    def failing_compact(db_path):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(service, "compact_file", failing_compact)
+    store = service.open_ladder_store(tmp_path / "ladders.duckdb")
+    try:
+        assert save(store, [SPREAD_CLOSE]) == 1
+    finally:
+        store.close()

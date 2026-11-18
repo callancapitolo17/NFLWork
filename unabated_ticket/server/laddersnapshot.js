@@ -12,11 +12,12 @@
 //           before the start: on every change, and re-sent unchanged every
 //           CLOSE_CONFIRM_MS so the stored observed_at stays near kickoff;
 //           the service keeps the newest observation before the start, and an
-//           unchanged one moves only its observed_at. Days of rewrites while
-//           a game sat on the board filled ladders.duckdb with dead space
-//           (116 MB in its first week, 2026-11-13) for a row only its last
-//           reading matters in. Whether that reading was near enough to the
-//           start to count as the close is decided in analysis.
+//           unchanged one moves only its observed_at. Only the last pregame
+//           reading is kept, so days of earlier closes were rewrites for
+//           nothing; a close sent before a start that then moved later is
+//           re-sent at once so the row carries the new start. Whether the
+//           reading was near enough to the start to count as the close is
+//           decided in analysis.
 // Read-only: nothing here or downstream touches a stake or an order.
 //
 // A rung's fair: Unabated's `bacr` is its fair for THAT side at THAT number,
@@ -143,19 +144,27 @@ function rowOf(ladder, reading) {
 
 // The rows to POST now: each ladder's opener until one was taken, and, once
 // its snapshot is within CLOSE_WINDOW_MS of the start, its close when the
-// ladder changed since the last close taken or that one is CLOSE_CONFIRM_MS old. A game that started since its league's snapshot is
+// ladder changed since the last close taken or that one is CLOSE_CONFIRM_MS
+// old; outside the window, a close only when one was taken for another start
+// (a postponed game). A game that started since its league's snapshot is
 // left out (the service refuses a reading at or after the start anyway).
 //   ladders  leagueLadders' output for the leagues read
-//   sent     ladderKey -> {openerSent, closeSignature, closeObservedMs} (markSent)
+//   sent     ladderKey -> {openerSent, closeSignature, closeObservedMs,
+//            closeEventStartMs} (markSent)
 function unsentRows(ladders, sent, now) {
   const rows = [];
   for (const ladder of ladders) {
     if (now >= ladder.eventStartMs) continue;
     const known = sent.get(ladderKeyOf(ladder)) || {};
     if (!known.openerSent) rows.push(rowOf(ladder, READING_OPENER));
-    if (ladder.eventStartMs - ladder.observedMs > CLOSE_WINDOW_MS) continue;
+    const closeTaken = Number.isFinite(known.closeObservedMs);
+    const startMoved = closeTaken && known.closeEventStartMs !== ladder.eventStartMs;
+    if (ladder.eventStartMs - ladder.observedMs > CLOSE_WINDOW_MS) {
+      if (startMoved) rows.push({ ...rowOf(ladder, READING_CLOSE), signature: ladder.signature });
+      continue;
+    }
     const changed = known.closeSignature !== ladder.signature;
-    const confirmDue = !Number.isFinite(known.closeObservedMs) || ladder.observedMs - known.closeObservedMs >= CLOSE_CONFIRM_MS;
+    const confirmDue = !closeTaken || startMoved || ladder.observedMs - known.closeObservedMs >= CLOSE_CONFIRM_MS;
     if (changed || confirmDue) rows.push({ ...rowOf(ladder, READING_CLOSE), signature: ladder.signature });
   }
   return rows;
@@ -167,7 +176,11 @@ function markSent(rows, sent) {
     const key = ladderKeyOf(row);
     const known = sent.get(key) || {};
     if (row.reading === READING_OPENER) known.openerSent = true;
-    else Object.assign(known, { closeSignature: row.signature, closeObservedMs: Date.parse(row.observedAt) });
+    else {
+      Object.assign(known, {
+        closeSignature: row.signature, closeObservedMs: Date.parse(row.observedAt), closeEventStartMs: Date.parse(row.eventStart),
+      });
+    }
     known.eventStartMs = Date.parse(row.eventStart);
     sent.set(key, known);
   }
