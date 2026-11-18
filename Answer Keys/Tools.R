@@ -539,14 +539,27 @@ grade_vs_parent_line <- function(dt, parent_spread, parent_total, use_spread_lin
 # Function 2: balance sample by greedy remove/add
 # Per Feustel spec: if both add and remove fail, return converged=FALSE
 # and let caller restart with smaller N
+# A push is stored as 0.5 in actual_cover / actual_over. Balance targets are
+# no-vig probabilities that exclude pushes, so a push must count as `target`
+# of a cover/over: then covers / (covers + non-covers) lands exactly on target.
+weight_pushes_by_target <- function(outcome, target) {
+  weighted <- as.numeric(outcome)
+  weighted[!is.na(weighted) & weighted == 0.5] <- target
+  weighted
+}
+# The pure-R path below rounds each error to 9 decimals, as sampling.cpp does,
+# so float drift from push weights never flips a sign or tol check.
+
 balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
+  cover_weighted <- weight_pushes_by_target(dt[["actual_cover"]], target_cover)
+  over_weighted  <- weight_pushes_by_target(dt[["actual_over"]],  target_over)
 
   # --- C++ fast path ---
   if (.use_rcpp) {
     result <- balance_sample_cpp(
       order_indices = seq_len(nrow(dt)),  # dt is already sorted by distance from mean_match
-      actual_cover  = as.integer(dt[["actual_cover"]]),
-      actual_over   = as.integer(dt[["actual_over"]]),
+      actual_cover  = cover_weighted,
+      actual_over   = over_weighted,
       N             = as.integer(N),
       target_cover  = target_cover,
       target_over   = target_over,
@@ -568,16 +581,19 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
 
   # --- Pure R fallback ---
   dt <- copy(dt)
+  set(dt, j = ".cover_w", value = cover_weighted)
+  set(dt, j = ".over_w",  value = over_weighted)
   n_sample <- N
 
-  cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
-    round(target_cover * n_sample)
-  over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
-    round(target_over * n_sample)
+  cover_error <- round(dt[included == TRUE, sum(.cover_w, na.rm = T)] -
+    round(target_cover * n_sample), 9)
+  over_error <- round(dt[included == TRUE, sum(.over_w, na.rm = T)] -
+    round(target_over * n_sample), 9)
   M <- nrow(dt)
 
   repeat {
     if ((abs(cover_error) <= tol_error) && (abs(over_error) <= tol_error)) {
+      dt[, c(".cover_w", ".over_w") := NULL]
       return(list(
         dt = dt,
         final_N = n_sample,
@@ -592,10 +608,10 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
 
     # ---- remove one game from 1..n_sample ----
     in1toN <- dt[seq_len(n_sample), included]
-    cov_help1 <- (cover_error > 0 & dt[seq_len(n_sample), actual_cover] == 1) |
-      (cover_error < 0 & dt[seq_len(n_sample), actual_cover] == 0)
-    ov_help1 <- (over_error > 0 & dt[seq_len(n_sample), actual_over] == 1) |
-      (over_error < 0 & dt[seq_len(n_sample), actual_over] == 0)
+    cov_help1 <- (cover_error > 0 & dt[seq_len(n_sample), .cover_w] == 1) |
+      (cover_error < 0 & dt[seq_len(n_sample), .cover_w] == 0)
+    ov_help1 <- (over_error > 0 & dt[seq_len(n_sample), .over_w] == 1) |
+      (over_error < 0 & dt[seq_len(n_sample), .over_w] == 0)
 
     both1 <- which(in1toN & cov_help1 & ov_help1)
     either1 <- which(in1toN & (cov_help1 | ov_help1))
@@ -611,19 +627,19 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     }
 
     if (!removal_failed) {
-      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
-        round(target_cover * n_sample)
-      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
-        round(target_over * n_sample)
+      cover_error <- round(dt[included == TRUE, sum(.cover_w, na.rm = T)] -
+        round(target_cover * n_sample), 9)
+      over_error <- round(dt[included == TRUE, sum(.over_w, na.rm = T)] -
+        round(target_over * n_sample), 9)
     }
 
     # ---- add one game from (n_sample+1)..M ----
     idx_range <- seq(n_sample + 1, M)
     inNplus <- dt[idx_range, included]
-    cov_help2 <- (cover_error > 0 & dt[idx_range, actual_cover] == 0) |
-      (cover_error < 0 & dt[idx_range, actual_cover] == 1)
-    ov_help2 <- (over_error > 0 & dt[idx_range, actual_over] == 0) |
-      (over_error < 0 & dt[idx_range, actual_over] == 1)
+    cov_help2 <- (cover_error > 0 & dt[idx_range, .cover_w] == 0) |
+      (cover_error < 0 & dt[idx_range, .cover_w] == 1)
+    ov_help2 <- (over_error > 0 & dt[idx_range, .over_w] == 0) |
+      (over_error < 0 & dt[idx_range, .over_w] == 1)
 
     both2 <- which(!inNplus & cov_help2 & ov_help2)
     either2 <- which(!inNplus & (cov_help2 | ov_help2))
@@ -639,14 +655,15 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     }
 
     if (!addition_failed) {
-      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
-        round(target_cover * n_sample)
-      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
-        round(target_over * n_sample)
+      cover_error <- round(dt[included == TRUE, sum(.cover_w, na.rm = T)] -
+        round(target_cover * n_sample), 9)
+      over_error <- round(dt[included == TRUE, sum(.over_w, na.rm = T)] -
+        round(target_over * n_sample), 9)
     }
 
     # Per Feustel: "restart the procedure looking for a smaller sample"
     if (removal_failed && addition_failed) {
+      dt[, c(".cover_w", ".over_w") := NULL]
       return(list(
         dt = dt,
         final_N = n_sample,
@@ -6228,12 +6245,79 @@ adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
 
 
 # =============================================================================
+# WALK-FORWARD TRAINING SET (backtests)
+# =============================================================================
+# Live pricing only ever sees games already played, so a backtest must too.
+# Leave-one-out (every game except the test game) let later seasons into the
+# sample and overstated backtest ROI versus live.
+WALK_FORWARD_MIN_TRAIN_SHARE <- 0.5  # test only games with >= half the history behind them
+
+.walk_forward_dates <- function(dates, what) {
+  if (!inherits(dates, c("Date", "POSIXt"))) {
+    stop("walk_forward: expected ", what, " as Date or POSIXct, got class ",
+         paste(class(dates), collapse = "/"))
+  }
+  as.Date(dates)
+}
+
+#' Which candidate test games have enough history behind them to backtest.
+#'
+#' Filter a test pool with this BEFORE sampling test ids, so the run tests the
+#' number of games it says it does.
+#'
+#' @param DT historical games; needs a game_date column (Date or POSIXct)
+#' @param test_game_dates game_date of each candidate test game
+#' @param min_train_share a test game is eligible when at least this share of
+#'   DT's games are dated strictly before it
+#' @return logical vector, one per test_game_dates entry (NA date -> FALSE)
+has_walk_forward_history <- function(DT, test_game_dates,
+                                     min_train_share = WALK_FORWARD_MIN_TRAIN_SHARE) {
+  if (!"game_date" %in% names(DT)) {
+    stop("walk_forward: expected a game_date column in DT, found: ",
+         paste(head(names(DT), 20), collapse = ", "))
+  }
+  history_dates <- sort(.walk_forward_dates(DT[["game_date"]], "DT$game_date"))  # sort drops NAs
+  test_dates <- .walk_forward_dates(test_game_dates, "test_game_dates")
+  games_before <- findInterval(as.numeric(test_dates), as.numeric(history_dates), left.open = TRUE)
+  min_train_games <- max(1, ceiling(min_train_share * nrow(DT)))
+  !is.na(test_dates) & games_before >= min_train_games
+}
+
+#' Historical games usable to price one test game in a backtest.
+#'
+#' Keeps only games dated strictly BEFORE the test game. CBB and NFL game_date
+#' is the UTC date of the start, so an early-evening ET game can still train a game that
+#' starts after 00:00 UTC the same night; there is no start time on every
+#' sport's history to cut on.
+#'
+#' @param DT historical games; needs a game_date column (Date or POSIXct)
+#' @param test_game_date the test game's game_date (one non-NA Date or POSIXct)
+#' @param min_train_share see has_walk_forward_history()
+#' @return the training rows, or NULL when the test game is not eligible.
+#'   Size the sample off nrow() of the result, as live sizes it off all
+#'   history to date.
+walk_forward_training_set <- function(DT, test_game_date,
+                                      min_train_share = WALK_FORWARD_MIN_TRAIN_SHARE) {
+  if (length(test_game_date) != 1 || is.na(test_game_date)) {
+    stop("walk_forward: expected one non-NA test_game_date, got: ",
+         paste(test_game_date, collapse = ", "))
+  }
+  if (!has_walk_forward_history(DT, test_game_date, min_train_share)) return(NULL)
+  history_dates <- .walk_forward_dates(DT[["game_date"]], "DT$game_date")
+  is_before_test_game <- !is.na(history_dates) &
+    history_dates < .walk_forward_dates(test_game_date, "test_game_date")
+  DT[is_before_test_game, ]
+}
+
+
+# =============================================================================
 # GENERALIZED DERIVATIVE BACKTEST FUNCTION
 # =============================================================================
 
 #' Run a generalized derivative backtest for any sport
 #'
-#' This function runs a leave-one-out backtest on derivative markets (H1, H2, etc.)
+#' This function runs a walk-forward backtest on derivative markets (H1, H2, etc.):
+#' each test game is priced only off games dated before it (walk_forward_training_set).
 #' comparing answer key predictions to book implied probabilities and actual outcomes.
 #'
 #' @param pbp_data Data frame with play-by-play outcomes (margins, totals by period)
@@ -6251,7 +6335,7 @@ adjust_kelly_for_correlation <- function(bets_df, samples, bankroll, kelly_mult,
 #' @param derivative_odds Optional data frame with derivative odds (for log-loss vs book)
 #' @param kelly_mult Kelly multiplier for ROI simulation (default 0.25)
 #' @param bankroll Starting bankroll for ROI simulation (default 1000)
-#' @param sample_pct Percentage of historical data to use for sample size (default 0.10)
+#' @param sample_pct Share of each test game's training history to use as sample size N (default 0.10)
 #' @param test_game_ids Optional vector of game IDs to test (NULL = test all games)
 #' @param verbose Print progress messages (default TRUE)
 #' @return List with: predictions, by_market, by_period, overall, plots
@@ -6305,10 +6389,9 @@ run_derivative_backtest <- function(
                              total_col = sport_config$parent_total_col)
   ss <- disp$ss
   st <- disp$st
-  N <- round(nrow(DT) * sample_pct, 0)
 
   if (verbose) cat("Total games:", nrow(DT), "\n")
-  if (verbose) cat("Sample size N:", N, "\n")
+  if (verbose) cat("Sample size N:", sample_pct * 100, "% of each test game's prior history\n")
   if (verbose) cat("Dispersion - ss:", round(ss, 2), "st:", round(st, 2), "\n\n")
 
   # Get list of games to test (use subset if provided)
@@ -6318,6 +6401,11 @@ run_derivative_backtest <- function(
   } else {
     all_game_ids <- unique(DT$game_id)
   }
+  test_game_dates <- DT$game_date[match(all_game_ids, DT$game_id)]
+  eligible <- has_walk_forward_history(DT, test_game_dates)
+  if (verbose) cat("Walk-forward: testing", sum(eligible), "of", length(all_game_ids),
+                   "games (the rest have < half the history behind them)\n\n")
+  all_game_ids <- all_game_ids[eligible]
 
   # ============================================================================
   # DEFINE MARKETS TO TEST
@@ -6416,8 +6504,9 @@ run_derivative_backtest <- function(
     if (is.na(parent_spread) || is.na(parent_total)) next
     if (is.na(target_cover) || is.na(target_over)) next
 
-    # Leave-one-out training data
-    DT_train <- DT[DT$game_id != test_game_id, ]
+    DT_train <- walk_forward_training_set(DT, test_game$game_date)
+    if (is.null(DT_train)) next
+    N <- round(nrow(DT_train) * sample_pct, 0)
 
     # Run answer key sampling
     sample_result <- tryCatch({

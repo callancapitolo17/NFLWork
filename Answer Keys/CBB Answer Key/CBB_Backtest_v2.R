@@ -94,8 +94,8 @@ DT <- pbp %>%
   filter(!is.na(home_spread), !is.na(total_line),
          !is.na(game_home_margin_h1), !is.na(game_home_margin_h2)) %>%
   mutate(
-    actual_cover = ifelse(game_home_margin_fg > -home_spread, 1, 0),
-    actual_over = ifelse(game_total_fg > total_line, 1, 0)
+    actual_cover = ifelse(game_home_margin_fg > -home_spread, 1, ifelse(game_home_margin_fg == -home_spread, 0.5, 0)),
+    actual_over = ifelse(game_total_fg > total_line, 1, ifelse(game_total_fg == total_line, 0.5, 0))
   ) %>%
   as.data.table()
 
@@ -169,6 +169,8 @@ games_with_derivs <- unique(c(spreads_h1$event_id, totals_h1$event_id, ml_h1$eve
 # Match to our PBP data via odds_id
 DT_test <- DT %>% filter(odds_id %in% games_with_derivs)
 cat("Games with derivative odds:", nrow(DT_test), "\n")
+DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
+cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
 
 # Sample if needed
 if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
@@ -184,9 +186,8 @@ if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {
 disp <- compute_dispersion(DT, moneyline = FALSE, spread_col = "home_spread", total_col = "total_line")
 ss <- disp$ss
 st <- disp$st
-N <- round(nrow(DT) * SAMPLE_PCT, 0)
 
-cat("Sample size N:", N, "\n\n")
+cat("Sample size N:", SAMPLE_PCT * 100, "% of each test game's prior history\n\n")
 
 # Run predictions
 all_results <- list()
@@ -206,8 +207,9 @@ for (i in seq_along(test_ids)) {
   if (is.na(parent_spread) || is.na(parent_total)) next
   if (is.na(target_cover) || is.na(target_over)) next
 
-  # Leave-one-out training data
-  DT_train <- DT[DT$odds_id != test_id, ]
+  DT_train <- walk_forward_training_set(DT, test_game$game_date)
+  if (is.null(DT_train)) next
+  N_game <- round(nrow(DT_train) * SAMPLE_PCT, 0)  # live sizes N off all history to date
 
   # Run answer key sampling
   sample_result <- tryCatch({
@@ -218,7 +220,7 @@ for (i in seq_along(test_ids)) {
       target_cover = target_cover,
       target_over = target_over,
       DT = DT_train,
-      ss = ss, st = st, N = N,
+      ss = ss, st = st, N = N_game,
       use_spread_line = TRUE
     )
   }, error = function(e) NULL)

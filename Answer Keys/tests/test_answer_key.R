@@ -16,8 +16,8 @@ cat("=============================================================\n\n")
 con <- dbConnect(duckdb(), dbdir = "pbp.duckdb", read_only = TRUE)
 DT <- dbGetQuery(con, "SELECT * FROM nfl_betting_pbp") %>%
   mutate(
-    actual_over = ifelse(total_final_score > total_line, 1, 0),
-    actual_cover = ifelse(home_margin > -home_spread, 1, 0)
+    actual_over = ifelse(total_final_score > total_line, 1, ifelse(total_final_score == total_line, 0.5, 0)),
+    actual_cover = ifelse(home_margin > -home_spread, 1, ifelse(home_margin == -home_spread, 0.5, 0))
   ) %>%
   as.data.table()
 dbDisconnect(con)
@@ -107,18 +107,18 @@ target_over <- 0.50
 bal <- balance_sample(mm$dt, N, target_cover, target_over, tol_error = 1)
 
 if (abs(bal$cover_error) <= 1) {
-  cat(sprintf("  PASS: Cover error = %d (within tolerance of 1)\n", bal$cover_error))
+  cat(sprintf("  PASS: Cover error = %.1f (within tolerance of 1)\n", bal$cover_error))
   test_passed <- test_passed + 1
 } else {
-  cat(sprintf("  FAIL: Cover error = %d (exceeds tolerance of 1)\n", bal$cover_error))
+  cat(sprintf("  FAIL: Cover error = %.1f (exceeds tolerance of 1)\n", bal$cover_error))
   test_failed <- test_failed + 1
 }
 
 if (abs(bal$over_error) <= 1) {
-  cat(sprintf("  PASS: Over error = %d (within tolerance of 1)\n", bal$over_error))
+  cat(sprintf("  PASS: Over error = %.1f (within tolerance of 1)\n", bal$over_error))
   test_passed <- test_passed + 1
 } else {
-  cat(sprintf("  FAIL: Over error = %d (exceeds tolerance of 1)\n", bal$over_error))
+  cat(sprintf("  FAIL: Over error = %.1f (exceeds tolerance of 1)\n", bal$over_error))
   test_failed <- test_failed + 1
 }
 
