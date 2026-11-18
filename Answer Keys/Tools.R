@@ -6232,8 +6232,8 @@ has_walk_forward_history <- function(DT, test_game_dates,
 
 #' Historical games usable to price one test game in a backtest.
 #'
-#' Keeps only games dated strictly BEFORE the test game. game_date is the UTC
-#' date of the start, so an early-evening ET game can still train a game that
+#' Keeps only games dated strictly BEFORE the test game. CBB and NFL game_date
+#' is the UTC date of the start, so an early-evening ET game can still train a game that
 #' starts after 00:00 UTC the same night; there is no start time on every
 #' sport's history to cut on.
 #'

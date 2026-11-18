@@ -51,6 +51,14 @@ test_that("works on a plain data.frame", {
   expect_equal(train, DF[1:2, ])
 })
 
+test_that("IDate and POSIXct game_date columns work like Date", {
+  DT <- .history(c("2024-01-01", "2024-01-02", "2024-01-03"))
+  as_idate <- copy(DT)[, game_date := as.IDate(game_date)]
+  as_posix <- copy(DT)[, game_date := as.POSIXct(paste(game_date, "12:00:00"), tz = "UTC")]
+  expect_equal(walk_forward_training_set(as_idate, as.IDate("2024-01-03"), min_train_share = 0), as_idate[1:2])
+  expect_equal(walk_forward_training_set(as_posix, as_posix$game_date[3], min_train_share = 0), as_posix[1:2])
+})
+
 test_that("has_walk_forward_history agrees with walk_forward_training_set per test date", {
   DT <- .history(sprintf("2024-01-%02d", 1:10))
   test_dates <- as.Date(c("2024-01-01", "2024-01-05", "2024-01-06", "2024-02-01", NA))

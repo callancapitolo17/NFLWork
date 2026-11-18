@@ -168,9 +168,9 @@ games_with_derivs <- unique(c(spreads_h1$event_id, totals_h1$event_id, ml_h1$eve
 
 # Match to our PBP data via odds_id
 DT_test <- DT %>% filter(odds_id %in% games_with_derivs)
+cat("Games with derivative odds:", nrow(DT_test), "\n")
 DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
 cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
-cat("Games with derivative odds:", nrow(DT_test), "\n")
 
 # Sample if needed
 if (!is.null(N_TEST_GAMES) && N_TEST_GAMES < nrow(DT_test)) {

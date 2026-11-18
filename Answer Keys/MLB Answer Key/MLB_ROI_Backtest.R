@@ -205,12 +205,12 @@ cat("  F5 moneylines:", nrow(ml_f5), "\n")
 # Games that have F5 derivative odds
 games_with_derivs <- unique(c(spreads_f5$game_pk, totals_f5$game_pk, ml_f5$game_pk))
 DT_test <- DT[DT$game_pk %in% games_with_derivs, ]
+cat("\nGames with F5 odds:", nrow(DT_test), "\n")
 DT_test <- DT_test[has_walk_forward_history(DT, DT_test$game_date), ]
 cat("Walk-forward eligible (>= half the history before them):", nrow(DT_test), "\n")
-cat("\nGames with F5 odds:", nrow(DT_test), "\n")
 
 if (nrow(DT_test) == 0) {
-  cat("ERROR: No games matched between PBP and F5 odds.\n")
+  cat("ERROR: No walk-forward eligible games with F5 odds (none matched, or none have half the history behind them).\n")
   quit(save = "no", status = 1)
 }
 
