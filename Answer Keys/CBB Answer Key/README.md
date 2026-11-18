@@ -110,10 +110,57 @@ If the multivariate solve fails, a per-bet fallback scales each bet by average p
 | `Acquire CBB Data.R` | Update play-by-play data from hoopR |
 | `Acquire CBB Derivative Odds v2.R` | Fetch historical derivative odds from The Odds API |
 | `build_betting_pbp.R` | Process raw PBP into betting-ready format |
-| `CBB_Backtest.R` | Backtest derivative market predictions |
+| `CBB_Backtest.R` | Walk-forward backtest of the answer key (see Backtest below) |
+| `cbb_backtest_lib.R` | Loading, pricing and report metrics for `CBB_Backtest.R` |
 | `CBB_Backtest_Correlation.R` | Backtest correlation adjustment impact |
-| `CBB_Parameter_Sweep.R` | Sweep Kelly multiplier / bankroll parameters |
+| `CBB_Backtest_Shrinkage_*.R` | 2026-06-15 shrinkage experiment (concluded; see its findings doc) |
 | `run_cbb_daily.sh` | Cron wrapper for daily pipeline runs |
+
+## Backtest
+
+`CBB_Backtest.R` is the one CBB backtest. It prices every game with 1H closing
+lines off only the games dated before it (walk-forward, half the history
+behind it at least), N = 2% of that prior history as in `CBB.R`, and saves the
+predictions under a label in `Answer Keys/cbb_backtest.duckdb` (gitignored;
+`backtest_predictions`, `backtest_runs`; a rerun replaces its label).
+
+```bash
+# price the current code (~9,600 games priced; a few minutes on 4-8 cores)
+Rscript "Answer Keys/CBB Answer Key/CBB_Backtest.R" run --label main
+# price another commit on the same data: point --code-dir at a worktree
+git worktree add /tmp/ak-before <commit>
+Rscript "Answer Keys/CBB Answer Key/CBB_Backtest.R" run --label before --code-dir "/tmp/ak-before/Answer Keys"
+# compare saved labels (first is the baseline); no repricing
+Rscript "Answer Keys/CBB Answer Key/CBB_Backtest.R" report --labels before,main
+```
+
+The report, on the lines every label priced (pushes dropped):
+- **Sample centring**: the sample's non-push cover/over rate of the parent
+  spread/total minus the no-vig target (`mean_gap > 0` = home / over lean),
+  and the sample's median margin/total miss from the parent line.
+- **Log loss** of 1H spreads, totals and moneylines vs the book close (median
+  probit devig over 2+ books), and of full-game main and alt lines.
+- **Paired log loss change** vs the baseline label, by-game bootstrap 95%.
+- **Flat $100 bets** at the best closing price where the claimed edge >=
+  `--edge` (default 3%; live `CBB.R` bets at 5%), one side per line, ROI per
+  graded bet with a by-game bootstrap 95% interval. Pushed lines are neither
+  staked nor counted, so ROI and claimed edge leave out the push share
+  (about 4% of 1H moneylines, 1.5% of 1H spreads).
+
+Each game's sample comes from the games dated before it (distance weights
+too), and its probabilities from `Tools.R`'s `predict_spreads_from_sample` /
+`predict_totals_from_sample`, so `--code-dir` tests those as well. A game whose
+`mean_match` does not converge is skipped (as live skips it) and counted; a
+sampler error on any game stops the run with that game and the message.
+
+Other options: `--max-games N` (random subset, for a quick check),
+`--sample-pct P` (a sample-size sweep is one run per value under its own
+label), `--books betonline` (1H fair and price from those books only; one
+named book keeps its one-book lines, several still need 2+ of them),
+`--cores N`. The code under test must include the walk-forward helpers
+(PR #332 or later). When this script changes the saved tables' columns, a run
+stops before pricing and asks you to delete `cbb_backtest.duckdb` and rerun
+the labels you need.
 
 ## Prerequisites
 

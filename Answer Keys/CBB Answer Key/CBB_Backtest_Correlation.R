@@ -9,12 +9,7 @@ library(dplyr)
 library(tidyverse)
 library(DBI)
 library(parallel)
-# Source Tools.R from worktree (has bet_to_leg, multivariate_kelly, etc.)
-WORKTREE_TOOLS <- "~/NFLWork/.claude/worktrees/correlation-kelly/Answer Keys/Tools.R"
-source(WORKTREE_TOOLS)
-if (!exists("walk_forward_training_set")) {
-  stop(WORKTREE_TOOLS, " has no walk_forward_training_set(); rebase that worktree on main")
-}
+source("Tools.R")  # bet_to_leg, multivariate_kelly and walk_forward_training_set are on main
 
 # =============================================================================
 # CONFIGURATION
@@ -65,16 +60,9 @@ calc_kelly <- function(ev, book_odds, bankroll, kelly_mult) {
 # =============================================================================
 
 cat("Loading data...\n")
-con <- dbConnect(duckdb(), dbdir = "cbb.duckdb")
+con <- dbConnect(duckdb(), dbdir = "cbb.duckdb", read_only = TRUE)
 
 pbp <- dbGetQuery(con, "SELECT * FROM cbb_betting_pbp")
-
-closing_odds <- dbGetQuery(con, "
-  SELECT id as odds_id, home_spread, total_line,
-         spread_home_odds, spread_away_odds, tot_over_odds, tot_under_odds
-  FROM cbb_closing_odds
-  WHERE spread_home_odds IS NOT NULL
-")
 
 deriv_odds <- dbGetQuery(con, "SELECT * FROM cbb_derivative_closing_odds")
 
@@ -87,31 +75,14 @@ cat("Derivative odds rows:", nrow(deriv_odds), "\n")
 # PREPARE DATA
 # =============================================================================
 
-closing_odds <- closing_odds %>%
-  mutate(
-    implied_home = american_to_prob(spread_home_odds),
-    implied_away = american_to_prob(spread_away_odds),
-    implied_over = american_to_prob(tot_over_odds),
-    implied_under = american_to_prob(tot_under_odds),
-    spread_juice = implied_home + implied_away,
-    total_juice = implied_over + implied_under,
-    devig_home = implied_home / spread_juice,
-    devig_over = implied_over / total_juice
-  )
-
-consensus <- closing_odds %>%
-  group_by(odds_id) %>%
-  summarize(
-    home_spread = median(home_spread, na.rm = TRUE),
-    total_line = median(total_line, na.rm = TRUE),
-    consensus_home_cover_prob = mean(devig_home, na.rm = TRUE),
-    consensus_over_prob = mean(devig_over, na.rm = TRUE),
-    .groups = "drop"
-  )
-
+# Parent lines and no-vig targets are cbb_betting_pbp's own columns (as CBB.R
+# uses them). Re-joining cbb_closing_odds duplicated home_spread / total_line
+# into .x/.y and crashed.
 DT <- pbp %>%
-  inner_join(consensus, by = "odds_id") %>%
+  mutate(consensus_home_cover_prob = consensus_devig_home_odds,
+         consensus_over_prob = consensus_devig_over_odds) %>%
   filter(!is.na(home_spread), !is.na(total_line),
+         !is.na(consensus_home_cover_prob), !is.na(consensus_over_prob),
          !is.na(game_home_margin_h1), !is.na(game_home_margin_h2)) %>%
   mutate(
     actual_cover = ifelse(game_home_margin_fg > -home_spread, 1, ifelse(game_home_margin_fg == -home_spread, 0.5, 0)),
@@ -383,12 +354,12 @@ cl <- makeCluster(N_CORES)
 clusterExport(cl, c("DT", "DT_test", "spreads_h1", "spreads_h2",
                      "totals_h1", "totals_h2", "ml_h1", "ml_h2",
                      "ss", "st", "SAMPLE_PCT", "devig_pair", "process_single_game",
-                     "american_to_prob", "WORKTREE_TOOLS"))
+                     "american_to_prob"))
 clusterEvalQ(cl, {
   library(data.table)
   library(dplyr)
   setwd("~/NFLWork/Answer Keys")
-  source(WORKTREE_TOOLS)
+  source("Tools.R")
 })
 
 cat("Processing", length(test_ids), "games...\n")
