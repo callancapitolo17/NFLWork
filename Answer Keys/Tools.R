@@ -511,12 +511,15 @@ distance_index_generic <- function(dt, ps, pt, ss, st, spread_col = "home_ml_odd
 # the stored actual_cover/actual_over (graded against each game's own closing
 # line) are the wrong thing to balance on.
 # Spread mode: cover = home margin > -parent_spread. Moneyline mode: cover =
-# home win (margin > 0). Over = final total > parent_total.
+# home win (margin > 0). Over = final total > parent_total. A push is 0.5.
 # Returns a copy without games whose final margin or total is missing, since
 # balance_sample_cpp cannot take NA. Stops if no score column is found, rather
 # than quietly balancing on own-line outcomes (warnings are lost under mclapply).
 MARGIN_COL_CANDIDATES <- c("home_margin", "game_home_margin_period_FG", "game_home_margin_fg")
 TOTAL_COL_CANDIDATES  <- c("total_final_score", "game_total_period_FG", "game_total_fg")
+
+# 1 = over the line, 0 = under, 0.5 = push (the push-scoring convention).
+grade_outcome <- function(x, line) ifelse(x == line, 0.5, as.numeric(x > line))
 
 grade_vs_parent_line <- function(dt, parent_spread, parent_total, use_spread_line) {
   m_col <- intersect(MARGIN_COL_CANDIDATES, names(dt))[1]
@@ -528,8 +531,8 @@ grade_vs_parent_line <- function(dt, parent_spread, parent_total, use_spread_lin
   }
   dt <- as.data.table(dt)[!is.na(dt[[m_col]]) & !is.na(dt[[t_col]])]
   cover_line <- if (use_spread_line) -parent_spread else 0
-  set(dt, j = "actual_cover", value = as.integer(dt[[m_col]] > cover_line))
-  set(dt, j = "actual_over",  value = as.integer(dt[[t_col]] > parent_total))
+  set(dt, j = "actual_cover", value = grade_outcome(dt[[m_col]], cover_line))
+  set(dt, j = "actual_over",  value = grade_outcome(dt[[t_col]], parent_total))
   dt
 }
 
@@ -927,6 +930,11 @@ generate_all_samples <- function(
       min_N = min_N
     )
   }, mc.cores = n_cores)
+
+  # mclapply returns errors as try-error objects; surface the first one
+  errs <- vapply(samples, inherits, logical(1), "try-error")
+  if (any(errs)) stop("generate_all_samples: ", sum(errs), " game(s) failed: ",
+                      attr(samples[[which(errs)[1]]], "condition")$message)
 
   # Name the list by game id for easy lookup
   names(samples) <- targets$id
