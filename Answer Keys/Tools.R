@@ -509,14 +509,25 @@ distance_index_generic <- function(dt, ps, pt, ss, st, spread_col = "home_ml_odd
 # Function 2: balance sample by greedy remove/add
 # Per Feustel spec: if both add and remove fail, return converged=FALSE
 # and let caller restart with smaller N
+# A push is stored as 0.5 in actual_cover / actual_over. Balance targets are
+# no-vig probabilities that exclude pushes, so a push must count as `target`
+# of a cover/over: then covers / (covers + non-covers) lands exactly on target.
+weight_pushes_by_target <- function(outcome, target) {
+  weighted <- as.numeric(outcome)
+  weighted[!is.na(weighted) & weighted == 0.5] <- target
+  weighted
+}
+
 balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
+  cover_weighted <- weight_pushes_by_target(dt[["actual_cover"]], target_cover)
+  over_weighted  <- weight_pushes_by_target(dt[["actual_over"]],  target_over)
 
   # --- C++ fast path ---
   if (.use_rcpp) {
     result <- balance_sample_cpp(
       order_indices = seq_len(nrow(dt)),  # dt is already sorted by distance from mean_match
-      actual_cover  = as.numeric(dt[["actual_cover"]]),  # 0 / 0.5 (push) / 1
-      actual_over   = as.numeric(dt[["actual_over"]]),
+      actual_cover  = cover_weighted,
+      actual_over   = over_weighted,
       N             = as.integer(N),
       target_cover  = target_cover,
       target_over   = target_over,
@@ -538,16 +549,19 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
 
   # --- Pure R fallback ---
   dt <- copy(dt)
+  set(dt, j = ".cover_w", value = cover_weighted)
+  set(dt, j = ".over_w",  value = over_weighted)
   n_sample <- N
 
-  cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
+  cover_error <- dt[included == TRUE, sum(.cover_w, na.rm = T)] -
     round(target_cover * n_sample)
-  over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
+  over_error <- dt[included == TRUE, sum(.over_w, na.rm = T)] -
     round(target_over * n_sample)
   M <- nrow(dt)
 
   repeat {
     if ((abs(cover_error) <= tol_error) && (abs(over_error) <= tol_error)) {
+      dt[, c(".cover_w", ".over_w") := NULL]
       return(list(
         dt = dt,
         final_N = n_sample,
@@ -562,10 +576,10 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
 
     # ---- remove one game from 1..n_sample ----
     in1toN <- dt[seq_len(n_sample), included]
-    cov_help1 <- (cover_error > 0 & dt[seq_len(n_sample), actual_cover] == 1) |
-      (cover_error < 0 & dt[seq_len(n_sample), actual_cover] == 0)
-    ov_help1 <- (over_error > 0 & dt[seq_len(n_sample), actual_over] == 1) |
-      (over_error < 0 & dt[seq_len(n_sample), actual_over] == 0)
+    cov_help1 <- (cover_error > 0 & dt[seq_len(n_sample), .cover_w] == 1) |
+      (cover_error < 0 & dt[seq_len(n_sample), .cover_w] == 0)
+    ov_help1 <- (over_error > 0 & dt[seq_len(n_sample), .over_w] == 1) |
+      (over_error < 0 & dt[seq_len(n_sample), .over_w] == 0)
 
     both1 <- which(in1toN & cov_help1 & ov_help1)
     either1 <- which(in1toN & (cov_help1 | ov_help1))
@@ -581,19 +595,19 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     }
 
     if (!removal_failed) {
-      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
+      cover_error <- dt[included == TRUE, sum(.cover_w, na.rm = T)] -
         round(target_cover * n_sample)
-      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
+      over_error <- dt[included == TRUE, sum(.over_w, na.rm = T)] -
         round(target_over * n_sample)
     }
 
     # ---- add one game from (n_sample+1)..M ----
     idx_range <- seq(n_sample + 1, M)
     inNplus <- dt[idx_range, included]
-    cov_help2 <- (cover_error > 0 & dt[idx_range, actual_cover] == 0) |
-      (cover_error < 0 & dt[idx_range, actual_cover] == 1)
-    ov_help2 <- (over_error > 0 & dt[idx_range, actual_over] == 0) |
-      (over_error < 0 & dt[idx_range, actual_over] == 1)
+    cov_help2 <- (cover_error > 0 & dt[idx_range, .cover_w] == 0) |
+      (cover_error < 0 & dt[idx_range, .cover_w] == 1)
+    ov_help2 <- (over_error > 0 & dt[idx_range, .over_w] == 0) |
+      (over_error < 0 & dt[idx_range, .over_w] == 1)
 
     both2 <- which(!inNplus & cov_help2 & ov_help2)
     either2 <- which(!inNplus & (cov_help2 | ov_help2))
@@ -609,14 +623,15 @@ balance_sample <- function(dt, N, target_cover, target_over, tol_error) {
     }
 
     if (!addition_failed) {
-      cover_error <- dt[included == TRUE, sum(actual_cover, na.rm = T)] -
+      cover_error <- dt[included == TRUE, sum(.cover_w, na.rm = T)] -
         round(target_cover * n_sample)
-      over_error <- dt[included == TRUE, sum(actual_over, na.rm = T)] -
+      over_error <- dt[included == TRUE, sum(.over_w, na.rm = T)] -
         round(target_over * n_sample)
     }
 
     # Per Feustel: "restart the procedure looking for a smaller sample"
     if (removal_failed && addition_failed) {
+      dt[, c(".cover_w", ".over_w") := NULL]
       return(list(
         dt = dt,
         final_N = n_sample,

@@ -116,17 +116,15 @@ Rcpp::List mean_match_cpp(
 // [[Rcpp::export]]
 Rcpp::List balance_sample_cpp(
     Rcpp::IntegerVector order_indices,
-    Rcpp::NumericVector actual_cover,   // 1 = cover, 0.5 = push, 0 = no cover
-    Rcpp::NumericVector actual_over,    // 1 = over,  0.5 = push, 0 = under
+    Rcpp::NumericVector actual_cover,   // 1 / 0, a push already weighted by target_cover
+    Rcpp::NumericVector actual_over,    // 1 / 0, a push already weighted by target_over
     int N,
     double target_cover,
     double target_over,
     int tol_error
 ) {
-    // Pushes are scored 0.5 so they count as half a cover/over. Targets are
-    // no-vig probabilities that exclude pushes, so scoring a push as 0 would
-    // bias samples toward home/over on whole-number lines. A push is never
-    // picked as a "helpful" add/remove (only strict 1s and 0s are).
+    // Pushes (weighted values strictly between 0 and 1) are never picked as a
+    // helpful add/remove: only strict 1s and 0s move the error.
 
     int M = order_indices.size();
 

@@ -97,15 +97,15 @@ target_over <- 0.50
 bal_cpp <- balance_sample(mm_cpp$dt, N, target_cover, target_over, tol_error = 1)
 
 if (abs(bal_cpp$cover_error) <= 1) {
-  pass(sprintf("C++ cover error = %d (within tolerance)", bal_cpp$cover_error))
+  pass(sprintf("C++ cover error = %.1f (within tolerance)", bal_cpp$cover_error))
 } else {
-  fail(sprintf("C++ cover error = %d (exceeds tolerance)", bal_cpp$cover_error))
+  fail(sprintf("C++ cover error = %.1f (exceeds tolerance)", bal_cpp$cover_error))
 }
 
 if (abs(bal_cpp$over_error) <= 1) {
-  pass(sprintf("C++ over error = %d (within tolerance)", bal_cpp$over_error))
+  pass(sprintf("C++ over error = %.1f (within tolerance)", bal_cpp$over_error))
 } else {
-  fail(sprintf("C++ over error = %d (exceeds tolerance)", bal_cpp$over_error))
+  fail(sprintf("C++ over error = %.1f (exceeds tolerance)", bal_cpp$over_error))
 }
 
 if (bal_cpp$converged) {

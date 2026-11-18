@@ -89,7 +89,7 @@ DT <- data.table(
   home_margin = matched$home_margin,
   total_final_score = matched$total_runs,
   actual_cover = matched$home_won,
-  actual_over = as.integer(matched$total_runs > matched$total_line),
+  actual_over = ifelse(matched$total_runs > matched$total_line, 1, ifelse(matched$total_runs == matched$total_line, 0.5, 0)),
   home_ml_odds = matched$home_ml,
   away_ml_odds = matched$away_ml
 )
