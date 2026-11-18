@@ -183,30 +183,25 @@ test("depth cuts the contracts; none resting at the ask is no_book", () => {
   assert.equal(decide(state, WSU_ALT_KEY, null, { quoteError: "HTTP 404" }).detail, "KXNCAAFSPREAD-26SEP19DUQWSU-WSU36: HTTP 404");
 });
 
-test("price rule: 0.1c worse than Unabated still trades, a cent worse is price_moved", () => {
+test("a live price away from Unabated's is bet at the live price while the live edge is 4-20%", () => {
   const state = boardWithEdge(WSU_ALT_KEY, 0.05);
   for (const key of Object.keys(state.lines)) {
     if (!key.includes("ms105") && key.includes("si1:tid717:alt-35.5")) moveLine(state, key, { price: -200 });
   }
-  // 57.08c ask: all-in 0.58799, 0.08c worse than Unabated's 0.587157.
-  const quote = { ask: 0.5708, depth: 1000 };
-  assert.equal(decide(state, WSU_ALT_KEY, quote).reason, "bet");
-  assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.58, depth: 1000 }).reason, "price_moved");
-});
-
-test("price rule: up to 1c better than Unabated trades (with the bigger edge); more is a stale fair, price_moved", () => {
-  const state = boardWithEdge(WSU_ALT_KEY, 0.05);
-  for (const key of Object.keys(state.lines)) {
-    if (!key.includes("ms105") && key.includes("si1:tid717:alt-35.5")) moveLine(state, key, { price: -200 });
-  }
-  // 56.1c ask: all-in 0.578288, 0.89c better than Unabated's 0.587157.
-  const better = decide(state, WSU_ALT_KEY, { ask: 0.561, depth: 1000 });
+  // Unabated shows 0.587157 all-in; fair = 1.05 x 0.587157 = 0.6165.
+  // 58c ask: all-in 0.597, 1c worse, live edge 3.3%: under the floor.
+  assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.58, depth: 1000 }).reason, "edge_short");
+  // 55c ask: all-in 0.567325, 1.98c better (refused as a stale fair before 2026-11-18): bet, live edge 8.7%.
+  const better = decide(state, WSU_ALT_KEY, { ask: 0.55, depth: 1000 });
   assert.equal(better.reason, "bet", better.detail);
-  assert.ok(better.liveEdge > 0.05, String(better.liveEdge));
-  // 55c ask: all-in 0.567325, 1.98c better: the market ran away from Unabated's snapshot.
-  const ranAway = decide(state, WSU_ALT_KEY, { ask: 0.55, depth: 1000 });
-  assert.equal(ranAway.reason, "price_moved");
-  assert.match(ranAway.detail, /better than Unabated/);
+  assert.ok(better.liveEdge > 0.08 && better.liveEdge < 0.09, String(better.liveEdge));
+  // Sized on the live price: a bigger edge at a lower price stakes more than at Unabated's price.
+  const atShown = decide(state, WSU_ALT_KEY, { ask: 0.5708, depth: 1000 });
+  assert.equal(atShown.reason, "bet");
+  assert.ok(better.stake > atShown.stake, `${better.stake} vs ${atShown.stake}`);
+  // 50c ask: all-in 0.5175, live edge 19.1%: still bet; 48c (22%) is over the cap.
+  assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.5, depth: 1000 }).reason, "bet");
+  assert.equal(decide(state, WSU_ALT_KEY, { ask: 0.48, depth: 1000 }).reason, "cap");
 });
 
 test("edge floor 4%, cap 20%, at the live price", () => {
@@ -259,7 +254,7 @@ test("the decision signature changes with the ask, not with the clock", () => {
   assert.equal(taker.decisionSignature(base), taker.decisionSignature({ ...base, liveEdge: 0.051 }));
   assert.notEqual(taker.decisionSignature(base), taker.decisionSignature({ ...base, liveAsk: 0.58 }));
   // A skipped row does not re-log on every tick of the book: only its reason or Unabated's price matter.
-  const skipped = { ...base, reason: "price_moved" };
+  const skipped = { ...base, reason: "not_best" };
   assert.equal(taker.decisionSignature(skipped), taker.decisionSignature({ ...skipped, liveAsk: 0.58, contracts: 4 }));
   assert.notEqual(taker.decisionSignature(skipped), taker.decisionSignature({ ...skipped, unabatedPrice: -150 }));
 });

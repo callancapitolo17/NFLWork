@@ -8,10 +8,9 @@
 //   - Kalshi rows Unabated shows an edge on, every league and market the
 //     settings scan (alts included, moneylines and main numbers through a derived ticker);
 //   - fair = Unabated's own (`ge` on the row), no cross-check;
-//   - Kalshi's live all-in price (ask + the 7% taker fee, the way Unabated
-//     shows Kalshi) at most 0.1c worse than Unabated's shown price, and at
-//     most 1c better: a price that ran away from Unabated's since its
-//     snapshot is news Unabated's fair has not caught up with, not an edge;
+//   - bet at Kalshi's live all-in price (ask + the 7% taker fee, the way
+//     Unabated shows Kalshi), wherever it sits against Unabated's shown
+//     price (2026-11-18; before, 0.1c worse to 1c better only);
 //   - Unabated's edge and the live edge at least 4% (3% before 2026-11-18), the live edge at most 20%;
 //   - the game starts within 72 hours (2026-11-18);
 //   - no live book beats the price at that number (pricecheck.js, strictly:
@@ -50,8 +49,6 @@
 //   no_outcome    no Novig outcome for the row (or an ambiguous one), or no
 //                 open pregame Novig market lists it
 //   no_book       the orderbook read failed or has no ask on the row's side
-//   price_moved   live all-in more than PRICE_TOLERANCE worse than Unabated's,
-//                 or more than BETTER_PRICE_TOLERANCE better
 //   edge_short    live edge under MIN_LIVE_EDGE, or the shrunk live edge under
 //                 the Min shrunk edge setting
 //   not_best      another live book beats the live price at the number
@@ -95,12 +92,10 @@ const BOT_KELLY = 0.25;
 // closed at about +1% CLV while its cap was full every day.
 const MIN_LIVE_EDGE = 0.04;
 const MAX_LIVE_EDGE = 0.20;
-// Unabated's Kalshi price sometimes lags the book by a tick; 0.1c worse still trades (Cal, 2026-10-14).
-const PRICE_TOLERANCE = 0.001;
-// A live price more than this much BETTER than Unabated's shown price is a
-// market that moved since Unabated's snapshot (news), so its fair is stale:
-// the edge the bot would compute there is its own, not Unabated's.
-const BETTER_PRICE_TOLERANCE = 0.01;
+// A live price away from Unabated's shown one is bet at the live price
+// whenever the live edge is still 4-20% (Cal, 2026-11-18, bot audit: the
+// refused Kalshi lines closed +4.6% CLV); both bots. There is no price_moved
+// refusal; older taker_decisions rows still carry that reason.
 // Kalshi's market status that takes orders (GET /markets/<ticker>).
 const MARKET_STATUS_ACTIVE = "active";
 const MAX_LINE_AGE_MS = 7 * 24 * 3600 * 1000;
@@ -145,7 +140,7 @@ const NOVIG_UNDER_NAME_RE = /^(under|u)\b/i;
 const VENUE_KALSHI = "kalshi";
 const VENUE_NOVIG = "novig";
 
-const REASONS = ["stale_feed", "no_ticker", "no_outcome", "no_book", "price_moved", "edge_short", "not_best", "cap", "size_declined", "size_zero", "market_mismatch", "bet"];
+const REASONS = ["stale_feed", "no_ticker", "no_outcome", "no_book", "edge_short", "not_best", "cap", "size_declined", "size_zero", "market_mismatch", "bet"];
 
 function roundPrice(value) {
   return Math.round(value * PRICE_DECIMALS) / PRICE_DECIMALS;
@@ -437,12 +432,6 @@ function decideRow({ row, contract, quote, quoteError, priceIndex, sizing, venue
   const liveAllIn = rules.allInOf(quote.ask);
   const liveEdge = fairProb / liveAllIn - 1;
   Object.assign(decision, { liveAsk: quote.ask, liveAllIn: roundPrice(liveAllIn), liveEdge: roundPrice(liveEdge), depth: quote.depth });
-  if (liveAllIn > unabatedAllIn + PRICE_TOLERANCE) {
-    return done("price_moved", `live ${(liveAllIn * 100).toFixed(2)}c vs Unabated ${(unabatedAllIn * 100).toFixed(2)}c`);
-  }
-  if (liveAllIn < unabatedAllIn - BETTER_PRICE_TOLERANCE) {
-    return done("price_moved", `live ${(liveAllIn * 100).toFixed(2)}c is over ${BETTER_PRICE_TOLERANCE * 100}c better than Unabated's ${(unabatedAllIn * 100).toFixed(2)}c: its fair is stale`);
-  }
   if (liveEdge < MIN_LIVE_EDGE) return done("edge_short", `live edge ${(liveEdge * 100).toFixed(2)}%`);
   // The Min shrunk edge gate. A missing floor, or a shrink outside (0, 1],
   // is a bug. A floor of 0 is the setting's "off": the row is bet on its raw
@@ -1195,7 +1184,7 @@ function decisionSignature(decision) {
 }
 
 module.exports = {
-  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, NOVIG_EVENT_INGAME, NOVIG_MARKET_OPEN, NOVIG_QTY_PER_DOLLAR, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE, PRICE_TOLERANCE, BETTER_PRICE_TOLERANCE,
+  KALSHI_BOOK_ID, NOVIG_BOOK_ID, VENUE_KALSHI, VENUE_NOVIG, NOVIG_EVENT_PREGAME, NOVIG_EVENT_INGAME, NOVIG_MARKET_OPEN, NOVIG_QTY_PER_DOLLAR, KELLY_BANKROLL, NOVIG_KELLY_BANKROLL, BOT_KELLY, MIN_LIVE_EDGE, MAX_LIVE_EDGE,
   MAX_LINE_AGE_MS, MAX_TIME_TO_START_MS, KALSHI_TAKER_FEE_RATE, REASONS,
   kalshiAllInPrice, probToAmerican, unabatedAllInOf, candidateRows,
   contractFromRungs, derivedMainNumberContract, spreadTeamCodes, derivedMoneylineContract, derivedSpreadFromTeamCodes, resolveKalshiContract,
