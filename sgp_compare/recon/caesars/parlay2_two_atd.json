@@ -1,0 +1,185 @@
+{
+ "request": {
+  "channel": "desktop",
+  "channelDetail": "cordova-desktop",
+  "includeMultiLine": false,
+  "combinationSelections": [],
+  "legs": [
+   {
+    "selectionId": "e312e5f7-ca61-3ecc-8b52-d943e8153496",
+    "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+    "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+    "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+    "priceType": "fp",
+    "related": true,
+    "eachWay": false,
+    "stakePerLine": 0,
+    "line": null,
+    "selectionType": "home",
+    "name": "|David Montgomery|",
+    "price": {
+     "f": "100/127",
+     "d": 1.7874,
+     "a": -127
+    },
+    "origPrice": {
+     "f": "100/127",
+     "d": 1.7874,
+     "a": -127
+    }
+   },
+   {
+    "selectionId": "2ed1ffdd-2b4a-341a-a264-7d9f6a0fce5c",
+    "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+    "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+    "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+    "priceType": "fp",
+    "related": true,
+    "eachWay": false,
+    "stakePerLine": 0,
+    "line": null,
+    "selectionType": "home",
+    "name": "|Nico Collins|",
+    "price": {
+     "f": "50/53",
+     "d": 1.9434,
+     "a": -106
+    },
+    "origPrice": {
+     "f": "50/53",
+     "d": 1.9434,
+     "a": -106
+    }
+   }
+  ]
+ },
+ "status": 200,
+ "response": {
+  "singles": [
+   {
+    "channel": "desktop",
+    "country": "USA",
+    "currency": "USD",
+    "eachWay": false,
+    "id": "e312e5f7-ca61-3ecc-8b52-d943e8153496",
+    "legs": [
+     {
+      "type": "standard",
+      "selectionId": "e312e5f7-ca61-3ecc-8b52-d943e8153496",
+      "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+      "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+      "buyingPointsAllowed": false,
+      "included": true
+     }
+    ],
+    "potentialReturns": 0,
+    "price": {
+     "decimal": 1.7874,
+     "fractional": "100/127",
+     "american": "-127"
+    },
+    "priceType": "fp",
+    "stakePerLine": 0,
+    "type": "SGL",
+    "externalBetType": "SGL",
+    "numOfLines": 1,
+    "typeName": "Straight",
+    "delay": 0,
+    "selectionId": "e312e5f7-ca61-3ecc-8b52-d943e8153496",
+    "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+    "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+    "buyingPointsAllowed": false,
+    "betWithRewardCreditsAllowed": true,
+    "bettable": true
+   },
+   {
+    "channel": "desktop",
+    "country": "USA",
+    "currency": "USD",
+    "eachWay": false,
+    "id": "2ed1ffdd-2b4a-341a-a264-7d9f6a0fce5c",
+    "legs": [
+     {
+      "type": "standard",
+      "selectionId": "2ed1ffdd-2b4a-341a-a264-7d9f6a0fce5c",
+      "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+      "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+      "buyingPointsAllowed": false,
+      "included": true
+     }
+    ],
+    "potentialReturns": 0,
+    "price": {
+     "decimal": 1.9434,
+     "fractional": "50/53",
+     "american": "-106"
+    },
+    "priceType": "fp",
+    "stakePerLine": 0,
+    "type": "SGL",
+    "externalBetType": "SGL",
+    "numOfLines": 1,
+    "typeName": "Straight",
+    "delay": 0,
+    "selectionId": "2ed1ffdd-2b4a-341a-a264-7d9f6a0fce5c",
+    "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+    "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+    "buyingPointsAllowed": false,
+    "betWithRewardCreditsAllowed": true,
+    "bettable": true
+   }
+  ],
+  "parlays": [
+   {
+    "channel": "desktop",
+    "country": "USA",
+    "currency": "USD",
+    "eachWay": false,
+    "id": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+    "legs": [
+     {
+      "type": "standard",
+      "selectionId": "e312e5f7-ca61-3ecc-8b52-d943e8153496",
+      "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+      "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+      "buyingPointsAllowed": false,
+      "included": true
+     },
+     {
+      "type": "standard",
+      "selectionId": "2ed1ffdd-2b4a-341a-a264-7d9f6a0fce5c",
+      "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+      "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+      "buyingPointsAllowed": false,
+      "included": true
+     }
+    ],
+    "potentialReturns": 0,
+    "price": {
+     "decimal": 3.7,
+     "fractional": "27/10",
+     "american": "+270"
+    },
+    "priceType": "fp",
+    "stakePerLine": 0,
+    "type": "BYO",
+    "externalBetType": "SGP2",
+    "numOfLines": 1,
+    "typeName": "Same Game Parlay",
+    "delay": 0,
+    "buyingPointsAllowed": false,
+    "betWithRewardCreditsAllowed": true,
+    "bettable": true
+   }
+  ],
+  "teasers": {
+   "eachWay": false,
+   "buyingPointsAllowed": false,
+   "bettable": false
+  },
+  "roundRobins": [],
+  "errors": [],
+  "bettable": true,
+  "multiLineAvailable": false
+ }
+}

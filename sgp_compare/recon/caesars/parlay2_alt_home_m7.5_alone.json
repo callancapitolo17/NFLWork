@@ -1,0 +1,87 @@
+{
+ "request": {
+  "channel": "desktop",
+  "channelDetail": "cordova-desktop",
+  "includeMultiLine": false,
+  "combinationSelections": [],
+  "legs": [
+   {
+    "selectionId": "6e1b9a51-fbdc-3f7e-be62-380aa2ad1d74",
+    "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+    "marketId": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+    "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+    "priceType": "fp",
+    "related": true,
+    "eachWay": false,
+    "stakePerLine": 0,
+    "line": -7.5,
+    "selectionType": "home",
+    "name": "|Houston Texans|",
+    "price": {
+     "f": "27/50",
+     "d": 1.54,
+     "a": -185
+    },
+    "origPrice": {
+     "f": "27/50",
+     "d": 1.54,
+     "a": -185
+    }
+   }
+  ]
+ },
+ "status": 200,
+ "response": {
+  "singles": [
+   {
+    "channel": "desktop",
+    "country": "USA",
+    "currency": "USD",
+    "eachWay": false,
+    "id": "6e1b9a51-fbdc-3f7e-be62-380aa2ad1d74",
+    "legs": [
+     {
+      "type": "standard",
+      "selectionId": "6e1b9a51-fbdc-3f7e-be62-380aa2ad1d74",
+      "marketId": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+      "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+      "buyingPointsAllowed": false,
+      "requestedLine": -7.5,
+      "included": true
+     }
+    ],
+    "potentialReturns": 0,
+    "price": {
+     "decimal": 1.54,
+     "fractional": "27/50",
+     "american": "-185"
+    },
+    "priceType": "fp",
+    "stakePerLine": 0,
+    "type": "SGL",
+    "externalBetType": "SGL",
+    "numOfLines": 1,
+    "typeName": "Straight",
+    "line": -12.5,
+    "delay": 0,
+    "selectionId": "6e1b9a51-fbdc-3f7e-be62-380aa2ad1d74",
+    "marketId": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+    "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+    "buyingPointsAllowed": false,
+    "requestedLine": -7.5,
+    "betWithRewardCreditsAllowed": true,
+    "bettable": true
+   }
+  ],
+  "parlays": [],
+  "teasers": {
+   "eachWay": false,
+   "buyingPointsAllowed": false,
+   "bettable": false
+  },
+  "roundRobins": [],
+  "errors": [],
+  "bettable": true,
+  "multiLineAvailable": false
+ }
+}
