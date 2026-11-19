@@ -35,6 +35,7 @@ number), tap one side per market, press **Price**.
 | `legs.py` | `Game`, `CanonicalLeg` (venue-neutral: period, stat, subject, side, line), `OfferedLeg`, `ParlayQuote`. |
 | `venues/base.py` | The `Venue` interface: `list_games`, `list_legs`, `price_parlay`. |
 | `venues/prophetx.py` | ProphetX: anonymous public endpoints over a curl_cffi Chrome session; game lines, halves, quarters, team totals, ~290 player props per game. |
+| `venues/novig.py` | Novig: anonymous endpoints over a curl_cffi Chrome session (NFL page, the GraphQL market tree via the committed `mlb_sgp/novig_event_markets_query.json`, the parlay quote); game lines, 1st-half lines, team totals, ~900 player-prop lines per game incl. `(Protected)` twins. One parlay price, no size, no per-leg prices. |
 | `venues/__init__.py` | `build_venues()`: the venues the page uses. Adding a venue = a module + one line here. |
 | `correlation.py` | Pure math: the Correlation factor with and without vig (singles devig from `kalshi_common.fair_value.two_way_fair`). |
 | `pricing.py` | `price_at_venue`: fresh legs, the parlay price, the 2^N partition. |
@@ -46,7 +47,8 @@ number), tap one side per market, press **Price**.
 | Venue | Status |
 |---|---|
 | ProphetX | Live (PR 1). Parlay = `POST /parlay/public/api/v1/user/request` with stake 1, a price request only. |
-| Novig, Kalshi, Polymarket US | Next, one thread each (Novig relays DK/FD/MGM/CZR prices; Kalshi needs an RFQ). |
+| Novig | Live (PR 2). Parlay = `POST api.novig.us/rfq/v2/quote/unauthenticated` with the legs' outcome ids, a price request only (good 15-30 s). Novig copies its parlay prices from a sportsbook (DK/FD/MGM/CZR) and since the 2026-11 endpoint change no longer says which, so the source book is not shown. Single prices are Novig's own exchange (`available`); no dollars-on-offer figure. |
+| Kalshi, Polymarket US | Next, one thread each (Kalshi needs an RFQ). |
 | DraftKings, FanDuel, BetMGM, Caesars | After the prediction markets. |
 
 Cross-venue pricing (one parlay priced at every venue) matches legs by
@@ -58,7 +60,7 @@ Cross-venue pricing (one parlay priced at every venue) matches legs by
 python3 -m pytest -q sgp_compare/tests
 ```
 
-Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
+Fixtures are trimmed copies of the 2026-11-18 ProphetX recon and the 2026-11-19 Novig recon (IND at HOU).
 
 ## Troubleshooting
 

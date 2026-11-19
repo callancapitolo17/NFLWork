@@ -1,0 +1,10 @@
+{
+ "request": {
+  "outcomeIds": [
+   "01a1c9ea-d65c-7550-96d8-3ea563848e5b",
+   "01a1c9ea-d65c-7550-96d8-3eb8c8c6413d"
+  ]
+ },
+ "status": 400,
+ "response": "Invalid parlay combination."
+}

@@ -1,0 +1,885 @@
+{
+ "data": {
+  "event": [
+   {
+    "id": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+    "type": "Game",
+    "league": "NFL",
+    "status": "OPEN_PREGAME",
+    "scheduled_start": "2026-11-20T01:15:00+00:00",
+    "description": "Indianapolis Colts @ Houston Texans",
+    "game": {
+     "id": "01a1c9ea-d5fc-7a22-aa59-3383284685d6",
+     "homeTeam": {
+      "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+      "name": "Houston Texans",
+      "symbol": "HOU"
+     },
+     "awayTeam": {
+      "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+      "name": "Indianapolis Colts",
+      "symbol": "IND"
+     }
+    },
+    "markets": [
+     {
+      "is_consensus": true,
+      "id": "01a1c9ea-d65a-7d30-bf13-2ea51e1ee9e6",
+      "strike": 0.0,
+      "type": "MONEY",
+      "description": "HOU",
+      "status": "OPEN",
+      "volume": 615131.35,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1c9ea-d65a-7d30-bf13-2eb31e9f70db",
+        "index": 0,
+        "description": "HOU",
+        "available": 0.85,
+        "altAvailable": null,
+        "competitor": {
+         "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+         "symbol": "HOU"
+        }
+       },
+       {
+        "id": "01a1c9ea-d65a-7d30-bf13-2ece6480f278",
+        "index": 1,
+        "description": "IND",
+        "available": 0.155,
+        "altAvailable": null,
+        "competitor": {
+         "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+         "symbol": "IND"
+        }
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1c9ea-d65b-7fe3-9fac-b5784d61a5dd",
+      "strike": -12.5,
+      "type": "SPREAD",
+      "description": "HOU -12.5",
+      "status": "OPEN",
+      "volume": 78218.61,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1c9ea-d65b-7fe3-9fac-b58dd46b2cad",
+        "index": 0,
+        "description": "HOU -12.5",
+        "available": 0.495,
+        "altAvailable": null,
+        "competitor": {
+         "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+         "symbol": "HOU"
+        }
+       },
+       {
+        "id": "01a1c9ea-d65b-7fe3-9fac-b59ac6861f60",
+        "index": 1,
+        "description": "IND +12.5",
+        "available": 0.51,
+        "altAvailable": null,
+        "competitor": {
+         "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+         "symbol": "IND"
+        }
+       }
+      ]
+     },
+     {
+      "is_consensus": false,
+      "id": "01a1e749-952d-7cf2-b08a-de96b7322247",
+      "strike": -18.5,
+      "type": "SPREAD",
+      "description": "HOU -18.5",
+      "status": "OPEN",
+      "volume": 0.0,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e749-952d-7cf2-b08a-dea55efb8fd4",
+        "index": 0,
+        "description": "HOU -18.5",
+        "available": 0.315,
+        "altAvailable": null,
+        "competitor": {
+         "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+         "symbol": "HOU"
+        }
+       },
+       {
+        "id": "01a1e749-952d-7cf2-b08a-deba1c69b6ac",
+        "index": 1,
+        "description": "IND +18.5",
+        "available": 0.72,
+        "altAvailable": null,
+        "competitor": {
+         "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+         "symbol": "IND"
+        }
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1c9ea-d65c-7550-96d8-3e949ffeac68",
+      "strike": 43.5,
+      "type": "TOTAL",
+      "description": "IND @ HOU t43.5",
+      "status": "OPEN",
+      "volume": 17552.46,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1c9ea-d65c-7550-96d8-3ea563848e5b",
+        "index": 0,
+        "description": "Over 43.5",
+        "available": 0.52,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1c9ea-d65c-7550-96d8-3eb8c8c6413d",
+        "index": 1,
+        "description": "Under 43.5",
+        "available": 0.485,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": false,
+      "id": "01a1ca6f-1a9d-7352-8f88-0d4ab5a764ff",
+      "strike": 35.5,
+      "type": "TOTAL",
+      "description": "IND @ HOU t35.5",
+      "status": "OPEN",
+      "volume": 10.41,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1ca6f-1a9d-7352-8f88-0d56d08261f9",
+        "index": 0,
+        "description": "Over 35.5",
+        "available": 0.78,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1ca6f-1a9d-7352-8f88-0d65bfa00b7d",
+        "index": 1,
+        "description": "Under 35.5",
+        "available": 0.24,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1e9c1-2c27-7b73-aecd-fae5c80a546c",
+      "strike": 15.5,
+      "type": "TEAM_TOTAL",
+      "description": "Indianapolis Colts 15.5 TEAM_TOTAL",
+      "status": "OPEN",
+      "volume": 0.0,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": {
+       "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+       "name": "Indianapolis Colts",
+       "country": "UnitedStates",
+       "short_name": "IND",
+       "symbol": "IND",
+       "swish_id": "338nfl",
+       "optic_odds_id": "28ABEAB98C11",
+       "primary_color": "#003B7A",
+       "secondary_color": "#A5ACAF"
+      },
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e9c1-2c27-7b73-aecd-faff5b39c04f",
+        "index": 0,
+        "description": "Over 15.5",
+        "available": 0.536,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1e9c1-2c27-7b73-aecd-fb09b1cb439a",
+        "index": 1,
+        "description": "Under 15.5",
+        "available": 0.521,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": false,
+      "id": "01a1e17e-9749-7662-99c2-ffb042e7338e",
+      "strike": 27.5,
+      "type": "TEAM_TOTAL",
+      "description": "Houston Texans 27.5 TEAM_TOTAL",
+      "status": "OPEN",
+      "volume": 2519.08,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": {
+       "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+       "name": "Houston Texans",
+       "country": "USA",
+       "short_name": "HOU",
+       "symbol": "HOU",
+       "swish_id": "325nfl",
+       "optic_odds_id": "4DD082E9EC10",
+       "primary_color": "#03202F",
+       "secondary_color": "#A71930"
+      },
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e17e-9749-7662-99c2-ffc44e4c9d32",
+        "index": 0,
+        "description": "Over 27.5",
+        "available": 0.55,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1e17e-9749-7662-99c2-ffdc343afb75",
+        "index": 1,
+        "description": "Under 27.5",
+        "available": 0.46,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1e176-2574-77d3-b3f3-af267d8aa5fe",
+      "strike": -6.5,
+      "type": "SPREAD_1H",
+      "description": "HOU -6.5 1H",
+      "status": "OPEN",
+      "volume": 3408.36,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e176-2574-77d3-b3f3-af3e980d4655",
+        "index": 0,
+        "description": "HOU -6.5",
+        "available": 0.55,
+        "altAvailable": null,
+        "competitor": {
+         "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+         "symbol": "HOU"
+        }
+       },
+       {
+        "id": "01a1e176-2574-77d3-b3f3-af4e4603d9e3",
+        "index": 1,
+        "description": "IND +6.5",
+        "available": 0.46,
+        "altAvailable": null,
+        "competitor": {
+         "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+         "symbol": "IND"
+        }
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1f0ad-d8bc-77d2-bd7c-6ffcb3de6ea1",
+      "strike": 21.5,
+      "type": "TOTAL_1H",
+      "description": "IND @ HOU t21.5 1H",
+      "status": "OPEN",
+      "volume": 39.05,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1f0ad-d8bc-77d2-bd7c-701f12d9b049",
+        "index": 1,
+        "description": "Under 21.5",
+        "available": 0.505,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1f0ad-d8bc-77d2-bd7c-70096c1ab865",
+        "index": 0,
+        "description": "Over 21.5",
+        "available": 0.525,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1e17e-9749-7662-99c3-004de217ea88",
+      "strike": 0.0,
+      "type": "MONEY_1H",
+      "description": "HOU 1H",
+      "status": "OPEN",
+      "volume": 1639.55,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e17e-9749-7662-99c3-00579b08ae2c",
+        "index": 0,
+        "description": "HOU",
+        "available": 0.785,
+        "altAvailable": null,
+        "competitor": {
+         "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+         "symbol": "HOU"
+        }
+       },
+       {
+        "id": "01a1e17e-9749-7662-99c3-00659db50d53",
+        "index": 1,
+        "description": "IND",
+        "available": 0.24,
+        "altAvailable": null,
+        "competitor": {
+         "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+         "symbol": "IND"
+        }
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1ea0d-bfe5-7973-a8c3-89a3c85c4c1a",
+      "strike": 70.5,
+      "type": "RECEIVING_YARDS",
+      "description": "Nico Collins 70.5 RECEIVING_YARDS",
+      "status": "OPEN",
+      "volume": 1116.41,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "d5981bd8-9926-4dc6-9e81-ae59dbf13516",
+       "full_name": "Nico Collins",
+       "jersey_number": "12",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+          "name": "Houston Texans",
+          "short_name": "HOU",
+          "symbol": "HOU",
+          "swish_id": "325nfl",
+          "optic_odds_id": "4DD082E9EC10",
+          "primary_color": "#03202F",
+          "secondary_color": "#A71930",
+          "country": "USA"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1ea0d-bfe5-7973-a8c3-89b61c82b05d",
+        "index": 0,
+        "description": "Over 70.5",
+        "available": 0.515,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1ea0d-bfe5-7973-a8c3-89c65b4e4958",
+        "index": 1,
+        "description": "Under 70.5",
+        "available": 0.505,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1ea0d-bfe5-7973-a8c3-89d7141db555",
+      "strike": 70.5,
+      "type": "RECEIVING_YARDS_PROTECTED",
+      "description": "Nico Collins 70.5 RECEIVING_YARDS_PROTECTED",
+      "status": "OPEN",
+      "volume": 0.0,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "d5981bd8-9926-4dc6-9e81-ae59dbf13516",
+       "full_name": "Nico Collins",
+       "jersey_number": "12",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+          "name": "Houston Texans",
+          "short_name": "HOU",
+          "symbol": "HOU",
+          "swish_id": "325nfl",
+          "optic_odds_id": "4DD082E9EC10",
+          "primary_color": "#03202F",
+          "secondary_color": "#A71930",
+          "country": "USA"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1ea0d-bfe5-7973-a8c3-89e2c5998706",
+        "index": 0,
+        "description": "Over 70.5",
+        "available": 0.565,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1ea0d-bfe5-7973-a8c3-89fb2ad53847",
+        "index": 1,
+        "description": "Under 70.5",
+        "available": 0.665,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1efce-0949-7743-9c05-b460b3bd63e7",
+      "strike": 257.5,
+      "type": "PASSING_YARDS",
+      "description": "C.J. Stroud 257.5 PASSING_YARDS",
+      "status": "OPEN",
+      "volume": 285.71,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "ca7f9596-aae8-4af0-a16f-a64aca54bcf3",
+       "full_name": "C.J. Stroud",
+       "jersey_number": "7",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+          "name": "Houston Texans",
+          "short_name": "HOU",
+          "symbol": "HOU",
+          "swish_id": "325nfl",
+          "optic_odds_id": "4DD082E9EC10",
+          "primary_color": "#03202F",
+          "secondary_color": "#A71930",
+          "country": "USA"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1efce-0949-7743-9c05-b478c916cebc",
+        "index": 0,
+        "description": "Over 257.5",
+        "available": 0.525,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1efce-0949-7743-9c05-b488fee331e3",
+        "index": 1,
+        "description": "Under 257.5",
+        "available": 0.55,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1e259-f46f-70d2-82af-cf948b6a99c2",
+      "strike": 0.5,
+      "type": "TOUCHDOWNS",
+      "description": "Jonathan Taylor 0.5 TOUCHDOWNS",
+      "status": "OPEN",
+      "volume": 1926.47,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "327dd23d-b783-4702-9a06-e5acb0810acd",
+       "full_name": "Jonathan Taylor",
+       "jersey_number": "28",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+          "name": "Indianapolis Colts",
+          "short_name": "IND",
+          "symbol": "IND",
+          "swish_id": "338nfl",
+          "optic_odds_id": "28ABEAB98C11",
+          "primary_color": "#003B7A",
+          "secondary_color": "#A5ACAF",
+          "country": "UnitedStates"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e259-f46f-70d2-82af-cfa4c7816cb8",
+        "index": 0,
+        "description": "Over 0.5",
+        "available": 0.43,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1e259-f46f-70d2-82af-cfb986ffa662",
+        "index": 1,
+        "description": "Under 0.5",
+        "available": 0.58,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": false,
+      "id": "01a1e259-f470-7140-9964-45bd8f5cc7c6",
+      "strike": 1.5,
+      "type": "TOUCHDOWNS",
+      "description": "Jonathan Taylor 1.5 TOUCHDOWNS",
+      "status": "OPEN",
+      "volume": 706.58,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "327dd23d-b783-4702-9a06-e5acb0810acd",
+       "full_name": "Jonathan Taylor",
+       "jersey_number": "28",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+          "name": "Indianapolis Colts",
+          "short_name": "IND",
+          "symbol": "IND",
+          "swish_id": "338nfl",
+          "optic_odds_id": "28ABEAB98C11",
+          "primary_color": "#003B7A",
+          "secondary_color": "#A5ACAF",
+          "country": "UnitedStates"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e259-f470-7140-9964-45cd573eb820",
+        "index": 0,
+        "description": "Over 1.5",
+        "available": 0.105,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1e259-f470-7140-9964-45d1cc15d124",
+        "index": 1,
+        "description": "Under 1.5",
+        "available": 0.915,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1e23f-244d-7fa0-875f-414d5e0ccc05",
+      "strike": 0.0,
+      "type": "FIRST_TOUCHDOWN_SCORER",
+      "description": "Nikko Remigio FIRST_TOUCHDOWN_SCORER",
+      "status": "OPEN",
+      "volume": 0.0,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "eb26f783-69e0-41ae-a3f2-17d537421853",
+       "full_name": "Nikko Remigio",
+       "jersey_number": "81",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+          "name": "Houston Texans",
+          "short_name": "HOU",
+          "symbol": "HOU",
+          "swish_id": "325nfl",
+          "optic_odds_id": "4DD082E9EC10",
+          "primary_color": "#03202F",
+          "secondary_color": "#A71930",
+          "country": "USA"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e23f-244d-7fa0-875f-415b209dd662",
+        "index": 0,
+        "description": "Yes",
+        "available": 0.008,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1e23f-244d-7fa0-875f-416902770aab",
+        "index": 1,
+        "description": "No",
+        "available": 0.999,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1e259-f46e-70d0-928b-8fa0c09a0bc2",
+      "strike": 0.5,
+      "type": "TOUCHDOWNS",
+      "description": "Will Mallory 0.5 TOUCHDOWNS",
+      "status": "OPEN",
+      "volume": 0.0,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [
+       {
+        "id": "4eb4db53-ecb5-41a3-b8db-4e4e635a0847",
+        "market_id": "01a1e259-f46e-70d0-928b-8fa0c09a0bc2",
+        "created_at": "2026-11-18T18:59:17.932+00:00",
+        "minute_duration": null
+       }
+      ],
+      "player": {
+       "id": "1ec53263-1667-44d3-8365-4e64e1bc47eb",
+       "full_name": "Will Mallory",
+       "jersey_number": "86",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+          "name": "Indianapolis Colts",
+          "short_name": "IND",
+          "symbol": "IND",
+          "swish_id": "338nfl",
+          "optic_odds_id": "28ABEAB98C11",
+          "primary_color": "#003B7A",
+          "secondary_color": "#A5ACAF",
+          "country": "UnitedStates"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e259-f46e-70d0-928b-8fbc592e271b",
+        "index": 0,
+        "description": "Over 0.5",
+        "available": 0.12,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1e259-f46e-70d0-928b-8fc2dc09d3a5",
+        "index": 1,
+        "description": "Under 0.5",
+        "available": 0.9,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1eb26-3486-7ca3-b907-7c16164e0497",
+      "strike": 0.5,
+      "type": "TOUCHDOWNS_PROTECTED",
+      "description": "Quez Watkins 0.5 TOUCHDOWNS_PROTECTED",
+      "status": "OPEN",
+      "volume": 0.0,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "01a1db60-abdd-70f1-ba11-3c98e205856a",
+       "full_name": "Quez Watkins",
+       "jersey_number": "9",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+          "name": "Indianapolis Colts",
+          "short_name": "IND",
+          "symbol": "IND",
+          "swish_id": "338nfl",
+          "optic_odds_id": "28ABEAB98C11",
+          "primary_color": "#003B7A",
+          "secondary_color": "#A5ACAF",
+          "country": "UnitedStates"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1eb26-3486-7ca3-b907-7c2225e85bfa",
+        "index": 0,
+        "description": "Over 0.5",
+        "available": null,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1eb26-3486-7ca3-b907-7c3c7c1a8712",
+        "index": 1,
+        "description": "Under 0.5",
+        "available": null,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
+      "is_consensus": true,
+      "id": "01a1eb26-3486-7ca3-b907-7be588f87ea9",
+      "strike": 0.5,
+      "type": "TOUCHDOWNS",
+      "description": "Quez Watkins 0.5 TOUCHDOWNS",
+      "status": "OPEN",
+      "volume": 0.0,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": null,
+      "market_locks": [],
+      "player": {
+       "id": "01a1db60-abdd-70f1-ba11-3c98e205856a",
+       "full_name": "Quez Watkins",
+       "jersey_number": "9",
+       "player_competitors": [
+        {
+         "competitor": {
+          "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+          "name": "Indianapolis Colts",
+          "short_name": "IND",
+          "symbol": "IND",
+          "swish_id": "338nfl",
+          "optic_odds_id": "28ABEAB98C11",
+          "primary_color": "#003B7A",
+          "secondary_color": "#A5ACAF",
+          "country": "UnitedStates"
+         }
+        }
+       ]
+      },
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1eb26-3486-7ca3-b907-7bf67156c36d",
+        "index": 0,
+        "description": "Over 0.5",
+        "available": 0.035,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1eb26-3486-7ca3-b907-7c0012de383b",
+        "index": 1,
+        "description": "Under 0.5",
+        "available": null,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     }
+    ],
+    "event_locks": []
+   }
+  ]
+ }
+}

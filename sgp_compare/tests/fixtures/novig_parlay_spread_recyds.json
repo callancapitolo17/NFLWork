@@ -1,0 +1,14 @@
+{
+ "request": {
+  "outcomeIds": [
+   "01a1c9ea-d65b-7fe3-9fac-b58dd46b2cad",
+   "01a1ea0d-bfe5-7973-a8c3-89b61c82b05d"
+  ]
+ },
+ "status": 200,
+ "response": {
+  "price": "0.262",
+  "expiresAt": 1795056439668,
+  "serverNow": 1795056409668
+ }
+}
