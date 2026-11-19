@@ -80,6 +80,12 @@ def league_listing_params(league_id: str) -> dict[str, str]:
     }
 
 
+def added_leg_params(event_id: str, base: frozenset[str], candidate_market_id: str) -> dict[str, str]:
+    """Query params of DK_SGP_PRICE_URL: price base + each selection of the candidate market."""
+    return {"eventId": event_id, "selections": ",".join(sorted(base)),
+            "marketCandidates": candidate_market_id, "oddsStyle": "american"}
+
+
 def dk_team_to_abbr(dk_name: str) -> str | None:
     """'SEA Seahawks' -> 'SEA'. The nickname decides: DK's city prefix is
     ambiguous for the two LA and two NY teams."""
@@ -219,9 +225,7 @@ class DraftKingsBook:
         try:
             resp = self._get(DK_SGP_PRICE_URL, timeout=30,
                                     headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
-                                    params={"eventId": event_id, "selections": ",".join(sorted(base)),
-                                            "marketCandidates": candidate_market_id,
-                                            "oddsStyle": "american"})
+                                    params=added_leg_params(event_id, base, candidate_market_id))
         finally:
             self._last_price_call_at = time.monotonic()
         if resp.status_code != 200:

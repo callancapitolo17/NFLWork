@@ -31,10 +31,11 @@ DraftKings shapes (recon 2026-11-19 on Cal's Mac, IND at HOU, fixtures in tests/
   * DK prices a single leg a bit worse inside the builder than on its listing
     (HOU ML -750 vs -700), so singles come from the listing and parlays only
     from the builder.
+Any payload this module cannot parse raises VenueTransportError, so one odd DK
+answer shows as a DraftKings error instead of failing every venue's page.
 """
 from __future__ import annotations
 
-import logging
 import os
 import re
 import threading
@@ -43,29 +44,30 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from nfl_specials.books import parse_start
-from nfl_specials.dk_book import (DK_FOOTBALL_SPORT_ID, DK_LEAGUE_IDS, DK_LEAGUE_URL, DK_SGP_EVENT_URL,
-                                  DK_SGP_PRICE_URL, DK_WARMUP_URL, MIN_SECONDS_BETWEEN_PRICE_CALLS,
-                                  dk_team_to_abbr, league_listing_params, parse_added_leg_odds)
+from nfl_specials.config import parse_dk_proxy
+from nfl_specials.dk_book import (DK_CONNECT_TIMEOUT_SECONDS, DK_FOOTBALL_SPORT_ID, DK_LEAGUE_IDS, DK_LEAGUE_URL,
+                                  DK_SGP_EVENT_URL, DK_SGP_PRICE_URL, DK_WARMUP_URL,
+                                  MIN_SECONDS_BETWEEN_PRICE_CALLS, added_leg_params, dk_team_to_abbr,
+                                  league_listing_params, parse_added_leg_odds)
 from nfl_specials.teams import TEAMS
 from sgp_compare.legs import CanonicalLeg, Game, OfferedLeg, ParlayQuote, ParlayTier
 from sgp_compare.venues.base import VenueTransportError
 
-log = logging.getLogger(__name__)
-
 PROXY_ENV = "SGP_COMPARE_DK_PROXY"
-CONNECT_TIMEOUT_SEC = 5
-REQUEST_TIMEOUT_SEC = 30          # the SGP leg list is ~4.6 MB
+REQUEST_TIMEOUT_SEC = 60          # the SGP leg list is ~4.6 MB; dk_book allows it 60 s too
 GAMES_CACHE_SEC = 300
 MARKETS_CACHE_SEC = 20            # the leg picker; pricing always re-reads
 # One builder answer prices base + every side of a market, so the partition
-# cells that differ only in their last leg share it. Kept just long enough to
-# serve one Price click.
+# cells that differ only in their last leg share it. A fresh leg read (the start
+# of every Price click) drops the game's answers, so they never outlive one
+# click; this is only the backstop.
 ADDED_LEG_CACHE_SEC = 10
 
-# marketType name suffix -> period, longest first so " - 1st Half" wins over " 1st Half".
-PERIOD_WORDS = (("1st Half", "1H"), ("2nd Half", "2H"), ("1st Quarter", "1Q"),
-                ("2nd Quarter", "2Q"), ("3rd Quarter", "3Q"), ("4th Quarter", "4Q"))
-_PERIOD_RE = re.compile(r"\s*(?:-\s*)?(1st Half|2nd Half|1st Quarter|2nd Quarter|3rd Quarter|4th Quarter)\s*$")
+# Period words in DK's marketType names: "Spread 1st Half", "Total Alternate - 1st Half",
+# "1st Half (3 Way)".
+PERIOD_OF_WORDS = {"1st Half": "1H", "2nd Half": "2H", "1st Quarter": "1Q",
+                   "2nd Quarter": "2Q", "3rd Quarter": "3Q", "4th Quarter": "4Q"}
+_PERIOD_SUFFIX_RE = re.compile(r"\s*(?:-\s*)?(" + "|".join(PERIOD_OF_WORDS) + r")\s*$")
 
 # Scorer categories -> stat, named as ProphetX names them so legs can be matched later.
 SCORER_STATS = {
@@ -90,6 +92,11 @@ OPPOSITE_OUTCOME = {"Home": "Away", "Away": "Home", "Over": "Under", "Under": "O
 
 # ---------------------------------------------------------------- parsing (pure)
 
+def dk_proxy_from_env() -> str | None:
+    """SGP_COMPARE_DK_PROXY, the Mac's dk_relay ("http://<tailnet ip>:8097"); None = straight to DK."""
+    return parse_dk_proxy(os.environ.get(PROXY_ENV), env_name=PROXY_ENV)
+
+
 def full_team_name(dk_name: str) -> str:
     """'HOU Texans' -> 'Houston Texans' (ProphetX's naming); DK's name when unknown."""
     abbr = dk_team_to_abbr(dk_name) if dk_name else None
@@ -107,7 +114,8 @@ def american_of(selection: dict) -> float | None:
 
 
 def parse_nfl_games(league_payload: dict, now: datetime) -> list[Game]:
-    """Not-yet-started NFL games from the league listing, soonest first."""
+    """Not-yet-started NFL games from the league listing, soonest first.
+    Raises KeyError/ValueError/TypeError on a shape it does not know."""
     games = []
     for event in league_payload.get("events") or []:
         roles = {p.get("venueRole"): p.get("name", "") for p in event.get("participants") or []}
@@ -133,7 +141,7 @@ def parse_legs(sgp_payload: dict) -> list[OfferedLeg]:
         if market.get("isSuspended") or "SGP" not in (market.get("tags") or []):
             continue
         live = [s for s in market.get("selections") or []
-                if not s.get("isDisabled") and s.get("status", "Active") == "Active" and american_of(s) is not None]
+                if not s.get("isDisabled") and s.get("status") in (None, "Active") and american_of(s) is not None]
         category = _category(market, group_names)
         for selection in live:
             opposite = _opposite(market, selection, live)
@@ -170,10 +178,10 @@ def _type_name(market: dict) -> str:
 def _period_and_base(type_name: str) -> tuple[str, str]:
     """'Receiving Yards O/U - 1st Half' -> ('1H', 'Receiving Yards O/U');
     '1st Half (3 Way)' -> ('1H', '(3 Way)')."""
-    found = _PERIOD_RE.search(type_name)
+    found = _PERIOD_SUFFIX_RE.search(type_name)
     if found:
-        return dict(PERIOD_WORDS)[found.group(1)], type_name[:found.start()].strip()
-    for words, period in PERIOD_WORDS:
+        return PERIOD_OF_WORDS[found.group(1)], type_name[:found.start()].strip()
+    for words, period in PERIOD_OF_WORDS.items():
         if type_name.startswith(words + " "):
             return period, type_name[len(words):].strip()
     return "FG", type_name
@@ -218,10 +226,13 @@ def _is_main_line(market: dict) -> bool:
 
 
 def _opposite(market: dict, selection: dict, live: list[dict]) -> dict | None:
-    """The selection that wins exactly when `selection` loses, when the market has one."""
+    """The selection that wins exactly when `selection` loses, when the market
+    has one. Only for legs whose canonical is understood: the pricer's push and
+    tie checks read the canonical, so an unknown market gets no other side and
+    no vig-removed factor rather than a partition that may be missing an outcome."""
     outcome = selection.get("outcomeType")
     wanted = OPPOSITE_OUTCOME.get(outcome)
-    if wanted is None:
+    if wanted is None or market.get("category") == "HomeTieAway" or _canonical(market, selection) is None:
         return None
     points = selection.get("points")
     candidates = [s for s in live if s is not selection and s.get("outcomeType") == wanted
@@ -230,7 +241,7 @@ def _opposite(market: dict, selection: dict, live: list[dict]) -> dict | None:
         candidates = [s for s in candidates if s.get("points") is not None and abs(s["points"] + points) < 1e-6]
     elif points is not None:                                      # total: same number
         candidates = [s for s in candidates if s.get("points") is not None and abs(s["points"] - points) < 1e-6]
-    elif len(live) != 2:                                          # e.g. a 3-way market: no single other side
+    elif len(market.get("selections") or []) != 2:                # judged on every listed outcome, not the live ones
         return None
     return candidates[0] if len(candidates) == 1 else None
 
@@ -248,9 +259,10 @@ def _canonical(market: dict, selection: dict) -> CanonicalLeg | None:
         scorer_period, stat = SCORER_STATS[category]
         return CanonicalLeg(period if period != "FG" else scorer_period, stat, players[0], "yes", None)
 
-    if category == "HomeAway" and base == "Moneyline":
+    if category == "HomeAway" and base == "Moneyline" and outcome in ("Home", "Away"):
         return CanonicalLeg(period, "moneyline", None, SIDE_OF_OUTCOME[outcome], None)
-    if category == "HomeAwayByPoints" and base in ("Spread", "Spread Alternate") and points is not None:
+    if (category == "HomeAwayByPoints" and base in ("Spread", "Spread Alternate") and points is not None
+            and outcome in ("Home", "Away")):
         return CanonicalLeg(period, "spread", None, SIDE_OF_OUTCOME[outcome], float(points))
     if category == "HomeTieAway" and base == "(3 Way)":
         subject = "Draw" if outcome == "Tie" else full_team_name(selection.get("name") or "")
@@ -278,13 +290,10 @@ def _canonical(market: dict, selection: dict) -> CanonicalLeg | None:
         return CanonicalLeg(period, _slug(base[: -len(" Milestones")]), players[0], "over", float(milestone) - 0.5)
 
     if category == "YesNo" and outcome in ("Yes", "No") and "[" not in base:
-        return CanonicalLeg(period, _slug(base), None, SIDE_OF_OUTCOME[outcome], None)
+        teams = _team_names(market, selection)
+        subject = full_team_name(teams[0]) if len(teams) == 1 else None
+        return CanonicalLeg(period, _slug(base), subject, SIDE_OF_OUTCOME[outcome], None)
     return None
-
-
-def price_request_params(event_id: str, base: frozenset[str], candidate_market_id: str) -> dict[str, str]:
-    return {"eventId": event_id, "selections": ",".join(sorted(base)),
-            "marketCandidates": candidate_market_id, "oddsStyle": "american"}
 
 
 def quote_from_added_leg_odds(added_leg_odds: dict[str, float], last: OfferedLeg, raw: dict) -> ParlayQuote | None:
@@ -299,20 +308,25 @@ def quote_from_added_leg_odds(added_leg_odds: dict[str, float], last: OfferedLeg
 # ---------------------------------------------------------------- the venue
 
 class DraftKingsVenue:
-    """Live DraftKings reads. Thread-safe; caches the schedule, the leg picker's
-    market list, and each builder answer for ADDED_LEG_CACHE_SEC."""
+    """Live DraftKings reads. Thread-safe. Caches the schedule (re-checked
+    against the clock on every call), the leg picker's market list, and each
+    builder answer until the next fresh leg read of its game."""
 
     name = "draftkings"
     display_name = "DraftKings"
 
-    def __init__(self, session_factory: Callable[[], Any] | None = None,
+    def __init__(self, proxy_url: str | None = None,
+                 session_factory: Callable[[], Any] | None = None,
                  clock: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
-        self._session_factory = session_factory or _chrome_session
+                 sleep: Callable[[float], None] = time.sleep,
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
+        self._session_factory = session_factory or (lambda: _chrome_session(proxy_url))
         self._session = None
         self._clock = clock
         self._sleep = sleep
+        self._now = now
         self._lock = threading.Lock()
+        self._session_lock = threading.Lock()
         self._price_lock = threading.Lock()
         self._last_price_call_at = float("-inf")
         self._games: tuple[float, list[Game]] | None = None
@@ -322,24 +336,32 @@ class DraftKingsVenue:
     def list_games(self) -> list[Game]:
         with self._lock:
             cached = self._games
-        if cached and self._clock() - cached[0] < GAMES_CACHE_SEC:
-            return cached[1]
-        payload = self._get(DK_LEAGUE_URL, "league listing", params=league_listing_params(DK_LEAGUE_IDS["NFL"]))
-        games = parse_nfl_games(payload, datetime.now(timezone.utc))
-        with self._lock:
-            self._games = (self._clock(), games)
-        return games
+        if not cached or self._clock() - cached[0] >= GAMES_CACHE_SEC:
+            payload = self._get(DK_LEAGUE_URL, "league listing", params=league_listing_params(DK_LEAGUE_IDS["NFL"]))
+            games = _parsed("league listing", parse_nfl_games, payload, self._now())
+            cached = (self._clock(), games)
+            with self._lock:
+                self._games = cached
+        now = self._now()
+        return [game for game in cached[1] if game.game_start_time > now]
 
     def list_legs(self, game: Game, fresh: bool = False) -> list[OfferedLeg]:
         event_id = game.venue_game_id
         with self._lock:
             cached = self._markets.get(event_id)
         if cached and not fresh and self._clock() - cached[0] < MARKETS_CACHE_SEC:
-            return parse_legs(cached[1])
+            return _parsed("SGP leg list", parse_legs, cached[1])
         payload = self._get(DK_SGP_EVENT_URL.format(event_id=event_id), "SGP leg list")
+        legs = _parsed("SGP leg list", parse_legs, payload)
         with self._lock:
-            self._markets[event_id] = (self._clock(), payload)
-        return parse_legs(payload)
+            now = self._clock()
+            # One ~4.6 MB payload per game: keep only the ones still young enough to serve.
+            self._markets = {k: v for k, v in self._markets.items() if now - v[0] < MARKETS_CACHE_SEC}
+            self._markets[event_id] = (now, payload)
+            if fresh:
+                # A fresh read starts a Price click: its builder answers start fresh too.
+                self._added = {k: v for k, v in self._added.items() if k[0] != event_id}
+        return legs
 
     def price_parlay(self, game: Game, legs: list[OfferedLeg]) -> ParlayQuote | None:
         """The SGP price of all `legs`: the builder prices the last leg's market
@@ -353,10 +375,10 @@ class DraftKingsVenue:
             cached = self._added.get(key)
         if cached is None or self._clock() - cached[0] >= ADDED_LEG_CACHE_SEC:
             raw = self._price_call(*key)
-            cached = (self._clock(), parse_added_leg_odds(raw, base), raw)
+            cached = (self._clock(), _parsed("SGP price", parse_added_leg_odds, raw, base), raw)
             with self._lock:
-                self._added = {k: v for k, v in self._added.items()
-                               if self._clock() - v[0] < ADDED_LEG_CACHE_SEC}
+                now = self._clock()
+                self._added = {k: v for k, v in self._added.items() if now - v[0] < ADDED_LEG_CACHE_SEC}
                 self._added[key] = cached
         return quote_from_added_leg_odds(cached[1], last, cached[2])
 
@@ -369,32 +391,57 @@ class DraftKingsVenue:
                 self._sleep(wait)
             try:
                 return self._get(DK_SGP_PRICE_URL, "SGP price", headers={"X-SportId": DK_FOOTBALL_SPORT_ID},
-                                 params=price_request_params(event_id, base, candidate_market_id))
+                                 params=added_leg_params(event_id, base, candidate_market_id))
             finally:
                 self._last_price_call_at = self._clock()
 
+    def _warm_session(self):
+        """The shared session, made and warmed once (DK sets its cookies on the page)."""
+        with self._session_lock:
+            if self._session is None:
+                session = self._session_factory()
+                try:
+                    session.get(DK_WARMUP_URL, timeout=(DK_CONNECT_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SEC))
+                except Exception as exc:   # curl_cffi raises its own error types
+                    raise VenueTransportError(f"DraftKings warmup: {type(exc).__name__}: {exc}") from exc
+                self._session = session
+            return self._session
+
+    def _drop_session(self, session) -> None:
+        """Forget `session` (not one another thread already replaced it with)."""
+        with self._session_lock:
+            if self._session is session:
+                self._session = None
+
     def _get(self, url: str, what: str, **kwargs) -> dict:
-        if self._session is None:
-            session = self._session_factory()
-            try:
-                session.get(DK_WARMUP_URL, timeout=(CONNECT_TIMEOUT_SEC, REQUEST_TIMEOUT_SEC))
-            except Exception as exc:   # curl_cffi raises its own error types
-                raise VenueTransportError(f"DraftKings warmup: {type(exc).__name__}: {exc}") from exc
-            self._session = session
+        session = self._warm_session()
         try:
-            response = self._session.get(url, timeout=(CONNECT_TIMEOUT_SEC, REQUEST_TIMEOUT_SEC), **kwargs)
+            response = session.get(url, timeout=(DK_CONNECT_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SEC), **kwargs)
         except Exception as exc:
-            self._session = None
+            self._drop_session(session)
             raise VenueTransportError(f"DraftKings {what}: {type(exc).__name__}: {exc}") from exc
         if response.status_code != 200:
+            # A 403 can mean Akamai flagged this cookie jar: start the next call on a new one.
+            self._drop_session(session)
             raise VenueTransportError(f"DraftKings {what}: expected HTTP 200, got "
                                       f"{response.status_code}: {response.text[:200]}")
         try:
-            return response.json()
+            body = response.json()
         except ValueError as exc:
             raise VenueTransportError(f"DraftKings {what}: response is not JSON") from exc
+        if not isinstance(body, dict):
+            raise VenueTransportError(f"DraftKings {what}: expected a JSON object, got {type(body).__name__}")
+        return body
 
 
-def _chrome_session():
+def _parsed(what: str, parse: Callable[..., Any], *args) -> Any:
+    """parse(*args), with a shape DK changed reported as this venue's error."""
+    try:
+        return parse(*args)
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
+        raise VenueTransportError(f"DraftKings {what}: unexpected shape: {type(exc).__name__}: {exc}") from exc
+
+
+def _chrome_session(proxy_url: str | None):
     from curl_cffi import requests as curl_requests
-    return curl_requests.Session(impersonate="chrome", proxy=os.environ.get(PROXY_ENV) or None)
+    return curl_requests.Session(impersonate="chrome", proxy=proxy_url)

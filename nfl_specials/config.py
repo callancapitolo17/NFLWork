@@ -37,13 +37,13 @@ def parse_extra_allowed_hosts(raw: str | None) -> tuple[str, ...]:
     return tuple(names)
 
 
-def parse_dk_proxy(raw: str | None) -> str | None:
-    """NFL_SPECIALS_DK_PROXY ("http://<Mac tailnet IP>:8097") or None when unset."""
+def parse_dk_proxy(raw: str | None, env_name: str = "NFL_SPECIALS_DK_PROXY") -> str | None:
+    """A DK relay URL env var ("http://<Mac tailnet IP>:8097") or None when unset."""
     value = (raw or "").strip()
     if not value:
         return None
     if not re.fullmatch(r"http://[^/\s]+:\d+", value):
-        raise ValueError(f"NFL_SPECIALS_DK_PROXY: expected http://<host>:<port>, got {value!r}")
+        raise ValueError(f"{env_name}: expected http://<host>:<port>, got {value!r}")
     return value
 
 
