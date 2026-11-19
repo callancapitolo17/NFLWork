@@ -499,14 +499,20 @@ class KalshiVenue:
             raise VenueTransportError(f"Kalshi combo mint: expected 200 with market_ticker, got {status}: {str(minted)[:200]}")
         combo_ticker = minted["market_ticker"]
 
-        status, created, _ = api("POST", "/communications/rfqs", body={
-            "market_ticker": combo_ticker, "rest_remainder": False, "replace_existing": True,
-            "target_cost_dollars": f"{RFQ_TARGET_COST_DOLLARS:.2f}"})
-        if status not in (200, 201) or not isinstance(created, dict) or not created.get("id"):
-            # The combo minted, so this is not "these legs can't combine". An
-            # ambiguous reply may still have created the RFQ: cancel any we
-            # hold on this combo before reporting.
+        try:
+            status, created, _ = api("POST", "/communications/rfqs", body={
+                "market_ticker": combo_ticker, "rest_remainder": False, "replace_existing": True,
+                "target_cost_dollars": f"{RFQ_TARGET_COST_DOLLARS:.2f}"})
+        except VenueTransportError:
+            # Timeout or reset: the POST may have landed. Cancel what we hold on this combo.
             self._cancel_open_rfqs_on(api, combo_ticker)
+            raise
+        if status not in (200, 201) or not isinstance(created, dict) or not created.get("id"):
+            # The combo minted, so this is not "these legs can't combine". A 5xx
+            # or an answer without an id may still have created the RFQ; a 4xx
+            # did not, and cleaning up then could cancel another click's live RFQ.
+            if status >= 500 or status in (200, 201):
+                self._cancel_open_rfqs_on(api, combo_ticker)
             raise VenueTransportError(f"Kalshi create RFQ: expected 201 with id, got {status}: {str(created)[:200]}")
         rfq_id = created["id"]
 
@@ -517,6 +523,8 @@ class KalshiVenue:
         tiers = parse_quotes(quotes, rfq_id, combo_ticker)
         if not tiers:
             # Raised, not None, so the page says why instead of "would not price".
+            if quotes:
+                raise VenueTransportError(f"Kalshi: {len(quotes)} quote(s) in {waited:.1f} s, none a usable price")
             raise VenueTransportError(f"Kalshi: no market maker quoted within {waited:.1f} s")
         raw = {"combo_market_ticker": combo_ticker, "rfq_id": rfq_id,
                "rfq_target_cost_dollars": RFQ_TARGET_COST_DOLLARS, "quote_polls": polls,
@@ -554,7 +562,8 @@ class KalshiVenue:
         except VenueTransportError as exc:
             log.error("kalshi: could not cancel RFQ %s: %s: %s", rfq_id, type(exc).__name__, exc)
             return None
-        expired = status == 400 and isinstance(body, dict) and (body.get("error") or {}).get("code") == "expired"
+        error = body.get("error") if isinstance(body, dict) else None
+        expired = status == 400 and isinstance(error, dict) and error.get("code") == "expired"
         if status not in (200, 204) and not expired:
             log.error("kalshi: cancel RFQ %s: expected 204, got %s: %s", rfq_id, status, str(body)[:200])
         return status
@@ -584,11 +593,13 @@ class KalshiVenue:
             cursor = ""
             for _ in range(GAMES_MAX_PAGES):
                 page = self._get(f"/events?series_ticker={GAME_SERIES}&status=open&with_nested_markets=true"
-                                 f"&limit=200&cursor={cursor}")
+                                 f"&limit=200" + (f"&cursor={cursor}" if cursor else ""))
                 events.extend(page.get("events") or [])
                 cursor = page.get("cursor") or ""
                 if not cursor:
                     break
+            else:
+                log.warning("kalshi: game list cut at %d pages (%d events); more remain", GAMES_MAX_PAGES, len(events))
             games = parse_nfl_games_with_teams({"events": events}, datetime.now(timezone.utc))
             cached = (self._clock(), games)
             with self._lock:

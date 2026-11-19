@@ -31,6 +31,19 @@ def load(name):
     return json.loads((FIXTURES / name).read_text())
 
 
+@pytest.fixture(autouse=True)
+def before_kickoff(monkeypatch):
+    """The venue's wall clock pinned before the fixture game, so the suite does
+    not go red once IND at HOU kicks off for real."""
+    import sgp_compare.venues.kalshi as kalshi_module
+
+    class Pinned(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return BEFORE_KICKOFF
+    monkeypatch.setattr(kalshi_module, "datetime", Pinned)
+
+
 @pytest.fixture
 def game():
     return parse_nfl_games(load("kalshi_games.json"), BEFORE_KICKOFF)[0]
@@ -130,9 +143,10 @@ def test_quotes_buy_yes_at_one_minus_no_bid_best_first():
 class FakeKalshi:
     """Answers the adapter's signed calls from the fixtures and records them."""
 
-    def __init__(self, mint_status=200, quotes_status=200, quotes=None, rfq_status=201):
+    def __init__(self, mint_status=200, quotes_status=200, quotes=None, rfq_status=201, rfq_raises=False):
         self.calls = []
         self.rfq_status = rfq_status
+        self.rfq_raises = rfq_raises
         self.mint_status = mint_status
         self.quotes_status = quotes_status
         self.quotes = load("kalshi_quotes_spread_over.json")["quotes"] if quotes is None else quotes
@@ -153,6 +167,8 @@ class FakeKalshi:
                                       else {"error": {"code": "invalid"}}), {}
         if method == "POST" and path == "/communications/rfqs":
             self.rfqs += 1
+            if self.rfq_raises:
+                raise TimeoutError("read timed out")
             return self.rfq_status, ({"id": RFQ_ID} if self.rfq_status == 201 else {"error": {"code": "x"}}), {}
         if method == "GET" and path.startswith("/communications/rfqs?status=open"):
             return 200, {"rfqs": [{"id": "leaked-1", "market_ticker": COMBO},
@@ -227,12 +243,49 @@ def test_an_unclear_rfq_create_reply_cancels_any_rfq_it_made():
     assert fake.deletes() == [("DELETE", "/communications/rfqs/leaked-1", None)]
 
 
-def test_a_refused_rfq_create_is_an_error_not_a_decline():
+def test_a_timed_out_rfq_create_cancels_any_rfq_it_made():
+    fake = FakeKalshi(rfq_raises=True)
+    venue = venue_on(fake)
+    game, legs = two_legs(venue)
+    with pytest.raises(VenueTransportError, match="TimeoutError"):
+        venue.price_parlay(game, legs)
+    assert fake.deletes() == [("DELETE", "/communications/rfqs/leaked-1", None)]
+
+
+def test_a_refused_rfq_create_is_an_error_and_cancels_nothing():
     fake = FakeKalshi(rfq_status=409)
     venue = venue_on(fake)
     game, legs = two_legs(venue)
     with pytest.raises(VenueTransportError, match="409"):
         venue.price_parlay(game, legs)
+    assert fake.deletes() == []   # a 4xx made no RFQ; another click's live one on this combo stays
+
+
+def test_quotes_with_no_usable_price_say_so():
+    junk = [{"rfq_id": RFQ_ID, "market_ticker": COMBO, "status": "open", "no_bid_dollars": "0.0001",
+             "no_contracts_fp": "100"}]
+    venue = venue_on(FakeKalshi(quotes=junk))
+    game, legs = two_legs(venue)
+    with pytest.raises(VenueTransportError, match="1 quote\\(s\\) in .* none a usable price"):
+        venue.price_parlay(game, legs)
+
+
+def test_the_game_list_follows_the_cursor():
+    fake = FakeKalshi()
+    pages = iter([{"events": load("kalshi_games.json")["events"][:1], "cursor": "next"},
+                  {"events": load("kalshi_games.json")["events"][1:]}])
+    original = fake.__call__
+
+    def paged(method, path, body=None):
+        if method == "GET" and path.startswith("/events?series_ticker=KXNFLGAME"):
+            fake.calls.append((method, path, body))
+            return 200, next(pages), {}
+        return original(method, path, body)
+    clock = FakeClock()
+    venue = KalshiVenue(api_factory=lambda: (paged, "user-1"), clock=clock, sleep=clock.sleep)
+    assert len(venue.list_games()) == 2
+    game_reads = [path for _, path, _ in fake.calls if path.startswith("/events?series_ticker")]
+    assert "cursor" not in game_reads[0] and game_reads[1].endswith("&cursor=next")
 
 
 def test_a_failed_quote_read_still_cancels():
