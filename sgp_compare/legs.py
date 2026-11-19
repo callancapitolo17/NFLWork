@@ -13,9 +13,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-# Periods a leg can belong to. "FG" = full game (overtime included, as books settle it).
-PERIODS = ("FG", "1H", "2H", "1Q", "2Q", "3Q", "4Q")
-
 
 @dataclass(frozen=True)
 class Game:
@@ -31,7 +28,7 @@ class Game:
 
 @dataclass(frozen=True)
 class CanonicalLeg:
-    period: str          # one of PERIODS
+    period: str          # "FG" (full game, overtime included) | "1H" | "2H" | "1Q" | "2Q" | "3Q" | "4Q"
     stat: str            # "moneyline" | "spread" | "total" | "team_total" | a player stat
                          # such as "receiving_yards" | a yes/no prop such as "anytime_td"
     subject: str | None  # team name or player name; None for a game-wide market
@@ -50,7 +47,6 @@ class OfferedLeg:
     to price every combination of outcomes.
     """
     leg_id: str
-    game_id: str
     market_label: str                 # "Nico Collins Receiving Yards"
     category: str                     # the venue's grouping, e.g. "Rec Yards", "Game Lines"
     side_label: str                   # "Over 70.5", "Houston Texans -12.5", "YES"
