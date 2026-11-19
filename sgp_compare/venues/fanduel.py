@@ -391,7 +391,8 @@ def _check_lines_unmoved(response: dict, legs: list[OfferedLeg]) -> None:
             continue
         # FanDuel leaves the key out at a handicap of 0 (moneylines, ladders), so
         # missing reads as 0: a main line that moved to pick'em is still caught.
-        echoed = runner.get("handicap", 0.0)
+        echoed = runner.get("handicap")
+        echoed = 0.0 if echoed is None else echoed
         if not isinstance(echoed, (int, float)):
             raise ValueError(f"expected a numeric handicap in FanDuel's runnerOdds, got {echoed!r}")
         if abs(float(echoed) - leg.venue_ref["handicap"]) > 1e-9:
@@ -470,9 +471,9 @@ class FanDuelVenue:
             for future in futures:      # a blocked FanDuel gets no more of this read's requests
                 future.cancel()
             raise
-        if not (pages[0].get("attachments") or {}).get("markets"):
-            raise VenueTransportError(f"FanDuel event page {event_id}: the {PRIMARY_TAB} tab listed no markets")
         markets = _parsed("event page", markets_of_pages, pages)
+        if not _parsed("event page", markets_of_pages, pages[:1]):
+            raise VenueTransportError(f"FanDuel event page {event_id}: the {PRIMARY_TAB} tab listed no open SGP markets")
         with self._lock:
             self._markets[event_id] = (self._clock(), markets)
         return markets

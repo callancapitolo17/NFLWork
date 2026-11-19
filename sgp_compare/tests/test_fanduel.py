@@ -460,7 +460,8 @@ def test_caches_expire():
     assert len(session.calls) == calls                     # both still cached
     clock[0] = 21.0
     venue.list_legs(game)
-    assert len(session.calls) == calls + 1 + len(EXTRA_TABS)
+    venue.list_games()
+    assert len(session.calls) == calls + 1 + len(EXTRA_TABS)   # legs re-read, schedule still cached
     clock[0] = 301.0
     venue.list_games()
     assert session.calls[-1][1] == API["scan_url"]
@@ -481,7 +482,7 @@ def test_sgp_tab_with_no_markets_is_an_error(game):
     session.request = lambda method, url, **kw: (FakeResponse(200, {"attachments": {}})
                                                  if kw.get("params", {}).get("tab") == PRIMARY_TAB
                                                  else original(method, url, **kw))
-    with pytest.raises(VenueTransportError, match="listed no markets"):
+    with pytest.raises(VenueTransportError, match="listed no open SGP markets"):
         venue_with(session).list_legs(game)
 
 
