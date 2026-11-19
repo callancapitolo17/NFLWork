@@ -108,8 +108,13 @@ async function loadGames() {
   const select = $("game");
   select.replaceChildren();
   if (entry.error) { select.append(el("option", {}, "Error: " + entry.error)); return; }
+  if (!state.games.length) {
+    select.append(el("option", {}, "No upcoming NFL games at " + body.venues[state.venue]));
+    $("legs-status").textContent = "Nothing to price until the venue lists games.";
+    return;
+  }
   for (const g of state.games) {
-    const when = new Date(g.game_start_time).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    const when = new Date(g.game_start_time).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
     select.append(el("option", { value: g.game_id }, `${g.label} · ${when}`));
   }
   if (state.games.length) loadLegs();
@@ -192,12 +197,12 @@ async function priceParlay() {
   try {
     const body = await api("/api/price", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ venue: state.venue, game_id: $("game").value, leg_ids: state.slip.map((l) => l.leg_id) }) });
-    renderResults(body.results);
+    renderResults(body.results, body.store_error);
   } catch (e) { $("results").replaceChildren(el("p", { class: "err" }, "Error: " + e.message)); }
   $("price").disabled = state.slip.length < 2;
 }
 
-function renderResults(results) {
+function renderResults(results, storeError) {
   const table = el("table", {}, el("tr", {},
     el("th", {}, "Venue"), el("th", {}, "Parlay price"), el("th", {}, "Legs as separate bets"),
     el("th", {}, "Correlation factor")));
@@ -208,7 +213,8 @@ function renderResults(results) {
       continue;
     }
     const rep = r.report, best = r.tiers[0];
-    const tiers = r.tiers.map((t) => `${fmtAmerican(decimalToAmerican(t.decimal_odds))} up to $${Math.round(t.max_stake ?? 0)}`).join(", ");
+    const size = (t) => t.max_stake == null ? "size unknown" : "up to $" + Math.round(t.max_stake);
+    const tiers = r.tiers.map((t) => fmtAmerican(decimalToAmerican(t.decimal_odds)) + " " + size(t)).join(", ");
     table.append(el("tr", {},
       el("td", {}, r.display_name),
       el("td", {}, el("div", { class: "big odds" }, fmtAmerican(decimalToAmerican(best.decimal_odds))), el("div", { class: "muted" }, tiers)),
@@ -216,7 +222,11 @@ function renderResults(results) {
         el("div", { class: "muted" }, "no vig " + chanceToAmerican(rep.independent_fair_chance))),
       el("td", {}, el("div", { class: "big " + pctClass(rep.correlation_raw) }, fmtPct(rep.correlation_raw)),
         el("div", { class: "muted" }, "with vig"),
+        rep.raw_unavailable_reason ? el("div", { class: "muted" }, rep.raw_unavailable_reason) : "",
         el("div", { class: pctClass(rep.correlation_fair) }, fmtPct(rep.correlation_fair) + " vig removed"),
+        rep.parlay_fair_chance != null ? el("div", { class: "muted" },
+          "from every outcome combination: parlay " + (rep.parlay_fair_chance * 100).toFixed(1) +
+          "% vs legs multiplied " + (rep.partition_independent_chance * 100).toFixed(1) + "%") : "",
         rep.fair_unavailable_reason ? el("div", { class: "muted" }, rep.fair_unavailable_reason) : "",
         rep.partition_overround != null ? el("div", { class: "muted" }, "parlay vig " + (rep.partition_overround * 100).toFixed(1) + "%") : "")));
     const legTable = el("table", {}, el("tr", {}, el("th", {}, `${r.display_name} leg`), el("th", {}, "Alone"),
@@ -228,7 +238,8 @@ function renderResults(results) {
     }
     details.push(legTable);
   }
-  $("results").replaceChildren(table, ...details.map((t) => el("div", { style: "margin-top:12px" }, t)));
+  $("results").replaceChildren(table, ...details.map((t) => el("div", { style: "margin-top:12px" }, t)),
+    storeError ? el("p", { class: "err" }, "Quote " + storeError) : "");
 }
 
 $("game").addEventListener("change", loadLegs);
