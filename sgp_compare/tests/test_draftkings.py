@@ -140,6 +140,8 @@ class FakeSession:
             raise self.fail
         if url == DK_WARMUP_URL:
             return FakeResponse(200, {})
+        if getattr(self, "status_override", None):
+            return FakeResponse(self.status_override, {})
         if url == DK_LEAGUE_URL:
             return FakeResponse(200, self.league)
         if url == DK_SGP_EVENT_URL.format(event_id=EVENT_ID):
@@ -153,6 +155,9 @@ class FakeSession:
 
     def price_calls(self):
         return [params for url, params, _ in self.calls if url == DK_SGP_PRICE_URL]
+
+    def close(self):
+        self.closed = True
 
     def calls_to(self, url):
         return sum(1 for called, _, _ in self.calls if called == url)
@@ -371,13 +376,21 @@ def test_a_shape_dk_changed_is_a_draftkings_error(game):
         venue_with(FakeSession(league=[])).list_games()
 
 
-def test_a_refused_request_starts_the_next_on_a_new_session(game):
+def test_only_a_403_starts_the_next_call_on_a_new_session(game):
     session = FakeSession()
     venue = venue_with(session)
+    pair = parse_legs(load("draftkings_sgp_event_ind_hou.json"))[:2]
     with pytest.raises(VenueTransportError, match="got 500"):
-        venue.price_parlay(game, parse_legs(load("draftkings_sgp_event_ind_hou.json"))[:2])
+        venue.price_parlay(game, pair)
     venue.list_legs(game)
-    assert session.calls_to(DK_WARMUP_URL) == 2
+    assert session.calls_to(DK_WARMUP_URL) == 1
+    session.price_answers = None
+    session.status_override = 403
+    with pytest.raises(VenueTransportError, match="got 403"):
+        venue.list_legs(game, fresh=True)
+    session.status_override = None
+    venue.list_legs(game, fresh=True)
+    assert session.calls_to(DK_WARMUP_URL) == 2 and session.closed
 
 
 def test_proxy_setting_is_checked(monkeypatch):

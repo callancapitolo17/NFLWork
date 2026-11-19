@@ -54,7 +54,9 @@ from sgp_compare.legs import CanonicalLeg, Game, OfferedLeg, ParlayQuote, Parlay
 from sgp_compare.venues.base import VenueTransportError
 
 PROXY_ENV = "SGP_COMPARE_DK_PROXY"
-REQUEST_TIMEOUT_SEC = 60          # the SGP leg list is ~4.6 MB; dk_book allows it 60 s too
+REQUEST_TIMEOUT_SEC = 30          # dk_book's read timeouts: 30 s, and 60 s for the ~4.6 MB SGP leg list
+LEG_LIST_TIMEOUT_SEC = 60
+HTTP_FORBIDDEN = 403
 GAMES_CACHE_SEC = 300
 MARKETS_CACHE_SEC = 20            # the leg picker; pricing always re-reads
 # One builder answer prices base + every side of a market, so the partition
@@ -351,7 +353,8 @@ class DraftKingsVenue:
             cached = self._markets.get(event_id)
         if cached and not fresh and self._clock() - cached[0] < MARKETS_CACHE_SEC:
             return _parsed("SGP leg list", parse_legs, cached[1])
-        payload = self._get(DK_SGP_EVENT_URL.format(event_id=event_id), "SGP leg list")
+        payload = self._get(DK_SGP_EVENT_URL.format(event_id=event_id), "SGP leg list",
+                            read_timeout=LEG_LIST_TIMEOUT_SEC)
         legs = _parsed("SGP leg list", parse_legs, payload)
         with self._lock:
             now = self._clock()
@@ -408,21 +411,26 @@ class DraftKingsVenue:
             return self._session
 
     def _drop_session(self, session) -> None:
-        """Forget `session` (not one another thread already replaced it with)."""
+        """Forget and close `session` (not one another thread already replaced it with)."""
         with self._session_lock:
             if self._session is session:
                 self._session = None
+        try:
+            session.close()
+        except Exception:   # closing a broken curl handle must not mask the error being raised
+            pass
 
-    def _get(self, url: str, what: str, **kwargs) -> dict:
+    def _get(self, url: str, what: str, read_timeout: float = REQUEST_TIMEOUT_SEC, **kwargs) -> dict:
         session = self._warm_session()
         try:
-            response = session.get(url, timeout=(DK_CONNECT_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SEC), **kwargs)
+            response = session.get(url, timeout=(DK_CONNECT_TIMEOUT_SECONDS, read_timeout), **kwargs)
         except Exception as exc:
             self._drop_session(session)
             raise VenueTransportError(f"DraftKings {what}: {type(exc).__name__}: {exc}") from exc
         if response.status_code != 200:
-            # A 403 can mean Akamai flagged this cookie jar: start the next call on a new one.
-            self._drop_session(session)
+            if response.status_code == HTTP_FORBIDDEN:
+                # Akamai may have flagged this cookie jar: start the next call on a new one.
+                self._drop_session(session)
             raise VenueTransportError(f"DraftKings {what}: expected HTTP 200, got "
                                       f"{response.status_code}: {response.text[:200]}")
         try:
