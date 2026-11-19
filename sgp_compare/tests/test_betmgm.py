@@ -196,7 +196,8 @@ def spread_over(legs):
 def test_a_suspended_group_or_leg_or_a_redundant_leg_is_a_decline(legs):
     for edit in (lambda g: g.update(suspensionState="MarketSuspended"),
                  lambda g: g["legInformation"][1].update(suspensionState="MarketSuspended"),
-                 lambda g: g["legInformation"][0].update(redundantState="RedundantLeg")):
+                 lambda g: g["legInformation"][0].update(redundantState="RedundantLeg"),
+                 lambda g: g.update(suspensionState="MarketSuspended", error="ErrorCode: SomethingNew")):
         chosen, group_id, response, group = spread_over(legs)
         edit(group)
         assert parse_parlay_quote(response, chosen, group_id) is None
@@ -291,8 +292,13 @@ def priced_at(decimal_odds):
     return answer
 
 
+def schedule(*pages):
+    """Schedule answers page by page, ending with BetMGM's empty last page."""
+    return [FakeResponse(200, page) for page in pages] + [FakeResponse(200, {"fixtures": []})]
+
+
 def live_answers(**overrides):
-    answers = {"sportIds=11": [FakeResponse(200, load("betmgm_fixtures_nfl.json"))],
+    answers = {"sportIds=11": schedule(load("betmgm_fixtures_nfl.json")),
                "fixtureIds=": [FakeResponse(200, load("betmgm_markets_colts_texans.json"))],
                "/picks": [priced_at(3.5)]}
     answers.update(overrides)
@@ -317,7 +323,7 @@ def test_venue_reads_games_legs_and_prices():
     chosen = pick(venue, game, ("Spread", "Houston Texans (-12.5)"), ("Totals", "Over 44"))
     quote = venue.price_parlay(game, chosen)
     assert quote.best.decimal_odds == 3.5
-    assert [method for method, _ in client.session.calls] == ["GET", "GET", "POST"]
+    assert [method for method, _ in client.session.calls] == ["GET", "GET", "GET", "POST"]   # 2 schedule pages
     assert [p["optionId"] for p in client.session.posted["tv2Picks"]] == [7552787, 7537006]
     assert client.session.posted["tv1Picks"] == []
 
@@ -329,7 +335,7 @@ def test_schedule_is_cached_but_a_started_game_drops_out_at_once():
     assert any(g.venue_game_id == GAME_ID for g in venue.list_games())
     now["wall"] = KICKOFF + timedelta(seconds=1)
     assert all(g.venue_game_id != GAME_ID for g in venue.list_games())
-    assert sum("sportIds=11" in url for _, url in client.session.calls) == 1
+    assert sum("sportIds=11" in url for _, url in client.session.calls) == 2   # one read: a page + the empty end
 
 
 def test_market_cache_and_fresh_reads():
@@ -345,9 +351,9 @@ def test_market_cache_and_fresh_reads():
 
 def test_a_stale_accessid_is_harvested_again_once():
     gate = FakeResponse(400, '{"message":"Access id is not valid"}')
-    venue, client, _ = venue_with(live_answers(**{"sportIds=11": [gate, FakeResponse(200, load("betmgm_fixtures_nfl.json"))]}))
+    venue, client, _ = venue_with(live_answers(**{"sportIds=11": [gate] + schedule(load("betmgm_fixtures_nfl.json"))}))
     assert venue.list_games()
-    assert client.harvests == [False, True]
+    assert client.harvests[:2] == [False, True]          # then the next page on the fresh id
 
 
 @pytest.mark.parametrize("answer, message", [
@@ -382,7 +388,7 @@ def test_a_failed_accessid_harvest_is_a_transport_error_and_rebuilds_the_client(
 
 def test_an_answer_with_an_unexpected_shape_is_a_transport_error_not_a_crash():
     weird = {"fixtures": [{"competition": {"name": {"value": "NFL"}}, "participants": "x"}]}
-    venue, _, _ = venue_with(live_answers(**{"sportIds=11": [FakeResponse(200, weird)]}))
+    venue, _, _ = venue_with(live_answers(**{"sportIds=11": schedule(weird)}))
     with pytest.raises(VenueTransportError, match="fixtures answer has an unexpected shape"):
         venue.list_games()
 
@@ -415,7 +421,7 @@ def test_a_fixture_closed_for_betting_has_no_legs_and_a_wrong_fixture_is_refused
     assert parse_legs(game, tree) == []
     tree = load("betmgm_markets_colts_texans.json")
     tree["fixtures"][0]["id"] = "6:99999"
-    with pytest.raises(ValueError, match="BetMGM answered 6:99999"):
+    with pytest.raises(VenueTransportError, match="BetMGM answered 6:99999"):
         parse_legs(game, tree)
 
 
@@ -472,10 +478,16 @@ def test_a_points_milestone_or_an_unknown_team_is_not_read_as_a_total(game):
 def test_the_schedule_reads_every_page():
     full_page = {"fixtures": [{"id": f"x{i}", "competition": {"name": {"value": "NCAA"}}} for i in range(200)]}
     nfl = load("betmgm_fixtures_nfl.json")
-    venue, client, _ = venue_with(live_answers(**{"sportIds=11": [FakeResponse(200, full_page), FakeResponse(200, nfl)]}))
+    venue, client, _ = venue_with(live_answers(**{"sportIds=11": schedule(full_page, nfl)}))
     assert any(g.venue_game_id == GAME_ID for g in venue.list_games())
     schedule_urls = [url for _, url in client.session.calls if "sportIds=11" in url]
-    assert ["skip=0" in schedule_urls[0], "skip=200" in schedule_urls[1]] == [True, True]
+    assert ["skip=0" in schedule_urls[0], "skip=200" in schedule_urls[1], "skip=400" in schedule_urls[2]] == [True] * 3
+
+
+def test_a_fixture_repeated_across_pages_is_listed_once():
+    nfl = load("betmgm_fixtures_nfl.json")
+    venue, _, _ = venue_with(live_answers(**{"sportIds=11": schedule(nfl, nfl)}))
+    assert sum(g.venue_game_id == GAME_ID for g in venue.list_games()) == 1
 
 
 def test_a_schedule_too_long_to_page_is_an_error_not_a_silent_cut():

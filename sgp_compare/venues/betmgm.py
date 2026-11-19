@@ -58,6 +58,10 @@ TWO_WAY_MARKET_TYPES = ("2way", "2wayHandicap", "Over/Under")
 # (recon 2026-11-18). Any other error is reported as an error, not a decline.
 DECLINE_ERROR_CODES = ("ZeroProbabilityError", "SingleSelectionRequestError")
 NOT_REDUNDANT = "NotRedundantLeg"
+# BetMGM's 400 body when the harvested accessid went stale (the same test as
+# mlb_sgp.betmgm_client._is_accessid_gate, kept here so a missing curl_cffi
+# stays a VenueTransportError instead of an ImportError).
+ACCESSID_GATE_TEXT = "access id"
 
 PERIOD_OF = {
     "FullTime": "FG", "FirstHalf": "1H", "SecondHalf": "2H",
@@ -134,7 +138,7 @@ def parse_legs(game: Game, markets_payload: dict) -> list[OfferedLeg]:
         return []
     fixture = fixtures[0]
     if str(fixture["id"]) != game.venue_game_id:
-        raise ValueError(f"asked for fixture {game.venue_game_id}, BetMGM answered {fixture['id']}")
+        raise VenueTransportError(f"asked for fixture {game.venue_game_id}, BetMGM answered {fixture['id']}")
     if fixture.get("isOpenForBetting") is False or fixture.get("stage") not in (None, PRE_MATCH_STAGE):
         return []
     participants = {p.get("id"): p for p in fixture.get("participants") or []}
@@ -286,13 +290,13 @@ def parse_parlay_quote(response: dict, legs: list[OfferedLeg], pick_group_id: st
     group = (response.get("betBuilderPricingGroups") or {}).get(pick_group_id)
     if group is None:
         raise VenueTransportError(f"BetMGM picks: no pricing group {pick_group_id} in the answer")
+    if group.get("suspensionState") != PRICED_STATE:
+        return None                  # suspended: a decline, whatever error it carries
     error = group.get("error")
     if error:
         if any(code in error for code in DECLINE_ERROR_CODES):
             return None
         raise VenueTransportError(f"BetMGM picks: {error[:200]}")
-    if group.get("suspensionState") != PRICED_STATE:
-        return None
     leg_states = group["legInformation"]
     sent = sorted(_client_leg_id(leg) for leg in legs)
     if sorted(info["clientLegId"] for info in leg_states) != sent:
@@ -402,7 +406,7 @@ class BetMgmVenue:
     def _read_schedule(self) -> dict:
         """Every football fixture, page by page: the query cannot filter to
         the NFL, and a college Saturday alone can fill a page."""
-        fixtures: list = []
+        fixtures: dict[str, dict] = {}     # by id: a live list can shift a fixture across pages
         for page in range(SCHEDULE_MAX_PAGES):
             payload = self._request("GET", "/bettingoffer/fixtures", query=(
                 "&fixtureTypes=Standard&state=Latest&offerMapping=Filtered"
@@ -410,9 +414,10 @@ class BetMgmVenue:
                 f"&sportIds={MGM_FOOTBALL_SPORT_ID}&skip={page * SCHEDULE_PAGE_SIZE}"
                 f"&take={SCHEDULE_PAGE_SIZE}&sortBy=Tags"))
             page_fixtures = payload.get("fixtures") or []
-            fixtures.extend(page_fixtures)
-            if len(page_fixtures) < SCHEDULE_PAGE_SIZE:
-                return {"fixtures": fixtures}
+            if not page_fixtures:            # stop on an empty page, in case BetMGM caps `take`
+                return {"fixtures": list(fixtures.values())}
+            for fixture in page_fixtures:
+                fixtures.setdefault(str(fixture.get("id")), fixture)
         raise VenueTransportError(f"BetMGM schedule: more than {SCHEDULE_MAX_PAGES * SCHEDULE_PAGE_SIZE} "
                                   "football fixtures; NFL games could be missing")
 
@@ -430,9 +435,8 @@ class BetMgmVenue:
     def _request(self, method: str, path: str, query: str = "", json_body: dict | None = None) -> dict:
         """One CDS call. A 400 "Access id ..." means the harvested id went
         stale: harvest a new one and send the call once more."""
-        from mlb_sgp.betmgm_client import _is_accessid_gate
         response = self._send(method, path, query, json_body, refresh_accessid=False)
-        if _is_accessid_gate(response):
+        if response.status_code == 400 and ACCESSID_GATE_TEXT in (response.text or "").lower():
             response = self._send(method, path, query, json_body, refresh_accessid=True)
         if response.status_code != 200:
             raise VenueTransportError(f"BetMGM {method} {path}: expected HTTP 200, got "
