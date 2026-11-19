@@ -1,0 +1,1828 @@
+{
+ "event": {
+  "id": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+  "name": "Indianapolis Colts at Houston Texans",
+  "startTime": "2026-11-20T01:15:00Z",
+  "type": "MATCH",
+  "sportId": "americanfootball",
+  "competitionName": "NFL",
+  "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+  "competitionType": "nfl",
+  "display": true,
+  "tradedInPlay": true,
+  "active": true,
+  "started": false,
+  "byoEligible": true,
+  "metadata": {
+   "zfSport": "american-football",
+   "awayTeamName": "Indianapolis Colts",
+   "homeTeam_hubId": "42594d2f-f02d-47da-aad9-b1397cb1fb40",
+   "geniusStreamingAvailable": "true",
+   "competition_hubId": "47922d60-18ef-4050-8324-47f8b76bd609",
+   "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+   "awayTeamId": "7a1e9839-9dcd-49d2-9984-95c923d52360",
+   "zfSportProfile": "nfl",
+   "sportsbookFilterName": "Week 11",
+   "awayTeam_hubId": "2395bff5-3805-48f5-8095-14209ec37624",
+   "homeTeamId": "8ffab0ac-d737-4294-93dc-977c9f1559df",
+   "zfOptionSetKey": "acd9dbc4-25ff-4c7e-b9e1-18f76d758325",
+   "homeTeamName": "Houston Texans",
+   "sportsbookFilterSort": "11"
+  },
+  "eventDisplay": {
+   "showEventHeader": false,
+   "teams": [
+    "Indianapolis Colts",
+    "Houston Texans"
+   ],
+   "navigationFilters": [
+    "Week 11"
+   ]
+  },
+  "marketCountActivePreMatch": 0,
+  "marketCountActiveInPlay": 0,
+  "keyMarketGroups": [
+   {
+    "marketDisplayTypeId": "standard_six_pack",
+    "marketDisplayGroupDisplayName": "Game Lines",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+      "name": "|Spread|",
+      "type": "two-way-handicap",
+      "gtpMarketClass": "HANDICAP",
+      "templateType": "generic",
+      "displayOrder": 2,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": -12.5,
+      "selections": [
+       {
+        "id": "278cdc82-0090-3436-b5ac-d0f37a0c6136",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+        "display": true,
+        "name": "|Indianapolis Colts|",
+        "active": true,
+        "type": "away",
+        "price": {
+         "f": "50/57",
+         "d": 1.87719,
+         "a": -114
+        }
+       },
+       {
+        "id": "6e1b9a51-fbdc-3f7e-be62-380aa2ad1d74",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+        "display": true,
+        "name": "|Houston Texans|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "50/53",
+         "d": 1.9434,
+         "a": -106
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "hasMovingLines": true,
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "marketCategory": "POINTS_HANDICAP",
+       "sourceMarketKey": "31b2cb82ee772d895d1d8208e519721721542c87baa46f9ebf71cdc6cad2abac",
+       "period": "MATCH_INC_OT",
+       "reportingGroup": "reporting-group-main-markets",
+       "line": "-12.5",
+       "flowSegment": "event",
+       "marketCode": "5600edc9-1035-377a-9464-e3ae1def45ef",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "31b2cb82ee772d895d1d8208e519721721542c87baa46f9ebf71cdc6cad2abac",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "line",
+       "displayOrder": "2",
+       "zfMarketType": "line"
+      },
+      "displayName": "Spread",
+      "templateId": "_7cMatch_20Spread_7c",
+      "templateName": "|Match Spread|",
+      "sixPackView": true,
+      "keyMarket": true,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 5000000,
+       "maxBet": 5000000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     },
+     {
+      "id": "080be971-1028-380c-95dc-e882b2ff53d6",
+      "name": "|Money Line|",
+      "type": "standard-market-template",
+      "gtpMarketClass": "HEAD_TO_HEAD",
+      "templateType": "generic",
+      "displayOrder": 1,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "selections": [
+       {
+        "id": "98011cf4-c909-3187-ab72-01d7a280bfd0",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "080be971-1028-380c-95dc-e882b2ff53d6",
+        "display": true,
+        "name": "|Indianapolis Colts|",
+        "active": true,
+        "type": "away",
+        "price": {
+         "f": "5/1",
+         "d": 6.0,
+         "a": 500
+        }
+       },
+       {
+        "id": "ed04e479-25b8-3677-abdc-55fa99ae178a",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "080be971-1028-380c-95dc-e882b2ff53d6",
+        "display": true,
+        "name": "|Houston Texans|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "2/15",
+         "d": 1.13333,
+         "a": -750
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "reportingGroup": "reporting-group-main-markets",
+       "marketCategory": "HEAD_TO_HEAD",
+       "sourceMarketKey": "17cb6d6203e1b0eed32c672fa169aa34cdb5c6de6594195aee96414f1289b5c2",
+       "period": "MATCH_INC_OT",
+       "flowSegment": "event",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "17cb6d6203e1b0eed32c672fa169aa34cdb5c6de6594195aee96414f1289b5c2",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "head-to-head",
+       "displayOrder": "1",
+       "zfMarketType": "head-to-head"
+      },
+      "displayName": "Money",
+      "templateId": "_7cMoney_20Line_7c",
+      "templateName": "|Money Line|",
+      "sixPackView": true,
+      "keyMarket": true,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 3000000,
+       "maxBet": 6000000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     },
+     {
+      "id": "92987c11-c922-345c-a506-719f06009a31",
+      "name": "|Total Points|",
+      "type": "over-under",
+      "gtpMarketClass": "OVER_UNDER",
+      "templateType": "generic",
+      "displayOrder": 3,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": 43.5,
+      "selections": [
+       {
+        "id": "c07f6594-2c70-384a-9b43-bcd295172ffa",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "92987c11-c922-345c-a506-719f06009a31",
+        "display": true,
+        "name": "|Over|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "100/117",
+         "d": 1.8547,
+         "a": -117
+        }
+       },
+       {
+        "id": "160a56f2-8449-3fb2-b8e7-b723f77e146f",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "92987c11-c922-345c-a506-719f06009a31",
+        "display": true,
+        "name": "|Under|",
+        "active": true,
+        "type": "under",
+        "price": {
+         "f": "25/26",
+         "d": 1.96154,
+         "a": -104
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "hasMovingLines": true,
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "marketCategory": "TOTAL_POINTS",
+       "sourceMarketKey": "34a814f38aacc2ffb214c114d1151621e15d9717eb8b0885dc96181aa5ea4897",
+       "period": "MATCH_INC_OT",
+       "reportingGroup": "reporting-group-main-markets",
+       "line": "43.5",
+       "flowSegment": "event",
+       "marketCode": "c67bb0ab-9c83-33bb-9d36-c1fcef8f5b2f",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "34a814f38aacc2ffb214c114d1151621e15d9717eb8b0885dc96181aa5ea4897",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "total",
+       "displayOrder": "3",
+       "zfMarketType": "total"
+      },
+      "displayName": "Total ",
+      "templateId": "_7cTotal_20Points_7c",
+      "templateName": "|Total Points|",
+      "sixPackView": true,
+      "keyMarket": true,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 1000000,
+       "maxBet": 1000000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "teams": [
+     "Indianapolis Colts",
+     "Houston Texans"
+    ],
+    "contextDisplay": {
+     "expandMarkets": true,
+     "showMoreLimit": 5,
+     "useMarketHeader": false,
+     "useMarketTitle": false
+    }
+   },
+   {
+    "marketDisplayTypeId": "moving_lines_slider",
+    "marketDisplayGroupDisplayName": "Spread",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+      "name": "|Spread|",
+      "type": "two-way-handicap",
+      "gtpMarketClass": "HANDICAP",
+      "templateType": "generic",
+      "displayOrder": 2,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": -12.5,
+      "selections": [
+       {
+        "id": "278cdc82-0090-3436-b5ac-d0f37a0c6136",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+        "display": true,
+        "name": "|Indianapolis Colts|",
+        "active": true,
+        "type": "away",
+        "price": {
+         "f": "50/57",
+         "d": 1.87719,
+         "a": -114
+        }
+       },
+       {
+        "id": "6e1b9a51-fbdc-3f7e-be62-380aa2ad1d74",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "a444e69d-d1e8-3919-bf09-ec4120eef7fa",
+        "display": true,
+        "name": "|Houston Texans|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "50/53",
+         "d": 1.9434,
+         "a": -106
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "hasMovingLines": true,
+      "movingLines": {
+       "active": true,
+       "display": true,
+       "cashOutAvailable": true,
+       "minPricedLine": 0.0,
+       "maxPricedLine": 0.0,
+       "lineIncrement": 0.0,
+       "linePrices": [
+        {
+         "line": -17.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "away",
+           "cop": 0.0,
+           "price": {
+            "f": "47/100",
+            "d": 1.47,
+            "a": -213
+           }
+          },
+          {
+           "selectionType": "home",
+           "cop": 0.0,
+           "price": {
+            "f": "77/50",
+            "d": 2.54,
+            "a": 154
+           }
+          }
+         ]
+        },
+        {
+         "line": -12.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "away",
+           "cop": 0.0,
+           "price": {
+            "f": "87/100",
+            "d": 1.87,
+            "a": -115
+           }
+          },
+          {
+           "selectionType": "home",
+           "cop": 0.0,
+           "price": {
+            "f": "19/20",
+            "d": 1.95,
+            "a": -105
+           }
+          }
+         ]
+        },
+        {
+         "line": -7.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "away",
+           "cop": 0.0,
+           "price": {
+            "f": "133/100",
+            "d": 2.33,
+            "a": 133
+           }
+          },
+          {
+           "selectionType": "home",
+           "cop": 0.0,
+           "price": {
+            "f": "27/50",
+            "d": 1.54,
+            "a": -185
+           }
+          }
+         ]
+        }
+       ]
+      },
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "marketCategory": "POINTS_HANDICAP",
+       "sourceMarketKey": "31b2cb82ee772d895d1d8208e519721721542c87baa46f9ebf71cdc6cad2abac",
+       "period": "MATCH_INC_OT",
+       "reportingGroup": "reporting-group-main-markets",
+       "line": "-12.5",
+       "flowSegment": "event",
+       "marketCode": "5600edc9-1035-377a-9464-e3ae1def45ef",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "31b2cb82ee772d895d1d8208e519721721542c87baa46f9ebf71cdc6cad2abac",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "line",
+       "displayOrder": "2",
+       "zfMarketType": "line"
+      },
+      "displayName": "Spread",
+      "templateId": "_7cMatch_20Spread_7c",
+      "templateName": "|Match Spread|",
+      "sixPackView": true,
+      "keyMarket": true,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 5000000,
+       "maxBet": 5000000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "teams": [
+     "Indianapolis Colts",
+     "Houston Texans"
+    ],
+    "contextDisplay": {
+     "expandMarkets": true,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    }
+   },
+   {
+    "marketDisplayTypeId": "moving_lines_slider",
+    "marketDisplayGroupDisplayName": "Total Points",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "92987c11-c922-345c-a506-719f06009a31",
+      "name": "|Total Points|",
+      "type": "over-under",
+      "gtpMarketClass": "OVER_UNDER",
+      "templateType": "generic",
+      "displayOrder": 3,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": 43.5,
+      "selections": [
+       {
+        "id": "c07f6594-2c70-384a-9b43-bcd295172ffa",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "92987c11-c922-345c-a506-719f06009a31",
+        "display": true,
+        "name": "|Over|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "100/117",
+         "d": 1.8547,
+         "a": -117
+        }
+       },
+       {
+        "id": "160a56f2-8449-3fb2-b8e7-b723f77e146f",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "92987c11-c922-345c-a506-719f06009a31",
+        "display": true,
+        "name": "|Under|",
+        "active": true,
+        "type": "under",
+        "price": {
+         "f": "25/26",
+         "d": 1.96154,
+         "a": -104
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "hasMovingLines": true,
+      "movingLines": {
+       "active": true,
+       "display": true,
+       "cashOutAvailable": true,
+       "minPricedLine": 0.0,
+       "maxPricedLine": 0.0,
+       "lineIncrement": 0.0,
+       "linePrices": [
+        {
+         "line": 38.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "over",
+           "cop": 0.0,
+           "price": {
+            "f": "21/50",
+            "d": 1.42,
+            "a": -238
+           }
+          },
+          {
+           "selectionType": "under",
+           "cop": 0.0,
+           "price": {
+            "f": "81/50",
+            "d": 2.62,
+            "a": 162
+           }
+          }
+         ]
+        },
+        {
+         "line": 43.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "over",
+           "cop": 0.0,
+           "price": {
+            "f": "43/50",
+            "d": 1.86,
+            "a": -116
+           }
+          },
+          {
+           "selectionType": "under",
+           "cop": 0.0,
+           "price": {
+            "f": "97/100",
+            "d": 1.97,
+            "a": -103
+           }
+          }
+         ]
+        },
+        {
+         "line": 48.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "over",
+           "cop": 0.0,
+           "price": {
+            "f": "29/20",
+            "d": 2.45,
+            "a": 145
+           }
+          },
+          {
+           "selectionType": "under",
+           "cop": 0.0,
+           "price": {
+            "f": "49/100",
+            "d": 1.49,
+            "a": -204
+           }
+          }
+         ]
+        }
+       ]
+      },
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "marketCategory": "TOTAL_POINTS",
+       "sourceMarketKey": "34a814f38aacc2ffb214c114d1151621e15d9717eb8b0885dc96181aa5ea4897",
+       "period": "MATCH_INC_OT",
+       "reportingGroup": "reporting-group-main-markets",
+       "line": "43.5",
+       "flowSegment": "event",
+       "marketCode": "c67bb0ab-9c83-33bb-9d36-c1fcef8f5b2f",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "34a814f38aacc2ffb214c114d1151621e15d9717eb8b0885dc96181aa5ea4897",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "total",
+       "displayOrder": "3",
+       "zfMarketType": "total"
+      },
+      "displayName": "Total ",
+      "templateId": "_7cTotal_20Points_7c",
+      "templateName": "|Total Points|",
+      "sixPackView": true,
+      "keyMarket": true,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 1000000,
+       "maxBet": 1000000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "contextDisplay": {
+     "expandMarkets": true,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    }
+   },
+   {
+    "marketDisplayTypeId": "selection_tabs",
+    "marketDisplayGroupDisplayName": "Odds Boost",
+    "isOddsBoost": true,
+    "markets": [
+     {
+      "id": "df74c6ab-9c3a-43c1-bee9-28b84deb00f1",
+      "name": "|Odds Boost|",
+      "type": "standard-market-template",
+      "gtpMarketClass": "NONE",
+      "templateType": "generic",
+      "displayOrder": 100,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": false,
+      "selections": [
+       {
+        "id": "d9c623ab-ba8a-4bd3-9e55-79d101b1e835",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "df74c6ab-9c3a-43c1-bee9-28b84deb00f1",
+        "display": true,
+        "name": "Jonathan Taylor to record 5+ Rushing Yards in Each Quarter on 11/19",
+        "active": true,
+        "type": "generic",
+        "price": {
+         "f": "12/5",
+         "d": 3.4,
+         "a": 240
+        }
+       }
+      ],
+      "cashoutAvailable": false,
+      "hasOddsBoost": true,
+      "metadata": {
+       "pricingSource": "MANUAL"
+      },
+      "displayName": " ",
+      "templateId": "_7cOdds_20Boost_7c",
+      "templateName": "|Odds Boost|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 1000000,
+       "maxMultipleBet": 0,
+       "maxWin": 1000000,
+       "maxBet": 10000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "contextDisplay": {
+     "expandMarkets": true,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    },
+    "marketDisplayGroupTiles": false
+   },
+   {
+    "marketDisplayTypeId": "selection_tabs",
+    "marketDisplayGroupDisplayName": "TD Scorer",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "230d3849-b070-33ad-ade2-6264d4c8e80b",
+      "name": "|First Touchdown Scorer|",
+      "type": "standard-market-template",
+      "gtpMarketClass": "SCORER",
+      "templateType": "generic",
+      "displayOrder": 30200,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "selections": [
+       {
+        "id": "9505c6d9-715d-37e3-851a-7a2fff3efe7d",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "230d3849-b070-33ad-ade2-6264d4c8e80b",
+        "display": true,
+        "name": "|David Montgomery|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "19/4",
+         "d": 5.75,
+         "a": 475
+        }
+       },
+       {
+        "id": "b73c3f8b-7c8d-335c-b96d-69dfb609d835",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "230d3849-b070-33ad-ade2-6264d4c8e80b",
+        "display": true,
+        "name": "|Nico Collins|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "6/1",
+         "d": 7.0,
+         "a": 600
+        }
+       },
+       {
+        "id": "c62af073-60dc-30ff-8ef2-80f83b4b140e",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "230d3849-b070-33ad-ade2-6264d4c8e80b",
+        "display": true,
+        "name": "|Jonathan Taylor|",
+        "active": true,
+        "type": "away",
+        "price": {
+         "f": "15/2",
+         "d": 8.5,
+         "a": 750
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-player-props",
+       "reportingGroup": "reporting-group-player-props",
+       "marketCategory": "SCORER",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceMarketKey": "33244dbb-8f13-003f-00a6-8eaf89025930",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "33244dbb-8f13-003f-00a6-8eaf89025930",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "touchdown-scorer-first",
+       "displayOrder": "30200",
+       "zfMarketType": "touchdown-scorer-first"
+      },
+      "displayName": "First",
+      "templateId": "_7cFirst_20Touchdown_20Scorer_7c",
+      "templateName": "|First Touchdown Scorer|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 1000000,
+       "maxBet": 300000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     },
+     {
+      "id": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+      "name": "|Player to Score a Touchdown|",
+      "type": "standard-market-template",
+      "gtpMarketClass": "SCORER",
+      "templateType": "generic",
+      "displayOrder": 30100,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "selections": [
+       {
+        "id": "e312e5f7-ca61-3ecc-8b52-d943e8153496",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+        "display": true,
+        "name": "|David Montgomery|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "100/127",
+         "d": 1.7874,
+         "a": -127
+        }
+       },
+       {
+        "id": "2ed1ffdd-2b4a-341a-a264-7d9f6a0fce5c",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+        "display": true,
+        "name": "|Nico Collins|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "50/53",
+         "d": 1.9434,
+         "a": -106
+        }
+       },
+       {
+        "id": "4518aa76-edb3-39a1-a14e-665188e5bd1d",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "597efd99-56c8-3e84-94c5-fb28f92c7a3a",
+        "display": true,
+        "name": "|Jonathan Taylor|",
+        "active": true,
+        "type": "away",
+        "price": {
+         "f": "121/100",
+         "d": 2.21,
+         "a": 121
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-player-props",
+       "reportingGroup": "reporting-group-player-props",
+       "marketCategory": "SCORER",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceMarketKey": "42b2d018-5b1a-003a-0088-ace4ae61060d",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "42b2d018-5b1a-003a-0088-ace4ae61060d",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "touchdown-scorer-anytime",
+       "displayOrder": "30100",
+       "zfMarketType": "touchdown-scorer-anytime"
+      },
+      "displayName": "Anytime",
+      "templateId": "_7cAnytime_20Touchdown_20Scorer_7c",
+      "templateName": "|Anytime Touchdown Scorer|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 2500000,
+       "maxWin": 1000000,
+       "maxBet": 500000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "teams": [
+     "Indianapolis Colts",
+     "Houston Texans"
+    ],
+    "contextDisplay": {
+     "expandMarkets": true,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    },
+    "marketDisplayGroupTiles": false
+   },
+   {
+    "marketDisplayTypeId": "single_row_scroll",
+    "marketDisplayGroupDisplayName": "Receiving Yards",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+      "name": "|Nico Collins - Receiving Yards|",
+      "type": "standard-market-template",
+      "gtpMarketClass": "NONE",
+      "templateType": "generic",
+      "displayOrder": 60600,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "selections": [
+       {
+        "id": "42c19f94-3996-3402-ac2b-84200c58b30b",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|100+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "12/5",
+         "d": 3.4,
+         "a": 240
+        }
+       },
+       {
+        "id": "f67f585e-1102-3b24-94cc-5e4bdff108e2",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|110+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "33/10",
+         "d": 4.3,
+         "a": 330
+        }
+       },
+       {
+        "id": "41224b5b-9dd4-3440-ac3e-2d5bb01f7f8d",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|120+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "19/4",
+         "d": 5.75,
+         "a": 475
+        }
+       },
+       {
+        "id": "c09ed9ee-d194-3fbd-a6ed-c7e809ce9f7e",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|130+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "27/4",
+         "d": 7.75,
+         "a": 675
+        }
+       },
+       {
+        "id": "0feacf3c-a9e3-38d9-a72d-426b32ef3753",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|140+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "19/2",
+         "d": 10.5,
+         "a": 950
+        }
+       },
+       {
+        "id": "ba14af11-6a91-37aa-b189-80f3b537782e",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|30+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "4/50",
+         "d": 1.08,
+         "a": -1250
+        }
+       },
+       {
+        "id": "ea61ad5e-0ceb-3a4c-b793-08fa075f5fb4",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|40+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "8/50",
+         "d": 1.16,
+         "a": -625
+        }
+       },
+       {
+        "id": "1b0eb527-a423-39c8-8bcd-0e0e9fbcc6cf",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|50+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "20/69",
+         "d": 1.28986,
+         "a": -345
+        }
+       },
+       {
+        "id": "51e0acdd-1c8d-3d50-a63a-47251d1f8dad",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|60+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "50/109",
+         "d": 1.45872,
+         "a": -218
+        }
+       },
+       {
+        "id": "f0924be1-53e2-3124-a7b5-87709e732591",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|70+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "50/67",
+         "d": 1.74627,
+         "a": -134
+        }
+       },
+       {
+        "id": "8f5c4b87-713e-3e6b-8916-0b3e1d14d34d",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|80+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "109/100",
+         "d": 2.09,
+         "a": 109
+        }
+       },
+       {
+        "id": "12dd1950-6193-3b9f-9dc6-8e4d5d9e4631",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "140abf58-5c70-3102-a9a7-8dbdbc837f9c",
+        "display": true,
+        "name": "|90+|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "161/100",
+         "d": 2.61,
+         "a": 161
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-player-props",
+       "teamName": "Houston Texans",
+       "hubId": "27a5ce2b-d024-49a2-8eeb-73e0e0b3e2b8",
+       "marketCategory": "NONE",
+       "teamAbbr": "HOU",
+       "sourceMarketKey": "1364e5f5-e864-0032-008b-8011d7777f5b",
+       "reportingGroup": "reporting-group-player-props",
+       "teamId": "42594d2f-f02d-47da-aad9-b1397cb1fb40",
+       "player": "Nico Collins",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "team": "HOME",
+       "zfMarketKey": "1364e5f5-e864-0032-008b-8011d7777f5b",
+       "playerId": "27a5ce2b-d024-49a2-8eeb-73e0e0b3e2b8",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "player-alt-receiving-yards",
+       "displayOrder": "60600",
+       "zfMarketType": "player-alt-receiving-yards"
+      },
+      "displayName": " ",
+      "templateId": "_7cAlt_20Receiving_20Yards_7c",
+      "templateName": "|Alt Receiving Yards|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 500000,
+       "maxBet": 150000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "teams": [
+     "Indianapolis Colts",
+     "Houston Texans"
+    ],
+    "contextDisplay": {
+     "expandMarkets": false,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    }
+   },
+   {
+    "marketDisplayTypeId": "market_tabs",
+    "marketDisplayGroupDisplayName": "Team Total Points",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "b65ebffe-8d1d-33fb-846f-a7cbed5f6be1",
+      "name": "|Houston Texans Total Points|",
+      "type": "over-under",
+      "gtpMarketClass": "OVER_UNDER",
+      "templateType": "generic",
+      "displayOrder": 50,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": 28.5,
+      "selections": [
+       {
+        "id": "5a436e92-dbde-3c2d-baa6-93a50a88244e",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "b65ebffe-8d1d-33fb-846f-a7cbed5f6be1",
+        "display": true,
+        "name": "|Over|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "25/27",
+         "d": 1.92593,
+         "a": -108
+        }
+       },
+       {
+        "id": "209680b1-da62-3db6-a62c-44e071c933a0",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "b65ebffe-8d1d-33fb-846f-a7cbed5f6be1",
+        "display": true,
+        "name": "|Under|",
+        "active": true,
+        "type": "under",
+        "price": {
+         "f": "50/61",
+         "d": 1.81967,
+         "a": -122
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "hasMovingLines": true,
+      "metadata": {
+       "marketSourceType": "reporting-group-match-props",
+       "teamName": "Houston Texans",
+       "hubId": "42594d2f-f02d-47da-aad9-b1397cb1fb40",
+       "marketCategory": "TOTAL_POINTS",
+       "teamAbbr": "HOU",
+       "sourceMarketKey": "80471edc-e6a3-ad50-3af2-dea100c77f11",
+       "reportingGroup": "reporting-group-match-props",
+       "line": "28.5",
+       "teamId": "42594d2f-f02d-47da-aad9-b1397cb1fb40",
+       "flowSegment": "event",
+       "marketCode": "2e700d91-8c49-36c3-b48c-6264d4a93a48",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "team": "HOME",
+       "zfMarketKey": "80471edc-e6a3-ad50-3af2-dea100c77f11",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "total-home",
+       "displayOrder": "50",
+       "zfMarketType": "total-home"
+      },
+      "displayName": " Team Totals",
+      "templateId": "_7cTeam_20Total_20Points_7c",
+      "templateName": "|Team Total Points|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 500000,
+       "maxBet": 150000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "contextDisplay": {
+     "expandMarkets": false,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    },
+    "marketDisplayGroupTiles": false
+   },
+   {
+    "marketDisplayTypeId": "moving_lines_slider",
+    "marketDisplayGroupDisplayName": "Houston Texans Total Points",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "b65ebffe-8d1d-33fb-846f-a7cbed5f6be1",
+      "name": "|Houston Texans Total Points|",
+      "type": "over-under",
+      "gtpMarketClass": "OVER_UNDER",
+      "templateType": "generic",
+      "displayOrder": 50,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": 28.5,
+      "selections": [
+       {
+        "id": "5a436e92-dbde-3c2d-baa6-93a50a88244e",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "b65ebffe-8d1d-33fb-846f-a7cbed5f6be1",
+        "display": true,
+        "name": "|Over|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "25/27",
+         "d": 1.92593,
+         "a": -108
+        }
+       },
+       {
+        "id": "209680b1-da62-3db6-a62c-44e071c933a0",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "b65ebffe-8d1d-33fb-846f-a7cbed5f6be1",
+        "display": true,
+        "name": "|Under|",
+        "active": true,
+        "type": "under",
+        "price": {
+         "f": "50/61",
+         "d": 1.81967,
+         "a": -122
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "hasMovingLines": true,
+      "movingLines": {
+       "active": true,
+       "display": true,
+       "cashOutAvailable": true,
+       "minPricedLine": 0.0,
+       "maxPricedLine": 0.0,
+       "lineIncrement": 0.0,
+       "linePrices": [
+        {
+         "line": 23.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "over",
+           "cop": 0.0,
+           "price": {
+            "f": "8/25",
+            "d": 1.32,
+            "a": -312
+           }
+          },
+          {
+           "selectionType": "under",
+           "cop": 0.0,
+           "price": {
+            "f": "51/25",
+            "d": 3.04,
+            "a": 204
+           }
+          }
+         ]
+        },
+        {
+         "line": 28.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "over",
+           "cop": 0.0,
+           "price": {
+            "f": "93/100",
+            "d": 1.93,
+            "a": -108
+           }
+          },
+          {
+           "selectionType": "under",
+           "cop": 0.0,
+           "price": {
+            "f": "41/50",
+            "d": 1.82,
+            "a": -122
+           }
+          }
+         ]
+        },
+        {
+         "line": 33.5,
+         "active": true,
+         "display": true,
+         "cashOutAvailable": true,
+         "selections": [
+          {
+           "selectionType": "over",
+           "cop": 0.0,
+           "price": {
+            "f": "39/20",
+            "d": 2.95,
+            "a": 195
+           }
+          },
+          {
+           "selectionType": "under",
+           "cop": 0.0,
+           "price": {
+            "f": "17/50",
+            "d": 1.34,
+            "a": -294
+           }
+          }
+         ]
+        }
+       ]
+      },
+      "metadata": {
+       "marketSourceType": "reporting-group-match-props",
+       "teamName": "Houston Texans",
+       "hubId": "42594d2f-f02d-47da-aad9-b1397cb1fb40",
+       "marketCategory": "TOTAL_POINTS",
+       "teamAbbr": "HOU",
+       "sourceMarketKey": "80471edc-e6a3-ad50-3af2-dea100c77f11",
+       "reportingGroup": "reporting-group-match-props",
+       "line": "28.5",
+       "teamId": "42594d2f-f02d-47da-aad9-b1397cb1fb40",
+       "flowSegment": "event",
+       "marketCode": "2e700d91-8c49-36c3-b48c-6264d4a93a48",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "team": "HOME",
+       "zfMarketKey": "80471edc-e6a3-ad50-3af2-dea100c77f11",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "total-home",
+       "displayOrder": "50",
+       "zfMarketType": "total-home"
+      },
+      "displayName": " Team Totals",
+      "templateId": "_7cTeam_20Total_20Points_7c",
+      "templateName": "|Team Total Points|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 500000,
+       "maxBet": 150000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "contextDisplay": {
+     "expandMarkets": false,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    }
+   },
+   {
+    "marketDisplayTypeId": "alternative_six_pack",
+    "marketDisplayGroupDisplayName": "1st Half",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "f942ed25-58e3-37bb-a365-7d070b0a4b37",
+      "name": "|1st Half Spread|",
+      "type": "two-way-handicap",
+      "gtpMarketClass": "HANDICAP",
+      "templateType": "generic",
+      "displayOrder": 5,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": -7.0,
+      "selections": [
+       {
+        "id": "ca1fa5fe-1db3-36f8-a100-0b71b7158f93",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "f942ed25-58e3-37bb-a365-7d070b0a4b37",
+        "display": true,
+        "name": "|Indianapolis Colts|",
+        "active": true,
+        "type": "away",
+        "price": {
+         "f": "20/23",
+         "d": 1.86957,
+         "a": -115
+        }
+       },
+       {
+        "id": "8c0aeefe-de10-39f6-8f54-d955cf916a0c",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "f942ed25-58e3-37bb-a365-7d070b0a4b37",
+        "display": true,
+        "name": "|Houston Texans|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "20/21",
+         "d": 1.95238,
+         "a": -105
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "zfSegment": "regulation_time/half_1",
+       "marketCategory": "POINTS_HANDICAP",
+       "sourceMarketKey": "42117dcbc340e6a31a8c19693b44b55039946c3e162aa99cb54bd485015cd739",
+       "period": "FIRST_HALF",
+       "reportingGroup": "reporting-group-main-markets",
+       "line": "-7.0",
+       "flowSegment": "regulation_time/half_1",
+       "marketCode": "f99c1732-ef9b-3abf-ae3a-d21d73abb00c",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "42117dcbc340e6a31a8c19693b44b55039946c3e162aa99cb54bd485015cd739",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "line",
+       "displayOrder": "5",
+       "zfMarketType": "line"
+      },
+      "displayName": "1H Spread",
+      "templateId": "_7c1st_20Half_20Spread_7c",
+      "templateName": "|1st Half Spread|",
+      "sixPackView": true,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 2000000,
+       "maxBet": 2000000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     },
+     {
+      "id": "bf6714a2-1411-312f-bc24-6d64bf5aa526",
+      "name": "|1st Half Total Points|",
+      "type": "over-under",
+      "gtpMarketClass": "OVER_UNDER",
+      "templateType": "generic",
+      "displayOrder": 6,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "line": 22.5,
+      "selections": [
+       {
+        "id": "647941ab-5101-3aa6-a4f6-5c9ae825bfd9",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "bf6714a2-1411-312f-bc24-6d64bf5aa526",
+        "display": true,
+        "name": "|Over|",
+        "active": true,
+        "type": "over",
+        "price": {
+         "f": "10/11",
+         "d": 1.91,
+         "a": -110
+        }
+       },
+       {
+        "id": "d5ffe312-b169-3f49-820b-25d4a9b3daa0",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "bf6714a2-1411-312f-bc24-6d64bf5aa526",
+        "display": true,
+        "name": "|Under|",
+        "active": true,
+        "type": "under",
+        "price": {
+         "f": "100/109",
+         "d": 1.91743,
+         "a": -109
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "zfSegment": "regulation_time/half_1",
+       "marketCategory": "TOTAL_POINTS",
+       "sourceMarketKey": "4856908164ea384261c83afea22a863187bdbc3dae88dc9aff267307c5e6754f",
+       "period": "FIRST_HALF",
+       "reportingGroup": "reporting-group-main-markets",
+       "line": "22.5",
+       "flowSegment": "regulation_time/half_1",
+       "marketCode": "884c004b-4b40-3351-bfcb-47202b8072a3",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "4856908164ea384261c83afea22a863187bdbc3dae88dc9aff267307c5e6754f",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "total",
+       "displayOrder": "6",
+       "zfMarketType": "total"
+      },
+      "displayName": "1H Total",
+      "templateId": "_7c1st_20Half_20Total_20Points_7c",
+      "templateName": "|1st Half Total Points|",
+      "sixPackView": true,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 1000000,
+       "maxBet": 1000000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "teams": [
+     "Indianapolis Colts",
+     "Houston Texans"
+    ],
+    "contextDisplay": {
+     "expandMarkets": false,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    }
+   },
+   {
+    "marketDisplayTypeId": "stacked",
+    "marketDisplayGroupDisplayName": "1st Half - Betting 3 Way",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "27432f09-473f-3fdd-ac65-73de53ccc2d5",
+      "name": "|1st Half - Betting 3 Way|",
+      "type": "standard-market-template",
+      "gtpMarketClass": "WIN_DRAW_WIN",
+      "templateType": "generic",
+      "displayOrder": 101,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "selections": [
+       {
+        "id": "1df4e136-85a5-3fc4-8ba5-90861730749a",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "27432f09-473f-3fdd-ac65-73de53ccc2d5",
+        "display": true,
+        "name": "|Indianapolis Colts|",
+        "active": true,
+        "type": "away",
+        "price": {
+         "f": "33/10",
+         "d": 4.3,
+         "a": 330
+        }
+       },
+       {
+        "id": "6020a861-6d45-35ae-9b0b-13ab3d8449b0",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "27432f09-473f-3fdd-ac65-73de53ccc2d5",
+        "display": true,
+        "name": "|Tie|",
+        "active": true,
+        "type": "draw",
+        "price": {
+         "f": "10/1",
+         "d": 11.0,
+         "a": 1000
+        }
+       },
+       {
+        "id": "3aa4401b-b551-3efd-bbe8-96ea2568d18d",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "27432f09-473f-3fdd-ac65-73de53ccc2d5",
+        "display": true,
+        "name": "|Houston Texans|",
+        "active": true,
+        "type": "home",
+        "price": {
+         "f": "4/13",
+         "d": 1.30769,
+         "a": -325
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-main-markets",
+       "reportingGroup": "reporting-group-main-markets",
+       "zfSegment": "regulation_time/half_1",
+       "marketCategory": "WIN_DRAW_WIN",
+       "sourceMarketKey": "d656148a-0e58-5224-f9bb-14ebf8465bba",
+       "period": "FIRST_HALF",
+       "flowSegment": "regulation_time/half_1",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "d656148a-0e58-5224-f9bb-14ebf8465bba",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "win-draw-win",
+       "displayOrder": "101",
+       "zfMarketType": "win-draw-win"
+      },
+      "displayName": "",
+      "templateId": "_7c1st_20Half_20Betting_7c",
+      "templateName": "|1st Half Betting|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 1000000,
+       "maxBet": 500000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "contextDisplay": {
+     "expandMarkets": false,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    }
+   },
+   {
+    "marketDisplayTypeId": "full_width_selections",
+    "marketDisplayGroupDisplayName": "Overtime",
+    "isOddsBoost": false,
+    "markets": [
+     {
+      "id": "58720b57-a752-311e-a70f-205b57b6608f",
+      "name": "|Will There be Overtime?|",
+      "type": "standard-market-template",
+      "gtpMarketClass": "NONE",
+      "templateType": "generic",
+      "displayOrder": 20,
+      "display": true,
+      "tradedInPlay": false,
+      "spOffered": false,
+      "active": true,
+      "placeholder": false,
+      "byoEligible": true,
+      "selections": [
+       {
+        "id": "ebb77bcd-7a34-33e7-9a38-4f7ffd707b17",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "58720b57-a752-311e-a70f-205b57b6608f",
+        "display": true,
+        "name": "|Yes|",
+        "active": true,
+        "type": "none",
+        "price": {
+         "f": "11/1",
+         "d": 12.0,
+         "a": 1100
+        }
+       },
+       {
+        "id": "2c1f3029-987c-352e-a324-cda28276a057",
+        "eventId": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+        "marketId": "58720b57-a752-311e-a70f-205b57b6608f",
+        "display": true,
+        "name": "|No|",
+        "active": true,
+        "type": "none",
+        "price": {
+         "f": "1/35",
+         "d": 1.02857,
+         "a": -3500
+        }
+       }
+      ],
+      "cashoutAvailable": true,
+      "hasOddsBoost": false,
+      "metadata": {
+       "marketSourceType": "reporting-group-match-props",
+       "reportingGroup": "reporting-group-match-props",
+       "marketCategory": "NONE",
+       "sourceMarketKey": "322422d2-50bf-f8de-c7a4-0ab61ddabb3f",
+       "flowSegment": "event",
+       "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "sourceEventKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+       "zfMarketKey": "322422d2-50bf-f8de-c7a4-0ab61ddabb3f",
+       "feedSource": "ZF",
+       "pricingSource": "ZF",
+       "marketTypeCode": "will-there-be-overtime",
+       "displayOrder": "20",
+       "zfMarketType": "will-there-be-overtime"
+      },
+      "displayName": "|Will There Be Overtime?|",
+      "templateId": "_7cWill_20There_20Be_20Overtime_3f_7c",
+      "templateName": "|Will There Be Overtime?|",
+      "sixPackView": false,
+      "keyMarket": false,
+      "betLimits": {
+       "liabilityLimit": 100000000,
+       "maxMultipleBet": 10000000,
+       "maxWin": 300000,
+       "maxBet": 300000
+      },
+      "specialConditions": "",
+      "phases": [
+       "PreMatch"
+      ]
+     }
+    ],
+    "contextDisplay": {
+     "expandMarkets": false,
+     "showMoreLimit": 5,
+     "useMarketHeader": true,
+     "useMarketTitle": false
+    }
+   }
+  ]
+ }
+}

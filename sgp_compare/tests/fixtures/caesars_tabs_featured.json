@@ -1,0 +1,211 @@
+{
+ "competitions": [
+  {
+   "id": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+   "name": "NFL",
+   "collectionName": "NFL",
+   "displayAsEvent": false,
+   "collectionDisplayOrder": 0,
+   "displayOrder": 1,
+   "events": [
+    {
+     "id": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+     "name": "Indianapolis Colts at Houston Texans",
+     "startTime": "2026-11-20T01:15:00Z",
+     "type": "MATCH",
+     "sportId": "americanfootball",
+     "competitionName": "NFL",
+     "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+     "competitionType": "nfl",
+     "display": true,
+     "tradedInPlay": true,
+     "active": true,
+     "started": false,
+     "byoEligible": true,
+     "metadata": {
+      "zfSport": "american-football",
+      "awayTeamName": "Indianapolis Colts",
+      "homeTeam_hubId": "42594d2f-f02d-47da-aad9-b1397cb1fb40",
+      "geniusStreamingAvailable": "true",
+      "competition_hubId": "47922d60-18ef-4050-8324-47f8b76bd609",
+      "zfBookKey": "faa98a96-ed6b-e0a9-94c7-71f707d9e752",
+      "awayTeamId": "7a1e9839-9dcd-49d2-9984-95c923d52360",
+      "zfSportProfile": "nfl",
+      "sportsbookFilterName": "Week 11",
+      "awayTeam_hubId": "2395bff5-3805-48f5-8095-14209ec37624",
+      "homeTeamId": "8ffab0ac-d737-4294-93dc-977c9f1559df",
+      "zfOptionSetKey": "acd9dbc4-25ff-4c7e-b9e1-18f76d758325",
+      "homeTeamName": "Houston Texans",
+      "sportsbookFilterSort": "11"
+     },
+     "eventDisplay": {
+      "showEventHeader": false,
+      "navigationFilters": [
+       "Week 11"
+      ]
+     },
+     "marketCountActivePreMatch": 0,
+     "marketCountActiveInPlay": 0
+    },
+    {
+     "id": "c8c55c7a-b90d-fab8-99da-99bba6f5c5e9",
+     "name": "Miami Dolphins at Buffalo Bills",
+     "startTime": "2026-11-22T18:00:00Z",
+     "type": "MATCH",
+     "sportId": "americanfootball",
+     "competitionName": "NFL",
+     "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+     "competitionType": "nfl",
+     "display": true,
+     "tradedInPlay": true,
+     "active": true,
+     "started": false,
+     "byoEligible": true,
+     "metadata": {
+      "zfSport": "american-football",
+      "awayTeamName": "Miami Dolphins",
+      "homeTeam_hubId": "07e0f853-16bc-4423-a92d-466ad528e6b2",
+      "competition_hubId": "47922d60-18ef-4050-8324-47f8b76bd609",
+      "zfBookKey": "c8c55c7a-b90d-fab8-99da-99bba6f5c5e9",
+      "awayTeamId": "3eeb42ea-7552-4975-a95f-4a539a61a9f6",
+      "zfSportProfile": "nfl",
+      "sportsbookFilterName": "Week 11",
+      "awayTeam_hubId": "f375e2cf-e881-4684-ae74-50ee6913714f",
+      "homeTeamId": "43f87835-5e85-43e5-8d48-a08ebddc92a8",
+      "zfOptionSetKey": "acd9dbc4-25ff-4c7e-b9e1-18f76d758325",
+      "homeTeamName": "Buffalo Bills",
+      "sportsbookFilterSort": "11"
+     },
+     "eventDisplay": {
+      "showEventHeader": false,
+      "navigationFilters": [
+       "Week 11"
+      ]
+     },
+     "marketCountActivePreMatch": 0,
+     "marketCountActiveInPlay": 0
+    },
+    {
+     "id": "b6cc2370-5094-e722-1bd4-c08996caba10",
+     "name": "Arizona Cardinals at Kansas City Chiefs",
+     "startTime": "2026-11-22T18:00:00Z",
+     "type": "MATCH",
+     "sportId": "americanfootball",
+     "competitionName": "NFL",
+     "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+     "competitionType": "nfl",
+     "display": true,
+     "tradedInPlay": true,
+     "active": true,
+     "started": false,
+     "byoEligible": true,
+     "metadata": {
+      "zfSport": "american-football",
+      "awayTeamName": "Arizona Cardinals",
+      "homeTeam_hubId": "60f5cc37-603f-4e41-b36d-4ad601dc3e96",
+      "competition_hubId": "47922d60-18ef-4050-8324-47f8b76bd609",
+      "zfBookKey": "b6cc2370-5094-e722-1bd4-c08996caba10",
+      "awayTeamId": "f234d8e0-3d30-4bf3-947c-49449390eb0a",
+      "zfSportProfile": "nfl",
+      "sportsbookFilterName": "Week 11",
+      "awayTeam_hubId": "b0488da1-9bb4-402e-a460-a6883c197cad",
+      "homeTeamId": "0444954b-33f3-47fa-bdd8-441725028cfe",
+      "zfOptionSetKey": "acd9dbc4-25ff-4c7e-b9e1-18f76d758325",
+      "homeTeamName": "Kansas City Chiefs",
+      "sportsbookFilterSort": "11"
+     },
+     "eventDisplay": {
+      "showEventHeader": false,
+      "navigationFilters": [
+       "Week 11"
+      ]
+     },
+     "marketCountActivePreMatch": 0,
+     "marketCountActiveInPlay": 0
+    },
+    {
+     "id": "started-1",
+     "name": "Arizona Cardinals at Kansas City Chiefs",
+     "startTime": "2026-11-22T18:00:00Z",
+     "type": "MATCH",
+     "sportId": "americanfootball",
+     "competitionName": "NFL",
+     "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+     "competitionType": "nfl",
+     "display": true,
+     "tradedInPlay": true,
+     "active": true,
+     "started": true,
+     "byoEligible": true,
+     "metadata": {
+      "zfSport": "american-football",
+      "awayTeamName": "Arizona Cardinals",
+      "homeTeam_hubId": "60f5cc37-603f-4e41-b36d-4ad601dc3e96",
+      "competition_hubId": "47922d60-18ef-4050-8324-47f8b76bd609",
+      "zfBookKey": "b6cc2370-5094-e722-1bd4-c08996caba10",
+      "awayTeamId": "f234d8e0-3d30-4bf3-947c-49449390eb0a",
+      "zfSportProfile": "nfl",
+      "sportsbookFilterName": "Week 11",
+      "awayTeam_hubId": "b0488da1-9bb4-402e-a460-a6883c197cad",
+      "homeTeamId": "0444954b-33f3-47fa-bdd8-441725028cfe",
+      "zfOptionSetKey": "acd9dbc4-25ff-4c7e-b9e1-18f76d758325",
+      "homeTeamName": "Kansas City Chiefs",
+      "sportsbookFilterSort": "11"
+     },
+     "eventDisplay": {
+      "showEventHeader": false,
+      "navigationFilters": [
+       "Week 11"
+      ]
+     },
+     "marketCountActivePreMatch": 0,
+     "marketCountActiveInPlay": 0
+    }
+   ]
+  },
+  {
+   "id": "b7eda1b3-0170-4510-9616-1bce561d7aa7",
+   "name": "NCAAF",
+   "events": [
+    {
+     "id": "ncaaf-1",
+     "name": "Miami Dolphins at Buffalo Bills",
+     "startTime": "2026-11-22T18:00:00Z",
+     "type": "MATCH",
+     "sportId": "americanfootball",
+     "competitionName": "NFL",
+     "competitionId": "007d7c61-07a7-4e18-bb40-15104b6eac92",
+     "competitionType": "nfl",
+     "display": true,
+     "tradedInPlay": true,
+     "active": true,
+     "started": false,
+     "byoEligible": true,
+     "metadata": {
+      "zfSport": "american-football",
+      "awayTeamName": "Miami Dolphins",
+      "homeTeam_hubId": "07e0f853-16bc-4423-a92d-466ad528e6b2",
+      "competition_hubId": "47922d60-18ef-4050-8324-47f8b76bd609",
+      "zfBookKey": "c8c55c7a-b90d-fab8-99da-99bba6f5c5e9",
+      "awayTeamId": "3eeb42ea-7552-4975-a95f-4a539a61a9f6",
+      "zfSportProfile": "nfl",
+      "sportsbookFilterName": "Week 11",
+      "awayTeam_hubId": "f375e2cf-e881-4684-ae74-50ee6913714f",
+      "homeTeamId": "43f87835-5e85-43e5-8d48-a08ebddc92a8",
+      "zfOptionSetKey": "acd9dbc4-25ff-4c7e-b9e1-18f76d758325",
+      "homeTeamName": "Buffalo Bills",
+      "sportsbookFilterSort": "11"
+     },
+     "eventDisplay": {
+      "showEventHeader": false,
+      "navigationFilters": [
+       "Week 11"
+      ]
+     },
+     "marketCountActivePreMatch": 0,
+     "marketCountActiveInPlay": 0
+    }
+   ]
+  }
+ ]
+}
