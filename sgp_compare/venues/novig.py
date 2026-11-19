@@ -151,7 +151,8 @@ def _legs_of_market(game: Game, market: dict, side_of_team_id: dict[str, str]) -
     described = [_describe(game, market, outcome, side_of_team_id) for outcome in outcomes]
     if described[0] is None or described[1] is None:
         return []
-    if not _are_opposite_sides(described[0][3], described[1][3]):
+    same_side_label = described[0][2] == described[1][2]   # covers market types with no canonical name
+    if same_side_label or not _are_opposite_sides(described[0][3], described[1][3]):
         log.warning("Novig market %r does not list two opposite sides; left out", market.get("description"))
         return []
     legs = []

@@ -176,14 +176,29 @@ def test_a_line_whose_two_outcomes_are_not_opposite_sides_of_its_strike_is_left_
     for outcome, description in zip(market["outcomes"], descriptions):
         outcome["description"] = description
     ids = {outcome["id"] for outcome in market["outcomes"]}
-    assert not any(leg.leg_id in ids for leg in parse_legs(game, markets))
+    parsed = parse_legs(game, markets)
+    assert not any(leg.leg_id in ids for leg in parsed)
+    assert any(leg.market_label == "Moneyline" for leg in parsed)   # only that line is dropped
+
+
+def test_an_unnamed_market_type_is_listed_unmatched_unless_both_outcomes_read_the_same(game):
+    markets = load("novig_markets_ind_hou.json")
+    total = next(m for m in markets["data"]["event"][0]["markets"] if m["type"] == "TOTAL" and m["strike"] == 43.5)
+    total["type"] = "TOTAL_CORNERS"
+    listed = [leg for leg in parse_legs(game, markets) if leg.market_key == "TOTAL_CORNERS"]
+    assert [(leg.side_label, leg.canonical, leg.category) for leg in listed] == [
+        ("Over 43.5", None, "Total Corners"), ("Under 43.5", None, "Total Corners")]
+    total["outcomes"][1]["description"] = "Over 43.5"
+    assert not any(leg.market_key == "TOTAL_CORNERS" for leg in parse_legs(game, markets))
 
 
 def test_two_moneyline_outcomes_for_one_team_are_left_out(game):
     markets = load("novig_markets_ind_hou.json")
     moneyline = next(m for m in markets["data"]["event"][0]["markets"] if m["type"] == "MONEY")
     moneyline["outcomes"][1]["competitor"] = dict(moneyline["outcomes"][0]["competitor"])
-    assert not any(leg.market_label == "Moneyline" for leg in parse_legs(game, markets))
+    parsed = parse_legs(game, markets)
+    assert not any(leg.market_label == "Moneyline" for leg in parsed)
+    assert any(leg.market_label == "Spread" for leg in parsed)
 
 
 def test_a_spread_whose_text_disagrees_with_its_strike_or_names_an_unknown_team_is_left_out(game):
