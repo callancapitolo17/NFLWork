@@ -1,0 +1,204 @@
+{
+ "quotes": [
+  {
+   "id": "c4bd7326-962e-8694-9d01-df3b77a92d54",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7590",
+   "no_contracts_fp": "393.85",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.2150",
+   "yes_contracts_fp": "125.46"
+  },
+  {
+   "id": "ddc10ea0-c7e2-356d-fffa-bf3dcdb3d267",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7580",
+   "no_contracts_fp": "392.31",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "44a65e18-595b-8fc4-8862-2bb008872d1b",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7470",
+   "no_contracts_fp": "375.51",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "f17b03b4-9bf6-8f16-a211-243e13249568",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7430",
+   "no_contracts_fp": "369.82",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "cfc60a91-1818-8033-8368-26491e295812",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7220",
+   "no_contracts_fp": "342.34",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.1550",
+   "yes_contracts_fp": "117.04"
+  },
+  {
+   "id": "49a3ca40-1bb3-8dc6-8761-790ac2af9239",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7220",
+   "no_contracts_fp": "342.34",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "73b5f4c9-c37f-8b67-8107-31d71fc6d14e",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7210",
+   "no_contracts_fp": "341.18",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "cfa49216-4750-8149-b6a5-cf04c1495524",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7200",
+   "no_contracts_fp": "339.90",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "ed96ae2c-f024-8fba-9179-ee2858e923cc",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7170",
+   "no_contracts_fp": "336.36",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "c318ebb2-3bd0-8724-b333-fffff5d9ac6e",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7170",
+   "no_contracts_fp": "336.36",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "144cca18-c842-8574-b802-9f0b6442aa58",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7150",
+   "no_contracts_fp": "334.11",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "5668e952-837c-8c2e-a833-440af12a5925",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7100",
+   "no_contracts_fp": "328.40",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "523d96fa-54d6-46db-9a8e-95212a6a0d82",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7050",
+   "no_contracts_fp": "322.99",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "0809b918-f3a2-8c85-8d1e-17739bd31297",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.7040",
+   "no_contracts_fp": "321.95",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "af42c293-7057-8f3f-b886-55664d461ec1",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.6910",
+   "no_contracts_fp": "308.64",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.1600",
+   "yes_contracts_fp": "117.71"
+  },
+  {
+   "id": "865afe65-aff0-8585-bbcf-c247828d3854",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.6060",
+   "no_contracts_fp": "243.42",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "c6adb424-de39-45f0-9399-cafe7f53d8dd",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.5320",
+   "no_contracts_fp": "205.97",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "5dfabc8c-dcf5-4c6f-810e-da8d00e70287",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.5310",
+   "no_contracts_fp": "205.54",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "a8b5a599-daac-8be4-8f97-7838a0ada1fd",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.5260",
+   "no_contracts_fp": "203.45",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.0000",
+   "yes_contracts_fp": null
+  },
+  {
+   "id": "3c75d5c2-20c6-8740-9c81-86f3a5e82ddc",
+   "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+   "no_bid_dollars": "0.0001",
+   "no_contracts_fp": "99.94",
+   "rfq_id": "7e01605e-2231-41de-bfc7-b821429eae79",
+   "status": "open",
+   "yes_bid_dollars": "0.1790",
+   "yes_contracts_fp": "120.28"
+  }
+ ]
+}

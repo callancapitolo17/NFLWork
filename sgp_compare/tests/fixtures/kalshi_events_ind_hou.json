@@ -1,0 +1,2330 @@
+[
+ {
+  "event": {
+   "event_ticker": "KXNFLGAME-26NOV19INDHOU",
+   "series_ticker": "KXNFLGAME",
+   "title": "Indianapolis vs Houston"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLGAME-26NOV19INDHOU",
+    "no_ask_dollars": "0.1600",
+    "no_bid_dollars": "0.1500",
+    "no_sub_title": "Houston",
+    "status": "active",
+    "strike_type": "structured",
+    "ticker": "KXNFLGAME-26NOV19INDHOU-HOU",
+    "title": "Houston wins",
+    "yes_ask_dollars": "0.8500",
+    "yes_ask_size_fp": "3064272.67",
+    "yes_bid_dollars": "0.8400",
+    "yes_bid_size_fp": "114051.53",
+    "yes_sub_title": "Houston"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLGAME-26NOV19INDHOU",
+    "no_ask_dollars": "0.8500",
+    "no_bid_dollars": "0.8400",
+    "no_sub_title": "Indianapolis",
+    "status": "active",
+    "strike_type": "structured",
+    "ticker": "KXNFLGAME-26NOV19INDHOU-IND",
+    "title": "Indianapolis wins",
+    "yes_ask_dollars": "0.1600",
+    "yes_ask_size_fp": "1053042.45",
+    "yes_bid_dollars": "0.1500",
+    "yes_bid_size_fp": "62509.44",
+    "yes_sub_title": "Indianapolis"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+   "series_ticker": "KXNFLSPREAD",
+   "title": "Indianapolis vs Houston: Spread"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 30.5,
+    "no_ask_dollars": "0.9300",
+    "no_bid_dollars": "0.9200",
+    "no_sub_title": "Houston wins by over 30.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU31",
+    "title": "Houston wins by over 30.5 points?",
+    "yes_ask_dollars": "0.0800",
+    "yes_ask_size_fp": "2000.00",
+    "yes_bid_dollars": "0.0700",
+    "yes_bid_size_fp": "210.00",
+    "yes_sub_title": "Houston wins by over 30.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 27.5,
+    "no_ask_dollars": "0.8900",
+    "no_bid_dollars": "0.8800",
+    "no_sub_title": "Houston wins by over 27.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU28",
+    "title": "Houston wins by over 27.5 points?",
+    "yes_ask_dollars": "0.1200",
+    "yes_ask_size_fp": "2878.00",
+    "yes_bid_dollars": "0.1100",
+    "yes_bid_size_fp": "100.00",
+    "yes_sub_title": "Houston wins by over 27.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 23.5,
+    "no_ask_dollars": "0.8000",
+    "no_bid_dollars": "0.7900",
+    "no_sub_title": "Houston wins by over 23.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU24",
+    "title": "Houston wins by over 23.5 points?",
+    "yes_ask_dollars": "0.2100",
+    "yes_ask_size_fp": "489.00",
+    "yes_bid_dollars": "0.2000",
+    "yes_bid_size_fp": "125.00",
+    "yes_sub_title": "Houston wins by over 23.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 20.5,
+    "no_ask_dollars": "0.7400",
+    "no_bid_dollars": "0.7300",
+    "no_sub_title": "Houston wins by over 20.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU21",
+    "title": "Houston wins by over 20.5 points?",
+    "yes_ask_dollars": "0.2700",
+    "yes_ask_size_fp": "357.74",
+    "yes_bid_dollars": "0.2600",
+    "yes_bid_size_fp": "470.00",
+    "yes_sub_title": "Houston wins by over 20.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 17.5,
+    "no_ask_dollars": "0.6700",
+    "no_bid_dollars": "0.6600",
+    "no_sub_title": "Houston wins by over 17.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU18",
+    "title": "Houston wins by over 17.5 points?",
+    "yes_ask_dollars": "0.3400",
+    "yes_ask_size_fp": "441.97",
+    "yes_bid_dollars": "0.3300",
+    "yes_bid_size_fp": "125.00",
+    "yes_sub_title": "Houston wins by over 17.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 16.5,
+    "no_ask_dollars": "0.6300",
+    "no_bid_dollars": "0.6200",
+    "no_sub_title": "Houston wins by over 16.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU17",
+    "title": "Houston wins by over 16.5 points?",
+    "yes_ask_dollars": "0.3800",
+    "yes_ask_size_fp": "558.02",
+    "yes_bid_dollars": "0.3700",
+    "yes_bid_size_fp": "9276.97",
+    "yes_sub_title": "Houston wins by over 16.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 14.5,
+    "no_ask_dollars": "0.6000",
+    "no_bid_dollars": "0.5900",
+    "no_sub_title": "Houston wins by over 14.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU15",
+    "title": "Houston wins by over 14.5 points?",
+    "yes_ask_dollars": "0.4100",
+    "yes_ask_size_fp": "1541.62",
+    "yes_bid_dollars": "0.4000",
+    "yes_bid_size_fp": "5747.85",
+    "yes_sub_title": "Houston wins by over 14.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 13.5,
+    "no_ask_dollars": "0.5500",
+    "no_bid_dollars": "0.5400",
+    "no_sub_title": "Houston wins by over 13.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU14",
+    "title": "Houston wins by over 13.5 points?",
+    "yes_ask_dollars": "0.4600",
+    "yes_ask_size_fp": "24375.60",
+    "yes_bid_dollars": "0.4500",
+    "yes_bid_size_fp": "946303.60",
+    "yes_sub_title": "Houston wins by over 13.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 10.5,
+    "no_ask_dollars": "0.4600",
+    "no_bid_dollars": "0.4500",
+    "no_sub_title": "Houston wins by over 10.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU11",
+    "title": "Houston wins by over 10.5 points?",
+    "yes_ask_dollars": "0.5500",
+    "yes_ask_size_fp": "6786.88",
+    "yes_bid_dollars": "0.5400",
+    "yes_bid_size_fp": "549603.74",
+    "yes_sub_title": "Houston wins by over 10.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 9.5,
+    "no_ask_dollars": "0.4200",
+    "no_bid_dollars": "0.4100",
+    "no_sub_title": "Houston wins by over 9.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU10",
+    "title": "Houston wins by over 9.5 points?",
+    "yes_ask_dollars": "0.5900",
+    "yes_ask_size_fp": "8335.83",
+    "yes_bid_dollars": "0.5800",
+    "yes_bid_size_fp": "395337.36",
+    "yes_sub_title": "Houston wins by over 9.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 7.5,
+    "no_ask_dollars": "0.3800",
+    "no_bid_dollars": "0.3700",
+    "no_sub_title": "Houston wins by over 7.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU8",
+    "title": "Houston wins by over 7.5 points?",
+    "yes_ask_dollars": "0.6300",
+    "yes_ask_size_fp": "7757.64",
+    "yes_bid_dollars": "0.6200",
+    "yes_bid_size_fp": "2056.88",
+    "yes_sub_title": "Houston wins by over 7.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 6.5,
+    "no_ask_dollars": "0.3300",
+    "no_bid_dollars": "0.3200",
+    "no_sub_title": "Houston wins by over 6.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU7",
+    "title": "Houston wins by over 6.5 points?",
+    "yes_ask_dollars": "0.6800",
+    "yes_ask_size_fp": "3179.73",
+    "yes_bid_dollars": "0.6700",
+    "yes_bid_size_fp": "602.01",
+    "yes_sub_title": "Houston wins by over 6.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 5.5,
+    "no_ask_dollars": "0.2900",
+    "no_bid_dollars": "0.2800",
+    "no_sub_title": "Houston wins by over 5.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU6",
+    "title": "Houston wins by over 5.5 points?",
+    "yes_ask_dollars": "0.7200",
+    "yes_ask_size_fp": "7459.10",
+    "yes_bid_dollars": "0.7100",
+    "yes_bid_size_fp": "330.00",
+    "yes_sub_title": "Houston wins by over 5.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 4.5,
+    "no_ask_dollars": "0.2800",
+    "no_bid_dollars": "0.2700",
+    "no_sub_title": "Houston wins by over 4.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU5",
+    "title": "Houston wins by over 4.5 points?",
+    "yes_ask_dollars": "0.7300",
+    "yes_ask_size_fp": "5663.00",
+    "yes_bid_dollars": "0.7200",
+    "yes_bid_size_fp": "916.01",
+    "yes_sub_title": "Houston wins by over 4.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 3.5,
+    "no_ask_dollars": "0.2500",
+    "no_bid_dollars": "0.2300",
+    "no_sub_title": "Houston wins by over 3.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU4",
+    "title": "Houston wins by over 3.5 points?",
+    "yes_ask_dollars": "0.7700",
+    "yes_ask_size_fp": "7647.35",
+    "yes_bid_dollars": "0.7500",
+    "yes_bid_size_fp": "4108.19",
+    "yes_sub_title": "Houston wins by over 3.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 2.5,
+    "no_ask_dollars": "0.1900",
+    "no_bid_dollars": "0.1700",
+    "no_sub_title": "Houston wins by over 2.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU3",
+    "title": "Houston wins by over 2.5 points?",
+    "yes_ask_dollars": "0.8300",
+    "yes_ask_size_fp": "4218.42",
+    "yes_bid_dollars": "0.8100",
+    "yes_bid_size_fp": "2196.00",
+    "yes_sub_title": "Houston wins by over 2.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 1.5,
+    "no_ask_dollars": "0.1700",
+    "no_bid_dollars": "0.1600",
+    "no_sub_title": "Houston wins by over 1.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU2",
+    "title": "Houston wins by over 1.5 points?",
+    "yes_ask_dollars": "0.8400",
+    "yes_ask_size_fp": "537.69",
+    "yes_bid_dollars": "0.8300",
+    "yes_bid_size_fp": "110.00",
+    "yes_sub_title": "Houston wins by over 1.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 1.5,
+    "no_ask_dollars": "0.8700",
+    "no_bid_dollars": "0.8600",
+    "no_sub_title": "Indianapolis wins by over 1.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND2",
+    "title": "Indianapolis wins by over 1.5 points?",
+    "yes_ask_dollars": "0.1400",
+    "yes_ask_size_fp": "2098.00",
+    "yes_bid_dollars": "0.1300",
+    "yes_bid_size_fp": "226.00",
+    "yes_sub_title": "Indianapolis wins by over 1.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 2.5,
+    "no_ask_dollars": "0.8700",
+    "no_bid_dollars": "0.8600",
+    "no_sub_title": "Indianapolis wins by over 2.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND3",
+    "title": "Indianapolis wins by over 2.5 points?",
+    "yes_ask_dollars": "0.1400",
+    "yes_ask_size_fp": "2400.00",
+    "yes_bid_dollars": "0.1300",
+    "yes_bid_size_fp": "116.00",
+    "yes_sub_title": "Indianapolis wins by over 2.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 3.5,
+    "no_ask_dollars": "0.9200",
+    "no_bid_dollars": "0.9100",
+    "no_sub_title": "Indianapolis wins by over 3.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND4",
+    "title": "Indianapolis wins by over 3.5 points?",
+    "yes_ask_dollars": "0.0900",
+    "yes_ask_size_fp": "110.00",
+    "yes_bid_dollars": "0.0800",
+    "yes_bid_size_fp": "110.00",
+    "yes_sub_title": "Indianapolis wins by over 3.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 4.5,
+    "no_ask_dollars": "0.9200",
+    "no_bid_dollars": "0.9100",
+    "no_sub_title": "Indianapolis wins by over 4.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND5",
+    "title": "Indianapolis wins by over 4.5 points?",
+    "yes_ask_dollars": "0.0900",
+    "yes_ask_size_fp": "3171.67",
+    "yes_bid_dollars": "0.0800",
+    "yes_bid_size_fp": "110.00",
+    "yes_sub_title": "Indianapolis wins by over 4.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 5.5,
+    "no_ask_dollars": "0.9400",
+    "no_bid_dollars": "0.9200",
+    "no_sub_title": "Indianapolis wins by over 5.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND6",
+    "title": "Indianapolis wins by over 5.5 points?",
+    "yes_ask_dollars": "0.0800",
+    "yes_ask_size_fp": "2382.62",
+    "yes_bid_dollars": "0.0600",
+    "yes_bid_size_fp": "2339.00",
+    "yes_sub_title": "Indianapolis wins by over 5.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 6.5,
+    "no_ask_dollars": "0.9500",
+    "no_bid_dollars": "0.9400",
+    "no_sub_title": "Indianapolis wins by over 6.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND7",
+    "title": "Indianapolis wins by over 6.5 points?",
+    "yes_ask_dollars": "0.0600",
+    "yes_ask_size_fp": "401.63",
+    "yes_bid_dollars": "0.0500",
+    "yes_bid_size_fp": "188.00",
+    "yes_sub_title": "Indianapolis wins by over 6.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 7.5,
+    "no_ask_dollars": "0.9700",
+    "no_bid_dollars": "0.9600",
+    "no_sub_title": "Indianapolis wins by over 7.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND8",
+    "title": "Indianapolis wins by over 7.5 points?",
+    "yes_ask_dollars": "0.0400",
+    "yes_ask_size_fp": "44.79",
+    "yes_bid_dollars": "0.0300",
+    "yes_bid_size_fp": "2978.00",
+    "yes_sub_title": "Indianapolis wins by over 7.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 9.5,
+    "no_ask_dollars": "0.9800",
+    "no_bid_dollars": "0.9600",
+    "no_sub_title": "Indianapolis wins by over 9.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND10",
+    "title": "Indianapolis wins by over 9.5 points?",
+    "yes_ask_dollars": "0.0400",
+    "yes_ask_size_fp": "1323.00",
+    "yes_bid_dollars": "0.0200",
+    "yes_bid_size_fp": "13263.00",
+    "yes_sub_title": "Indianapolis wins by over 9.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "floor_strike": 10.5,
+    "no_ask_dollars": "0.9800",
+    "no_bid_dollars": "0.9700",
+    "no_sub_title": "Indianapolis wins by over 10.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU-IND11",
+    "title": "Indianapolis wins by over 10.5 points?",
+    "yes_ask_dollars": "0.0300",
+    "yes_ask_size_fp": "455.00",
+    "yes_bid_dollars": "0.0200",
+    "yes_bid_size_fp": "2264.00",
+    "yes_sub_title": "Indianapolis wins by over 10.5 points"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+   "series_ticker": "KXNFLTOTAL",
+   "title": "Indianapolis vs Houston: Total Points"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 23.5,
+    "no_ask_dollars": "0.0500",
+    "no_bid_dollars": "0.0300",
+    "no_sub_title": "Over 23.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-24",
+    "title": "Full Game: over 23.5 points scored?",
+    "yes_ask_dollars": "0.9700",
+    "yes_ask_size_fp": "7110.00",
+    "yes_bid_dollars": "0.9500",
+    "yes_bid_size_fp": "842.00",
+    "yes_sub_title": "Over 23.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 26.5,
+    "no_ask_dollars": "0.0700",
+    "no_bid_dollars": "0.0500",
+    "no_sub_title": "Over 26.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-27",
+    "title": "Full Game: over 26.5 points scored?",
+    "yes_ask_dollars": "0.9500",
+    "yes_ask_size_fp": "4648.00",
+    "yes_bid_dollars": "0.9300",
+    "yes_bid_size_fp": "1120.00",
+    "yes_sub_title": "Over 26.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 29.5,
+    "no_ask_dollars": "0.1100",
+    "no_bid_dollars": "0.0900",
+    "no_sub_title": "Over 29.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-30",
+    "title": "Full Game: over 29.5 points scored?",
+    "yes_ask_dollars": "0.9100",
+    "yes_ask_size_fp": "6523.12",
+    "yes_bid_dollars": "0.8900",
+    "yes_bid_size_fp": "138.00",
+    "yes_sub_title": "Over 29.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 32.5,
+    "no_ask_dollars": "0.1700",
+    "no_bid_dollars": "0.1600",
+    "no_sub_title": "Over 32.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-33",
+    "title": "Full Game: over 32.5 points scored?",
+    "yes_ask_dollars": "0.8400",
+    "yes_ask_size_fp": "110.00",
+    "yes_bid_dollars": "0.8300",
+    "yes_bid_size_fp": "251.00",
+    "yes_sub_title": "Over 32.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 35.5,
+    "no_ask_dollars": "0.2400",
+    "no_bid_dollars": "0.2200",
+    "no_sub_title": "Over 35.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-36",
+    "title": "Full Game: over 35.5 points scored?",
+    "yes_ask_dollars": "0.7800",
+    "yes_ask_size_fp": "4598.09",
+    "yes_bid_dollars": "0.7600",
+    "yes_bid_size_fp": "210.00",
+    "yes_sub_title": "Over 35.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 38.5,
+    "no_ask_dollars": "0.3200",
+    "no_bid_dollars": "0.3100",
+    "no_sub_title": "Over 38.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-39",
+    "title": "Full Game: over 38.5 points scored?",
+    "yes_ask_dollars": "0.6900",
+    "yes_ask_size_fp": "3735.48",
+    "yes_bid_dollars": "0.6800",
+    "yes_bid_size_fp": "1.00",
+    "yes_sub_title": "Over 38.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 41.5,
+    "no_ask_dollars": "0.4200",
+    "no_bid_dollars": "0.4100",
+    "no_sub_title": "Over 41.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-42",
+    "title": "Full Game: over 41.5 points scored?",
+    "yes_ask_dollars": "0.5900",
+    "yes_ask_size_fp": "36019.00",
+    "yes_bid_dollars": "0.5800",
+    "yes_bid_size_fp": "110.00",
+    "yes_sub_title": "Over 41.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 42.5,
+    "no_ask_dollars": "0.4400",
+    "no_bid_dollars": "0.4300",
+    "no_sub_title": "Over 42.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-43",
+    "title": "Full Game: over 42.5 points scored?",
+    "yes_ask_dollars": "0.5700",
+    "yes_ask_size_fp": "59807.76",
+    "yes_bid_dollars": "0.5600",
+    "yes_bid_size_fp": "65.00",
+    "yes_sub_title": "Over 42.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 43.5,
+    "no_ask_dollars": "0.4900",
+    "no_bid_dollars": "0.4800",
+    "no_sub_title": "Over 43.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-44",
+    "title": "Full Game: over 43.5 points scored?",
+    "yes_ask_dollars": "0.5200",
+    "yes_ask_size_fp": "7905.00",
+    "yes_bid_dollars": "0.5100",
+    "yes_bid_size_fp": "183611.13",
+    "yes_sub_title": "Over 43.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 44.5,
+    "no_ask_dollars": "0.5200",
+    "no_bid_dollars": "0.5100",
+    "no_sub_title": "Over 44.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-45",
+    "title": "Full Game: over 44.5 points scored?",
+    "yes_ask_dollars": "0.4900",
+    "yes_ask_size_fp": "501418.00",
+    "yes_bid_dollars": "0.4800",
+    "yes_bid_size_fp": "35395.68",
+    "yes_sub_title": "Over 44.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 45.5,
+    "no_ask_dollars": "0.5600",
+    "no_bid_dollars": "0.5500",
+    "no_sub_title": "Over 45.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-46",
+    "title": "Full Game: over 45.5 points scored?",
+    "yes_ask_dollars": "0.4500",
+    "yes_ask_size_fp": "125.00",
+    "yes_bid_dollars": "0.4400",
+    "yes_bid_size_fp": "178922.91",
+    "yes_sub_title": "Over 45.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 46.5,
+    "no_ask_dollars": "0.5800",
+    "no_bid_dollars": "0.5700",
+    "no_sub_title": "Over 46.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-47",
+    "title": "Full Game: over 46.5 points scored?",
+    "yes_ask_dollars": "0.4300",
+    "yes_ask_size_fp": "53944.96",
+    "yes_bid_dollars": "0.4200",
+    "yes_bid_size_fp": "5550.00",
+    "yes_sub_title": "Over 46.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 47.5,
+    "no_ask_dollars": "0.6200",
+    "no_bid_dollars": "0.6000",
+    "no_sub_title": "Over 47.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-48",
+    "title": "Full Game: over 47.5 points scored?",
+    "yes_ask_dollars": "0.4000",
+    "yes_ask_size_fp": "6349.92",
+    "yes_bid_dollars": "0.3800",
+    "yes_bid_size_fp": "7660.00",
+    "yes_sub_title": "Over 47.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 50.5,
+    "no_ask_dollars": "0.7000",
+    "no_bid_dollars": "0.6800",
+    "no_sub_title": "Over 50.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-51",
+    "title": "Full Game: over 50.5 points scored?",
+    "yes_ask_dollars": "0.3200",
+    "yes_ask_size_fp": "6486.00",
+    "yes_bid_dollars": "0.3000",
+    "yes_bid_size_fp": "4884.06",
+    "yes_sub_title": "Over 50.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 53.5,
+    "no_ask_dollars": "0.7600",
+    "no_bid_dollars": "0.7500",
+    "no_sub_title": "Over 53.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-54",
+    "title": "Full Game: over 53.5 points scored?",
+    "yes_ask_dollars": "0.2500",
+    "yes_ask_size_fp": "5022.98",
+    "yes_bid_dollars": "0.2400",
+    "yes_bid_size_fp": "438.91",
+    "yes_sub_title": "Over 53.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 56.5,
+    "no_ask_dollars": "0.8400",
+    "no_bid_dollars": "0.8300",
+    "no_sub_title": "Over 56.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-57",
+    "title": "Full Game: over 56.5 points scored?",
+    "yes_ask_dollars": "0.1700",
+    "yes_ask_size_fp": "100.00",
+    "yes_bid_dollars": "0.1600",
+    "yes_bid_size_fp": "138.00",
+    "yes_sub_title": "Over 56.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 59.5,
+    "no_ask_dollars": "0.9000",
+    "no_bid_dollars": "0.8800",
+    "no_sub_title": "Over 59.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-60",
+    "title": "Full Game: over 59.5 points scored?",
+    "yes_ask_dollars": "0.1200",
+    "yes_ask_size_fp": "138.00",
+    "yes_bid_dollars": "0.1000",
+    "yes_bid_size_fp": "238.00",
+    "yes_sub_title": "Over 59.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 62.5,
+    "no_ask_dollars": "0.9500",
+    "no_bid_dollars": "0.9200",
+    "no_sub_title": "Over 62.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-63",
+    "title": "Full Game: over 62.5 points scored?",
+    "yes_ask_dollars": "0.0800",
+    "yes_ask_size_fp": "2132.00",
+    "yes_bid_dollars": "0.0500",
+    "yes_bid_size_fp": "5240.60",
+    "yes_sub_title": "Over 62.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "floor_strike": 65.5,
+    "no_ask_dollars": "0.9500",
+    "no_bid_dollars": "0.9400",
+    "no_sub_title": "Over 65.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU-66",
+    "title": "Full Game: over 65.5 points scored?",
+    "yes_ask_dollars": "0.0600",
+    "yes_ask_size_fp": "3803.00",
+    "yes_bid_dollars": "0.0500",
+    "yes_bid_size_fp": "42.00",
+    "yes_sub_title": "Over 65.5 points"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFL1H-26NOV19INDHOU",
+   "series_ticker": "KXNFL1H",
+   "title": "Indianapolis vs Houston: 1st Half Winner"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFL1H-26NOV19INDHOU",
+    "no_ask_dollars": "0.2900",
+    "no_bid_dollars": "0.2800",
+    "no_sub_title": "Houston",
+    "status": "active",
+    "strike_type": "structured",
+    "ticker": "KXNFL1H-26NOV19INDHOU-HOU",
+    "title": "Will Houston win the 1st Half?",
+    "yes_ask_dollars": "0.7200",
+    "yes_ask_size_fp": "8.00",
+    "yes_bid_dollars": "0.7100",
+    "yes_bid_size_fp": "305.00",
+    "yes_sub_title": "Houston"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFL1H-26NOV19INDHOU",
+    "no_ask_dollars": "0.8100",
+    "no_bid_dollars": "0.8000",
+    "no_sub_title": "Indianapolis",
+    "status": "active",
+    "strike_type": "structured",
+    "ticker": "KXNFL1H-26NOV19INDHOU-IND",
+    "title": "Will Indianapolis win the 1st Half?",
+    "yes_ask_dollars": "0.2000",
+    "yes_ask_size_fp": "118.29",
+    "yes_bid_dollars": "0.1900",
+    "yes_bid_size_fp": "138.00",
+    "yes_sub_title": "Indianapolis"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "111193d4-9b1f-4bd8-ab8b-9de252737f05"
+    },
+    "event_ticker": "KXNFL1H-26NOV19INDHOU",
+    "no_ask_dollars": "0.9300",
+    "no_bid_dollars": "0.9200",
+    "no_sub_title": "Tie",
+    "status": "active",
+    "strike_type": "structured",
+    "ticker": "KXNFL1H-26NOV19INDHOU-TIE",
+    "title": "Will neither team win the 1st Half?",
+    "yes_ask_dollars": "0.0800",
+    "yes_ask_size_fp": "3502.00",
+    "yes_bid_dollars": "0.0700",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Tie"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+   "series_ticker": "KXNFLTEAMTOTAL",
+   "title": "Indianapolis vs Houston: Team Total"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 3.5,
+    "no_ask_dollars": "0.0200",
+    "no_bid_dollars": "0.0100",
+    "no_sub_title": "Houston over 3.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU4",
+    "title": "Houston over 3.5 points scored",
+    "yes_ask_dollars": "0.9900",
+    "yes_ask_size_fp": "244.42",
+    "yes_bid_dollars": "0.9800",
+    "yes_bid_size_fp": "2000.00",
+    "yes_sub_title": "Houston over 3.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 7.5,
+    "no_ask_dollars": "0.0300",
+    "no_bid_dollars": "0.0200",
+    "no_sub_title": "Houston over 7.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU8",
+    "title": "Houston over 7.5 points scored",
+    "yes_ask_dollars": "0.9800",
+    "yes_ask_size_fp": "33.00",
+    "yes_bid_dollars": "0.9700",
+    "yes_bid_size_fp": "2000.00",
+    "yes_sub_title": "Houston over 7.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 10.5,
+    "no_ask_dollars": "0.0500",
+    "no_bid_dollars": "0.0400",
+    "no_sub_title": "Houston over 10.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU11",
+    "title": "Houston over 10.5 points scored",
+    "yes_ask_dollars": "0.9600",
+    "yes_ask_size_fp": "33.00",
+    "yes_bid_dollars": "0.9500",
+    "yes_bid_size_fp": "5278.00",
+    "yes_sub_title": "Houston over 10.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 14.5,
+    "no_ask_dollars": "0.0800",
+    "no_bid_dollars": "0.0500",
+    "no_sub_title": "Houston over 14.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU15",
+    "title": "Houston over 14.5 points scored",
+    "yes_ask_dollars": "0.9500",
+    "yes_ask_size_fp": "2.00",
+    "yes_bid_dollars": "0.9200",
+    "yes_bid_size_fp": "5404.00",
+    "yes_sub_title": "Houston over 14.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 17.5,
+    "no_ask_dollars": "0.1400",
+    "no_bid_dollars": "0.1100",
+    "no_sub_title": "Houston over 17.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU18",
+    "title": "Houston over 17.5 points scored",
+    "yes_ask_dollars": "0.8900",
+    "yes_ask_size_fp": "33.00",
+    "yes_bid_dollars": "0.8600",
+    "yes_bid_size_fp": "5528.00",
+    "yes_sub_title": "Houston over 17.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 20.5,
+    "no_ask_dollars": "0.2000",
+    "no_bid_dollars": "0.1900",
+    "no_sub_title": "Houston over 20.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU21",
+    "title": "Houston over 20.5 points scored",
+    "yes_ask_dollars": "0.8100",
+    "yes_ask_size_fp": "114.87",
+    "yes_bid_dollars": "0.8000",
+    "yes_bid_size_fp": "110.00",
+    "yes_sub_title": "Houston over 20.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 21.5,
+    "no_ask_dollars": "0.2300",
+    "no_bid_dollars": "0.2200",
+    "no_sub_title": "Houston over 21.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU22",
+    "title": "Houston over 21.5 points scored",
+    "yes_ask_dollars": "0.7800",
+    "yes_ask_size_fp": "109.23",
+    "yes_bid_dollars": "0.7700",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Houston over 21.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 24.5,
+    "no_ask_dollars": "0.3500",
+    "no_bid_dollars": "0.3400",
+    "no_sub_title": "Houston over 24.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU25",
+    "title": "Houston over 24.5 points scored",
+    "yes_ask_dollars": "0.6600",
+    "yes_ask_size_fp": "2940.04",
+    "yes_bid_dollars": "0.6500",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Houston over 24.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 27.5,
+    "no_ask_dollars": "0.4600",
+    "no_bid_dollars": "0.4500",
+    "no_sub_title": "Houston over 27.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU28",
+    "title": "Houston over 27.5 points scored",
+    "yes_ask_dollars": "0.5500",
+    "yes_ask_size_fp": "10698.96",
+    "yes_bid_dollars": "0.5400",
+    "yes_bid_size_fp": "13910.65",
+    "yes_sub_title": "Houston over 27.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 28.5,
+    "no_ask_dollars": "0.5100",
+    "no_bid_dollars": "0.5000",
+    "no_sub_title": "Houston over 28.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU29",
+    "title": "Houston over 28.5 points scored",
+    "yes_ask_dollars": "0.5000",
+    "yes_ask_size_fp": "4116.65",
+    "yes_bid_dollars": "0.4900",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Houston over 28.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 31.5,
+    "no_ask_dollars": "0.6600",
+    "no_bid_dollars": "0.6400",
+    "no_sub_title": "Houston over 31.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU32",
+    "title": "Houston over 31.5 points scored",
+    "yes_ask_dollars": "0.3600",
+    "yes_ask_size_fp": "33.00",
+    "yes_bid_dollars": "0.3400",
+    "yes_bid_size_fp": "67.08",
+    "yes_sub_title": "Houston over 31.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 35.5,
+    "no_ask_dollars": "0.7900",
+    "no_bid_dollars": "0.7700",
+    "no_sub_title": "Houston over 35.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU36",
+    "title": "Houston over 35.5 points scored",
+    "yes_ask_dollars": "0.2300",
+    "yes_ask_size_fp": "33.00",
+    "yes_bid_dollars": "0.2100",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Houston over 35.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 38.5,
+    "no_ask_dollars": "0.8800",
+    "no_bid_dollars": "0.8600",
+    "no_sub_title": "Houston over 38.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU39",
+    "title": "Houston over 38.5 points scored",
+    "yes_ask_dollars": "0.1400",
+    "yes_ask_size_fp": "2574.00",
+    "yes_bid_dollars": "0.1200",
+    "yes_bid_size_fp": "2033.00",
+    "yes_sub_title": "Houston over 38.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 42.5,
+    "no_ask_dollars": "0.9400",
+    "no_bid_dollars": "0.9100",
+    "no_sub_title": "Houston over 42.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-HOU43",
+    "title": "Houston over 42.5 points scored",
+    "yes_ask_dollars": "0.0900",
+    "yes_ask_size_fp": "1438.00",
+    "yes_bid_dollars": "0.0600",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Houston over 42.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 3.5,
+    "no_ask_dollars": "0.0900",
+    "no_bid_dollars": "0.0700",
+    "no_sub_title": "Indianapolis over 3.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND4",
+    "title": "Indianapolis over 3.5 points scored",
+    "yes_ask_dollars": "0.9300",
+    "yes_ask_size_fp": "296.00",
+    "yes_bid_dollars": "0.9100",
+    "yes_bid_size_fp": "139.00",
+    "yes_sub_title": "Indianapolis over 3.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 7.5,
+    "no_ask_dollars": "0.1900",
+    "no_bid_dollars": "0.1600",
+    "no_sub_title": "Indianapolis over 7.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND8",
+    "title": "Indianapolis over 7.5 points scored",
+    "yes_ask_dollars": "0.8400",
+    "yes_ask_size_fp": "33.00",
+    "yes_bid_dollars": "0.8100",
+    "yes_bid_size_fp": "2626.00",
+    "yes_sub_title": "Indianapolis over 7.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 10.5,
+    "no_ask_dollars": "0.3000",
+    "no_bid_dollars": "0.2900",
+    "no_sub_title": "Indianapolis over 10.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND11",
+    "title": "Indianapolis over 10.5 points scored",
+    "yes_ask_dollars": "0.7100",
+    "yes_ask_size_fp": "6832.66",
+    "yes_bid_dollars": "0.7000",
+    "yes_bid_size_fp": "4.00",
+    "yes_sub_title": "Indianapolis over 10.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 14.5,
+    "no_ask_dollars": "0.4700",
+    "no_bid_dollars": "0.4600",
+    "no_sub_title": "Indianapolis over 14.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND15",
+    "title": "Indianapolis over 14.5 points scored",
+    "yes_ask_dollars": "0.5400",
+    "yes_ask_size_fp": "110.00",
+    "yes_bid_dollars": "0.5300",
+    "yes_bid_size_fp": "0.04",
+    "yes_sub_title": "Indianapolis over 14.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 16.5,
+    "no_ask_dollars": "0.5500",
+    "no_bid_dollars": "0.5400",
+    "no_sub_title": "Indianapolis over 16.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND17",
+    "title": "Indianapolis over 16.5 points scored",
+    "yes_ask_dollars": "0.4600",
+    "yes_ask_size_fp": "57.35",
+    "yes_bid_dollars": "0.4500",
+    "yes_bid_size_fp": "1593.54",
+    "yes_sub_title": "Indianapolis over 16.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 17.5,
+    "no_ask_dollars": "0.6100",
+    "no_bid_dollars": "0.6000",
+    "no_sub_title": "Indianapolis over 17.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND18",
+    "title": "Indianapolis over 17.5 points scored",
+    "yes_ask_dollars": "0.4000",
+    "yes_ask_size_fp": "138.00",
+    "yes_bid_dollars": "0.3900",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Indianapolis over 17.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 20.5,
+    "no_ask_dollars": "0.7200",
+    "no_bid_dollars": "0.7100",
+    "no_sub_title": "Indianapolis over 20.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND21",
+    "title": "Indianapolis over 20.5 points scored",
+    "yes_ask_dollars": "0.2900",
+    "yes_ask_size_fp": "3623.00",
+    "yes_bid_dollars": "0.2800",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Indianapolis over 20.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 21.5,
+    "no_ask_dollars": "0.7600",
+    "no_bid_dollars": "0.7500",
+    "no_sub_title": "Indianapolis over 21.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND22",
+    "title": "Indianapolis over 21.5 points scored",
+    "yes_ask_dollars": "0.2500",
+    "yes_ask_size_fp": "33.00",
+    "yes_bid_dollars": "0.2400",
+    "yes_bid_size_fp": "78.30",
+    "yes_sub_title": "Indianapolis over 21.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 24.5,
+    "no_ask_dollars": "0.8500",
+    "no_bid_dollars": "0.8300",
+    "no_sub_title": "Indianapolis over 24.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND25",
+    "title": "Indianapolis over 24.5 points scored",
+    "yes_ask_dollars": "0.1700",
+    "yes_ask_size_fp": "3386.29",
+    "yes_bid_dollars": "0.1500",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Indianapolis over 24.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 28.5,
+    "no_ask_dollars": "0.9300",
+    "no_bid_dollars": "0.9000",
+    "no_sub_title": "Indianapolis over 28.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND29",
+    "title": "Indianapolis over 28.5 points scored",
+    "yes_ask_dollars": "0.1000",
+    "yes_ask_size_fp": "3590.00",
+    "yes_bid_dollars": "0.0700",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Indianapolis over 28.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 31.5,
+    "no_ask_dollars": "0.9800",
+    "no_bid_dollars": "0.9300",
+    "no_sub_title": "Indianapolis over 31.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND32",
+    "title": "Indianapolis over 31.5 points scored",
+    "yes_ask_dollars": "0.0700",
+    "yes_ask_size_fp": "6481.00",
+    "yes_bid_dollars": "0.0200",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Indianapolis over 31.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 35.5,
+    "no_ask_dollars": "0.9900",
+    "no_bid_dollars": "0.9500",
+    "no_sub_title": "Indianapolis over 35.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND36",
+    "title": "Indianapolis over 35.5 points scored",
+    "yes_ask_dollars": "0.0500",
+    "yes_ask_size_fp": "6445.00",
+    "yes_bid_dollars": "0.0100",
+    "yes_bid_size_fp": "800.00",
+    "yes_sub_title": "Indianapolis over 35.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 38.5,
+    "no_ask_dollars": "1.0000",
+    "no_bid_dollars": "0.9700",
+    "no_sub_title": "Indianapolis over 38.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND39",
+    "title": "Indianapolis over 38.5 points scored",
+    "yes_ask_dollars": "0.0300",
+    "yes_ask_size_fp": "2000.00",
+    "yes_bid_dollars": "0.0000",
+    "yes_bid_size_fp": "0.00",
+    "yes_sub_title": "Indianapolis over 38.5 points"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU",
+    "floor_strike": 42.5,
+    "no_ask_dollars": "1.0000",
+    "no_bid_dollars": "0.9700",
+    "no_sub_title": "Indianapolis over 42.5 points",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU-IND43",
+    "title": "Indianapolis over 42.5 points scored",
+    "yes_ask_dollars": "0.0300",
+    "yes_ask_size_fp": "41.23",
+    "yes_bid_dollars": "0.0000",
+    "yes_bid_size_fp": "0.00",
+    "yes_sub_title": "Indianapolis over 42.5 points"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+   "series_ticker": "KXNFLWINMARGIN",
+   "title": "Indianapolis vs Houston: Winning Margin"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "Winning Margin": "tie",
+     "football_team": "111193d4-9b1f-4bd8-ab8b-9de252737f05"
+    },
+    "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+    "no_ask_dollars": "1.0000",
+    "no_bid_dollars": "0.9900",
+    "no_sub_title": "Tie",
+    "status": "active",
+    "strike_type": "custom",
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU-TIE",
+    "title": "Will Indianapolis vs Houston end in a tie?",
+    "yes_ask_dollars": "0.0100",
+    "yes_ask_size_fp": "75931.00",
+    "yes_bid_dollars": "0.0000",
+    "yes_bid_size_fp": "0.00",
+    "yes_sub_title": "Tie"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "Winning Margin": "1 to 6",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+    "no_ask_dollars": "0.8400",
+    "no_bid_dollars": "0.8300",
+    "no_sub_title": "Houston by 1 to 6",
+    "status": "active",
+    "strike_type": "custom",
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU-HOU1TO6",
+    "title": "Will Houston win by 1 to 6 points?",
+    "yes_ask_dollars": "0.1700",
+    "yes_ask_size_fp": "1013.00",
+    "yes_bid_dollars": "0.1600",
+    "yes_bid_size_fp": "6.00",
+    "yes_sub_title": "Houston by 1 to 6"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "Winning Margin": "7 to 14",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+    "no_ask_dollars": "0.7500",
+    "no_bid_dollars": "0.7400",
+    "no_sub_title": "Houston by 7 to 14",
+    "status": "active",
+    "strike_type": "custom",
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU-HOU7TO14",
+    "title": "Will Houston win by 7 to 14 points?",
+    "yes_ask_dollars": "0.2600",
+    "yes_ask_size_fp": "118.87",
+    "yes_bid_dollars": "0.2500",
+    "yes_bid_size_fp": "161.00",
+    "yes_sub_title": "Houston by 7 to 14"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "Winning Margin": "15 or more",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+    "no_ask_dollars": "0.6200",
+    "no_bid_dollars": "0.6100",
+    "no_sub_title": "Houston by 15 or more",
+    "status": "active",
+    "strike_type": "custom",
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU-HOU15PLUS",
+    "title": "Will Houston win by at least 15 points?",
+    "yes_ask_dollars": "0.3900",
+    "yes_ask_size_fp": "896.23",
+    "yes_bid_dollars": "0.3800",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Houston by 15 or more"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "Winning Margin": "1 to 6",
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+    "no_ask_dollars": "0.9200",
+    "no_bid_dollars": "0.9100",
+    "no_sub_title": "Indianapolis by 1 to 6",
+    "status": "active",
+    "strike_type": "custom",
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU-IND1TO6",
+    "title": "Will Indianapolis win by 1 to 6 points?",
+    "yes_ask_dollars": "0.0900",
+    "yes_ask_size_fp": "20747.00",
+    "yes_bid_dollars": "0.0800",
+    "yes_bid_size_fp": "1.00",
+    "yes_sub_title": "Indianapolis by 1 to 6"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "Winning Margin": "7 to 14",
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+    "no_ask_dollars": "0.9700",
+    "no_bid_dollars": "0.9600",
+    "no_sub_title": "Indianapolis by 7 to 14",
+    "status": "active",
+    "strike_type": "custom",
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU-IND7TO14",
+    "title": "Will Indianapolis win by 7 to 14 points?",
+    "yes_ask_dollars": "0.0400",
+    "yes_ask_size_fp": "125.00",
+    "yes_bid_dollars": "0.0300",
+    "yes_bid_size_fp": "26.00",
+    "yes_sub_title": "Indianapolis by 7 to 14"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "Winning Margin": "15 or more",
+     "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+    },
+    "event_ticker": "KXNFLWINMARGIN-26NOV19INDHOU",
+    "no_ask_dollars": "1.0000",
+    "no_bid_dollars": "0.9800",
+    "no_sub_title": "Indianapolis by 15 or more",
+    "status": "active",
+    "strike_type": "custom",
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU-IND15PLUS",
+    "title": "Will Indianapolis win by at least 15 points?",
+    "yes_ask_dollars": "0.0200",
+    "yes_ask_size_fp": "11862.00",
+    "yes_bid_dollars": "0.0000",
+    "yes_bid_size_fp": "0.00",
+    "yes_sub_title": "Indianapolis by 15 or more"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+   "series_ticker": "KXNFLRECYDS",
+   "title": "Indianapolis vs Houston: Receiving Yards"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 29.5,
+    "no_ask_dollars": "0.1600",
+    "no_bid_dollars": "0.1400",
+    "no_sub_title": "Nico Collins: 30+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-30",
+    "title": "Nico Collins: 30+ receiving yards",
+    "yes_ask_dollars": "0.8600",
+    "yes_ask_size_fp": "128.22",
+    "yes_bid_dollars": "0.8400",
+    "yes_bid_size_fp": "43.00",
+    "yes_sub_title": "Nico Collins: 30+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 39.5,
+    "no_ask_dollars": "0.2200",
+    "no_bid_dollars": "0.2000",
+    "no_sub_title": "Nico Collins: 40+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-40",
+    "title": "Nico Collins: 40+ receiving yards",
+    "yes_ask_dollars": "0.8000",
+    "yes_ask_size_fp": "509.00",
+    "yes_bid_dollars": "0.7800",
+    "yes_bid_size_fp": "90.00",
+    "yes_sub_title": "Nico Collins: 40+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 49.5,
+    "no_ask_dollars": "0.3000",
+    "no_bid_dollars": "0.2900",
+    "no_sub_title": "Nico Collins: 50+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-50",
+    "title": "Nico Collins: 50+ receiving yards",
+    "yes_ask_dollars": "0.7100",
+    "yes_ask_size_fp": "158.10",
+    "yes_bid_dollars": "0.7000",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Nico Collins: 50+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 59.5,
+    "no_ask_dollars": "0.4100",
+    "no_bid_dollars": "0.3900",
+    "no_sub_title": "Nico Collins: 60+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-60",
+    "title": "Nico Collins: 60+ receiving yards",
+    "yes_ask_dollars": "0.6100",
+    "yes_ask_size_fp": "125.10",
+    "yes_bid_dollars": "0.5900",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Nico Collins: 60+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 69.5,
+    "no_ask_dollars": "0.5000",
+    "no_bid_dollars": "0.4900",
+    "no_sub_title": "Nico Collins: 70+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-70",
+    "title": "Nico Collins: 70+ receiving yards",
+    "yes_ask_dollars": "0.5100",
+    "yes_ask_size_fp": "978.42",
+    "yes_bid_dollars": "0.5000",
+    "yes_bid_size_fp": "200.00",
+    "yes_sub_title": "Nico Collins: 70+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 79.5,
+    "no_ask_dollars": "0.5800",
+    "no_bid_dollars": "0.5700",
+    "no_sub_title": "Nico Collins: 80+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-80",
+    "title": "Nico Collins: 80+ receiving yards",
+    "yes_ask_dollars": "0.4300",
+    "yes_ask_size_fp": "837.64",
+    "yes_bid_dollars": "0.4200",
+    "yes_bid_size_fp": "314.00",
+    "yes_sub_title": "Nico Collins: 80+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 89.5,
+    "no_ask_dollars": "0.6700",
+    "no_bid_dollars": "0.6600",
+    "no_sub_title": "Nico Collins: 90+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-90",
+    "title": "Nico Collins: 90+ receiving yards",
+    "yes_ask_dollars": "0.3400",
+    "yes_ask_size_fp": "280.00",
+    "yes_bid_dollars": "0.3300",
+    "yes_bid_size_fp": "281.00",
+    "yes_sub_title": "Nico Collins: 90+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 99.5,
+    "no_ask_dollars": "0.7500",
+    "no_bid_dollars": "0.7400",
+    "no_sub_title": "Nico Collins: 100+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-100",
+    "title": "Nico Collins: 100+ receiving yards",
+    "yes_ask_dollars": "0.2600",
+    "yes_ask_size_fp": "174.00",
+    "yes_bid_dollars": "0.2500",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Nico Collins: 100+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 109.5,
+    "no_ask_dollars": "0.8100",
+    "no_bid_dollars": "0.8000",
+    "no_sub_title": "Nico Collins: 110+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-110",
+    "title": "Nico Collins: 110+ receiving yards",
+    "yes_ask_dollars": "0.2000",
+    "yes_ask_size_fp": "145.00",
+    "yes_bid_dollars": "0.1900",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Nico Collins: 110+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 119.5,
+    "no_ask_dollars": "0.8600",
+    "no_bid_dollars": "0.8300",
+    "no_sub_title": "Nico Collins: 120+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-120",
+    "title": "Nico Collins: 120+ receiving yards",
+    "yes_ask_dollars": "0.1700",
+    "yes_ask_size_fp": "22.00",
+    "yes_bid_dollars": "0.1400",
+    "yes_bid_size_fp": "17.00",
+    "yes_sub_title": "Nico Collins: 120+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 129.5,
+    "no_ask_dollars": "0.8900",
+    "no_bid_dollars": "0.8700",
+    "no_sub_title": "Nico Collins: 130+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-130",
+    "title": "Nico Collins: 130+ receiving yards",
+    "yes_ask_dollars": "0.1300",
+    "yes_ask_size_fp": "24.00",
+    "yes_bid_dollars": "0.1100",
+    "yes_bid_size_fp": "15.00",
+    "yes_sub_title": "Nico Collins: 130+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 139.5,
+    "no_ask_dollars": "0.9400",
+    "no_bid_dollars": "0.9000",
+    "no_sub_title": "Nico Collins: 140+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-140",
+    "title": "Nico Collins: 140+ receiving yards",
+    "yes_ask_dollars": "0.1000",
+    "yes_ask_size_fp": "362.00",
+    "yes_bid_dollars": "0.0600",
+    "yes_bid_size_fp": "132.00",
+    "yes_sub_title": "Nico Collins: 140+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDS-26NOV19INDHOU",
+    "floor_strike": 149.5,
+    "no_ask_dollars": "0.9600",
+    "no_bid_dollars": "0.9300",
+    "no_sub_title": "Nico Collins: 150+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU-HOUNCOLLINS12-150",
+    "title": "Nico Collins: 150+ receiving yards",
+    "yes_ask_dollars": "0.0700",
+    "yes_ask_size_fp": "371.00",
+    "yes_bid_dollars": "0.0400",
+    "yes_bid_size_fp": "33.00",
+    "yes_sub_title": "Nico Collins: 150+"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+   "series_ticker": "KXNFLRECYDSPROT",
+   "title": "Indianapolis vs Houston: Receiving Yards"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 29.5,
+    "no_ask_dollars": "0.8300",
+    "no_bid_dollars": "0.0800",
+    "no_sub_title": "Nico Collins: 30+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-30",
+    "title": "Nico Collins: 30+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.9200",
+    "yes_ask_size_fp": "481.00",
+    "yes_bid_dollars": "0.1700",
+    "yes_bid_size_fp": "43.00",
+    "yes_sub_title": "Nico Collins: 30+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 39.5,
+    "no_ask_dollars": "0.2400",
+    "no_bid_dollars": "0.1700",
+    "no_sub_title": "Nico Collins: 40+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-40",
+    "title": "Nico Collins: 40+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.8300",
+    "yes_ask_size_fp": "619.00",
+    "yes_bid_dollars": "0.7600",
+    "yes_bid_size_fp": "480.00",
+    "yes_sub_title": "Nico Collins: 40+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 49.5,
+    "no_ask_dollars": "0.3200",
+    "no_bid_dollars": "0.2800",
+    "no_sub_title": "Nico Collins: 50+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-50",
+    "title": "Nico Collins: 50+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.7200",
+    "yes_ask_size_fp": "134.00",
+    "yes_bid_dollars": "0.6800",
+    "yes_bid_size_fp": "16.00",
+    "yes_sub_title": "Nico Collins: 50+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 59.5,
+    "no_ask_dollars": "0.4200",
+    "no_bid_dollars": "0.3500",
+    "no_sub_title": "Nico Collins: 60+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-60",
+    "title": "Nico Collins: 60+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.6500",
+    "yes_ask_size_fp": "662.00",
+    "yes_bid_dollars": "0.5800",
+    "yes_bid_size_fp": "200.00",
+    "yes_sub_title": "Nico Collins: 60+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 69.5,
+    "no_ask_dollars": "0.5000",
+    "no_bid_dollars": "0.4700",
+    "no_sub_title": "Nico Collins: 70+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-70",
+    "title": "Nico Collins: 70+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.5300",
+    "yes_ask_size_fp": "160.00",
+    "yes_bid_dollars": "0.5000",
+    "yes_bid_size_fp": "19.00",
+    "yes_sub_title": "Nico Collins: 70+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 79.5,
+    "no_ask_dollars": "0.5900",
+    "no_bid_dollars": "0.5500",
+    "no_sub_title": "Nico Collins: 80+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-80",
+    "title": "Nico Collins: 80+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.4500",
+    "yes_ask_size_fp": "529.00",
+    "yes_bid_dollars": "0.4100",
+    "yes_bid_size_fp": "320.00",
+    "yes_sub_title": "Nico Collins: 80+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 89.5,
+    "no_ask_dollars": "0.8300",
+    "no_bid_dollars": "0.6400",
+    "no_sub_title": "Nico Collins: 90+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-90",
+    "title": "Nico Collins: 90+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.3600",
+    "yes_ask_size_fp": "376.00",
+    "yes_bid_dollars": "0.1700",
+    "yes_bid_size_fp": "679.64",
+    "yes_sub_title": "Nico Collins: 90+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 99.5,
+    "no_ask_dollars": "0.8100",
+    "no_bid_dollars": "0.7200",
+    "no_sub_title": "Nico Collins: 100+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-100",
+    "title": "Nico Collins: 100+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.2800",
+    "yes_ask_size_fp": "296.00",
+    "yes_bid_dollars": "0.1900",
+    "yes_bid_size_fp": "966.10",
+    "yes_sub_title": "Nico Collins: 100+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 109.5,
+    "no_ask_dollars": "0.9900",
+    "no_bid_dollars": "0.7900",
+    "no_sub_title": "Nico Collins: 110+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-110",
+    "title": "Nico Collins: 110+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.2100",
+    "yes_ask_size_fp": "266.00",
+    "yes_bid_dollars": "0.0100",
+    "yes_bid_size_fp": "37.00",
+    "yes_sub_title": "Nico Collins: 110+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 119.5,
+    "no_ask_dollars": "0.9800",
+    "no_bid_dollars": "0.8400",
+    "no_sub_title": "Nico Collins: 120+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-120",
+    "title": "Nico Collins: 120+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.1600",
+    "yes_ask_size_fp": "103.00",
+    "yes_bid_dollars": "0.0200",
+    "yes_bid_size_fp": "25.00",
+    "yes_sub_title": "Nico Collins: 120+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 129.5,
+    "no_ask_dollars": "0.9900",
+    "no_bid_dollars": "0.8800",
+    "no_sub_title": "Nico Collins: 130+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-130",
+    "title": "Nico Collins: 130+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.1200",
+    "yes_ask_size_fp": "104.00",
+    "yes_bid_dollars": "0.0100",
+    "yes_bid_size_fp": "25.00",
+    "yes_sub_title": "Nico Collins: 130+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 139.5,
+    "no_ask_dollars": "0.9800",
+    "no_bid_dollars": "0.9100",
+    "no_sub_title": "Nico Collins: 140+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-140",
+    "title": "Nico Collins: 140+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.0900",
+    "yes_ask_size_fp": "103.00",
+    "yes_bid_dollars": "0.0200",
+    "yes_bid_size_fp": "21.00",
+    "yes_sub_title": "Nico Collins: 140+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLRECYDSPROT-26NOV19INDHOU",
+    "floor_strike": 149.5,
+    "no_ask_dollars": "0.9700",
+    "no_bid_dollars": "0.9200",
+    "no_sub_title": "Nico Collins: 150+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLRECYDSPROT-26NOV19INDHOU-HOUNCOLLINS12-150",
+    "title": "Nico Collins: 150+ receiving yards (Protected)",
+    "yes_ask_dollars": "0.0800",
+    "yes_ask_size_fp": "519.00",
+    "yes_bid_dollars": "0.0300",
+    "yes_bid_size_fp": "66.67",
+    "yes_sub_title": "Nico Collins: 150+"
+   }
+  ]
+ },
+ {
+  "event": {
+   "event_ticker": "KXNFLTD-26NOV19INDHOU",
+   "series_ticker": "KXNFLTD",
+   "title": "Indianapolis vs Houston: Touchdowns"
+  },
+  "markets": [
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTD-26NOV19INDHOU",
+    "floor_strike": 0.5,
+    "no_ask_dollars": "0.5300",
+    "no_bid_dollars": "0.5200",
+    "no_sub_title": "Nico Collins: 1+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTD-26NOV19INDHOU-HOUNCOLLINS12-1",
+    "title": "Nico Collins: 1+ touchdowns",
+    "yes_ask_dollars": "0.4800",
+    "yes_ask_size_fp": "62563.98",
+    "yes_bid_dollars": "0.4700",
+    "yes_bid_size_fp": "2254.61",
+    "yes_sub_title": "Nico Collins: 1+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTD-26NOV19INDHOU",
+    "floor_strike": 1.5,
+    "no_ask_dollars": "0.8900",
+    "no_bid_dollars": "0.8800",
+    "no_sub_title": "Nico Collins: 2+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTD-26NOV19INDHOU-HOUNCOLLINS12-2",
+    "title": "Nico Collins: 2+ touchdowns",
+    "yes_ask_dollars": "0.1200",
+    "yes_ask_size_fp": "70735.91",
+    "yes_bid_dollars": "0.1100",
+    "yes_bid_size_fp": "325.00",
+    "yes_sub_title": "Nico Collins: 2+"
+   },
+   {
+    "close_time": "2026-11-22T01:15:00Z",
+    "custom_strike": {
+     "football_player": "32d2bbf9-ecb2-44b0-a8ef-f39f6310d36c",
+     "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+    },
+    "event_ticker": "KXNFLTD-26NOV19INDHOU",
+    "floor_strike": 2.5,
+    "no_ask_dollars": "0.9800",
+    "no_bid_dollars": "0.9700",
+    "no_sub_title": "Nico Collins: 3+",
+    "status": "active",
+    "strike_type": "greater",
+    "ticker": "KXNFLTD-26NOV19INDHOU-HOUNCOLLINS12-3",
+    "title": "Nico Collins: 3+ touchdowns",
+    "yes_ask_dollars": "0.0300",
+    "yes_ask_size_fp": "116755.65",
+    "yes_bid_dollars": "0.0200",
+    "yes_bid_size_fp": "11148.00",
+    "yes_sub_title": "Nico Collins: 3+"
+   }
+  ]
+ }
+]

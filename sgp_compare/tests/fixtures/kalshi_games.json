@@ -1,0 +1,128 @@
+{
+ "events": [
+  {
+   "category": "Sports",
+   "collateral_return_type": "MECNET",
+   "event_ticker": "KXNFLGAME-26NOV19INDHOU",
+   "exchange_index": 0,
+   "last_updated_ts": "2026-11-10T05:03:26.756094Z",
+   "markets": [
+    {
+     "close_time": "2026-11-22T01:15:00Z",
+     "custom_strike": {
+      "football_team": "96edbad3-1be5-4528-a3ed-c6e0c28c5fa0"
+     },
+     "event_ticker": "KXNFLGAME-26NOV19INDHOU",
+     "no_ask_dollars": "0.1600",
+     "no_bid_dollars": "0.1500",
+     "no_sub_title": "Houston",
+     "status": "active",
+     "strike_type": "structured",
+     "ticker": "KXNFLGAME-26NOV19INDHOU-HOU",
+     "title": "Houston wins",
+     "yes_ask_dollars": "0.8500",
+     "yes_ask_size_fp": "3064272.67",
+     "yes_bid_dollars": "0.8400",
+     "yes_bid_size_fp": "114051.53",
+     "yes_sub_title": "Houston"
+    },
+    {
+     "close_time": "2026-11-22T01:15:00Z",
+     "custom_strike": {
+      "football_team": "fe5f8219-fef4-4498-83d5-f6cc6f2cb7bf"
+     },
+     "event_ticker": "KXNFLGAME-26NOV19INDHOU",
+     "no_ask_dollars": "0.8500",
+     "no_bid_dollars": "0.8400",
+     "no_sub_title": "Indianapolis",
+     "status": "active",
+     "strike_type": "structured",
+     "ticker": "KXNFLGAME-26NOV19INDHOU-IND",
+     "title": "Indianapolis wins",
+     "yes_ask_dollars": "0.1600",
+     "yes_ask_size_fp": "1053042.45",
+     "yes_bid_dollars": "0.1500",
+     "yes_bid_size_fp": "62509.44",
+     "yes_sub_title": "Indianapolis"
+    }
+   ],
+   "mutually_exclusive": true,
+   "product_metadata": {
+    "competition": "Pro Football",
+    "competition_scope": "Game"
+   },
+   "series_ticker": "KXNFLGAME",
+   "settlement_sources": [
+    {
+     "name": "the Governing League",
+     "url": "https://www.nfl.com/"
+    }
+   ],
+   "strike_period": "",
+   "sub_title": "IND vs HOU (Nov 19)",
+   "title": "Indianapolis vs Houston"
+  },
+  {
+   "category": "Sports",
+   "collateral_return_type": "MECNET",
+   "event_ticker": "KXNFLGAME-26NOV22ARIKC",
+   "exchange_index": 0,
+   "last_updated_ts": "2026-11-10T05:05:15.101586Z",
+   "markets": [
+    {
+     "close_time": "2026-11-24T18:00:00Z",
+     "custom_strike": {
+      "football_team": "64f72720-2e4a-4cc8-a39b-ca148aecb389"
+     },
+     "event_ticker": "KXNFLGAME-26NOV22ARIKC",
+     "no_ask_dollars": "0.0900",
+     "no_bid_dollars": "0.0800",
+     "no_sub_title": "Kansas City",
+     "status": "active",
+     "strike_type": "structured",
+     "ticker": "KXNFLGAME-26NOV22ARIKC-KC",
+     "title": "Kansas City wins",
+     "yes_ask_dollars": "0.9200",
+     "yes_ask_size_fp": "177634.30",
+     "yes_bid_dollars": "0.9100",
+     "yes_bid_size_fp": "323713.98",
+     "yes_sub_title": "Kansas City"
+    },
+    {
+     "close_time": "2026-11-24T18:00:00Z",
+     "custom_strike": {
+      "football_team": "d73dae4f-1f08-4b5e-bf23-4e25e9b6a69c"
+     },
+     "event_ticker": "KXNFLGAME-26NOV22ARIKC",
+     "no_ask_dollars": "0.9200",
+     "no_bid_dollars": "0.9100",
+     "no_sub_title": "Arizona",
+     "status": "active",
+     "strike_type": "structured",
+     "ticker": "KXNFLGAME-26NOV22ARIKC-ARI",
+     "title": "Arizona wins",
+     "yes_ask_dollars": "0.0900",
+     "yes_ask_size_fp": "392029.64",
+     "yes_bid_dollars": "0.0800",
+     "yes_bid_size_fp": "52118.69",
+     "yes_sub_title": "Arizona"
+    }
+   ],
+   "mutually_exclusive": true,
+   "product_metadata": {
+    "competition": "Pro Football",
+    "competition_scope": "Game"
+   },
+   "series_ticker": "KXNFLGAME",
+   "settlement_sources": [
+    {
+     "name": "the Governing League",
+     "url": "https://www.nfl.com/"
+    }
+   ],
+   "strike_period": "",
+   "sub_title": "ARI vs KC (Nov 22)",
+   "title": "Arizona vs Kansas City"
+  }
+ ]
+}

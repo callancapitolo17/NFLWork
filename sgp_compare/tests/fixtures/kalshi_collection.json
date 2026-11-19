@@ -1,0 +1,231 @@
+{
+ "multivariate_contract": {
+  "associated_events": [
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLGAME-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLSPREAD-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLTOTAL-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLTEAMTOTAL-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFL1HTEAMTOTAL-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLTD-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLFIRSTTD-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLRECYDS-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLRSHYDS-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLPASSYDS-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLPASSTDS-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLTEAMFIRSTTD-26NOV19INDHOU-HOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLTEAMFIRSTTD-26NOV19INDHOU-IND"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLFIRSTTDTEAM-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLWINMARGIN-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLREC-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLPASSATT-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLPASSCOMP-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLRSHATT-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLPASSINT-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLRRYDS-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1H-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1HSPREAD-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1HTOTAL-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1Q-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1QSPREAD-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1QTOTAL-26NOV19INDHOU"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLGAME-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLSPREAD-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLTOTAL-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLTEAMTOTAL-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFL1HTEAMTOTAL-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "ticker": "KXNFLTD-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFLFIRSTTD-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1H-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1HSPREAD-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1HTOTAL-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1Q-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1QSPREAD-26NOV22ARIKC"
+   },
+   {
+    "active_quoters": [],
+    "is_yes_only": false,
+    "size_max": 1,
+    "ticker": "KXNFL1QTOTAL-26NOV22ARIKC"
+   }
+  ],
+  "collection_ticker": "KXMVECROSSCATEGORY-R"
+ }
+}

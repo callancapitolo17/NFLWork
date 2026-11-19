@@ -9,7 +9,7 @@ Run on the Mac from the repo root:
 Credentials: kalshi_mlb_rfq/.env (KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_PATH,
 KALSHI_USER_ID), the same as the MLB taker.
 
-Writes trimmed JSON to sgp_compare/tests/fixtures/kalshi_recon/ with every
+Writes raw JSON to /tmp/kalshi_sgp_recon/ with every
 user / creator id replaced by "REDACTED".
 """
 from __future__ import annotations
@@ -22,11 +22,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-from kalshi_mlb_rfq import config  # noqa: E402
-from kalshi_mlb_rfq.auth_client import api  # noqa: E402
+from kalshi_mlb_rfq import config
+from kalshi_mlb_rfq.auth_client import api
 
 COLLECTION = "KXMVECROSSCATEGORY-R"
-OUT = REPO / "sgp_compare" / "tests" / "fixtures" / "kalshi_recon"
+OUT = Path("/tmp/kalshi_sgp_recon")   # raw; the tests use trimmed copies (tests/fixtures/kalshi_*.json)
 RFQ_DOLLARS = 100.0
 QUOTE_WINDOW_S = 8.0
 
@@ -171,7 +171,7 @@ def main() -> None:
             save("rfq_get", b)
     finally:
         if rfq_id:
-            status, body, _ = api("DELETE", f"/communications/rfqs/{rfq_id}")
+            status, _body, _ = api("DELETE", f"/communications/rfqs/{rfq_id}")
             print(f"  DELETE rfq {rfq_id} -> {status}")
 
 

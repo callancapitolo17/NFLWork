@@ -35,6 +35,8 @@ number), tap one side per market, press **Price**.
 | `legs.py` | `Game`, `CanonicalLeg` (venue-neutral: period, stat, subject, side, line), `OfferedLeg`, `ParlayQuote`. |
 | `venues/base.py` | The `Venue` interface: `list_games`, `list_legs`, `price_parlay`. |
 | `venues/prophetx.py` | ProphetX: anonymous public endpoints over a curl_cffi Chrome session; game lines, halves, quarters, team totals, ~290 player props per game. |
+| `venues/kalshi.py` | Kalshi: signed REST on the key in the environment or `kalshi_mlb_rfq/.env`; every NFL leg the KXMVECROSSCATEGORY combo collection takes (~1,700 legs per game: game lines, 1H/1Q, team totals, TD scorers, passing/rushing/receiving props incl. "Protected"); parlay = an RFQ, never accepted. Every Kalshi price includes the 0.07 x p x (1-p) taker fee. |
+| `tools/recon_kalshi.py` | One-off Kalshi recon (reads + one RFQ, deleted); run on the Mac, writes raw JSON to /tmp. |
 | `venues/__init__.py` | `build_venues()`: the venues the page uses. Adding a venue = a module + one line here. |
 | `correlation.py` | Pure math: the Correlation factor with and without vig (singles devig from `kalshi_common.fair_value.two_way_fair`). |
 | `pricing.py` | `price_at_venue`: fresh legs, the parlay price, the 2^N partition. |
@@ -46,7 +48,8 @@ number), tap one side per market, press **Price**.
 | Venue | Status |
 |---|---|
 | ProphetX | Live (PR 1). Parlay = `POST /parlay/public/api/v1/user/request` with stake 1, a price request only. |
-| Novig, Kalshi, Polymarket US | Next, one thread each (Novig relays DK/FD/MGM/CZR prices; Kalshi needs an RFQ). |
+| Kalshi | Live (PR 3). Parlay = mint the combo, `POST /communications/rfqs` for $100, read the makers' quotes for 1.5-4 s, `DELETE` the RFQ. Never accepted; makers see each RFQ, so a 3-leg vig-removed factor sends 8. Each quote is a tier (YES cost = 1 - the maker's no_bid, plus fee), each good up to the $100 asked. |
+| Novig, Polymarket US | Next, one thread each (Novig relays DK/FD/MGM/CZR prices). |
 | DraftKings, FanDuel, BetMGM, Caesars | After the prediction markets. |
 
 Cross-venue pricing (one parlay priced at every venue) matches legs by
@@ -58,7 +61,7 @@ Cross-venue pricing (one parlay priced at every venue) matches legs by
 python3 -m pytest -q sgp_compare/tests
 ```
 
-Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
+Fixtures are trimmed copies of the 2026-11-18 ProphetX and 2026-11-19 Kalshi recons (IND at HOU).
 
 ## Troubleshooting
 
@@ -68,3 +71,9 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
 - **"no longer offered"**: the line moved between picking and pricing; reload the game.
 - **"would not price this combination"**: ProphetX returned no offers (it refuses some combinations).
 - **Vig-removed factor blank**: the reason is shown under it.
+- **Kalshi "credentials missing"**: set `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`
+  and `KALSHI_USER_ID` in the environment or `kalshi_mlb_rfq/.env`.
+- **Kalshi "would not price this combination"**: Kalshi refused the combo (some legs
+  can't go together) or no maker quoted within 4 s.
+- **"Kalshi: could not cancel RFQ" in the log**: the RFQ stays open until Kalshi expires
+  it; nothing can fill without an accept, which this tool never sends.
