@@ -1,6 +1,6 @@
 """The interface every venue adapter (ProphetX now; Novig, Kalshi, Polymarket,
 sportsbooks next) fills in. Adding a venue = one module implementing `Venue`
-plus one line in `sgp_compare.venues.VENUES`."""
+plus one line in `sgp_compare.venues.build_venues()`."""
 from __future__ import annotations
 
 from typing import Protocol
