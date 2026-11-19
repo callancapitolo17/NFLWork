@@ -11,7 +11,6 @@ must be application/json):
     GET  /api/legs?venue=V&game_id=G         the game's legs at venue V
     POST /api/price {venue, game_id, leg_ids}  price the parlay; APPENDS one row
                                              to parlay_quotes (store.py)
-    GET  /api/history                        the 50 newest stored quotes
 Nothing here places a bet: every venue call is a read or a price request.
 """
 from __future__ import annotations
@@ -111,8 +110,6 @@ def make_handler(app: CompareApp, port: int):
                 elif url.path == "/api/legs":
                     self._send_json(200, app.legs_payload((query.get("venue") or [""])[0],
                                                           (query.get("game_id") or [""])[0]))
-                elif url.path == "/api/history":
-                    self._send_json(200, {"quotes": app.store.recent_quotes()})
                 else:
                     self._send_json(404, {"error": "not found"})
             except ValueError as exc:

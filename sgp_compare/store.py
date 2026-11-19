@@ -85,14 +85,3 @@ class Store:
         ]
         with self._lock, self._connect() as con:
             con.execute(INSERT_PARLAY_QUOTE, row)
-
-    def recent_quotes(self, limit: int = 50) -> list[dict]:
-        query = """
-            SELECT quoted_at, venue, status, home_team, away_team, n_legs, legs_json,
-                   best_decimal_odds, correlation_raw, correlation_fair
-            FROM parlay_quotes ORDER BY quoted_at DESC LIMIT ?
-        """
-        with self._lock, self._connect() as con:
-            rows = con.execute(query, [limit]).fetchall()
-            columns = [d[0] for d in con.description]
-        return [dict(zip(columns, row)) for row in rows]
