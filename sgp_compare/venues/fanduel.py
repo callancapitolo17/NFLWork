@@ -29,8 +29,9 @@ FanDuel shapes (recon 2026-11-19 on Cal's Mac, IND @ HOU, fixtures in tests/fixt
     player ladders are "Name 25+ Yards" with no other side.
   * implyBets answer: betCombinations, one SINGLE per leg plus the parlay;
     the parlay entry has isSGM true, winAvgOdds.trueOdds.decimalOdds and
-    betMaxStake. No isSGM entry = FanDuel will not build that SGP (a decline),
-    e.g. a moneyline and spread on the same team.
+    betMaxStake. FanDuel refusing the SGP (e.g. a moneyline and spread on the
+    same team) is betFailures INVALID_SGM_COMBINATION; no isSGM entry without
+    that code is an error (an expired PerimeterX token answers that way).
 """
 from __future__ import annotations
 
@@ -386,9 +387,13 @@ def _check_lines_unmoved(response: dict, legs: list[OfferedLeg]) -> None:
     for entry in response.get("runnerOdds") or []:
         runner = (entry or {}).get("runner") or {}
         leg = sent.get((str(runner.get("marketId")), runner.get("selectionId")))
-        echoed = runner.get("handicap")
-        if leg is None or not isinstance(echoed, (int, float)):
+        if leg is None:
             continue
+        # FanDuel leaves the key out at a handicap of 0 (moneylines, ladders), so
+        # missing reads as 0: a main line that moved to pick'em is still caught.
+        echoed = runner.get("handicap", 0.0)
+        if not isinstance(echoed, (int, float)):
+            raise ValueError(f"expected a numeric handicap in FanDuel's runnerOdds, got {echoed!r}")
         if abs(float(echoed) - leg.venue_ref["handicap"]) > 1e-9:
             raise ValueError(f"FanDuel moved {leg.market_label} {leg.side_label} to {float(echoed):g} "
                              f"while pricing; reload the game")
@@ -435,8 +440,9 @@ class FanDuelVenue:
             payload = self._on_pool(self._request, "POST", self._fd_api()["scan_url"],
                                     data=json.dumps(body), json_body=True)
             cached = (self._clock(), _parsed("scan", parse_nfl_games, payload, now))
-            with self._lock:
-                self._games = cached
+            if cached[1]:               # an empty schedule is re-read next call, never held 5 min
+                with self._lock:
+                    self._games = cached
         # Re-filtered on every call so a game drops out at kickoff, not up to 5 min later.
         return [game for game in cached[1] if game.game_start_time > now]
 
@@ -458,7 +464,14 @@ class FanDuelVenue:
         if cached and not fresh and self._clock() - cached[0] < MARKETS_CACHE_SEC:
             return cached[1]
         futures = [self._pool.submit(self._read_tab, event_id, tab) for tab in (PRIMARY_TAB, *EXTRA_TABS)]
-        pages = [future.result() for future in futures]
+        try:
+            pages = [future.result() for future in futures]
+        except VenueTransportError:
+            for future in futures:      # a blocked FanDuel gets no more of this read's requests
+                future.cancel()
+            raise
+        if not (pages[0].get("attachments") or {}).get("markets"):
+            raise VenueTransportError(f"FanDuel event page {event_id}: the {PRIMARY_TAB} tab listed no markets")
         markets = _parsed("event page", markets_of_pages, pages)
         with self._lock:
             self._markets[event_id] = (self._clock(), markets)

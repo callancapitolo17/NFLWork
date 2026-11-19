@@ -414,3 +414,106 @@ def test_first_td_is_exclusive_either_player_is_not(other_tabs):
 
 def test_non_sgp_market_on_another_tab_is_left_out(other_tabs):
     assert not any(m == "1st Half Total Touchdowns - HOU Texans" for m, _ in other_tabs)
+
+
+# ---------------------------------------------------------------- filters, caches, failures (round 2)
+
+def one_market(name, **changes):
+    page = load("fanduel_event_ind_hou.json")
+    market = json.loads(json.dumps(next(m for m in page["attachments"]["markets"].values() if m["marketName"] == name)))
+    market.update(changes)
+    return {"attachments": {"markets": {market["marketId"]: market}}}
+
+
+@pytest.mark.parametrize("changes", [{"marketStatus": "SUSPENDED"}, {"inPlay": True}, {"sgmMarket": False}])
+def test_closed_in_play_and_non_sgp_markets_are_left_out(changes):
+    assert markets_of_pages([one_market("Moneyline", **changes)]) == []
+    assert len(markets_of_pages([one_market("Moneyline")])) == 1
+
+
+def test_runner_without_a_price_is_left_out(game):
+    page = one_market("Moneyline")
+    market = next(iter(page["attachments"]["markets"].values()))
+    market["runners"][0]["winRunnerOdds"] = {}
+    legs = parse_legs(game, markets_of_pages([page]))
+    assert [leg.side_label for leg in legs] == ["Houston Texans"] and legs[0].opposite_leg_id is None
+
+
+def test_games_are_sorted_by_kickoff():
+    payload = load("fanduel_scan.json")
+    payload["attachments"]["events"] = dict(reversed(list(payload["attachments"]["events"].items())))
+    starts = [g.game_start_time for g in parse_nfl_games(payload, BEFORE_KICKOFF)]
+    assert starts == sorted(starts) and len(starts) == 3
+
+
+def test_caches_expire():
+    clock = [0.0]
+    session = FakeSession()
+    venue = FanDuelVenue(session_factory=lambda: session, api=API, clock=lambda: clock[0],
+                         wall_clock=lambda: BEFORE_KICKOFF)
+    game = venue.list_games()[0]
+    venue.list_legs(game)
+    calls = len(session.calls)
+    clock[0] = 19.0
+    venue.list_legs(game)
+    venue.list_games()
+    assert len(session.calls) == calls                     # both still cached
+    clock[0] = 21.0
+    venue.list_legs(game)
+    assert len(session.calls) == calls + 1 + len(EXTRA_TABS)
+    clock[0] = 301.0
+    venue.list_games()
+    assert session.calls[-1][1] == API["scan_url"]
+
+
+def test_empty_schedule_is_not_cached():
+    scans = []
+    session = FakeSession()
+    session.request = lambda method, url, **kw: scans.append(url) or FakeResponse(200, {"attachments": {"events": {}}})
+    venue = FanDuelVenue(session_factory=lambda: session, api=API, clock=lambda: 0.0, wall_clock=lambda: BEFORE_KICKOFF)
+    assert venue.list_games() == [] and venue.list_games() == []
+    assert scans == [API["scan_url"]] * 2
+
+
+def test_sgp_tab_with_no_markets_is_an_error(game):
+    session = FakeSession()
+    original = session.request
+    session.request = lambda method, url, **kw: (FakeResponse(200, {"attachments": {}})
+                                                 if kw.get("params", {}).get("tab") == PRIMARY_TAB
+                                                 else original(method, url, **kw))
+    with pytest.raises(VenueTransportError, match="listed no markets"):
+        venue_with(session).list_legs(game)
+
+
+def test_a_failed_request_drops_the_session_and_is_a_transport_error(game):
+    made = []
+
+    class Exploding(FakeSession):
+        def request(self, *args, **kwargs):
+            raise ConnectionError("reset by peer")
+
+    venue = FanDuelVenue(session_factory=lambda: made.append(Exploding()) or made[-1], api=API)
+    for _ in range(2):
+        with pytest.raises(VenueTransportError, match="ConnectionError: reset by peer"):
+            venue.price_parlay(game, [])
+    assert len(made) == 2                                   # the broken session is not reused
+
+
+def test_a_json_list_is_a_transport_error():
+    session = FakeSession()
+    session.request = lambda *a, **k: FakeResponse(200, [1, 2])
+    with pytest.raises(VenueTransportError, match="expected a JSON object"):
+        venue_with(session).list_games()
+
+
+def test_sgm_entry_must_cover_every_leg():
+    capture = load("fanduel_imply_ml_total_prop.json")       # 3-leg SGP entry
+    with pytest.raises(ValueError, match="no SGP entry"):
+        parse_parlay_quote(capture["response"], legs_sent_in(capture)[:2])
+
+
+def test_a_main_line_moved_to_pickem_is_caught():
+    """FanDuel omits the handicap key at 0, as on the moneyline here."""
+    capture = load("fanduel_imply_ml_total.json")
+    with pytest.raises(ValueError, match="to 0 while pricing"):
+        parse_parlay_quote(capture["response"], legs_sent_in(capture, moved={50200: -1.5}))

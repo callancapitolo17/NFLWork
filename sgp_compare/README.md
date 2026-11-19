@@ -72,7 +72,7 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX recon and the 2026-11-19 
   FanDuel answered `INVALID_SGM_COMBINATION`, e.g. a moneyline and spread on one team).
 - **"FanDuel moved ... while pricing"**: a main line changed between the leg read and the
   parlay request; reload the game.
-- **FanDuel errors with HTTP 400/403 everywhere**: FanDuel's PerimeterX token (`FD_PX_CONTEXT` in
+- **FanDuel errors with HTTP 400/403 everywhere, or "no SGP entry"**: FanDuel's PerimeterX token (`FD_PX_CONTEXT` in
   `mlb_sgp/scraper_fanduel_sgp.py`) has expired; refresh it there (it is shared with the MLB scrapers).
   FanDuel also needs a US IP.
 - **Vig-removed factor blank**: the reason is shown under it.
