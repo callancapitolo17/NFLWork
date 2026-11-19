@@ -1,0 +1,65 @@
+{
+ "legs": [
+  "Spread | Houston Texans (-12.5) (-110)",
+  "Totals | Over 44 (-105)"
+ ],
+ "http_status": 200,
+ "request": {
+  "tv1Picks": [],
+  "tv2Picks": [
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4585337,
+    "optionId": 7552787,
+    "useLiveFallback": false,
+    "pickGroupId": "efbff65d-4071-4d42-9e55-9a5bac1ceb03"
+   },
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4580209,
+    "optionId": 7537006,
+    "useLiveFallback": false,
+    "pickGroupId": "efbff65d-4071-4d42-9e55-9a5bac1ceb03"
+   }
+  ]
+ },
+ "response": {
+  "liveFallbacks": {},
+  "betBuilderSourceFixtures": {},
+  "contextualInfo": {
+   "resultsContextualInfo": {},
+   "optionsContextualInfo": {}
+  },
+  "betBuilderPricingGroups": {
+   "efbff65d-4071-4d42-9e55-9a5bac1ceb03": {
+    "groupId": "efbff65d-4071-4d42-9e55-9a5bac1ceb03",
+    "sgpId": "gTaK5rR+5k+hpBSdilEbBQSp0uV4ijNAOxaDtL7wjjDQHSc",
+    "odds": {
+     "numerator": 5,
+     "denominator": 2,
+     "odds": 3.5,
+     "americanOdds": 250
+    },
+    "suspensionState": "MarketUnsuspended",
+    "legInformation": [
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQa5czWcs1xAus/vb7MrBhHwqRc",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:4585337:7552787",
+      "redundantState": "NotRedundantLeg"
+     },
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQRO+Z90H+Rvhs21c638kwDwdA8",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:4580209:7537006",
+      "redundantState": "NotRedundantLeg"
+     }
+    ],
+    "providerId": "Angstrom"
+   }
+  },
+  "fixturePage": "<trimmed: full fixture tree>"
+ }
+}

@@ -1,0 +1,65 @@
+{
+ "legs": [
+  "Spread | Houston Texans (-12.5) (-110)",
+  "Tank Dell - Reception Yards | Over 35.5 (-115)"
+ ],
+ "http_status": 200,
+ "request": {
+  "tv1Picks": [],
+  "tv2Picks": [
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4585337,
+    "optionId": 7552787,
+    "useLiveFallback": false,
+    "pickGroupId": "701369c2-5a6c-426a-a271-9b66ca63d7c4"
+   },
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4610904,
+    "optionId": 7607200,
+    "useLiveFallback": false,
+    "pickGroupId": "701369c2-5a6c-426a-a271-9b66ca63d7c4"
+   }
+  ]
+ },
+ "response": {
+  "liveFallbacks": {},
+  "betBuilderSourceFixtures": {},
+  "contextualInfo": {
+   "resultsContextualInfo": {},
+   "optionsContextualInfo": {}
+  },
+  "betBuilderPricingGroups": {
+   "701369c2-5a6c-426a-a271-9b66ca63d7c4": {
+    "groupId": "701369c2-5a6c-426a-a271-9b66ca63d7c4",
+    "sgpId": "gTaK5rR+5k+hpBSdilEbBQzku6b69WsLMFbDZKu5voMgYyc",
+    "odds": {
+     "numerator": 11,
+     "denominator": 5,
+     "odds": 3.2,
+     "americanOdds": 220
+    },
+    "suspensionState": "MarketUnsuspended",
+    "legInformation": [
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQa5czWcs1xAus/vb7MrBhHwqRc",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:4585337:7552787",
+      "redundantState": "NotRedundantLeg"
+     },
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQNRWMTu67z1R3gTzC6ziriwug8",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:4610904:7607200",
+      "redundantState": "NotRedundantLeg"
+     }
+    ],
+    "providerId": "Angstrom"
+   }
+  },
+  "fixturePage": "<trimmed: full fixture tree>"
+ }
+}

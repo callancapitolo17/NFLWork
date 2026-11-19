@@ -1,0 +1,60 @@
+{
+ "legs": [
+  "Totals | Over 44 (-105)",
+  "Totals | Under 44 (-112)"
+ ],
+ "http_status": 200,
+ "request": {
+  "tv1Picks": [],
+  "tv2Picks": [
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4580209,
+    "optionId": 7537006,
+    "useLiveFallback": false,
+    "pickGroupId": "9d12c2d6-360e-4b45-9e51-00f40ca15398"
+   },
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4580209,
+    "optionId": 7537007,
+    "useLiveFallback": false,
+    "pickGroupId": "9d12c2d6-360e-4b45-9e51-00f40ca15398"
+   }
+  ]
+ },
+ "response": {
+  "liveFallbacks": {},
+  "betBuilderSourceFixtures": {},
+  "contextualInfo": {
+   "resultsContextualInfo": {},
+   "optionsContextualInfo": {}
+  },
+  "betBuilderPricingGroups": {
+   "9d12c2d6-360e-4b45-9e51-00f40ca15398": {
+    "groupId": "9d12c2d6-360e-4b45-9e51-00f40ca15398",
+    "sgpId": "gTaK5rR+5k+hpBSdilEbBQLF73NSWfyyWLsFnoTZJE0g6R4",
+    "suspensionState": "MarketUnsuspended",
+    "legInformation": [
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQRO+Z90H+Rvhs21c638kwDwdA8",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:4580209:7537006",
+      "redundantState": "NotRedundantLeg"
+     },
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQt7kEZ/JXZ7MNRjN491g6zQdQ8",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:4580209:7537007",
+      "redundantState": "NotRedundantLeg"
+     }
+    ],
+    "error": "Status: ZeroPriceError. ErrorCode: ZeroProbabilityError. ErrorMessage: Impossible Outcome / Zero Probability",
+    "providerId": "Angstrom"
+   }
+  },
+  "fixturePage": "<trimmed: full fixture tree>"
+ }
+}

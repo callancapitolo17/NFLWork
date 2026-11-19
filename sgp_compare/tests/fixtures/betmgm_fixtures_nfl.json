@@ -1,0 +1,5179 @@
+{
+ "fixtures": [
+  {
+   "id": "6:44039",
+   "name": {
+    "value": "Indianapolis Colts @ Houston Texans",
+    "sign": "3G51ug=="
+   },
+   "startDate": "2026-11-20T01:15:00.000Z",
+   "cutOffDate": "2026-11-20T06:15:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 802442,
+     "participantId": 609056,
+     "name": {
+      "value": "Marlin Klein"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 802443,
+     "participantId": 573239,
+     "name": {
+      "value": "Marvin Harrison Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 731707,
+     "participantId": 352326,
+     "name": {
+      "value": "Houston Texans",
+      "short": "Texans"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731708,
+     "participantId": 352599,
+     "name": {
+      "value": "Indianapolis Colts",
+      "short": "Colts"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 800150,
+     "participantId": 602222,
+     "name": {
+      "value": "HOU D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800151,
+     "participantId": 602223,
+     "name": {
+      "value": "IND D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800152,
+     "participantId": 353033,
+     "name": {
+      "value": "Foster Moreau"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800153,
+     "participantId": 887234,
+     "name": {
+      "value": "Deion Burks"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800154,
+     "participantId": 576455,
+     "name": {
+      "value": "Cade Stover"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800156,
+     "participantId": 669919,
+     "name": {
+      "value": "D.J. Giddens"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800157,
+     "participantId": 354497,
+     "name": {
+      "value": "Daniel Jones"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800160,
+     "participantId": 352359,
+     "name": {
+      "value": "Dare Ogunbowale"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800161,
+     "participantId": 352402,
+     "name": {
+      "value": "Dalton Schultz"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800162,
+     "participantId": 354183,
+     "name": {
+      "value": "Kayshon Boutte"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800163,
+     "participantId": 353451,
+     "name": {
+      "value": "Emari Demercado"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800165,
+     "participantId": 352649,
+     "name": {
+      "value": "Pharaoh Brown"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800166,
+     "participantId": 351971,
+     "name": {
+      "value": "David Montgomery"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800167,
+     "participantId": 352245,
+     "name": {
+      "value": "Laquon Treadwell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800168,
+     "participantId": 720075,
+     "name": {
+      "value": "Drew Ogletree"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 802393,
+     "participantId": 595788,
+     "name": {
+      "value": "Spencer Shrader"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800169,
+     "participantId": 352339,
+     "name": {
+      "value": "Tank Dell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800171,
+     "participantId": 352345,
+     "name": {
+      "value": "Xavier Hutchinson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800172,
+     "participantId": 352617,
+     "name": {
+      "value": "Ashton Dulin"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800173,
+     "participantId": 352333,
+     "name": {
+      "value": "C.J. Stroud"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800175,
+     "participantId": 352679,
+     "name": {
+      "value": "Will Mallory"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800176,
+     "participantId": 351901,
+     "name": {
+      "value": "Nikko Remigio"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800177,
+     "participantId": 352335,
+     "name": {
+      "value": "Brevin Jordan"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 800178,
+     "participantId": 439111,
+     "name": {
+      "value": "Jonathan Taylor"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800179,
+     "participantId": 881617,
+     "name": {
+      "value": "Seth McGowan"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800180,
+     "participantId": 576691,
+     "name": {
+      "value": "Anthony Gould"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800181,
+     "participantId": 353064,
+     "name": {
+      "value": "Nick Westbrook-Ikhine"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800182,
+     "participantId": 669187,
+     "name": {
+      "value": "Tyler Warren"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 800183,
+     "participantId": 352338,
+     "name": {
+      "value": "Nico Collins"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 804148,
+     "participantId": 916554,
+     "name": {
+      "value": "No HOU TD"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    },
+    {
+     "id": 804149,
+     "participantId": 916553,
+     "name": {
+      "value": "No IND TD"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 804150,
+     "participantId": 354233,
+     "name": {
+      "value": "Quez Watkins"
+     },
+     "properties": {
+      "type": "Player"
+     }
+    },
+    {
+     "id": 804151,
+     "participantId": 352605,
+     "name": {
+      "value": "Anthony Richardson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352599
+     }
+    },
+    {
+     "id": 804444,
+     "participantId": 352341,
+     "name": {
+      "value": "Ka'imi Fairbairn"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352326
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44028",
+   "name": {
+    "value": "Baltimore Ravens @ Carolina Panthers",
+    "sign": "+jTnSQ=="
+   },
+   "startDate": "2026-11-22T18:00:00.000Z",
+   "cutOffDate": "2026-11-22T23:00:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 803136,
+     "participantId": 352225,
+     "name": {
+      "value": "Tommy Tremble"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803138,
+     "participantId": 835043,
+     "name": {
+      "value": "Josh Cuevas"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803139,
+     "participantId": 832886,
+     "name": {
+      "value": "Ja'Kobi Lane"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803140,
+     "participantId": 353336,
+     "name": {
+      "value": "Jacoby Brissett"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803143,
+     "participantId": 353070,
+     "name": {
+      "value": "Derrick Henry"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803144,
+     "participantId": 573232,
+     "name": {
+      "value": "Rasheen Ali"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803146,
+     "participantId": 354500,
+     "name": {
+      "value": "Darren Waller"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803147,
+     "participantId": 352282,
+     "name": {
+      "value": "Justice Hill"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803148,
+     "participantId": 352334,
+     "name": {
+      "value": "John Metchie III"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803149,
+     "participantId": 352244,
+     "name": {
+      "value": "Zay Flowers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 731685,
+     "participantId": 352147,
+     "name": {
+      "value": "Carolina Panthers",
+      "short": "Panthers"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731686,
+     "participantId": 352241,
+     "name": {
+      "value": "Baltimore Ravens",
+      "short": "Ravens"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 803112,
+     "participantId": 604129,
+     "name": {
+      "value": "Feleipe Franks"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803113,
+     "participantId": 602216,
+     "name": {
+      "value": "CAR D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803116,
+     "participantId": 669931,
+     "name": {
+      "value": "Mitchell Evans"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803117,
+     "participantId": 605292,
+     "name": {
+      "value": "Matthew Hibner"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803118,
+     "participantId": 352248,
+     "name": {
+      "value": "Rashod Bateman"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803121,
+     "participantId": 352157,
+     "name": {
+      "value": "Bryce Young"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803123,
+     "participantId": 669990,
+     "name": {
+      "value": "LaJohntay Wester"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803124,
+     "participantId": 352360,
+     "name": {
+      "value": "Nick Vannett"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803125,
+     "participantId": 669885,
+     "name": {
+      "value": "Trevor Etienne"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803126,
+     "participantId": 669183,
+     "name": {
+      "value": "Tetairoa McMillan"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803130,
+     "participantId": 352315,
+     "name": {
+      "value": "Mark Andrews"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803131,
+     "participantId": 602214,
+     "name": {
+      "value": "BAL D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803134,
+     "participantId": 352178,
+     "name": {
+      "value": "Chuba Hubbard"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803135,
+     "participantId": 359050,
+     "name": {
+      "value": "Jalen Coker"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803152,
+     "participantId": 574106,
+     "name": {
+      "value": "Xavier Legette"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803153,
+     "participantId": 353408,
+     "name": {
+      "value": "Brycen Tremayne"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    },
+    {
+     "id": 803154,
+     "participantId": 573229,
+     "name": {
+      "value": "Devontez Walker"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352241
+     }
+    },
+    {
+     "id": 803155,
+     "participantId": 579135,
+     "name": {
+      "value": "Jonathon Brooks"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352147
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44031",
+   "name": {
+    "value": "New Orleans Saints @ Chicago Bears",
+    "sign": "BiUA5A=="
+   },
+   "startDate": "2026-11-22T18:00:00.000Z",
+   "cutOffDate": "2026-11-22T23:00:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 731691,
+     "participantId": 353513,
+     "name": {
+      "value": "Chicago Bears",
+      "short": "Bears"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731692,
+     "participantId": 352961,
+     "name": {
+      "value": "New Orleans Saints",
+      "short": "Saints"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 802281,
+     "participantId": 352973,
+     "name": {
+      "value": "Chris Olave"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802282,
+     "participantId": 573230,
+     "name": {
+      "value": "Rome Odunze"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802284,
+     "participantId": 669446,
+     "name": {
+      "value": "Luther Burden III"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802285,
+     "participantId": 354220,
+     "name": {
+      "value": "D'Andre Swift"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802287,
+     "participantId": 669184,
+     "name": {
+      "value": "Colston Loveland"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802289,
+     "participantId": 351975,
+     "name": {
+      "value": "Kalif Raymond"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802292,
+     "participantId": 876348,
+     "name": {
+      "value": "Jordyn Tyson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802295,
+     "participantId": 353034,
+     "name": {
+      "value": "Juwan Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802296,
+     "participantId": 669944,
+     "name": {
+      "value": "Kyle Monangai"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802298,
+     "participantId": 352691,
+     "name": {
+      "value": "Travis Etienne Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802299,
+     "participantId": 716195,
+     "name": {
+      "value": "Saints D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802301,
+     "participantId": 602217,
+     "name": {
+      "value": "CHI D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802303,
+     "participantId": 354389,
+     "name": {
+      "value": "Noah Fant"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802304,
+     "participantId": 353665,
+     "name": {
+      "value": "Stephen Carlson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802307,
+     "participantId": 669447,
+     "name": {
+      "value": "Tyler Shough"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802309,
+     "participantId": 357085,
+     "name": {
+      "value": "Caleb Williams"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802311,
+     "participantId": 574146,
+     "name": {
+      "value": "Devaughn Vele"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802312,
+     "participantId": 832912,
+     "name": {
+      "value": "Sam Roush"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 802314,
+     "participantId": 574137,
+     "name": {
+      "value": "Audric Estime"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 802315,
+     "participantId": 832859,
+     "name": {
+      "value": "Oscar Delp"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 803284,
+     "participantId": 832913,
+     "name": {
+      "value": "Zavion Thomas"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 803285,
+     "participantId": 718087,
+     "name": {
+      "value": "Jahdae Walker"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 803286,
+     "participantId": 354064,
+     "name": {
+      "value": "Salvon Ahmed"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 803287,
+     "participantId": 353613,
+     "name": {
+      "value": "Roschon Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353513
+     }
+    },
+    {
+     "id": 803288,
+     "participantId": 359679,
+     "name": {
+      "value": "Bryce Lance"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 803289,
+     "participantId": 882499,
+     "name": {
+      "value": "Barion Brown"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 803290,
+     "participantId": 432785,
+     "name": {
+      "value": "Alvin Kamara"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 803291,
+     "participantId": 353889,
+     "name": {
+      "value": "Zamir White"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    },
+    {
+     "id": 803292,
+     "participantId": 893728,
+     "name": {
+      "value": "CJ Donaldson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352961
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44034",
+   "name": {
+    "value": "Arizona Cardinals @ Kansas City Chiefs",
+    "sign": "lyblvA=="
+   },
+   "startDate": "2026-11-22T18:00:00.000Z",
+   "cutOffDate": "2026-11-22T23:00:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 731697,
+     "participantId": 351873,
+     "name": {
+      "value": "Kansas City Chiefs",
+      "short": "Chiefs"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731698,
+     "participantId": 353419,
+     "name": {
+      "value": "Arizona Cardinals",
+      "short": "Cardinals"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 803321,
+     "participantId": 880047,
+     "name": {
+      "value": "Harrison Wallace III"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803322,
+     "participantId": 351876,
+     "name": {
+      "value": "Rashee Rice"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803315,
+     "participantId": 351952,
+     "name": {
+      "value": "Travis Kelce"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803317,
+     "participantId": 835028,
+     "name": {
+      "value": "Reggie Virgil"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803316,
+     "participantId": 602226,
+     "name": {
+      "value": "KC D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803323,
+     "participantId": 354475,
+     "name": {
+      "value": "Hunter Long"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803319,
+     "participantId": 882494,
+     "name": {
+      "value": "Jake Briningstool"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803324,
+     "participantId": 642294,
+     "name": {
+      "value": "Teagan Quitoriano"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803334,
+     "participantId": 699528,
+     "name": {
+      "value": "Carson Beck"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803333,
+     "participantId": 352253,
+     "name": {
+      "value": "Devin Duvernay"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803318,
+     "participantId": 602212,
+     "name": {
+      "value": "ARI D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803338,
+     "participantId": 353498,
+     "name": {
+      "value": "Trey McBride"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803343,
+     "participantId": 352080,
+     "name": {
+      "value": "Tyler Allgeier"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803341,
+     "participantId": 352600,
+     "name": {
+      "value": "Josh Downs"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803337,
+     "participantId": 903847,
+     "name": {
+      "value": "Andrew Armstrong"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803340,
+     "participantId": 351949,
+     "name": {
+      "value": "Noah Gray"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803345,
+     "participantId": 835035,
+     "name": {
+      "value": "Cyrus Allen"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803346,
+     "participantId": 354112,
+     "name": {
+      "value": "Elijah Higgins"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803347,
+     "participantId": 354688,
+     "name": {
+      "value": "Zonovan Knight"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803349,
+     "participantId": 352697,
+     "name": {
+      "value": "Zay Jones"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803350,
+     "participantId": 835076,
+     "name": {
+      "value": "Emmett Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803351,
+     "participantId": 572354,
+     "name": {
+      "value": "Xavier Worthy"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803348,
+     "participantId": 354649,
+     "name": {
+      "value": "Simi Fehoko"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353419
+     }
+    },
+    {
+     "id": 803352,
+     "participantId": 351890,
+     "name": {
+      "value": "Patrick Mahomes"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803447,
+     "participantId": 669902,
+     "name": {
+      "value": "Jalen Royals"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803448,
+     "participantId": 576204,
+     "name": {
+      "value": "Jared Wiley"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803449,
+     "participantId": 718158,
+     "name": {
+      "value": "Nathan Carter"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803450,
+     "participantId": 354319,
+     "name": {
+      "value": "Kenneth Walker"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803451,
+     "participantId": 906427,
+     "name": {
+      "value": "Jaydn Ott"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    },
+    {
+     "id": 803452,
+     "participantId": 353520,
+     "name": {
+      "value": "Justin Fields"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351873
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44037",
+   "name": {
+    "value": "Pittsburgh Steelers @ Philadelphia Eagles",
+    "sign": "EzLQ5A=="
+   },
+   "startDate": "2026-11-22T18:00:00.000Z",
+   "cutOffDate": "2026-11-22T23:00:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 731703,
+     "participantId": 354219,
+     "name": {
+      "value": "Philadelphia Eagles",
+      "short": "Eagles"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731704,
+     "participantId": 353140,
+     "name": {
+      "value": "Pittsburgh Steelers",
+      "short": "Steelers"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 803247,
+     "participantId": 354514,
+     "name": {
+      "value": "Saquon Barkley"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803254,
+     "participantId": 353171,
+     "name": {
+      "value": "Jaylen Warren"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803266,
+     "participantId": 354323,
+     "name": {
+      "value": "DK Metcalf"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803269,
+     "participantId": 678416,
+     "name": {
+      "value": "Joe Milton III"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803270,
+     "participantId": 602233,
+     "name": {
+      "value": "PIT D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803276,
+     "participantId": 354676,
+     "name": {
+      "value": "Aaron Rodgers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803275,
+     "participantId": 602232,
+     "name": {
+      "value": "PHI D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803278,
+     "participantId": 354599,
+     "name": {
+      "value": "Rico Dowdle"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803279,
+     "participantId": 354300,
+     "name": {
+      "value": "Dallas Goedert"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803281,
+     "participantId": 354225,
+     "name": {
+      "value": "DeVonta Smith"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803280,
+     "participantId": 354293,
+     "name": {
+      "value": "Grant Calcaterra"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803282,
+     "participantId": 832895,
+     "name": {
+      "value": "Eli Stowers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803918,
+     "participantId": 669917,
+     "name": {
+      "value": "Jaydon Blue"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803938,
+     "participantId": 715063,
+     "name": {
+      "value": "Darius Cooper"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803940,
+     "participantId": 353258,
+     "name": {
+      "value": "Elijah Mitchell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803941,
+     "participantId": 352612,
+     "name": {
+      "value": "Michael Pittman Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803942,
+     "participantId": 353601,
+     "name": {
+      "value": "Robert Tonyan"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803943,
+     "participantId": 353684,
+     "name": {
+      "value": "Dontayvion Wicks"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803944,
+     "participantId": 876352,
+     "name": {
+      "value": "Makai Lemon"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803945,
+     "participantId": 353703,
+     "name": {
+      "value": "Lew Nichols"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803946,
+     "participantId": 353215,
+     "name": {
+      "value": "Darnell Washington"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803949,
+     "participantId": 576118,
+     "name": {
+      "value": "Roman Wilson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803947,
+     "participantId": 354871,
+     "name": {
+      "value": "Brandon Smith"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803950,
+     "participantId": 832890,
+     "name": {
+      "value": "Germie Bernard"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803948,
+     "participantId": 353221,
+     "name": {
+      "value": "Pat Freiermuth"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803952,
+     "participantId": 354235,
+     "name": {
+      "value": "Britain Covey"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 803953,
+     "participantId": 835061,
+     "name": {
+      "value": "Riley Nowakowski"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 803954,
+     "participantId": 352427,
+     "name": {
+      "value": "Elijah Moore"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 804437,
+     "participantId": 353422,
+     "name": {
+      "value": "Hollywood Brown"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 804438,
+     "participantId": 352858,
+     "name": {
+      "value": "Johnny Mundt"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354219
+     }
+    },
+    {
+     "id": 804439,
+     "participantId": 354420,
+     "name": {
+      "value": "Ben Skowronek"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 804440,
+     "participantId": 835051,
+     "name": {
+      "value": "Kaden Wetjen"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 804441,
+     "participantId": 353603,
+     "name": {
+      "value": "Travis Homer"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 804442,
+     "participantId": 886397,
+     "name": {
+      "value": "Eli Heidenreich"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    },
+    {
+     "id": 804443,
+     "participantId": 353849,
+     "name": {
+      "value": "Brandon Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353140
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44041",
+   "name": {
+    "value": "Tampa Bay Buccaneers @ Detroit Lions",
+    "sign": "WNq1Yg=="
+   },
+   "startDate": "2026-11-22T18:00:00.000Z",
+   "cutOffDate": "2026-11-22T23:00:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 802984,
+     "participantId": 351980,
+     "name": {
+      "value": "Jared Goff"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 802986,
+     "participantId": 351978,
+     "name": {
+      "value": "Amon-Ra St. Brown"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 802987,
+     "participantId": 352044,
+     "name": {
+      "value": "Sam LaPorta"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 802996,
+     "participantId": 573902,
+     "name": {
+      "value": "Bucky Irving"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 802997,
+     "participantId": 351989,
+     "name": {
+      "value": "Jahmyr Gibbs"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 731711,
+     "participantId": 351964,
+     "name": {
+      "value": "Detroit Lions",
+      "short": "Lions"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731712,
+     "participantId": 352870,
+     "name": {
+      "value": "Tampa Bay Buccaneers",
+      "short": "Buccaneers"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 803002,
+     "participantId": 474607,
+     "name": {
+      "value": "Jameson Williams"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803003,
+     "participantId": 669495,
+     "name": {
+      "value": "Isaac TeSlaa"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803004,
+     "participantId": 895621,
+     "name": {
+      "value": "Jalon Daniels"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803006,
+     "participantId": 572398,
+     "name": {
+      "value": "Sione Vaki"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803008,
+     "participantId": 354232,
+     "name": {
+      "value": "Kenneth Gainwell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803011,
+     "participantId": 352950,
+     "name": {
+      "value": "Cade Otton"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803012,
+     "participantId": 352884,
+     "name": {
+      "value": "Chris Godwin"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803013,
+     "participantId": 352046,
+     "name": {
+      "value": "Brock Wright"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803015,
+     "participantId": 669191,
+     "name": {
+      "value": "Emeka Egbuka"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803016,
+     "participantId": 602211,
+     "name": {
+      "value": "TB D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803017,
+     "participantId": 602203,
+     "name": {
+      "value": "DET D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803018,
+     "participantId": 358476,
+     "name": {
+      "value": "Bauer Sharp"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803293,
+     "participantId": 354739,
+     "name": {
+      "value": "Tyler Conklin"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803295,
+     "participantId": 352910,
+     "name": {
+      "value": "Ko Kieft"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803296,
+     "participantId": 589334,
+     "name": {
+      "value": "Kameron Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803299,
+     "participantId": 669946,
+     "name": {
+      "value": "Tez Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803298,
+     "participantId": 352542,
+     "name": {
+      "value": "Jacob Saylors"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803303,
+     "participantId": 887247,
+     "name": {
+      "value": "Jabari Small"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 351964
+     }
+    },
+    {
+     "id": 803304,
+     "participantId": 354501,
+     "name": {
+      "value": "David Sills"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803305,
+     "participantId": 832889,
+     "name": {
+      "value": "Ted Hurst"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803306,
+     "participantId": 352949,
+     "name": {
+      "value": "Payne Durham"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803307,
+     "participantId": 352877,
+     "name": {
+      "value": "Baker Mayfield"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    },
+    {
+     "id": 803308,
+     "participantId": 352912,
+     "name": {
+      "value": "Sean Tucker"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352870
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44051",
+   "name": {
+    "value": "Miami Dolphins @ Buffalo Bills",
+    "sign": "lNLwNg=="
+   },
+   "startDate": "2026-11-22T18:00:00.000Z",
+   "cutOffDate": "2026-11-22T23:00:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 801178,
+     "participantId": 835055,
+     "name": {
+      "value": "Skyler Bell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801179,
+     "participantId": 573892,
+     "name": {
+      "value": "Jaylen Wright"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801185,
+     "participantId": 354595,
+     "name": {
+      "value": "Jalen Tolbert"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801187,
+     "participantId": 745984,
+     "name": {
+      "value": "Keleki Latu"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801189,
+     "participantId": 602215,
+     "name": {
+      "value": "BUF D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801190,
+     "participantId": 832881,
+     "name": {
+      "value": "Will Kacmarek"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801192,
+     "participantId": 354830,
+     "name": {
+      "value": "Dawson Knox"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801195,
+     "participantId": 354758,
+     "name": {
+      "value": "James Cook"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801197,
+     "participantId": 574203,
+     "name": {
+      "value": "Malik Washington"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801198,
+     "participantId": 832882,
+     "name": {
+      "value": "Chris Bell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801199,
+     "participantId": 835033,
+     "name": {
+      "value": "Kevin Coleman Jr"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801200,
+     "participantId": 353523,
+     "name": {
+      "value": "DJ Moore"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801201,
+     "participantId": 353841,
+     "name": {
+      "value": "Greg Dulcich"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801202,
+     "participantId": 602231,
+     "name": {
+      "value": "MIA D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801203,
+     "participantId": 669972,
+     "name": {
+      "value": "Kyle McCord"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801205,
+     "participantId": 354823,
+     "name": {
+      "value": "Tyrell Shavers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801206,
+     "participantId": 352784,
+     "name": {
+      "value": "Jalen Reagor"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801207,
+     "participantId": 354763,
+     "name": {
+      "value": "Khalil Shakir"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801208,
+     "participantId": 354882,
+     "name": {
+      "value": "Josh Allen"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801209,
+     "participantId": 832880,
+     "name": {
+      "value": "Caleb Douglas"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801211,
+     "participantId": 669968,
+     "name": {
+      "value": "Ollie Gordon II"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801212,
+     "participantId": 584467,
+     "name": {
+      "value": "Ty Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 731731,
+     "participantId": 354755,
+     "name": {
+      "value": "Buffalo Bills",
+      "short": "Bills"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731732,
+     "participantId": 354039,
+     "name": {
+      "value": "Miami Dolphins",
+      "short": "Dolphins"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 801167,
+     "participantId": 353497,
+     "name": {
+      "value": "Greg Dortch"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801168,
+     "participantId": 354828,
+     "name": {
+      "value": "Dalton Kincaid"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801172,
+     "participantId": 574776,
+     "name": {
+      "value": "Keon Coleman"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801173,
+     "participantId": 835031,
+     "name": {
+      "value": "Seydou Traore"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801174,
+     "participantId": 875306,
+     "name": {
+      "value": "Kaytron Allen"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801175,
+     "participantId": 887832,
+     "name": {
+      "value": "DJ Herman"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 801176,
+     "participantId": 669949,
+     "name": {
+      "value": "Jackson Hawes"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    },
+    {
+     "id": 801177,
+     "participantId": 352407,
+     "name": {
+      "value": "Jared Wayne"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354039
+     }
+    },
+    {
+     "id": 803246,
+     "participantId": 574204,
+     "name": {
+      "value": "Ray Davis"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354755
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44054",
+   "name": {
+    "value": "Tennessee Titans @ Dallas Cowboys",
+    "sign": "PgPARA=="
+   },
+   "startDate": "2026-11-22T18:00:00.000Z",
+   "cutOffDate": "2026-11-22T23:00:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 802427,
+     "participantId": 353078,
+     "name": {
+      "value": "Tyjae Spears"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802428,
+     "participantId": 604401,
+     "name": {
+      "value": "David Martin-Robinson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802430,
+     "participantId": 354655,
+     "name": {
+      "value": "CeeDee Lamb"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802431,
+     "participantId": 352041,
+     "name": {
+      "value": "James Mitchell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802432,
+     "participantId": 352676,
+     "name": {
+      "value": "Kylen Granson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802434,
+     "participantId": 354582,
+     "name": {
+      "value": "Dak Prescott"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802444,
+     "participantId": 669862,
+     "name": {
+      "value": "Chimere Dike"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802396,
+     "participantId": 669905,
+     "name": {
+      "value": "Elic Ayomanor"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802398,
+     "participantId": 602207,
+     "name": {
+      "value": "TEN D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802399,
+     "participantId": 603245,
+     "name": {
+      "value": "Brevyn Spann-Ford"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802400,
+     "participantId": 353152,
+     "name": {
+      "value": "George Pickens"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802401,
+     "participantId": 354586,
+     "name": {
+      "value": "KaVontae Turpin"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802402,
+     "participantId": 602220,
+     "name": {
+      "value": "DAL D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 731737,
+     "participantId": 354577,
+     "name": {
+      "value": "Dallas Cowboys",
+      "short": "Cowboys"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731738,
+     "participantId": 353051,
+     "name": {
+      "value": "Tennessee Titans",
+      "short": "Titans"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 802405,
+     "participantId": 354563,
+     "name": {
+      "value": "Daniel Bellinger"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802406,
+     "participantId": 353083,
+     "name": {
+      "value": "Julius Chestnut"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802408,
+     "participantId": 358872,
+     "name": {
+      "value": "Ryan Flournoy"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802409,
+     "participantId": 354687,
+     "name": {
+      "value": "Israel Abanikanda"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802415,
+     "participantId": 354653,
+     "name": {
+      "value": "Luke Schoonmaker"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802416,
+     "participantId": 876344,
+     "name": {
+      "value": "Carnell Tate"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802417,
+     "participantId": 438349,
+     "name": {
+      "value": "Wan'Dale Robinson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802418,
+     "participantId": 354619,
+     "name": {
+      "value": "Hunter Luepke"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802419,
+     "participantId": 669178,
+     "name": {
+      "value": "Cam Ward"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802420,
+     "participantId": 353797,
+     "name": {
+      "value": "Javonte Williams"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 802421,
+     "participantId": 669891,
+     "name": {
+      "value": "Gunnar Helm"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802422,
+     "participantId": 354597,
+     "name": {
+      "value": "Tony Pollard"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 802601,
+     "participantId": 352707,
+     "name": {
+      "value": "Calvin Ridley"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 803694,
+     "participantId": 887806,
+     "name": {
+      "value": "Camden Brown"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    },
+    {
+     "id": 803695,
+     "participantId": 750458,
+     "name": {
+      "value": "Xavier Restrepo"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353051
+     }
+    },
+    {
+     "id": 803696,
+     "participantId": 354654,
+     "name": {
+      "value": "Jake Ferguson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354577
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44060",
+   "name": {
+    "value": "New York Jets @ Los Angeles Chargers",
+    "sign": "FFQPqg=="
+   },
+   "startDate": "2026-11-22T21:05:00.000Z",
+   "cutOffDate": "2026-11-23T02:05:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 731749,
+     "participantId": 353950,
+     "name": {
+      "value": "Los Angeles Chargers",
+      "short": "Chargers"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731750,
+     "participantId": 354667,
+     "name": {
+      "value": "New York Jets",
+      "short": "Jets"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 804402,
+     "participantId": 669935,
+     "name": {
+      "value": "Oronde Gadsden II"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804400,
+     "participantId": 353961,
+     "name": {
+      "value": "Justin Herbert"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804401,
+     "participantId": 354038,
+     "name": {
+      "value": "Scott Matlock"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804404,
+     "participantId": 353963,
+     "name": {
+      "value": "Derius Davis"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804407,
+     "participantId": 352273,
+     "name": {
+      "value": "Keaton Mitchell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804414,
+     "participantId": 572739,
+     "name": {
+      "value": "Kimani Vidal"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804409,
+     "participantId": 352314,
+     "name": {
+      "value": "Charlie Kolar"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804411,
+     "participantId": 352498,
+     "name": {
+      "value": "David Njoku"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804406,
+     "participantId": 602210,
+     "name": {
+      "value": "NYJ D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804413,
+     "participantId": 602228,
+     "name": {
+      "value": "LAC D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804415,
+     "participantId": 773315,
+     "name": {
+      "value": "Theo Wease Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804410,
+     "participantId": 353952,
+     "name": {
+      "value": "Quentin Johnston"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804417,
+     "participantId": 669194,
+     "name": {
+      "value": "Omarion Hampton"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804418,
+     "participantId": 669465,
+     "name": {
+      "value": "Tre Harris"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804419,
+     "participantId": 574107,
+     "name": {
+      "value": "Ladd McConkey"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804420,
+     "participantId": 669924,
+     "name": {
+      "value": "KeAndre Lambert-Smith"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804421,
+     "participantId": 354681,
+     "name": {
+      "value": "Garrett Wilson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804422,
+     "participantId": 875300,
+     "name": {
+      "value": "Omar Cooper Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804423,
+     "participantId": 573871,
+     "name": {
+      "value": "Adonai Mitchell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804424,
+     "participantId": 572384,
+     "name": {
+      "value": "Isaiah Williams"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804425,
+     "participantId": 875299,
+     "name": {
+      "value": "Kenyon Sadiq"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804426,
+     "participantId": 669449,
+     "name": {
+      "value": "Mason Taylor"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804427,
+     "participantId": 354745,
+     "name": {
+      "value": "Jeremy Ruckert"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804428,
+     "participantId": 354317,
+     "name": {
+      "value": "Geno Smith"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804429,
+     "participantId": 835042,
+     "name": {
+      "value": "Cade Klubnik"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804430,
+     "participantId": 354683,
+     "name": {
+      "value": "Breece Hall"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804431,
+     "participantId": 581581,
+     "name": {
+      "value": "Braelon Allen"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804432,
+     "participantId": 894501,
+     "name": {
+      "value": "Malik McClain"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804433,
+     "participantId": 359331,
+     "name": {
+      "value": "Isaiah Davis"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804434,
+     "participantId": 835036,
+     "name": {
+      "value": "Brenen Thompson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353950
+     }
+    },
+    {
+     "id": 804435,
+     "participantId": 352372,
+     "name": {
+      "value": "Andrew Beck"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    },
+    {
+     "id": 804436,
+     "participantId": 352804,
+     "name": {
+      "value": "Kene Nwangwu"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354667
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44057",
+   "name": {
+    "value": "Jacksonville Jaguars @ New York Giants",
+    "sign": "VV4CHg=="
+   },
+   "startDate": "2026-11-22T21:25:00.000Z",
+   "cutOffDate": "2026-11-23T02:25:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 800468,
+     "participantId": 602209,
+     "name": {
+      "value": "NYG D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800469,
+     "participantId": 714495,
+     "name": {
+      "value": "J.J. McCarthy"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800470,
+     "participantId": 353874,
+     "name": {
+      "value": "Jakobi Meyers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800471,
+     "participantId": 602224,
+     "name": {
+      "value": "JAC D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800472,
+     "participantId": 832904,
+     "name": {
+      "value": "Nate Boerkircher"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800473,
+     "participantId": 352704,
+     "name": {
+      "value": "Trevor Lawrence"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800475,
+     "participantId": 573231,
+     "name": {
+      "value": "Malik Nabers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800478,
+     "participantId": 669866,
+     "name": {
+      "value": "Cam Skattebo"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800479,
+     "participantId": 352766,
+     "name": {
+      "value": "Brenton Strange"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800481,
+     "participantId": 606824,
+     "name": {
+      "value": "Chris Rodriguez Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800483,
+     "participantId": 352352,
+     "name": {
+      "value": "Devin Singletary"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800484,
+     "participantId": 669947,
+     "name": {
+      "value": "LeQuint Allen"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800485,
+     "participantId": 882501,
+     "name": {
+      "value": "Josh Cameron"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800486,
+     "participantId": 575071,
+     "name": {
+      "value": "Theo Johnson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800487,
+     "participantId": 352309,
+     "name": {
+      "value": "Isaiah Likely"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800488,
+     "participantId": 353878,
+     "name": {
+      "value": "Ameer Abdullah"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800490,
+     "participantId": 699519,
+     "name": {
+      "value": "Malachi Fields"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800491,
+     "participantId": 910328,
+     "name": {
+      "value": "Greg Desrosiers Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800492,
+     "participantId": 882502,
+     "name": {
+      "value": "CJ Williams"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800493,
+     "participantId": 835073,
+     "name": {
+      "value": "Tanner Koziol"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800494,
+     "participantId": 669863,
+     "name": {
+      "value": "Bhayshul Tuten"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800495,
+     "participantId": 353846,
+     "name": {
+      "value": "Chris Manhertz"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800496,
+     "participantId": 354565,
+     "name": {
+      "value": "Jalin Hyatt"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800497,
+     "participantId": 352281,
+     "name": {
+      "value": "Patrick Ricard"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 731743,
+     "participantId": 354489,
+     "name": {
+      "value": "New York Giants",
+      "short": "Giants"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731744,
+     "participantId": 352690,
+     "name": {
+      "value": "Jacksonville Jaguars",
+      "short": "Jaguars"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 800461,
+     "participantId": 352700,
+     "name": {
+      "value": "Parker Washington"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800462,
+     "participantId": 354827,
+     "name": {
+      "value": "Quintin Morris"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800463,
+     "participantId": 353560,
+     "name": {
+      "value": "Darnell Mooney"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 800464,
+     "participantId": 577317,
+     "name": {
+      "value": "Brian Thomas Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    },
+    {
+     "id": 800465,
+     "participantId": 352522,
+     "name": {
+      "value": "Charlie Jones"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 803445,
+     "participantId": 669951,
+     "name": {
+      "value": "Phil Mafah"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 354489
+     }
+    },
+    {
+     "id": 803446,
+     "participantId": 669179,
+     "name": {
+      "value": "Travis Hunter"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352690
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44063",
+   "name": {
+    "value": "Las Vegas Raiders @ Denver Broncos",
+    "sign": "VdllFQ=="
+   },
+   "startDate": "2026-11-22T21:25:00.000Z",
+   "cutOffDate": "2026-11-23T02:25:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 802636,
+     "participantId": 354055,
+     "name": {
+      "value": "Jaylen Waddle"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802638,
+     "participantId": 602221,
+     "name": {
+      "value": "DEN D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802639,
+     "participantId": 353845,
+     "name": {
+      "value": "Marvin Mims"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802640,
+     "participantId": 353781,
+     "name": {
+      "value": "Courtland Sutton"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802641,
+     "participantId": 353843,
+     "name": {
+      "value": "Adam Trautman"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802645,
+     "participantId": 352855,
+     "name": {
+      "value": "Jalen Nailor"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802647,
+     "participantId": 353218,
+     "name": {
+      "value": "Connor Heyward"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802648,
+     "participantId": 353003,
+     "name": {
+      "value": "Adam Prentice"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802649,
+     "participantId": 573655,
+     "name": {
+      "value": "Bo Nix"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802650,
+     "participantId": 669182,
+     "name": {
+      "value": "Ashton Jeanty"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802651,
+     "participantId": 574144,
+     "name": {
+      "value": "Troy Franklin"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802655,
+     "participantId": 602227,
+     "name": {
+      "value": "LV D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802657,
+     "participantId": 404733,
+     "name": {
+      "value": "J.K. Dobbins"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802659,
+     "participantId": 835040,
+     "name": {
+      "value": "Jonah Coleman"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 802660,
+     "participantId": 353936,
+     "name": {
+      "value": "Michael Mayer"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802661,
+     "participantId": 876340,
+     "name": {
+      "value": "Fernando Mendoza"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802662,
+     "participantId": 357511,
+     "name": {
+      "value": "Dylan Laube"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802663,
+     "participantId": 353938,
+     "name": {
+      "value": "Tre Tucker"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802665,
+     "participantId": 354385,
+     "name": {
+      "value": "Dareke Young"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802666,
+     "participantId": 745596,
+     "name": {
+      "value": "Mike Washington Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 802667,
+     "participantId": 352223,
+     "name": {
+      "value": "Ian Thomas"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 731755,
+     "participantId": 353766,
+     "name": {
+      "value": "Denver Broncos",
+      "short": "Broncos"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731756,
+     "participantId": 353860,
+     "name": {
+      "value": "Las Vegas Raiders",
+      "short": "Raiders"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 803465,
+     "participantId": 353783,
+     "name": {
+      "value": "Lil'Jordan Humphrey"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 803466,
+     "participantId": 353153,
+     "name": {
+      "value": "Cody White"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 803462,
+     "participantId": 352705,
+     "name": {
+      "value": "Evan Engram"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 803467,
+     "participantId": 669466,
+     "name": {
+      "value": "Jack Bech"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 803469,
+     "participantId": 669452,
+     "name": {
+      "value": "Pat Bryant"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 803472,
+     "participantId": 717345,
+     "name": {
+      "value": "Dont'e Thornton Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 803474,
+     "participantId": 579509,
+     "name": {
+      "value": "Brock Bowers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    },
+    {
+     "id": 803476,
+     "participantId": 353810,
+     "name": {
+      "value": "Nate Adkins"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 803477,
+     "participantId": 602556,
+     "name": {
+      "value": "Cody Schrader"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353766
+     }
+    },
+    {
+     "id": 803478,
+     "participantId": 352787,
+     "name": {
+      "value": "Kirk Cousins"
+     },
+     "properties": {
+      "type": "Player"
+     }
+    },
+    {
+     "id": 803479,
+     "participantId": 728233,
+     "name": {
+      "value": "Carter Runyon"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353860
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44014",
+   "name": {
+    "value": "Minnesota Vikings @ San Francisco 49ers",
+    "sign": "+XDyxw=="
+   },
+   "startDate": "2026-11-23T01:20:00.000Z",
+   "cutOffDate": "2026-11-23T06:20:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 801625,
+     "participantId": 353274,
+     "name": {
+      "value": "Kyle Juszczyk"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801628,
+     "participantId": 353250,
+     "name": {
+      "value": "Jauan Jennings"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 801629,
+     "participantId": 352883,
+     "name": {
+      "value": "Mike Evans"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801632,
+     "participantId": 353256,
+     "name": {
+      "value": "Christian McCaffrey"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801633,
+     "participantId": 832873,
+     "name": {
+      "value": "Kaelon Black"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801634,
+     "participantId": 352770,
+     "name": {
+      "value": "Luke Farrell"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801635,
+     "participantId": 353253,
+     "name": {
+      "value": "Deebo Samuel"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801636,
+     "participantId": 353704,
+     "name": {
+      "value": "Aaron Jones"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 801637,
+     "participantId": 352859,
+     "name": {
+      "value": "T.J. Hockenson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 801638,
+     "participantId": 352787,
+     "name": {
+      "value": "Kirk Cousins"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 801639,
+     "participantId": 354417,
+     "name": {
+      "value": "Demarcus Robinson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801640,
+     "participantId": 835077,
+     "name": {
+      "value": "Max Bredeson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 801609,
+     "participantId": 354341,
+     "name": {
+      "value": "DeeJay Dallas"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 801610,
+     "participantId": 602205,
+     "name": {
+      "value": "MIN D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 731657,
+     "participantId": 353233,
+     "name": {
+      "value": "San Francisco 49ers",
+      "short": "49ers"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 801612,
+     "participantId": 353257,
+     "name": {
+      "value": "Jordan Mason"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 731658,
+     "participantId": 352779,
+     "name": {
+      "value": "Minnesota Vikings",
+      "short": "Vikings"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 801613,
+     "participantId": 602234,
+     "name": {
+      "value": "SF D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801616,
+     "participantId": 353248,
+     "name": {
+      "value": "Brock Purdy"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801618,
+     "participantId": 353310,
+     "name": {
+      "value": "George Kittle"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801619,
+     "participantId": 352796,
+     "name": {
+      "value": "Justin Jefferson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 801620,
+     "participantId": 353964,
+     "name": {
+      "value": "Keenan Allen"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801621,
+     "participantId": 669907,
+     "name": {
+      "value": "Jordan Watkins"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 801622,
+     "participantId": 669522,
+     "name": {
+      "value": "Tai Felton"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 803453,
+     "participantId": 572741,
+     "name": {
+      "value": "Jacob Cowing"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 803454,
+     "participantId": 669915,
+     "name": {
+      "value": "Jordan James"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353233
+     }
+    },
+    {
+     "id": 803455,
+     "participantId": 718159,
+     "name": {
+      "value": "Myles Price"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 803456,
+     "participantId": 882490,
+     "name": {
+      "value": "Jeshaun Jones"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 803457,
+     "participantId": 669989,
+     "name": {
+      "value": "Gavin Bartholomew"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 803458,
+     "participantId": 720498,
+     "name": {
+      "value": "Benjamin Yurosek"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 803459,
+     "participantId": 604750,
+     "name": {
+      "value": "Devin Culp"
+     },
+     "properties": {
+      "type": "Player"
+     }
+    },
+    {
+     "id": 803460,
+     "participantId": 352783,
+     "name": {
+      "value": "Jordan Addison"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    },
+    {
+     "id": 803461,
+     "participantId": 352243,
+     "name": {
+      "value": "Odell Beckham Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352779
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  },
+  {
+   "id": "6:44066",
+   "name": {
+    "value": "Cincinnati Bengals @ Washington Commanders",
+    "sign": "6SXRWQ=="
+   },
+   "startDate": "2026-11-24T01:15:00.000Z",
+   "cutOffDate": "2026-11-24T06:15:00.000Z",
+   "competition": {
+    "parentLeagueId": 35,
+    "statistics": true,
+    "sportId": 11,
+    "compoundId": "2:103489",
+    "imageProfile": {
+     "logo": "b623e611.svg"
+    },
+    "type": "Competition",
+    "id": 103489,
+    "parentId": 9,
+    "name": {
+     "value": "NFL"
+    }
+   },
+   "participants": [
+    {
+     "id": 731761,
+     "participantId": 353325,
+     "name": {
+      "value": "Washington Commanders",
+      "short": "Commanders"
+     },
+     "properties": {
+      "type": "HomeTeam"
+     }
+    },
+    {
+     "id": 731762,
+     "participantId": 352511,
+     "name": {
+      "value": "Cincinnati Bengals",
+      "short": "Bengals"
+     },
+     "properties": {
+      "type": "AwayTeam"
+     }
+    },
+    {
+     "id": 802169,
+     "participantId": 575070,
+     "name": {
+      "value": "Luke McCaffrey"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 802170,
+     "participantId": 604403,
+     "name": {
+      "value": "Ben Sinnott"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 802171,
+     "participantId": 353406,
+     "name": {
+      "value": "John Bates"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 802172,
+     "participantId": 352588,
+     "name": {
+      "value": "Drew Sample"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 802173,
+     "participantId": 887233,
+     "name": {
+      "value": "Jack Endries"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 802174,
+     "participantId": 352580,
+     "name": {
+      "value": "Andrei Iosivas"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800216,
+     "participantId": 354209,
+     "name": {
+      "value": "Mike Gesicki"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800217,
+     "participantId": 354413,
+     "name": {
+      "value": "Van Jefferson"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 802175,
+     "participantId": 669982,
+     "name": {
+      "value": "Tahj Brooks"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800219,
+     "participantId": 352538,
+     "name": {
+      "value": "Chase Brown"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800220,
+     "participantId": 354766,
+     "name": {
+      "value": "Stefon Diggs"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800222,
+     "participantId": 602236,
+     "name": {
+      "value": "WAS D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800223,
+     "participantId": 832914,
+     "name": {
+      "value": "Antonio Williams"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800224,
+     "participantId": 602218,
+     "name": {
+      "value": "CIN D/ST"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800225,
+     "participantId": 352515,
+     "name": {
+      "value": "Tee Higgins"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800227,
+     "participantId": 882492,
+     "name": {
+      "value": "Dohnte Meyers"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800230,
+     "participantId": 835067,
+     "name": {
+      "value": "Colbie Young"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800232,
+     "participantId": 576115,
+     "name": {
+      "value": "Colson Yankoff"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800235,
+     "participantId": 353065,
+     "name": {
+      "value": "Treylon Burks"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800237,
+     "participantId": 603244,
+     "name": {
+      "value": "Cam Grandy"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800238,
+     "participantId": 353974,
+     "name": {
+      "value": "Austin Ekeler"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800239,
+     "participantId": 353789,
+     "name": {
+      "value": "Samaje Perine"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800241,
+     "participantId": 901430,
+     "name": {
+      "value": "Robert Henry Jr."
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800244,
+     "participantId": 575072,
+     "name": {
+      "value": "Jayden Daniels"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800245,
+     "participantId": 353405,
+     "name": {
+      "value": "Mitchell Tinsley"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800246,
+     "participantId": 352517,
+     "name": {
+      "value": "Joe Burrow"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800248,
+     "participantId": 352512,
+     "name": {
+      "value": "Ja'Marr Chase"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 352511
+     }
+    },
+    {
+     "id": 800249,
+     "participantId": 474611,
+     "name": {
+      "value": "Chig Okonkwo"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    },
+    {
+     "id": 800250,
+     "participantId": 352872,
+     "name": {
+      "value": "Rachaad White"
+     },
+     "properties": {
+      "type": "Player",
+      "team": 353325
+     }
+    }
+   ],
+   "stage": "PreMatch",
+   "isOpenForBetting": true,
+   "fixtureType": "PairGame",
+   "sport": {
+    "type": "Sport",
+    "isEsport": false,
+    "id": 11,
+    "name": {
+     "value": "American Football"
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,65 @@
+{
+ "legs": [
+  "Dare Ogunbowale to score 1+ TDs | Yes (775)",
+  "Moneyline | Houston Texans (-700)"
+ ],
+ "http_status": 200,
+ "request": {
+  "tv1Picks": [],
+  "tv2Picks": [
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4587020,
+    "optionId": 7556495,
+    "useLiveFallback": false,
+    "pickGroupId": "d6185134-838a-41cf-b876-f004ac2540fb"
+   },
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 3451307,
+    "optionId": 5411296,
+    "useLiveFallback": false,
+    "pickGroupId": "d6185134-838a-41cf-b876-f004ac2540fb"
+   }
+  ]
+ },
+ "response": {
+  "liveFallbacks": {},
+  "betBuilderSourceFixtures": {},
+  "contextualInfo": {
+   "resultsContextualInfo": {},
+   "optionsContextualInfo": {}
+  },
+  "betBuilderPricingGroups": {
+   "d6185134-838a-41cf-b876-f004ac2540fb": {
+    "groupId": "d6185134-838a-41cf-b876-f004ac2540fb",
+    "sgpId": "gTaK5rR+5k+hpBSdilEbBQuoiV2r/7GITMEkrXLaX6cQWCY",
+    "odds": {
+     "numerator": 21,
+     "denominator": 2,
+     "odds": 11.5,
+     "americanOdds": 1050
+    },
+    "suspensionState": "MarketUnsuspended",
+    "legInformation": [
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQrvpaqWUhaLJtOESyj8/0GQuA8",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:4587020:7556495",
+      "redundantState": "NotRedundantLeg"
+     },
+     {
+      "legId": "gTaK5rR+5k+hpBSdilEbBQILYClCtq2gpuIPK9m0iLFgoBY",
+      "suspensionState": "MarketUnsuspended",
+      "resultState": "Open",
+      "clientLegId": "6:44039:3451307:5411296",
+      "redundantState": "NotRedundantLeg"
+     }
+    ],
+    "providerId": "Angstrom"
+   }
+  },
+  "fixturePage": "<trimmed: full fixture tree>"
+ }
+}

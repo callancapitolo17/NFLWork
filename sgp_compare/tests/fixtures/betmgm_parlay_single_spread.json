@@ -1,0 +1,37 @@
+{
+ "legs": [
+  "Spread | Houston Texans (-12.5) (-110)"
+ ],
+ "http_status": 200,
+ "request": {
+  "tv1Picks": [],
+  "tv2Picks": [
+   {
+    "fixtureId": "6:44039",
+    "optionMarketId": 4585337,
+    "optionId": 7552787,
+    "useLiveFallback": false,
+    "pickGroupId": "ce325532-1f43-4086-a1cc-150a84358183"
+   }
+  ]
+ },
+ "response": {
+  "liveFallbacks": {},
+  "betBuilderSourceFixtures": {},
+  "contextualInfo": {
+   "resultsContextualInfo": {},
+   "optionsContextualInfo": {}
+  },
+  "betBuilderPricingGroups": {
+   "ce325532-1f43-4086-a1cc-150a84358183": {
+    "groupId": "ce325532-1f43-4086-a1cc-150a84358183",
+    "sgpId": "",
+    "suspensionState": "MarketSuspended",
+    "legInformation": [],
+    "error": "Status: ImproperRequestDataError. ErrorCode: SingleSelectionRequestError. ErrorMessage: Multiple selections must be provided, received 1.",
+    "providerId": "Angstrom"
+   }
+  },
+  "fixturePage": "<trimmed: full fixture tree>"
+ }
+}
