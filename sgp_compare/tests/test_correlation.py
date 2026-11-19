@@ -97,3 +97,10 @@ def test_the_live_smoke_quotes_reproduce():
     assert report.correlation_fair == pytest.approx(0.0587, abs=0.0001)
     assert report.partition_overround == pytest.approx(0.1886, abs=0.0001)
     assert report.fair_unavailable_reason is None
+
+
+def test_a_partition_past_its_envelope_gives_no_factor():
+    report = correlation_report(3.0, [leg_with(0.5), leg_with(0.5)], [3.0, 1.2, 1.2, 3.0], None)
+    assert report.correlation_fair is None
+    assert "so a price is stale or wrong" in report.fair_unavailable_reason
+    assert report.partition_overround == pytest.approx(2 / 3 + 2 / 1.2 - 1)

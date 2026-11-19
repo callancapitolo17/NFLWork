@@ -109,7 +109,7 @@ def test_a_whole_number_line_skips_the_partition():
     venue = FakeVenue(ALL_CELLS, legs=legs)
     result = price_at_venue(venue, GAME, ["a", "b"])
     assert venue.requests == [("a", "b")]
-    assert "is a whole number, so it can push" in result.report.fair_unavailable_reason
+    assert "can push or tie" in result.report.fair_unavailable_reason
 
 
 def test_declined_missing_and_failed_reads_keep_the_requested_legs():
@@ -209,3 +209,40 @@ def test_refusals(server):
     assert request(port, "POST", "/api/price", {"venue": "nope", "game_id": "g1", "leg_ids": []})[0] == 400
     assert request(port, "POST", "/api/price", ["not", "an", "object"])[0] == 400
     assert request(port, "POST", "/api/price", {"venue": "fake", "game_id": "started", "leg_ids": ["a", "b"]})[0] == 400
+
+
+@pytest.mark.parametrize("canonical, pushes", [
+    (CanonicalLeg("FG", "spread", None, "home", -3.0), True),
+    (CanonicalLeg("FG", "spread", None, "home", -12.5), False),
+    (CanonicalLeg("FG", "moneyline", None, "home", None), False),
+    (CanonicalLeg("1H", "moneyline", None, "away", None), True),
+    (CanonicalLeg("FG", "anytime_td", "David Montgomery", "yes", None), False),
+    (CanonicalLeg("FG", "receiving_yards", "Nico Collins", "over", 70.0), True),
+])
+def test_which_legs_can_push(canonical, pushes):
+    from sgp_compare.pricing import _can_push
+    offered = OfferedLeg("x", "m", "c", "s", canonical, -110.0, -110.0, 1.0, "y", "m", True, {})
+    assert _can_push(offered) is pushes
+
+
+def test_a_leg_with_no_other_side_skips_the_partition():
+    legs = [leg("a", None, "m1"), *TWO_MARKETS[2:]]
+    venue = FakeVenue(ALL_CELLS, legs=legs)
+    result = price_at_venue(venue, GAME, ["a", "b"])
+    assert venue.requests == [("a", "b")]
+    assert result.report.fair_unavailable_reason == "side a has no other side at Fake to flip to"
+
+
+def test_three_correlated_legs_read_each_legs_own_share():
+    # Leg chances 0.5 / 0.4 / 0.3, legs a and b positively linked, c independent.
+    joint_ab = {(False, False): 0.28, (False, True): 0.22, (True, False): 0.12, (True, True): 0.38}
+    cells, chance_c = {}, 0.3
+    for a_flip, a in ((False, "a"), (True, "a2")):
+        for b_flip, b in ((False, "b"), (True, "b2")):
+            for c_flip, c in ((False, "c"), (True, "c2")):
+                true = joint_ab[(a_flip, b_flip)] * ((1 - chance_c) if c_flip else chance_c)
+                cells[(a, b, c)] = 1 / (true * 1.12)
+    result = price_at_venue(FakeVenue(cells, legs=THREE_MARKETS), GAME, ["a", "b", "c"])
+    # parlay 0.28 * 0.3 against 0.5 * 0.4 * 0.3: +40%
+    assert result.report.correlation_fair == pytest.approx(0.28 / (0.5 * 0.4) - 1)
+    assert result.report.partition_independent_chance == pytest.approx(0.5 * 0.4 * 0.3)

@@ -117,8 +117,8 @@ def _price_partition(venue: Venue, game: Game, legs: list[OfferedLeg], offered: 
         return None, f"{one_sided[0].side_label} has no other side at {venue.display_name} to flip to"
     pushable = [leg for leg in legs if _can_push(leg)]
     if pushable:
-        return None, (f"{pushable[0].market_label} {pushable[0].side_label} is a whole number, so it can push; "
-                      "its two sides are not every outcome")
+        return None, (f"{pushable[0].market_label} {pushable[0].side_label} can push or tie, "
+                      "so its two sides are not every outcome")
     prices = [quote.best.decimal_odds]
     for flips in partition_flips(len(legs))[1:]:
         cell = [offered[leg.opposite_leg_id] if flip else leg for leg, flip in zip(legs, flips)]
@@ -135,9 +135,14 @@ def _price_partition(venue: Venue, game: Game, legs: list[OfferedLeg], offered: 
 
 
 def _can_push(leg: OfferedLeg) -> bool:
+    """A whole-number line can land exactly; a half or quarter moneyline can be
+    tied (a full-game NFL tie is rare enough to ignore)."""
     canonical = leg.canonical
-    return (canonical is not None and canonical.side in PUSHABLE_SIDES
-            and canonical.line is not None and float(canonical.line).is_integer())
+    if canonical is None or canonical.side not in PUSHABLE_SIDES:
+        return False
+    if canonical.stat == "moneyline":
+        return canonical.period != "FG"
+    return canonical.line is not None and float(canonical.line).is_integer()
 
 
 def _decimal(american_odds: float | None) -> float | None:

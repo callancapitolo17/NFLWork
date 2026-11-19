@@ -224,6 +224,9 @@ function renderResults(results, storeError) {
         el("div", { class: "muted" }, "with vig"),
         rep.raw_unavailable_reason ? el("div", { class: "muted" }, rep.raw_unavailable_reason) : "",
         el("div", { class: pctClass(rep.correlation_fair) }, fmtPct(rep.correlation_fair) + " vig removed"),
+        rep.parlay_fair_chance != null ? el("div", { class: "muted" },
+          "from every outcome combination: parlay " + (rep.parlay_fair_chance * 100).toFixed(1) +
+          "% vs legs multiplied " + (rep.partition_independent_chance * 100).toFixed(1) + "%") : "",
         rep.fair_unavailable_reason ? el("div", { class: "muted" }, rep.fair_unavailable_reason) : "",
         rep.partition_overround != null ? el("div", { class: "muted" }, "parlay vig " + (rep.partition_overround * 100).toFixed(1) + "%") : "")));
     const legTable = el("table", {}, el("tr", {}, el("th", {}, `${r.display_name} leg`), el("th", {}, "Alone"),
