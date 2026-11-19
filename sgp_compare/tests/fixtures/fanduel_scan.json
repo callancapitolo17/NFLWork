@@ -1,0 +1,61 @@
+{
+ "attachments": {
+  "events": {
+   "36305232": {
+    "eventId": 36305232,
+    "key": "EVENT:36305232",
+    "name": "Indianapolis Colts @ Houston Texans",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "countryCode": "GB",
+    "timezone": "GMT",
+    "openDate": "2026-11-20T01:16:00.000Z",
+    "videoAvailable": true
+   },
+   "36305241": {
+    "eventId": 36305241,
+    "key": "EVENT:36305241",
+    "name": "Pittsburgh Steelers @ Philadelphia Eagles",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "countryCode": "GB",
+    "timezone": "GMT",
+    "openDate": "2026-11-22T18:01:00.000Z",
+    "videoAvailable": false
+   },
+   "36305233": {
+    "eventId": 36305233,
+    "key": "EVENT:36305233",
+    "name": "New Orleans Saints @ Chicago Bears",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "countryCode": "GB",
+    "timezone": "GMT",
+    "openDate": "2026-11-22T18:01:00.000Z",
+    "videoAvailable": false
+   },
+   "99000001": {
+    "eventId": 99000001,
+    "name": "NFL 2026/27 - Super Bowl Winner",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "openDate": "2027-02-07T23:30:00.000Z"
+   },
+   "99000002": {
+    "eventId": 99000002,
+    "name": "Dallas Cowboys @ Kansas City Chiefs",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "openDate": "2026-11-19T18:00:00.000Z",
+    "inPlay": true
+   },
+   "99000003": {
+    "eventId": 99000003,
+    "name": "Ohio State Buckeyes @ Michigan Wolverines",
+    "eventTypeId": 6423,
+    "competitionId": 12529073,
+    "openDate": "2026-11-28T17:00:00.000Z"
+   }
+  }
+ }
+}
