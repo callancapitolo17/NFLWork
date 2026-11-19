@@ -1,0 +1,64 @@
+{
+ "sections": [
+  {
+   "title": "Games",
+   "content": {
+    "type": "components",
+    "components": [
+     {
+      "type": "game_event_card",
+      "eventId": "01a1c9ea-d660-7b32-add7-e68933c6ca57",
+      "scheduledStart": "2026-11-22T18:00:00.000Z",
+      "league": "NFL",
+      "eventStatus": "OPEN_PREGAME",
+      "homeTeam": {
+       "id": "c01d5d99-5a6e-4443-97ba-d5ae981f99de",
+       "name": "Carolina Panthers",
+       "symbol": "CAR"
+      },
+      "awayTeam": {
+       "id": "85a1ccd0-6082-42c9-9579-5d45b7c27289",
+       "name": "Baltimore Ravens",
+       "symbol": "BAL"
+      }
+     },
+     {
+      "type": "game_event_card",
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "scheduledStart": "2026-11-20T01:15:00.000Z",
+      "league": "NFL",
+      "eventStatus": "OPEN_PREGAME",
+      "homeTeam": {
+       "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+       "name": "Houston Texans",
+       "symbol": "HOU"
+      },
+      "awayTeam": {
+       "id": "f339c975-d318-4c52-a87d-fa4297584f9f",
+       "name": "Indianapolis Colts",
+       "symbol": "IND"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "title": "Featured Parlays",
+   "content": {
+    "type": "components",
+    "components": [
+     {
+      "type": "featured_parlay_card"
+     }
+    ]
+   }
+  },
+  {
+   "title": "Futures",
+   "content": {
+    "type": "subsections",
+    "subSections": []
+   }
+  }
+ ]
+}
