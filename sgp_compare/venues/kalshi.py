@@ -5,7 +5,8 @@ Kalshi posts no parlay price. A parlay is priced by asking market makers:
     POST   /multivariate_event_collections/KXMVECROSSCATEGORY-R   mint (or look up) the combo
     POST   /communications/rfqs        {market_ticker, target_cost_dollars: 100}
     GET    /communications/quotes?rfq_id=...   polled for up to QUOTE_WINDOW_MAX_SEC
-    DELETE /communications/rfqs/{id}   always, in a finally block
+    DELETE /communications/rfqs/{id}   in a finally block; after an unclear create
+                                       reply, any open RFQ of ours on the combo
 This module has no code that accepts a quote, so it can never bet. Market
 makers do see each RFQ (Cal OK'd that, 2026-11-18). Reads:
     GET /events?series_ticker=KXNFLGAME&status=open&with_nested_markets=true   the games
@@ -14,8 +15,8 @@ makers do see each RFQ (Cal OK'd that, 2026-11-18). Reads:
 All requests are signed (kalshi_common.auth_client) with the key in the
 environment or kalshi_mlb_rfq/.env. No DB I/O.
 
-Kalshi shapes (recon 2026-11-19 on Cal's Mac, IND at HOU, fixtures in
-tests/fixtures/kalshi_recon/):
+Kalshi shapes (recon 2026-11-19 on Cal's Mac, IND at HOU; trimmed copies in
+tests/fixtures/kalshi_*.json):
   * game key "26NOV19INDHOU" = date + AWAY code + HOME code; the KXNFLGAME
     markets end "-IND" / "-HOU" and their yes_sub_title is the team name.
   * a game market's close_time is the scheduled start + 48 h (the rules'
@@ -69,8 +70,9 @@ QUOTE_WINDOW_MAX_SEC = 4.0            # and stop early once the count holds stea
 GAMES_CACHE_SEC = 300
 COLLECTION_CACHE_SEC = 300
 EVENTS_CACHE_SEC = 20                 # the leg picker; pricing always re-reads
-EVENT_READ_WORKERS = 6                # ~33 events per game; Kalshi allows ~20 reads/s
-DECLINE_STATUSES = (400, 404, 409, 422)
+EVENT_READ_WORKERS = 4                # ~33 events per game; the key's read bucket is shared with the MLB taker
+MINT_DECLINE_STATUSES = (400, 422)    # Kalshi refuses legs that can't go together
+GAMES_MAX_PAGES = 5
 MIN_QUOTE_DECIMAL_ODDS = 1.01         # a 0.01c no_bid "quote" returns nothing; not an offer
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / "kalshi_mlb_rfq" / ".env"
 
@@ -154,15 +156,21 @@ def _dollars(value: Any) -> float | None:
 
 def parse_nfl_games(events_payload: dict, now: datetime) -> list[Game]:
     """Not-yet-started NFL games from the KXNFLGAME event list, soonest first."""
+    return [game for game, _ in parse_nfl_games_with_teams(events_payload, now)]
+
+
+def parse_nfl_games_with_teams(events_payload: dict, now: datetime) -> list[tuple[Game, dict[str, str]]]:
+    """Each not-yet-started game with its Kalshi team codes -> names
+    ({"IND": "Indianapolis", "HOU": "Houston"}), soonest first."""
     games = []
     for event in events_payload.get("events") or []:
-        game = _game_from_event(event)
-        if game is not None and game.game_start_time > now:
-            games.append(game)
-    return sorted(games, key=lambda g: g.game_start_time)
+        read = _game_from_event(event)
+        if read is not None and read[0].game_start_time > now:
+            games.append(read)
+    return sorted(games, key=lambda read: read[0].game_start_time)
 
 
-def _game_from_event(event: dict) -> Game | None:
+def _game_from_event(event: dict) -> tuple[Game, dict[str, str]] | None:
     """None (logged) when the event does not read as away-code + home-code."""
     event_ticker = event.get("event_ticker") or ""
     game_key = event_ticker.split("-", 1)[1] if "-" in event_ticker else ""
@@ -174,13 +182,15 @@ def _game_from_event(event: dict) -> Game | None:
         names[code] = market.get("yes_sub_title") or code
         if market.get("close_time"):
             closes.append(datetime.fromisoformat(market["close_time"].replace("Z", "+00:00")))
-    away = next((code for code in names if teams_part.startswith(code)), None)
-    home = next((code for code in names if away and teams_part == away + code), None)
-    if not (away and home and closes):
+    # Every pair, not the first prefix: "LACLA" is LAC at LA, and LA is also a prefix.
+    pairs = [(away, home) for away in names for home in names if away != home and away + home == teams_part]
+    if len(pairs) != 1 or not closes:
         log.warning("kalshi: %s does not read as away+home teams (%s); skipped", event_ticker, sorted(names))
         return None
-    return Game(venue_game_id=game_key, home_team=names[home], away_team=names[away],
-                game_start_time=(min(closes) - GAME_CLOSE_AFTER_START).astimezone(timezone.utc))
+    away, home = pairs[0]
+    start = (min(closes) - GAME_CLOSE_AFTER_START).astimezone(timezone.utc)
+    game = Game(venue_game_id=game_key, home_team=names[home], away_team=names[away], game_start_time=start)
+    return game, {away: names[away], home: names[home]}
 
 
 def combo_event_tickers(collection_payload: dict, game: Game) -> dict[str, int | None]:
@@ -195,9 +205,10 @@ def combo_event_tickers(collection_payload: dict, game: Game) -> dict[str, int |
     return events
 
 
-def parse_legs(game: Game, event_payloads: list[dict], size_max_of_event: dict[str, int | None]) -> list[OfferedLeg]:
-    """Both sides of every active, priced market of the game's combo events."""
-    team_names = _team_names(game, event_payloads)
+def parse_legs(game: Game, team_names: dict[str, str], event_payloads: list[dict],
+               size_max_of_event: dict[str, int | None]) -> list[OfferedLeg]:
+    """Both sides of every active, priced market of the game's combo events.
+    `team_names` is the game's Kalshi team codes -> names (from the game list)."""
     legs: list[OfferedLeg] = []
     for payload in event_payloads:
         event = payload.get("event") or {}
@@ -211,24 +222,6 @@ def parse_legs(game: Game, event_payloads: list[dict], size_max_of_event: dict[s
                                                   size_max_of_event.get(event_ticker)))
         legs.extend(_mark_main_lines(event_legs))
     return legs
-
-
-def _team_names(game: Game, event_payloads: list[dict]) -> dict[str, str]:
-    """Kalshi team code -> name, from the moneyline markets ("-HOU" -> "Houston")."""
-    teams_part = game.venue_game_id[7:]
-    names = {}
-    for payload in event_payloads:
-        for market in payload.get("markets") or (payload.get("event") or {}).get("markets") or []:
-            if market.get("event_ticker", "").startswith(GAME_SERIES + "-"):
-                names[market["ticker"].rsplit("-", 1)[-1]] = market.get("yes_sub_title") or ""
-    if not names:
-        # No moneyline event: fall back to the game's names in ticker order.
-        for code_len in (2, 3, 4):
-            away, home = teams_part[:code_len], teams_part[code_len:]
-            if 2 <= len(home) <= 4:
-                names = {away: game.away_team, home: game.home_team}
-                break
-    return names
 
 
 def _side_of_team(game: Game, team_name: str) -> str | None:
@@ -295,18 +288,19 @@ def _read_market(game: Game, kind: SeriesKind | None, market: dict, team_names: 
     yes_sub = market.get("yes_sub_title") or title
     line = market.get("floor_strike")
     line = float(line) if isinstance(line, (int, float)) else None
-    team_code = market["ticker"].rsplit("-", 1)[-1]
+    # "-HOU", "-HOU14" (spread at 13.5), "-IND17" (team total at 16.5) -> the team code.
+    team_code = market["ticker"].rsplit("-", 1)[-1].rstrip("0123456789")
     team = team_names.get(team_code)
+    unread = MarketReading(kind.label if kind else title, kind.category if kind else "Other",
+                           yes_sub, f"Not {yes_sub}", None, None)
     if kind is None or kind.kind == "other":
-        label = kind.label if kind else title
-        category = kind.category if kind else "Other"
-        return MarketReading(label, category, yes_sub, f"Not {yes_sub}", None, None)
+        return unread
 
     period, category, stat = kind.period, kind.category, kind.stat
+    side = _side_of_team(game, team) if team else None
+    other = {"home": "away", "away": "home"}.get(side)
+    other_name = game.home_team if other == "home" else game.away_team
     if kind.kind == "moneyline":
-        side = _side_of_team(game, team) if team else None
-        other = {"home": "away", "away": "home"}.get(side)
-        other_name = game.home_team if other == "home" else game.away_team
         return MarketReading(kind.label, category, yes_sub, f"No on {yes_sub} (= {other_name})",
                              CanonicalLeg(period, "moneyline", None, side, None) if side else None,
                              CanonicalLeg(period, "moneyline", None, other, None) if other else None)
@@ -316,13 +310,8 @@ def _read_market(game: Game, kind: SeriesKind | None, market: dict, team_names: 
                              CanonicalLeg(period, "win_3way", subject, "yes", None) if subject else None,
                              CanonicalLeg(period, "win_3way", subject, "no", None) if subject else None)
     if kind.kind == "spread" and line is not None:
-        code = market["ticker"].rsplit("-", 1)[-1].rstrip("0123456789")
-        team = team_names.get(code)
-        side = _side_of_team(game, team) if team else None
-        other = {"home": "away", "away": "home"}.get(side)
-        other_name = game.home_team if other == "home" else game.away_team
         if side is None:
-            return MarketReading(kind.label, category, yes_sub, f"Not {yes_sub}", None, None)
+            return unread
         return MarketReading(kind.label, category, f"{team} {-line:+g}", f"{other_name} {line:+g}",
                              CanonicalLeg(period, "spread", None, side, -line),
                              CanonicalLeg(period, "spread", None, other, line))
@@ -331,8 +320,7 @@ def _read_market(game: Game, kind: SeriesKind | None, market: dict, team_names: 
                              CanonicalLeg(period, "total", None, "over", line),
                              CanonicalLeg(period, "total", None, "under", line))
     if kind.kind == "team_total" and line is not None:
-        code = market["ticker"].rsplit("-", 1)[-1].rstrip("0123456789")
-        team = team_names.get(code, yes_sub.split(" over ")[0])
+        team = team or yes_sub.split(" over ")[0]
         return MarketReading(f"{team} {kind.label}", category, f"Over {line:g}", f"Under {line:g}",
                              CanonicalLeg(period, "team_total", team, "over", line),
                              CanonicalLeg(period, "team_total", team, "under", line))
@@ -360,7 +348,7 @@ def _read_market(game: Game, kind: SeriesKind | None, market: dict, team_names: 
         return MarketReading(f"{subject} {kind.label}{suffix}", category + suffix, "YES", "NO",
                              CanonicalLeg(period, stat_name, subject, "yes", None),
                              CanonicalLeg(period, stat_name, subject, "no", None))
-    return MarketReading(title, category, yes_sub, f"Not {yes_sub}", None, None)
+    return unread
 
 
 def _mark_main_lines(legs: list[OfferedLeg]) -> list[OfferedLeg]:
@@ -406,7 +394,9 @@ def selected_markets(legs: list[OfferedLeg]) -> list[dict]:
 def parse_quotes(quotes: list[dict], rfq_id: str, combo_ticker: str) -> tuple[ParlayTier, ...]:
     """Every open quote on our RFQ as a price to buy the combo YES, best first;
     quotes at the same price merge. A quote paying under MIN_QUOTE_DECIMAL_ODDS
-    (YES cost 1 - no_bid, plus fee, near $1) is dropped."""
+    (YES cost 1 - no_bid, plus fee, near $1) is dropped. A tier's max_stake is
+    what one quote fills: about the RFQ's $100, since makers size to it; one
+    RFQ accepts one quote, so same-price quotes take the max, not the sum."""
     stake_at: dict[float, float] = {}
     for quote in quotes:
         if quote.get("status") != "open" or quote.get("rfq_id") != rfq_id or quote.get("market_ticker") != combo_ticker:
@@ -419,7 +409,7 @@ def parse_quotes(quotes: list[dict], rfq_id: str, combo_ticker: str) -> tuple[Pa
         if cost >= 1.0 or 1.0 / cost < MIN_QUOTE_DECIMAL_ODDS:
             continue
         decimal_odds = round(1.0 / cost, 6)
-        stake_at[decimal_odds] = stake_at.get(decimal_odds, 0.0) + (contracts or 0.0) * cost
+        stake_at[decimal_odds] = max(stake_at.get(decimal_odds, 0.0), (contracts or 0.0) * cost)
     return tuple(ParlayTier(odds, round(stake, 2) or None) for odds, stake in sorted(stake_at.items(), reverse=True))
 
 
@@ -481,32 +471,28 @@ class KalshiVenue:
         self._clock = clock
         self._sleep = sleep
         self._lock = threading.Lock()
-        self._games: tuple[float, list[Game]] | None = None
+        self._games: tuple[float, list[tuple[Game, dict[str, str]]]] | None = None
         self._collection: tuple[float, dict] | None = None
         self._events: dict[str, tuple[float, list[dict]]] = {}
 
     def list_games(self) -> list[Game]:
-        with self._lock:
-            cached = self._games
-        if cached and self._clock() - cached[0] < GAMES_CACHE_SEC:
-            return cached[1]
-        payload = self._get(f"/events?series_ticker={GAME_SERIES}&status=open&with_nested_markets=true&limit=200")
-        games = parse_nfl_games(payload, datetime.now(timezone.utc))
-        with self._lock:
-            self._games = (self._clock(), games)
-        return games
+        return [game for game, _ in self._read_games()]
 
     def list_legs(self, game: Game, fresh: bool = False) -> list[OfferedLeg]:
+        team_names = next((teams for listed, teams in self._read_games()
+                           if listed.venue_game_id == game.venue_game_id), None)
+        if team_names is None:
+            raise VenueTransportError(f"Kalshi: {game.label} is not an upcoming KXNFLGAME event")
         size_max_of_event = combo_event_tickers(self._read_collection(), game)
         payloads = self._read_events(game, sorted(size_max_of_event), fresh)
-        return parse_legs(game, payloads, size_max_of_event)
+        return parse_legs(game, team_names, payloads, size_max_of_event)
 
     def price_parlay(self, game: Game, legs: list[OfferedLeg]) -> ParlayQuote | None:
         """Mint the combo, ask for quotes, read them, cancel. Never accepts."""
         api = self._signed_api()
         status, minted, _ = api("POST", f"/multivariate_event_collections/{COLLECTION_TICKER}",
                                 body={"selected_markets": selected_markets(legs)})
-        if status in DECLINE_STATUSES:
+        if status in MINT_DECLINE_STATUSES:
             log.info("kalshi: combo refused (%s): %s", status, str(minted)[:200])
             return None
         if status != 200 or not isinstance(minted, dict) or not minted.get("market_ticker"):
@@ -516,21 +502,22 @@ class KalshiVenue:
         status, created, _ = api("POST", "/communications/rfqs", body={
             "market_ticker": combo_ticker, "rest_remainder": False, "replace_existing": True,
             "target_cost_dollars": f"{RFQ_TARGET_COST_DOLLARS:.2f}"})
-        if status in DECLINE_STATUSES:
-            log.info("kalshi: RFQ refused on %s (%s): %s", combo_ticker, status, str(created)[:200])
-            return None
         if status not in (200, 201) or not isinstance(created, dict) or not created.get("id"):
+            # The combo minted, so this is not "these legs can't combine". An
+            # ambiguous reply may still have created the RFQ: cancel any we
+            # hold on this combo before reporting.
+            self._cancel_open_rfqs_on(api, combo_ticker)
             raise VenueTransportError(f"Kalshi create RFQ: expected 201 with id, got {status}: {str(created)[:200]}")
         rfq_id = created["id"]
 
-        delete_status = None
         try:
             quotes, polls, waited = self._collect_quotes(api, rfq_id)
         finally:
             delete_status = self._delete_rfq(api, rfq_id)
         tiers = parse_quotes(quotes, rfq_id, combo_ticker)
         if not tiers:
-            return None
+            # Raised, not None, so the page says why instead of "would not price".
+            raise VenueTransportError(f"Kalshi: no market maker quoted within {waited:.1f} s")
         raw = {"combo_market_ticker": combo_ticker, "rfq_id": rfq_id,
                "rfq_target_cost_dollars": RFQ_TARGET_COST_DOLLARS, "quote_polls": polls,
                "seconds_waited": round(waited, 2), "delete_status": delete_status,
@@ -550,7 +537,8 @@ class KalshiVenue:
             status, body, _ = api("GET", path)
             if status != 200 or not isinstance(body, dict):
                 raise VenueTransportError(f"Kalshi quotes for RFQ {rfq_id}: expected 200, got {status}: {str(body)[:200]}")
-            previous_count, quotes = len(quotes), body.get("quotes") or []
+            previous_count = len(quotes)
+            quotes = [q for q in body.get("quotes") or [] if q.get("rfq_id") == rfq_id and q.get("status") == "open"]
             polls += 1
             waited = self._clock() - start
             settled = quotes and len(quotes) == previous_count and waited >= QUOTE_WINDOW_MIN_SEC
@@ -566,11 +554,48 @@ class KalshiVenue:
         except VenueTransportError as exc:
             log.error("kalshi: could not cancel RFQ %s: %s: %s", rfq_id, type(exc).__name__, exc)
             return None
-        if status not in (200, 204):
+        expired = status == 400 and isinstance(body, dict) and (body.get("error") or {}).get("code") == "expired"
+        if status not in (200, 204) and not expired:
             log.error("kalshi: cancel RFQ %s: expected 204, got %s: %s", rfq_id, status, str(body)[:200])
         return status
 
+    def _cancel_open_rfqs_on(self, api: KalshiApi, combo_ticker: str) -> None:
+        """Delete every open RFQ of ours on `combo_ticker` (after an unclear create reply)."""
+        try:
+            status, body, _ = api("GET", f"/communications/rfqs?status=open&creator_user_id={self._user_id}&limit=100")
+        except VenueTransportError as exc:
+            log.error("kalshi: could not list open RFQs to clean up %s: %s", combo_ticker, exc)
+            return
+        if status != 200 or not isinstance(body, dict):
+            log.error("kalshi: list open RFQs to clean up %s: expected 200, got %s", combo_ticker, status)
+            return
+        for rfq in body.get("rfqs") or []:
+            if rfq.get("market_ticker") == combo_ticker and rfq.get("id"):
+                self._delete_rfq(api, rfq["id"])
+
     # -- reads
+    def _read_games(self) -> list[tuple[Game, dict[str, str]]]:
+        """Upcoming games with their team codes. The cache is re-filtered on
+        every read, so a game drops out at its start, not up to 5 min later."""
+        with self._lock:
+            cached = self._games
+        if not cached or self._clock() - cached[0] >= GAMES_CACHE_SEC:
+            events: list[dict] = []
+            cursor = ""
+            for _ in range(GAMES_MAX_PAGES):
+                page = self._get(f"/events?series_ticker={GAME_SERIES}&status=open&with_nested_markets=true"
+                                 f"&limit=200&cursor={cursor}")
+                events.extend(page.get("events") or [])
+                cursor = page.get("cursor") or ""
+                if not cursor:
+                    break
+            games = parse_nfl_games_with_teams({"events": events}, datetime.now(timezone.utc))
+            cached = (self._clock(), games)
+            with self._lock:
+                self._games = cached
+        now = datetime.now(timezone.utc)
+        return [(game, teams) for game, teams in cached[1] if game.game_start_time > now]
+
     def _read_collection(self) -> dict:
         with self._lock:
             cached = self._collection

@@ -39,7 +39,9 @@ def game():
 @pytest.fixture
 def legs(game):
     size_max = combo_event_tickers(load("kalshi_collection.json"), game)
-    return {(leg.market_label, leg.side_label): leg for leg in parse_legs(game, load("kalshi_events_ind_hou.json"), size_max)}
+    teams = {"IND": "Indianapolis", "HOU": "Houston"}
+    return {(leg.market_label, leg.side_label): leg
+            for leg in parse_legs(game, teams, load("kalshi_events_ind_hou.json"), size_max)}
 
 
 def test_games_read_away_then_home_and_start_48h_before_close(game):
@@ -128,8 +130,9 @@ def test_quotes_buy_yes_at_one_minus_no_bid_best_first():
 class FakeKalshi:
     """Answers the adapter's signed calls from the fixtures and records them."""
 
-    def __init__(self, mint_status=200, quotes_status=200, quotes=None):
+    def __init__(self, mint_status=200, quotes_status=200, quotes=None, rfq_status=201):
         self.calls = []
+        self.rfq_status = rfq_status
         self.mint_status = mint_status
         self.quotes_status = quotes_status
         self.quotes = load("kalshi_quotes_spread_over.json")["quotes"] if quotes is None else quotes
@@ -150,7 +153,10 @@ class FakeKalshi:
                                       else {"error": {"code": "invalid"}}), {}
         if method == "POST" and path == "/communications/rfqs":
             self.rfqs += 1
-            return 201, {"id": RFQ_ID}, {}
+            return self.rfq_status, ({"id": RFQ_ID} if self.rfq_status == 201 else {"error": {"code": "x"}}), {}
+        if method == "GET" and path.startswith("/communications/rfqs?status=open"):
+            return 200, {"rfqs": [{"id": "leaked-1", "market_ticker": COMBO},
+                                  {"id": "other-1", "market_ticker": "KXMVECROSSCATEGORY-S-OTHER"}]}, {}
         if method == "GET" and path.startswith("/communications/quotes?"):
             return self.quotes_status, {"quotes": self.quotes}, {}
         if method == "DELETE":
@@ -201,12 +207,32 @@ def test_price_parlay_asks_reads_and_always_cancels():
     assert quote.raw["seconds_waited"] == pytest.approx(1.5)
 
 
-def test_no_quotes_is_a_decline_and_still_cancels():
+def test_no_quotes_waits_the_full_window_says_so_and_still_cancels():
     fake = FakeKalshi(quotes=[])
     venue = venue_on(fake)
     game, legs = two_legs(venue)
-    assert venue.price_parlay(game, legs) is None
+    with pytest.raises(VenueTransportError, match="no market maker quoted within 4.0 s"):
+        venue.price_parlay(game, legs)
+    assert len([c for c in fake.calls if c[1].startswith("/communications/quotes?")]) == 8
     assert len(fake.deletes()) == 1
+
+
+def test_an_unclear_rfq_create_reply_cancels_any_rfq_it_made():
+    fake = FakeKalshi(rfq_status=503)
+    venue = venue_on(fake)
+    game, legs = two_legs(venue)
+    with pytest.raises(VenueTransportError, match="create RFQ: expected 201"):
+        venue.price_parlay(game, legs)
+    # The open-RFQ list holds one on our combo and one on another; only ours goes.
+    assert fake.deletes() == [("DELETE", "/communications/rfqs/leaked-1", None)]
+
+
+def test_a_refused_rfq_create_is_an_error_not_a_decline():
+    fake = FakeKalshi(rfq_status=409)
+    venue = venue_on(fake)
+    game, legs = two_legs(venue)
+    with pytest.raises(VenueTransportError, match="409"):
+        venue.price_parlay(game, legs)
 
 
 def test_a_failed_quote_read_still_cancels():
@@ -234,6 +260,10 @@ def test_price_at_venue_prices_every_combination_one_rfq_each():
     assert result.status == "priced"
     assert fake.rfqs == 4 and len(fake.deletes()) == 4
     assert result.partition_decimal_odds is not None and len(result.partition_decimal_odds) == 4
+    mint_sides = [[leg["side"] for leg in body["selected_markets"]] for method, path, body in fake.calls
+                  if method == "POST" and path.startswith("/multivariate_event_collections/")]
+    # Each combination flips a leg to the NO of its own market (partition_flips order).
+    assert mint_sides == [["yes", "yes"], ["yes", "no"], ["no", "yes"], ["no", "no"]]
 
 
 def test_missing_credentials_name_what_to_set(tmp_path, monkeypatch):
@@ -241,6 +271,37 @@ def test_missing_credentials_name_what_to_set(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(VenueTransportError, match="KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_PATH, KALSHI_USER_ID"):
         _signed_api_from_env(tmp_path / "missing.env")
+
+
+def test_team_codes_that_prefix_each_other_still_pair():
+    event = {"event_ticker": "KXNFLGAME-26NOV22LACLA", "markets": [
+        {"ticker": "KXNFLGAME-26NOV22LACLA-LA", "yes_sub_title": "Los Angeles R", "close_time": "2026-11-24T21:25:00Z"},
+        {"ticker": "KXNFLGAME-26NOV22LACLA-LAC", "yes_sub_title": "Los Angeles C", "close_time": "2026-11-24T21:25:00Z"}]}
+    games = parse_nfl_games({"events": [event]}, BEFORE_KICKOFF)
+    assert [(g.away_team, g.home_team) for g in games] == [("Los Angeles C", "Los Angeles R")]
+
+
+def test_a_game_drops_out_of_the_cached_list_at_kickoff(monkeypatch):
+    import sgp_compare.venues.kalshi as kalshi_module
+    venue = venue_on(FakeKalshi())
+    assert venue.list_games()[0].venue_game_id == "26NOV19INDHOU"
+
+    class AfterKickoff(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 20, 1, 16, tzinfo=timezone.utc)
+    monkeypatch.setattr(kalshi_module, "datetime", AfterKickoff)
+    assert "26NOV19INDHOU" not in [g.venue_game_id for g in venue.list_games()]
+
+
+def test_same_price_quotes_take_one_quotes_size_not_the_sum():
+    base = {"rfq_id": RFQ_ID, "market_ticker": COMBO, "status": "open", "no_bid_dollars": "0.7220"}
+    quotes = [{**base, "no_contracts_fp": "342.34"}, {**base, "no_contracts_fp": "342.34"},
+              {**base, "status": "cancelled", "no_bid_dollars": "0.9000", "no_contracts_fp": "1000"},
+              {**base, "market_ticker": "OTHER", "no_bid_dollars": "0.9000", "no_contracts_fp": "1000"},
+              {**base, "no_bid_dollars": None, "no_contracts_fp": "10"}]
+    (tier,) = parse_quotes(quotes, RFQ_ID, COMBO)
+    assert tier.max_stake == pytest.approx(342.34 * all_in_price(0.278), abs=0.01)
 
 
 def test_kalshi_is_a_venue():

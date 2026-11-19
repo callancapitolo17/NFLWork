@@ -48,7 +48,7 @@ number), tap one side per market, press **Price**.
 | Venue | Status |
 |---|---|
 | ProphetX | Live (PR 1). Parlay = `POST /parlay/public/api/v1/user/request` with stake 1, a price request only. |
-| Kalshi | Live (PR 3). Parlay = mint the combo, `POST /communications/rfqs` for $100, read the makers' quotes for 1.5-4 s, `DELETE` the RFQ. Never accepted; makers see each RFQ, so a 3-leg vig-removed factor sends 8. Each quote is a tier (YES cost = 1 - the maker's no_bid, plus fee), each good up to the $100 asked. |
+| Kalshi | Live (PR 3). Parlay = mint the combo, `POST /communications/rfqs` for $100, read the makers' quotes for 1.5-4 s, `DELETE` the RFQ. Never accepted; makers see each RFQ, so a 3-leg vig-removed factor sends 8. Each quote price is a tier (YES cost = 1 - the maker's no_bid, plus fee), good up to the $100 asked (one RFQ fills one quote). The fee is not an even margin, so the vig-removed factor carries a small bias (about -0.5% relative on a longshot cell). Runs on the MLB taker's key, so a taker restart mid-click can cancel the RFQ (it then reads no quotes). |
 | Novig, Polymarket US | Next, one thread each (Novig relays DK/FD/MGM/CZR prices). |
 | DraftKings, FanDuel, BetMGM, Caesars | After the prediction markets. |
 
@@ -74,6 +74,8 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX and 2026-11-19 Kalshi rec
 - **Kalshi "credentials missing"**: set `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`
   and `KALSHI_USER_ID` in the environment or `kalshi_mlb_rfq/.env`.
 - **Kalshi "would not price this combination"**: Kalshi refused the combo (some legs
-  can't go together) or no maker quoted within 4 s.
+  can't go together).
+- **Kalshi "no market maker quoted within 4.0 s"**: nobody answered the RFQ (thin game,
+  or the MLB taker restarted and cancelled it); try again.
 - **"Kalshi: could not cancel RFQ" in the log**: the RFQ stays open until Kalshi expires
   it; nothing can fill without an accept, which this tool never sends.
