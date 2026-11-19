@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SGP Compare</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e3e2dd;
+          --accent:#2457c5; --pos:#1a7f37; --neg:#b42318; --chip:#eef2fb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141413; --card:#1f1f1d; --ink:#ecebe6; --muted:#9b9a93; --line:#33332f;
+            --accent:#7aa2ff; --pos:#4ac26b; --neg:#ff7b72; --chip:#26304a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:16px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { main { grid-template-columns: 1.3fr 1fr; } }
+  h1 { font-size:20px; margin:0; } h2 { font-size:16px; margin:0 0 8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  select, input[type=search] { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+          background:var(--card); color:var(--ink); min-width:0; flex:1; }
+  button { font:inherit; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--ink);
+          padding:5px 8px; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  .muted { color:var(--muted); font-size:13px; }
+  .market { border-top:1px solid var(--line); padding:8px 0; }
+  .market-name { font-weight:600; }
+  .sides { display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-top:4px; }
+  .side { text-align:left; display:flex; justify-content:space-between; gap:6px; }
+  .side.on { background:var(--chip); border-color:var(--accent); }
+  .odds { font-variant-numeric: tabular-nums; }
+  details > summary { cursor:pointer; font-weight:600; padding:6px 0; }
+  .slip-leg { display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-bottom:1px solid var(--line); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; color:var(--muted); font-weight:600; }
+  .big { font-size:18px; font-weight:700; }
+  .pos { color:var(--pos); } .neg { color:var(--neg); }
+  .err { color:var(--neg); }
+  .scroll { max-height:70vh; overflow:auto; }
+</style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <div class="row" style="margin-bottom:8px"><h1>SGP Compare · NFL</h1></div>
+    <div class="row"><select id="game"><option>Loading games…</option></select></div>
+    <div class="row" style="margin-top:8px">
+      <input type="search" id="search" placeholder="Search a player, team or market">
+      <label class="muted"><input type="checkbox" id="alts"> alt lines</label>
+    </div>
+    <p id="legs-status" class="muted"></p>
+    <div id="markets" class="scroll"></div>
+  </section>
+
+  <section style="display:grid; gap:16px; align-content:start">
+    <div class="card">
+      <h2>Your parlay</h2>
+      <div id="slip"><p class="muted">Tap a side to add a leg (one line per market).</p></div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="price" disabled>Price</button>
+        <button id="clear">Clear</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Prices</h2>
+      <p class="muted">Correlation factor = how much more often the venue thinks your legs hit together
+        than if they had nothing to do with each other. +19% means 19% more often; negative means they work against each other.</p>
+      <div id="results"><p class="muted">Nothing priced yet.</p></div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+const state = { venue: null, games: [], legs: [], slip: [] };
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const child of children) node.append(child instanceof Node ? child : document.createTextNode(child ?? ""));
+  return node;
+}
+const fmtAmerican = (a) => a == null ? "–" : (a > 0 ? "+" : "") + Math.round(a);
+const decimalToAmerican = (d) => d >= 2 ? (d - 1) * 100 : -100 / (d - 1);
+const chanceToAmerican = (p) => p ? fmtAmerican(decimalToAmerican(1 / p)) : "–";
+const fmtPct = (x) => x == null ? "–" : (x > 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
+const pctClass = (x) => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || response.statusText);
+  return body;
+}
+
+async function loadGames() {
+  const body = await api("/api/games");
+  state.venue = Object.keys(body.venues)[0];
+  const entry = body.by_venue[state.venue];
+  state.games = entry.games;
+  const select = $("game");
+  select.replaceChildren();
+  if (entry.error) { select.append(el("option", {}, "Error: " + entry.error)); return; }
+  for (const g of state.games) {
+    const when = new Date(g.game_start_time).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    select.append(el("option", { value: g.game_id }, `${g.label} · ${when}`));
+  }
+  if (state.games.length) loadLegs();
+}
+
+async function loadLegs() {
+  state.slip = []; renderSlip();
+  $("legs-status").textContent = "Loading markets…";
+  try {
+    const body = await api(`/api/legs?venue=${encodeURIComponent(state.venue)}&game_id=${encodeURIComponent($("game").value)}`);
+    state.legs = body.legs; mainKeyCache = null;
+    $("legs-status").textContent = `${body.legs.length} legs at ${state.venue}`;
+  } catch (e) { state.legs = []; mainKeyCache = null; $("legs-status").textContent = "Error: " + e.message; }
+  renderMarkets();
+}
+
+function renderMarkets() {
+  const query = $("search").value.trim().toLowerCase();
+  const showAlts = $("alts").checked;
+  const byCategory = new Map();
+  for (const leg of state.legs) {
+    if (!showAlts && !leg.is_main_line && hasMainLine(leg.market_key)) continue;
+    const text = (leg.market_label + " " + leg.side_label + " " + leg.category).toLowerCase();
+    if (query && !text.includes(query)) continue;
+    if (!byCategory.has(leg.category)) byCategory.set(leg.category, new Map());
+    const markets = byCategory.get(leg.category);
+    if (!markets.has(leg.market_label)) markets.set(leg.market_label, []);
+    markets.get(leg.market_label).push(leg);
+  }
+  const container = $("markets");
+  container.replaceChildren();
+  for (const [category, markets] of byCategory) {
+    const details = el("details", query || category === "Game Lines" ? { open: "" } : {}, el("summary", {}, category));
+    for (const [label, legs] of markets) {
+      const block = el("div", { class: "market" }, el("div", { class: "market-name" }, label));
+      const sides = el("div", { class: "sides" });
+      for (const leg of legs) {
+        const on = state.slip.some((s) => s.leg_id === leg.leg_id);
+        sides.append(el("button", { class: "side" + (on ? " on" : ""), onclick: () => toggleLeg(leg) },
+          el("span", {}, leg.side_label), el("span", { class: "odds" }, fmtAmerican(leg.american_odds))));
+      }
+      block.append(sides);
+      details.append(block);
+    }
+    container.append(details);
+  }
+  if (!byCategory.size) container.append(el("p", { class: "muted" }, "No legs match."));
+}
+
+const mainKeys = () => new Set(state.legs.filter((l) => l.is_main_line).map((l) => l.market_key));
+let mainKeyCache = null;
+function hasMainLine(marketKey) { mainKeyCache = mainKeyCache || mainKeys(); return mainKeyCache.has(marketKey); }
+
+function toggleLeg(leg) {
+  const existing = state.slip.findIndex((s) => s.leg_id === leg.leg_id);
+  if (existing >= 0) state.slip.splice(existing, 1);
+  else {
+    state.slip = state.slip.filter((s) => s.market_key !== leg.market_key);  // one line per market
+    state.slip.push(leg);
+  }
+  renderSlip(); renderMarkets();
+}
+
+function renderSlip() {
+  const slip = $("slip");
+  slip.replaceChildren();
+  if (!state.slip.length) slip.append(el("p", { class: "muted" }, "Tap a side to add a leg (one line per market)."));
+  for (const leg of state.slip) {
+    slip.append(el("div", { class: "slip-leg" },
+      el("span", {}, `${leg.market_label}: ${leg.side_label}`),
+      el("span", { class: "odds" }, fmtAmerican(leg.american_odds), " ",
+        el("button", { onclick: () => toggleLeg(leg), "aria-label": "remove" }, "×"))));
+  }
+  $("price").disabled = state.slip.length < 2;
+}
+
+async function priceParlay() {
+  $("price").disabled = true;
+  $("results").replaceChildren(el("p", { class: "muted" }, "Pricing… (2-3 legs also price every outcome combination to remove the vig)"));
+  try {
+    const body = await api("/api/price", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ venue: state.venue, game_id: $("game").value, leg_ids: state.slip.map((l) => l.leg_id) }) });
+    renderResults(body.results);
+  } catch (e) { $("results").replaceChildren(el("p", { class: "err" }, "Error: " + e.message)); }
+  $("price").disabled = state.slip.length < 2;
+}
+
+function renderResults(results) {
+  const table = el("table", {}, el("tr", {},
+    el("th", {}, "Venue"), el("th", {}, "Parlay price"), el("th", {}, "Legs as separate bets"),
+    el("th", {}, "Correlation factor")));
+  const details = [];
+  for (const r of results) {
+    if (r.status !== "priced") {
+      table.append(el("tr", {}, el("td", {}, r.display_name), el("td", { colspan: "3", class: "err" }, r.detail)));
+      continue;
+    }
+    const rep = r.report, best = r.tiers[0];
+    const tiers = r.tiers.map((t) => `${fmtAmerican(decimalToAmerican(t.decimal_odds))} up to $${Math.round(t.max_stake ?? 0)}`).join(", ");
+    table.append(el("tr", {},
+      el("td", {}, r.display_name),
+      el("td", {}, el("div", { class: "big odds" }, fmtAmerican(decimalToAmerican(best.decimal_odds))), el("div", { class: "muted" }, tiers)),
+      el("td", {}, el("div", { class: "odds" }, chanceToAmerican(rep.independent_raw_chance)),
+        el("div", { class: "muted" }, "no vig " + chanceToAmerican(rep.independent_fair_chance))),
+      el("td", {}, el("div", { class: "big " + pctClass(rep.correlation_raw) }, fmtPct(rep.correlation_raw)),
+        el("div", { class: "muted" }, "with vig"),
+        el("div", { class: pctClass(rep.correlation_fair) }, fmtPct(rep.correlation_fair) + " vig removed"),
+        rep.fair_unavailable_reason ? el("div", { class: "muted" }, rep.fair_unavailable_reason) : "",
+        rep.partition_overround != null ? el("div", { class: "muted" }, "parlay vig " + (rep.partition_overround * 100).toFixed(1) + "%") : "")));
+    const legTable = el("table", {}, el("tr", {}, el("th", {}, `${r.display_name} leg`), el("th", {}, "Alone"),
+      el("th", {}, "Other side"), el("th", {}, "Inside parlay")));
+    for (const leg of r.legs) {
+      legTable.append(el("tr", {}, el("td", {}, `${leg.market_label}: ${leg.side_label}`),
+        el("td", { class: "odds" }, fmtAmerican(leg.american_odds)), el("td", { class: "odds" }, fmtAmerican(leg.opposite_american_odds)),
+        el("td", { class: "odds" }, fmtAmerican(leg.price_inside_parlay))));
+    }
+    details.push(legTable);
+  }
+  $("results").replaceChildren(table, ...details.map((t) => el("div", { style: "margin-top:12px" }, t)));
+}
+
+$("game").addEventListener("change", loadLegs);
+$("search").addEventListener("input", renderMarkets);
+$("alts").addEventListener("change", renderMarkets);
+$("price").addEventListener("click", priceParlay);
+$("clear").addEventListener("click", () => { state.slip = []; renderSlip(); renderMarkets(); });
+loadGames().catch((e) => { $("game").replaceChildren(el("option", {}, "Error: " + e.message)); });
+</script>
+</body>
+</html>

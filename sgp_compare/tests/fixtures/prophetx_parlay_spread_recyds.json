@@ -1,0 +1,45 @@
+{
+ "request": {
+  "marketLines": [
+   {
+    "sportEventId": 1700008817,
+    "marketId": 223,
+    "outcomeId": 1714,
+    "lineId": "7342bc136571bb4c9584fd65c027c042",
+    "line": -12.5
+   },
+   {
+    "sportEventId": 1700008817,
+    "marketId": 1700053320,
+    "outcomeId": 12,
+    "lineId": "cc5716f9a81807e8f3e6c18504282648",
+    "line": 70.5
+   }
+  ],
+  "stake": 1
+ },
+ "status": 200,
+ "response": {
+  "success": true,
+  "data": {
+   "parlayId": "01a1f19f-6c47-75a6-b59f-af81eb24455e",
+   "parlayRequestId": "01a1f19f-6c47-75ab-b26c-965e70e56fb6",
+   "offers": [
+    {
+     "odds": 217.29841909,
+     "stake": 1500,
+     "estimatedPrices": [
+      {
+       "lineId": "7342bc136571bb4c9584fd65c027c042",
+       "odds": -129
+      },
+      {
+       "lineId": "cc5716f9a81807e8f3e6c18504282648",
+       "odds": -127
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

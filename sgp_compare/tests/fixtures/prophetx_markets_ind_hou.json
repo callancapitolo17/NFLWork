@@ -1,0 +1,1271 @@
+{
+ "data": {
+  "markets": [
+   {
+    "id": 66,
+    "name": "First Half Spread",
+    "status": "active",
+    "totalStake": 25479.539999999994,
+    "sportEventId": 1700008817,
+    "type": "spread",
+    "marketLines": [
+     {
+      "id": 66,
+      "name": "Fixed home -6.5",
+      "selections": [
+       [
+        {
+         "id": 1714,
+         "name": "Houston Texans -6.5",
+         "displayName": "Houston Texans -6.5",
+         "competitorId": 1700004938,
+         "odds": -120,
+         "line": -6.5,
+         "displayOdds": "-120",
+         "displayLine": "-6.5",
+         "value": 85.63,
+         "stake": 71.36,
+         "lineID": "9ce36cb6876b9cdd18ff589e58a9c285",
+         "isMain": true,
+         "abbreviatedName": "HOU -6.5"
+        },
+        {
+         "id": 1714,
+         "name": "Houston Texans -6.5",
+         "displayName": "Houston Texans -6.5",
+         "competitorId": 1700004938,
+         "odds": -121,
+         "line": -6.5,
+         "displayOdds": "-121",
+         "displayLine": "-6.5",
+         "value": 783.5,
+         "stake": 647.52,
+         "lineID": "9ce36cb6876b9cdd18ff589e58a9c285",
+         "isMain": true,
+         "abbreviatedName": "HOU -6.5"
+        }
+       ],
+       [
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +6.5",
+         "displayName": "Indianapolis Colts +6.5",
+         "competitorId": 1700004960,
+         "odds": 111,
+         "line": 6.5,
+         "displayOdds": "+111",
+         "displayLine": "+6.5",
+         "value": 28.44,
+         "stake": 31.57,
+         "lineID": "dbac1d040f8e1dc82b37d72b83bd9f0d",
+         "isMain": true,
+         "abbreviatedName": "IND +6.5"
+        },
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +6.5",
+         "displayName": "Indianapolis Colts +6.5",
+         "competitorId": 1700004960,
+         "odds": 110,
+         "line": 6.5,
+         "displayOdds": "+110",
+         "displayLine": "+6.5",
+         "value": 85.24,
+         "stake": 93.76,
+         "lineID": "dbac1d040f8e1dc82b37d72b83bd9f0d",
+         "isMain": true,
+         "abbreviatedName": "IND +6.5"
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 1714,
+        "name": "Houston Texans -6.5",
+        "displayName": "Houston Texans -6.5",
+        "competitorId": 1700004938,
+        "line": -6.5,
+        "displayLine": "-6.5",
+        "lineID": "9ce36cb6876b9cdd18ff589e58a9c285",
+        "isMain": true,
+        "abbreviatedName": "HOU -6.5"
+       },
+       {
+        "id": 1715,
+        "name": "Indianapolis Colts +6.5",
+        "displayName": "Indianapolis Colts +6.5",
+        "competitorId": 1700004960,
+        "line": 6.5,
+        "displayLine": "+6.5",
+        "lineID": "dbac1d040f8e1dc82b37d72b83bd9f0d",
+        "isMain": true,
+        "abbreviatedName": "IND +6.5"
+       }
+      ],
+      "type": "spread",
+      "favourite": true,
+      "highRisk": true,
+      "highRiskSource": "auto"
+     },
+     {
+      "id": 66,
+      "name": "Fixed home -12.5",
+      "selections": [
+       [
+        {
+         "id": 1714,
+         "name": "Houston Texans -12.5",
+         "displayName": "Houston Texans -12.5",
+         "competitorId": 1700004938,
+         "odds": 225,
+         "line": -12.5,
+         "displayOdds": "+225",
+         "displayLine": "-12.5",
+         "value": 153.33,
+         "stake": 345,
+         "lineID": "6cbde3b560833202ecd398bf0fdbf40b",
+         "isMain": false,
+         "abbreviatedName": "HOU -12.5"
+        }
+       ],
+       [
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +12.5",
+         "displayName": "Indianapolis Colts +12.5",
+         "competitorId": 1700004960,
+         "odds": -315,
+         "line": 12.5,
+         "displayOdds": "-315",
+         "displayLine": "+12.5",
+         "value": 378,
+         "stake": 120,
+         "lineID": "53524edb1a574ddb0e93545485244748",
+         "isMain": false,
+         "abbreviatedName": "IND +12.5"
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 1714,
+        "name": "Houston Texans -12.5",
+        "displayName": "Houston Texans -12.5",
+        "competitorId": 1700004938,
+        "line": -12.5,
+        "displayLine": "-12.5",
+        "lineID": "6cbde3b560833202ecd398bf0fdbf40b",
+        "isMain": false,
+        "abbreviatedName": "HOU -12.5"
+       },
+       {
+        "id": 1715,
+        "name": "Indianapolis Colts +12.5",
+        "displayName": "Indianapolis Colts +12.5",
+        "competitorId": 1700004960,
+        "line": 12.5,
+        "displayLine": "+12.5",
+        "lineID": "53524edb1a574ddb0e93545485244748",
+        "isMain": false,
+        "abbreviatedName": "IND +12.5"
+       }
+      ],
+      "type": "spread",
+      "highRisk": true,
+      "highRiskSource": "auto"
+     },
+     {
+      "id": 66,
+      "name": "Fixed home -16.5",
+      "selections": [
+       [
+        {
+         "id": 1714,
+         "name": "Houston Texans -16.5",
+         "displayName": "Houston Texans -16.5",
+         "competitorId": 1700004938,
+         "odds": 430,
+         "line": -16.5,
+         "displayOdds": "+430",
+         "displayLine": "-16.5",
+         "value": 94.19,
+         "stake": 405,
+         "lineID": "387b772021324eb621686f16dd3fbc04",
+         "isMain": false,
+         "abbreviatedName": "HOU -16.5"
+        },
+        {
+         "id": 1714,
+         "name": "Houston Texans -16.5",
+         "displayName": "Houston Texans -16.5",
+         "competitorId": 1700004938,
+         "odds": 134,
+         "line": -16.5,
+         "displayOdds": "+134",
+         "displayLine": "-16.5",
+         "value": 50,
+         "stake": 67,
+         "lineID": "387b772021324eb621686f16dd3fbc04",
+         "isMain": false,
+         "abbreviatedName": "HOU -16.5"
+        }
+       ],
+       [
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +16.5",
+         "displayName": "Indianapolis Colts +16.5",
+         "competitorId": 1700004960,
+         "odds": -730,
+         "line": 16.5,
+         "displayOdds": "-730",
+         "displayLine": "+16.5",
+         "value": 438,
+         "stake": 60,
+         "lineID": "b332811fba2ce735d965a64159e62133",
+         "isMain": false,
+         "abbreviatedName": "IND +16.5"
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 1714,
+        "name": "Houston Texans -16.5",
+        "displayName": "Houston Texans -16.5",
+        "competitorId": 1700004938,
+        "line": -16.5,
+        "displayLine": "-16.5",
+        "lineID": "387b772021324eb621686f16dd3fbc04",
+        "isMain": false,
+        "abbreviatedName": "HOU -16.5"
+       },
+       {
+        "id": 1715,
+        "name": "Indianapolis Colts +16.5",
+        "displayName": "Indianapolis Colts +16.5",
+        "competitorId": 1700004960,
+        "line": 16.5,
+        "displayLine": "+16.5",
+        "lineID": "b332811fba2ce735d965a64159e62133",
+        "isMain": false,
+        "abbreviatedName": "IND +16.5"
+       }
+      ],
+      "type": "spread",
+      "highRisk": true,
+      "highRiskSource": "auto"
+     }
+    ],
+    "subType": "first_half_spread",
+    "categoryID": 4,
+    "categoryName": "First Half",
+    "highRisk": true,
+    "highRiskSource": "auto"
+   },
+   {
+    "id": 219,
+    "name": "Moneyline",
+    "status": "active",
+    "selections": [
+     [
+      {
+       "id": 4,
+       "name": "Houston Texans -570",
+       "displayName": "Houston Texans -570",
+       "competitorId": 1700004938,
+       "odds": -570,
+       "line": 0,
+       "displayOdds": "-570",
+       "value": 26106.86,
+       "stake": 4992.45,
+       "lineID": "ce1ffe13780d66121d58269e19fe0aa1",
+       "abbreviatedName": "HOU -570"
+      },
+      {
+       "id": 4,
+       "name": "Houston Texans -580",
+       "displayName": "Houston Texans -580",
+       "competitorId": 1700004938,
+       "odds": -580,
+       "line": 0,
+       "displayOdds": "-580",
+       "value": 5790.08,
+       "stake": 2514.73,
+       "lineID": "ce1ffe13780d66121d58269e19fe0aa1",
+       "abbreviatedName": "HOU -580"
+      }
+     ],
+     [
+      {
+       "id": 5,
+       "name": "Indianapolis Colts +550",
+       "displayName": "Indianapolis Colts +550",
+       "competitorId": 1700004960,
+       "odds": 550,
+       "line": 0,
+       "displayOdds": "+550",
+       "value": 879.77,
+       "stake": 20149.35,
+       "lineID": "ddc7c2461afce21419a0654de0f95be0",
+       "abbreviatedName": "IND +550"
+      },
+      {
+       "id": 5,
+       "name": "Indianapolis Colts +540",
+       "displayName": "Indianapolis Colts +540",
+       "competitorId": 1700004960,
+       "odds": 540,
+       "line": 0,
+       "displayOdds": "+540",
+       "value": 44.38,
+       "stake": 2219.41,
+       "lineID": "ddc7c2461afce21419a0654de0f95be0",
+       "abbreviatedName": "IND +540"
+      }
+     ]
+    ],
+    "outcomes": [
+     {
+      "id": 4,
+      "competitorId": 1700004938,
+      "lineID": "ce1ffe13780d66121d58269e19fe0aa1"
+     },
+     {
+      "id": 5,
+      "competitorId": 1700004960,
+      "lineID": "ddc7c2461afce21419a0654de0f95be0"
+     }
+    ],
+    "totalStake": 116959.35999999999,
+    "sportEventId": 1700008817,
+    "type": "moneyline",
+    "subType": "moneyline",
+    "categoryID": 3,
+    "categoryName": "Game Lines",
+    "highRisk": false
+   },
+   {
+    "id": 223,
+    "name": "Spread",
+    "status": "active",
+    "totalStake": 218597.03000000017,
+    "sportEventId": 1700008817,
+    "type": "spread",
+    "marketLines": [
+     {
+      "id": 223,
+      "name": "Fixed home -12.5",
+      "selections": [
+       [
+        {
+         "id": 1714,
+         "name": "Houston Texans -12.5",
+         "displayName": "Houston Texans -12.5",
+         "competitorId": 1700004938,
+         "odds": 100,
+         "line": -12.5,
+         "displayOdds": "+100",
+         "displayLine": "-12.5",
+         "value": 783.54,
+         "stake": 838.54,
+         "lineID": "7342bc136571bb4c9584fd65c027c042",
+         "isMain": true,
+         "abbreviatedName": "HOU -12.5"
+        },
+        {
+         "id": 1714,
+         "name": "Houston Texans -12.5",
+         "displayName": "Houston Texans -12.5",
+         "competitorId": 1700004938,
+         "odds": -101,
+         "line": -12.5,
+         "displayOdds": "-101",
+         "displayLine": "-12.5",
+         "value": 1029.21,
+         "stake": 1266.54,
+         "lineID": "7342bc136571bb4c9584fd65c027c042",
+         "isMain": true,
+         "abbreviatedName": "HOU -12.5"
+        }
+       ],
+       [
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +12.5",
+         "displayName": "Indianapolis Colts +12.5",
+         "competitorId": 1700004960,
+         "odds": -105,
+         "line": 12.5,
+         "displayOdds": "-105",
+         "displayLine": "+12.5",
+         "value": 1547.41,
+         "stake": 1473.72,
+         "lineID": "1d42eb578b743760ee8aba45e351d389",
+         "isMain": true,
+         "abbreviatedName": "IND +12.5"
+        },
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +12.5",
+         "displayName": "Indianapolis Colts +12.5",
+         "competitorId": 1700004960,
+         "odds": -106,
+         "line": 12.5,
+         "displayOdds": "-106",
+         "displayLine": "+12.5",
+         "value": 5135.7,
+         "stake": 4845,
+         "lineID": "1d42eb578b743760ee8aba45e351d389",
+         "isMain": true,
+         "abbreviatedName": "IND +12.5"
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 1714,
+        "name": "Houston Texans -12.5",
+        "displayName": "Houston Texans -12.5",
+        "competitorId": 1700004938,
+        "line": -12.5,
+        "displayLine": "-12.5",
+        "lineID": "7342bc136571bb4c9584fd65c027c042",
+        "isMain": true,
+        "abbreviatedName": "HOU -12.5"
+       },
+       {
+        "id": 1715,
+        "name": "Indianapolis Colts +12.5",
+        "displayName": "Indianapolis Colts +12.5",
+        "competitorId": 1700004960,
+        "line": 12.5,
+        "displayLine": "+12.5",
+        "lineID": "1d42eb578b743760ee8aba45e351d389",
+        "isMain": true,
+        "abbreviatedName": "IND +12.5"
+       }
+      ],
+      "type": "spread",
+      "favourite": true,
+      "highRisk": false
+     },
+     {
+      "id": 223,
+      "name": "Fixed home -20.5",
+      "selections": [
+       [
+        {
+         "id": 1714,
+         "name": "Houston Texans -20.5",
+         "displayName": "Houston Texans -20.5",
+         "competitorId": 1700004938,
+         "odds": 250,
+         "line": -20.5,
+         "displayOdds": "+250",
+         "displayLine": "-20.5",
+         "value": 606.28,
+         "stake": 1515.71,
+         "lineID": "d9334bd0fcecc6765f8772edec3edb9c",
+         "isMain": false,
+         "abbreviatedName": "HOU -20.5"
+        },
+        {
+         "id": 1714,
+         "name": "Houston Texans -20.5",
+         "displayName": "Houston Texans -20.5",
+         "competitorId": 1700004938,
+         "odds": 245,
+         "line": -20.5,
+         "displayOdds": "+245",
+         "displayLine": "-20.5",
+         "value": 143.75,
+         "stake": 352.19,
+         "lineID": "d9334bd0fcecc6765f8772edec3edb9c",
+         "isMain": false,
+         "abbreviatedName": "HOU -20.5"
+        }
+       ],
+       [
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +20.5",
+         "displayName": "Indianapolis Colts +20.5",
+         "competitorId": 1700004960,
+         "odds": -300,
+         "line": 20.5,
+         "displayOdds": "-300",
+         "displayLine": "+20.5",
+         "value": 268.5,
+         "stake": 89.5,
+         "lineID": "2bafb222b47779478e9fe3953c2632ef",
+         "isMain": false,
+         "abbreviatedName": "IND +20.5"
+        },
+        {
+         "id": 1715,
+         "name": "Indianapolis Colts +20.5",
+         "displayName": "Indianapolis Colts +20.5",
+         "competitorId": 1700004960,
+         "odds": -310,
+         "line": 20.5,
+         "displayOdds": "-310",
+         "displayLine": "+20.5",
+         "value": 171.62,
+         "stake": 55.36,
+         "lineID": "2bafb222b47779478e9fe3953c2632ef",
+         "isMain": false,
+         "abbreviatedName": "IND +20.5"
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 1714,
+        "name": "Houston Texans -20.5",
+        "displayName": "Houston Texans -20.5",
+        "competitorId": 1700004938,
+        "line": -20.5,
+        "displayLine": "-20.5",
+        "lineID": "d9334bd0fcecc6765f8772edec3edb9c",
+        "isMain": false,
+        "abbreviatedName": "HOU -20.5"
+       },
+       {
+        "id": 1715,
+        "name": "Indianapolis Colts +20.5",
+        "displayName": "Indianapolis Colts +20.5",
+        "competitorId": 1700004960,
+        "line": 20.5,
+        "displayLine": "+20.5",
+        "lineID": "2bafb222b47779478e9fe3953c2632ef",
+        "isMain": false,
+        "abbreviatedName": "IND +20.5"
+       }
+      ],
+      "type": "spread",
+      "highRisk": false
+     }
+    ],
+    "subType": "spread",
+    "categoryID": 3,
+    "categoryName": "Game Lines",
+    "highRisk": false
+   },
+   {
+    "id": 225,
+    "name": "Total Points",
+    "status": "active",
+    "totalStake": 294210.36999999994,
+    "sportEventId": 1700008817,
+    "type": "total",
+    "marketLines": [
+     {
+      "id": 225,
+      "name": "Fixed total 43.5",
+      "selections": [
+       [
+        {
+         "id": 12,
+         "name": "over 43.5",
+         "displayName": "over 43.5",
+         "odds": -109,
+         "line": 43.5,
+         "displayOdds": "-109",
+         "displayLine": "43.5",
+         "value": 512.73,
+         "stake": 471.39,
+         "lineID": "6dbbbb881c9f1a0cca84dce841d92ca8",
+         "isMain": true
+        },
+        {
+         "id": 12,
+         "name": "over 43.5",
+         "displayName": "over 43.5",
+         "odds": -110,
+         "line": 43.5,
+         "displayOdds": "-110",
+         "displayLine": "43.5",
+         "value": 86.43,
+         "stake": 98.57,
+         "lineID": "6dbbbb881c9f1a0cca84dce841d92ca8",
+         "isMain": true
+        }
+       ],
+       [
+        {
+         "id": 13,
+         "name": "under 43.5",
+         "displayName": "under 43.5",
+         "odds": 105,
+         "line": 43.5,
+         "displayOdds": "+105",
+         "displayLine": "43.5",
+         "value": 2098.29,
+         "stake": 2203.2,
+         "lineID": "ca7e7e92c9ae85d8eb453bab9c0035c7",
+         "isMain": true
+        },
+        {
+         "id": 13,
+         "name": "under 43.5",
+         "displayName": "under 43.5",
+         "odds": 104,
+         "line": 43.5,
+         "displayOdds": "+104",
+         "displayLine": "43.5",
+         "value": 4189.86,
+         "stake": 4357.45,
+         "lineID": "ca7e7e92c9ae85d8eb453bab9c0035c7",
+         "isMain": true
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 12,
+        "name": "over 43.5",
+        "displayName": "over 43.5",
+        "line": 43.5,
+        "displayLine": "43.5",
+        "lineID": "6dbbbb881c9f1a0cca84dce841d92ca8",
+        "isMain": true
+       },
+       {
+        "id": 13,
+        "name": "under 43.5",
+        "displayName": "under 43.5",
+        "line": 43.5,
+        "displayLine": "43.5",
+        "lineID": "ca7e7e92c9ae85d8eb453bab9c0035c7",
+        "isMain": true
+       }
+      ],
+      "type": "total",
+      "favourite": true,
+      "highRisk": false
+     },
+     {
+      "id": 225,
+      "name": "Fixed total 35.5",
+      "selections": [
+       [
+        {
+         "id": 12,
+         "name": "over 35.5",
+         "displayName": "over 35.5",
+         "odds": -395,
+         "line": 35.5,
+         "displayOdds": "-395",
+         "displayLine": "35.5",
+         "value": 26.35,
+         "stake": 6.67,
+         "lineID": "71e367aa61ad2cbd702242e6affc5003",
+         "isMain": false
+        },
+        {
+         "id": 12,
+         "name": "over 35.5",
+         "displayName": "over 35.5",
+         "odds": -400,
+         "line": 35.5,
+         "displayOdds": "-400",
+         "displayLine": "35.5",
+         "value": 200,
+         "stake": 50,
+         "lineID": "71e367aa61ad2cbd702242e6affc5003",
+         "isMain": false
+        }
+       ],
+       [
+        {
+         "id": 13,
+         "name": "under 35.5",
+         "displayName": "under 35.5",
+         "odds": 295,
+         "line": 35.5,
+         "displayOdds": "+295",
+         "displayLine": "35.5",
+         "value": 79.22,
+         "stake": 233.71,
+         "lineID": "4ad9ed2d7230c18a4edfdfd805ada4eb",
+         "isMain": false
+        },
+        {
+         "id": 13,
+         "name": "under 35.5",
+         "displayName": "under 35.5",
+         "odds": 290,
+         "line": 35.5,
+         "displayOdds": "+290",
+         "displayLine": "35.5",
+         "value": 25.64,
+         "stake": 74.36,
+         "lineID": "4ad9ed2d7230c18a4edfdfd805ada4eb",
+         "isMain": false
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 12,
+        "name": "over 35.5",
+        "displayName": "over 35.5",
+        "line": 35.5,
+        "displayLine": "35.5",
+        "lineID": "71e367aa61ad2cbd702242e6affc5003",
+        "isMain": false
+       },
+       {
+        "id": 13,
+        "name": "under 35.5",
+        "displayName": "under 35.5",
+        "line": 35.5,
+        "displayLine": "35.5",
+        "lineID": "4ad9ed2d7230c18a4edfdfd805ada4eb",
+        "isMain": false
+       }
+      ],
+      "type": "total",
+      "highRisk": false
+     }
+    ],
+    "subType": "total",
+    "categoryID": 3,
+    "categoryName": "Game Lines",
+    "highRisk": false
+   },
+   {
+    "id": 1361,
+    "name": "Draw (2nd Quarter)",
+    "status": "active",
+    "selections": [
+     [
+      {
+       "id": 2,
+       "name": "NO",
+       "displayName": "NO",
+       "odds": -1200,
+       "line": 0,
+       "displayOdds": "-1200",
+       "value": 55.32,
+       "stake": 4.61,
+       "lineID": "5c504df7679f56627487b7231c499247",
+       "abbreviatedName": "NO"
+      }
+     ],
+     [
+      {
+       "id": 1,
+       "name": "YES",
+       "displayName": "YES",
+       "odds": 620,
+       "line": 0,
+       "displayOdds": "+620",
+       "value": 8.33,
+       "stake": 51.67,
+       "lineID": "20114520a537e9574632bce069e05e6a",
+       "abbreviatedName": "YES"
+      },
+      {
+       "id": 1,
+       "name": "YES",
+       "displayName": "YES",
+       "odds": 550,
+       "line": 0,
+       "displayOdds": "+550",
+       "value": 18.18,
+       "stake": 100,
+       "lineID": "20114520a537e9574632bce069e05e6a",
+       "abbreviatedName": "YES"
+      }
+     ]
+    ],
+    "outcomes": [
+     {
+      "id": 2,
+      "name": "NO",
+      "lineID": "5c504df7679f56627487b7231c499247"
+     },
+     {
+      "id": 1,
+      "name": "YES",
+      "lineID": "20114520a537e9574632bce069e05e6a"
+     }
+    ],
+    "totalStake": 156.28,
+    "sportEventId": 1700008817,
+    "type": "moneyline",
+    "subType": "2nd_quarter_moneyline_3_way",
+    "categoryID": 622,
+    "categoryName": "Second Quarter",
+    "highRisk": false
+   },
+   {
+    "id": 1700008759,
+    "name": "Indianapolis Colts: Team Total Points",
+    "status": "active",
+    "totalStake": 24717.95,
+    "sportEventId": 1700008817,
+    "type": "total",
+    "marketLines": [
+     {
+      "id": 1700008759,
+      "name": "Fixed total 15.5",
+      "selections": [
+       [
+        {
+         "id": 12,
+         "name": "over 15.5",
+         "displayName": "over 15.5",
+         "odds": -113,
+         "line": 15.5,
+         "displayOdds": "-113",
+         "displayLine": "15.5",
+         "value": 517.48,
+         "stake": 457.95,
+         "lineID": "893e9f1c48e6c88c20626d19d3925226",
+         "isMain": true
+        },
+        {
+         "id": 12,
+         "name": "over 15.5",
+         "displayName": "over 15.5",
+         "odds": -117,
+         "line": 15.5,
+         "displayOdds": "-117",
+         "displayLine": "15.5",
+         "value": 134.55,
+         "stake": 115,
+         "lineID": "893e9f1c48e6c88c20626d19d3925226",
+         "isMain": true
+        }
+       ],
+       [
+        {
+         "id": 13,
+         "name": "under 15.5",
+         "displayName": "under 15.5",
+         "odds": -103,
+         "line": 15.5,
+         "displayOdds": "-103",
+         "displayLine": "15.5",
+         "value": 478.64,
+         "stake": 464.7,
+         "lineID": "6fd66862808e8249185ec85c8418f7f1",
+         "isMain": true
+        },
+        {
+         "id": 13,
+         "name": "under 15.5",
+         "displayName": "under 15.5",
+         "odds": -112,
+         "line": 15.5,
+         "displayOdds": "-112",
+         "displayLine": "15.5",
+         "value": 181.6,
+         "stake": 162.14,
+         "lineID": "6fd66862808e8249185ec85c8418f7f1",
+         "isMain": true
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 12,
+        "name": "over 15.5",
+        "displayName": "over 15.5",
+        "line": 15.5,
+        "displayLine": "15.5",
+        "lineID": "893e9f1c48e6c88c20626d19d3925226",
+        "isMain": true
+       },
+       {
+        "id": 13,
+        "name": "under 15.5",
+        "displayName": "under 15.5",
+        "line": 15.5,
+        "displayLine": "15.5",
+        "lineID": "6fd66862808e8249185ec85c8418f7f1",
+        "isMain": true
+       }
+      ],
+      "type": "total",
+      "favourite": true,
+      "highRisk": false
+     },
+     {
+      "id": 1700008759,
+      "name": "Fixed total 3.5",
+      "selections": [
+       [
+        {
+         "id": 12,
+         "name": "over 3.5",
+         "displayName": "over 3.5",
+         "odds": -3100,
+         "line": 3.5,
+         "displayOdds": "-3100",
+         "displayLine": "3.5",
+         "value": 62,
+         "stake": 2,
+         "lineID": "ce501e71a1b87e0fe89d50b23239322f",
+         "isMain": false
+        },
+        {
+         "id": 12,
+         "name": "over 3.5",
+         "displayName": "over 3.5",
+         "odds": -3200,
+         "line": 3.5,
+         "displayOdds": "-3200",
+         "displayLine": "3.5",
+         "value": 240,
+         "stake": 7.5,
+         "lineID": "ce501e71a1b87e0fe89d50b23239322f",
+         "isMain": false
+        }
+       ],
+       [
+        {
+         "id": 13,
+         "name": "under 3.5",
+         "displayName": "under 3.5",
+         "odds": 900,
+         "line": 3.5,
+         "displayOdds": "+900",
+         "displayLine": "3.5",
+         "value": 25,
+         "stake": 225,
+         "lineID": "b9931e6cdd919aa5edd369b823949cb3",
+         "isMain": false
+        },
+        {
+         "id": 13,
+         "name": "under 3.5",
+         "displayName": "under 3.5",
+         "odds": 720,
+         "line": 3.5,
+         "displayOdds": "+720",
+         "displayLine": "3.5",
+         "value": 1.39,
+         "stake": 10,
+         "lineID": "b9931e6cdd919aa5edd369b823949cb3",
+         "isMain": false
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 12,
+        "name": "over 3.5",
+        "displayName": "over 3.5",
+        "line": 3.5,
+        "displayLine": "3.5",
+        "lineID": "ce501e71a1b87e0fe89d50b23239322f",
+        "isMain": false
+       },
+       {
+        "id": 13,
+        "name": "under 3.5",
+        "displayName": "under 3.5",
+        "line": 3.5,
+        "displayLine": "3.5",
+        "lineID": "b9931e6cdd919aa5edd369b823949cb3",
+        "isMain": false
+       }
+      ],
+      "type": "total",
+      "highRisk": false
+     }
+    ],
+    "subType": "team_total_points",
+    "categoryID": 328,
+    "categoryName": "Team Totals",
+    "highRisk": false
+   },
+   {
+    "id": 1700008951,
+    "name": "David Montgomery To Score a Touchdown",
+    "status": "active",
+    "selections": [
+     [
+      {
+       "id": 2,
+       "name": "NO",
+       "displayName": "NO",
+       "odds": 107,
+       "line": 0,
+       "displayOdds": "+107",
+       "value": 304.35,
+       "stake": 325.65,
+       "lineID": "9833f19c4ec79c41fe4d2a64b4423e9d",
+       "abbreviatedName": "NO"
+      },
+      {
+       "id": 2,
+       "name": "NO",
+       "displayName": "NO",
+       "odds": 105,
+       "line": 0,
+       "displayOdds": "+105",
+       "value": 6.21,
+       "stake": 6.52,
+       "lineID": "9833f19c4ec79c41fe4d2a64b4423e9d",
+       "abbreviatedName": "NO"
+      }
+     ],
+     [
+      {
+       "id": 1,
+       "name": "YES",
+       "displayName": "YES",
+       "odds": -112,
+       "line": 0,
+       "displayOdds": "-112",
+       "value": 560,
+       "stake": 500,
+       "lineID": "c7e21a9df7f078bf7977c7029528a900",
+       "abbreviatedName": "YES"
+      },
+      {
+       "id": 1,
+       "name": "YES",
+       "displayName": "YES",
+       "odds": -116,
+       "line": 0,
+       "displayOdds": "-116",
+       "value": 69.82,
+       "stake": 60.19,
+       "lineID": "c7e21a9df7f078bf7977c7029528a900",
+       "abbreviatedName": "YES"
+      }
+     ]
+    ],
+    "outcomes": [
+     {
+      "id": 2,
+      "name": "NO",
+      "lineID": "9833f19c4ec79c41fe4d2a64b4423e9d"
+     },
+     {
+      "id": 1,
+      "name": "YES",
+      "lineID": "c7e21a9df7f078bf7977c7029528a900"
+     }
+    ],
+    "totalStake": 11276.649999999998,
+    "sportEventId": 1700008817,
+    "type": "moneyline",
+    "subType": "to_score_a_touchdown",
+    "categoryID": 6,
+    "categoryName": "TD Scorers",
+    "highRisk": false
+   },
+   {
+    "id": 1700053320,
+    "name": "Nico Collins Receiving Yards",
+    "status": "active",
+    "totalStake": 3934.8299999999995,
+    "sportEventId": 1700008817,
+    "type": "total",
+    "marketLines": [
+     {
+      "id": 1700053320,
+      "name": "Fixed total 70.5",
+      "selections": [
+       [
+        {
+         "id": 12,
+         "name": "over 70.5",
+         "displayName": "over 70.5",
+         "odds": -112,
+         "line": 70.5,
+         "displayOdds": "-112",
+         "displayLine": "70.5",
+         "value": 335.72,
+         "stake": 308.68,
+         "lineID": "cc5716f9a81807e8f3e6c18504282648",
+         "isMain": true
+        },
+        {
+         "id": 12,
+         "name": "over 70.5",
+         "displayName": "over 70.5",
+         "odds": -113,
+         "line": 70.5,
+         "displayOdds": "-113",
+         "displayLine": "70.5",
+         "value": 32.35,
+         "stake": 28.63,
+         "lineID": "cc5716f9a81807e8f3e6c18504282648",
+         "isMain": true
+        }
+       ],
+       [
+        {
+         "id": 13,
+         "name": "under 70.5",
+         "displayName": "under 70.5",
+         "odds": -108,
+         "line": 70.5,
+         "displayOdds": "-108",
+         "displayLine": "70.5",
+         "value": 270,
+         "stake": 250,
+         "lineID": "a66211cb49498dec0d735c0ab91fb044",
+         "isMain": true
+        },
+        {
+         "id": 13,
+         "name": "under 70.5",
+         "displayName": "under 70.5",
+         "odds": -109,
+         "line": 70.5,
+         "displayOdds": "-109",
+         "displayLine": "70.5",
+         "value": 70.4,
+         "stake": 64.59,
+         "lineID": "a66211cb49498dec0d735c0ab91fb044",
+         "isMain": true
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 12,
+        "name": "over 70.5",
+        "displayName": "over 70.5",
+        "line": 70.5,
+        "displayLine": "70.5",
+        "lineID": "cc5716f9a81807e8f3e6c18504282648",
+        "isMain": true
+       },
+       {
+        "id": 13,
+        "name": "under 70.5",
+        "displayName": "under 70.5",
+        "line": 70.5,
+        "displayLine": "70.5",
+        "lineID": "a66211cb49498dec0d735c0ab91fb044",
+        "isMain": true
+       }
+      ],
+      "type": "total",
+      "favourite": true,
+      "highRisk": true,
+      "highRiskSource": "auto"
+     },
+     {
+      "id": 1700053320,
+      "name": "Fixed total 71.5",
+      "selections": [
+       [
+        {
+         "id": 12,
+         "name": "over 71.5",
+         "displayName": "over 71.5",
+         "odds": -128,
+         "line": 71.5,
+         "displayOdds": "-128",
+         "displayLine": "71.5",
+         "value": 42.55,
+         "stake": 33.24,
+         "lineID": "c4a101279f0e1f8a66c1a33f086de861",
+         "isMain": false
+        }
+       ],
+       [
+        {
+         "id": 13,
+         "name": "under 71.5",
+         "displayName": "under 71.5",
+         "odds": -138,
+         "line": 71.5,
+         "displayOdds": "-138",
+         "displayLine": "71.5",
+         "value": 13.8,
+         "stake": 10,
+         "lineID": "13d6c6aa2a4644ade7cbed5fe4095ade",
+         "isMain": false
+        },
+        {
+         "id": 13,
+         "name": "under 71.5",
+         "displayName": "under 71.5",
+         "odds": -25000,
+         "line": 71.5,
+         "displayOdds": "-25000",
+         "displayLine": "71.5",
+         "value": 750,
+         "stake": 3,
+         "lineID": "13d6c6aa2a4644ade7cbed5fe4095ade",
+         "isMain": false
+        }
+       ]
+      ],
+      "outcomes": [
+       {
+        "id": 12,
+        "name": "over 71.5",
+        "displayName": "over 71.5",
+        "line": 71.5,
+        "displayLine": "71.5",
+        "lineID": "c4a101279f0e1f8a66c1a33f086de861",
+        "isMain": false
+       },
+       {
+        "id": 13,
+        "name": "under 71.5",
+        "displayName": "under 71.5",
+        "line": 71.5,
+        "displayLine": "71.5",
+        "lineID": "13d6c6aa2a4644ade7cbed5fe4095ade",
+        "isMain": false
+       }
+      ],
+      "type": "total",
+      "highRisk": true,
+      "highRiskSource": "auto"
+     },
+     {
+      "id": 1700053320,
+      "name": "Fixed total 14.5",
+      "selections": [
+       null,
+       null
+      ],
+      "outcomes": [
+       {
+        "id": 12,
+        "name": "over 14.5",
+        "displayName": "over 14.5",
+        "line": 14.5,
+        "displayLine": "14.5",
+        "lineID": "0edcb13245206e275c107d9cc254330e",
+        "isMain": false
+       },
+       {
+        "id": 13,
+        "name": "under 14.5",
+        "displayName": "under 14.5",
+        "line": 14.5,
+        "displayLine": "14.5",
+        "lineID": "c073c23a68a6f8d3b580c5c0aed20ebd",
+        "isMain": false
+       }
+      ],
+      "type": "total",
+      "highRisk": true,
+      "highRiskSource": "auto"
+     }
+    ],
+    "subType": "player_total_receiving_yards",
+    "categoryID": 10,
+    "categoryName": "Rec Yards",
+    "highRisk": true,
+    "highRiskSource": "auto"
+   }
+  ]
+ }
+}

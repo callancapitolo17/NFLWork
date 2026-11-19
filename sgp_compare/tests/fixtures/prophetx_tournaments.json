@@ -1,0 +1,323 @@
+{
+ "data": {
+  "tournaments": [
+   {
+    "id": 132,
+    "name": "NBA",
+    "sportEvents": [
+     {
+      "name": "Philadelphia 76ers at Orlando Magic",
+      "displayName": "Philadelphia 76ers at Orlando Magic",
+      "sport": {
+       "id": 2,
+       "name": "Basketball"
+      },
+      "tournament": {
+       "id": 132,
+       "name": "NBA"
+      },
+      "round": {
+       "id": 0
+      },
+      "id": 1704744079,
+      "scheduled": "2026-11-19T00:00:00Z",
+      "status": "live",
+      "liveodds": "booked",
+      "liveoddsCustom": "",
+      "competitors": [
+       {
+        "id": 1700078359,
+        "name": "Orlando Magic",
+        "displayName": "Orlando Magic",
+        "seq": 0,
+        "abbreviation": "ORL",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "22_ORL_Orlando_Magic_E_SE.png"
+       },
+       {
+        "id": 1700078351,
+        "name": "Philadelphia 76ers",
+        "displayName": "Philadelphia 76ers",
+        "seq": 1,
+        "abbreviation": "PHI",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "23_PHI_Philadelphia_76ers_E_A.png"
+       }
+      ],
+      "stake": 437322.98,
+      "liveScore": {
+       "homeScore": 107,
+       "awayScore": 109,
+       "externalGameID": 0,
+       "timeRemainingSeconds": null,
+       "currentPeriod": null
+      },
+      "createdAt": "0001-01-01T00:00:00Z",
+      "updatedAt": "0001-01-01T00:00:00Z"
+     },
+     {
+      "name": "Milwaukee Bucks at Miami Heat",
+      "displayName": "Milwaukee Bucks at Miami Heat",
+      "sport": {
+       "id": 2,
+       "name": "Basketball"
+      },
+      "tournament": {
+       "id": 132,
+       "name": "NBA"
+      },
+      "round": {
+       "id": 0
+      },
+      "id": 1704744077,
+      "scheduled": "2026-11-19T00:00:00Z",
+      "status": "live",
+      "liveodds": "booked",
+      "liveoddsCustom": "",
+      "competitors": [
+       {
+        "id": 1700078330,
+        "name": "Miami Heat",
+        "displayName": "Miami Heat",
+        "seq": 0,
+        "abbreviation": "MIA",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "16_MIA_Miami_Heat_E_SE.png"
+       },
+       {
+        "id": 1700078325,
+        "name": "Milwaukee Bucks",
+        "displayName": "Milwaukee Bucks",
+        "seq": 1,
+        "abbreviation": "MIL",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "17_MIL_Milwaukee_Bucks_E_C.png"
+       }
+      ],
+      "stake": 226400.09,
+      "liveScore": {
+       "homeScore": 112,
+       "awayScore": 86,
+       "externalGameID": 0,
+       "timeRemainingSeconds": null,
+       "currentPeriod": null
+      },
+      "createdAt": "0001-01-01T00:00:00Z",
+      "updatedAt": "0001-01-01T00:00:00Z"
+     }
+    ],
+    "outrights": []
+   },
+   {
+    "id": 31,
+    "name": "NFL",
+    "sportEvents": [
+     {
+      "name": "Indianapolis Colts at Houston Texans",
+      "displayName": "Indianapolis Colts at Houston Texans",
+      "sport": {
+       "id": 16,
+       "name": "American Football"
+      },
+      "tournament": {
+       "id": 31,
+       "name": "NFL"
+      },
+      "round": {
+       "id": 0
+      },
+      "id": 1700008817,
+      "scheduled": "2026-11-20T01:15:00Z",
+      "status": "not_started",
+      "liveodds": "booked",
+      "liveoddsCustom": "",
+      "competitors": [
+       {
+        "id": 1700004938,
+        "name": "Houston Texans",
+        "displayName": "Houston Texans",
+        "seq": 0,
+        "abbreviation": "HOU",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "13_HOU_Houston_Texans_AFC_S_H1.png"
+       },
+       {
+        "id": 1700004960,
+        "name": "Indianapolis Colts",
+        "displayName": "Indianapolis Colts",
+        "seq": 1,
+        "abbreviation": "IND",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "14_IND_Indianapolis_Colts_AFC_S_H1.png"
+       }
+      ],
+      "stake": 1525016,
+      "createdAt": "0001-01-01T00:00:00Z",
+      "updatedAt": "0001-01-01T00:00:00Z"
+     },
+     {
+      "name": "Baltimore Ravens at Carolina Panthers",
+      "displayName": "Baltimore Ravens at Carolina Panthers",
+      "sport": {
+       "id": 16,
+       "name": "American Football"
+      },
+      "tournament": {
+       "id": 31,
+       "name": "NFL"
+      },
+      "round": {
+       "id": 0
+      },
+      "id": 1700008828,
+      "scheduled": "2026-11-22T18:00:00Z",
+      "status": "not_started",
+      "liveodds": "booked",
+      "liveoddsCustom": "",
+      "competitors": [
+       {
+        "id": 1700004945,
+        "name": "Carolina Panthers",
+        "displayName": "Carolina Panthers",
+        "seq": 0,
+        "abbreviation": "CAR",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "5_CAR_Carolina_Panthers_NFC_S_H1.png"
+       },
+       {
+        "id": 1700004944,
+        "name": "Baltimore Ravens",
+        "displayName": "Baltimore Ravens",
+        "seq": 1,
+        "abbreviation": "BAL",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0,
+        "logo": "3_BAL_Baltimore_Ravens_AFC_N_H1.png"
+       }
+      ],
+      "stake": 531356.84,
+      "createdAt": "0001-01-01T00:00:00Z",
+      "updatedAt": "0001-01-01T00:00:00Z"
+     }
+    ],
+    "outrights": []
+   },
+   {
+    "id": 1600000352,
+    "name": "NFL Win Totals",
+    "sportEvents": [
+     {
+      "name": "ARI Cardinals Regular Season Wins 2026/27",
+      "type": "custom",
+      "sport": {
+       "id": 16,
+       "name": "American Football"
+      },
+      "tournament": {
+       "id": 1600000352,
+       "name": "NFL Win Totals"
+      },
+      "round": {
+       "id": 0
+      },
+      "id": 1500011351,
+      "scheduled": "2027-01-10T18:00:00Z",
+      "status": "not_started",
+      "liveodds": "booked",
+      "liveoddsCustom": "",
+      "competitors": [
+       {
+        "id": 1600001576,
+        "name": "Under 3.5",
+        "displayName": "Under 3.5",
+        "seq": 0,
+        "abbreviation": "Under 3.5",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0
+       },
+       {
+        "id": 1600001577,
+        "name": "Over 3.5",
+        "displayName": "Over 3.5",
+        "seq": 1,
+        "abbreviation": "Over 3.5",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0
+       }
+      ],
+      "stake": 3606.27,
+      "createdAt": "0001-01-01T00:00:00Z",
+      "updatedAt": "0001-01-01T00:00:00Z"
+     },
+     {
+      "name": "ATL Falcons Regular Season Wins 2026/27",
+      "type": "custom",
+      "sport": {
+       "id": 16,
+       "name": "American Football"
+      },
+      "tournament": {
+       "id": 1600000352,
+       "name": "NFL Win Totals"
+      },
+      "round": {
+       "id": 1500021221,
+       "type": "",
+       "number": 0,
+       "name": "",
+       "groupLongName": ""
+      },
+      "id": 1500011352,
+      "scheduled": "2027-01-10T18:00:01Z",
+      "status": "not_started",
+      "liveodds": "booked",
+      "liveoddsCustom": "",
+      "competitors": [
+       {
+        "id": 1600001578,
+        "name": "Under 7.5",
+        "displayName": "Under 7.5",
+        "seq": 0,
+        "abbreviation": "Under 7.5",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0
+       },
+       {
+        "id": 1600001579,
+        "name": "Over 7.5",
+        "displayName": "Over 7.5",
+        "seq": 1,
+        "abbreviation": "Over 7.5",
+        "winner": false,
+        "updatedAt": "0001-01-01T00:00:00Z",
+        "externalGameID": 0
+       }
+      ],
+      "stake": 10076.02,
+      "createdAt": "0001-01-01T00:00:00Z",
+      "updatedAt": "0001-01-01T00:00:00Z"
+     }
+    ],
+    "outrights": []
+   }
+  ]
+ }
+}

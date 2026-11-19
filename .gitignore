@@ -175,3 +175,6 @@ unabated_ticket/bets_service/underdog_token.json.tmp
 # BetOnline cookie-file lock / atomic-write temp (bet_logger + the bets service)
 bet_logger/recon_betonline_cookies.json.lock
 bet_logger/recon_betonline_cookies.json.tmp
+
+# Local venue recon captures (raw venue JSON; trimmed copies live in tests/fixtures)
+.recon/
