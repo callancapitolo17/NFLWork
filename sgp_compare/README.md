@@ -22,9 +22,9 @@ number), tap one side per market, press **Price**.
 | Column | Meaning |
 |---|---|
 | Parlay price | The venue's best offer, with every price tier and the most it takes at each (ProphetX: bigger size, worse price). |
-| Legs as separate bets | The legs' single prices multiplied together; "no vig" uses each single devigged against its other side. |
+| Legs as separate bets | The legs' single prices multiplied together; "no vig" uses each single devigged against its other side (kalshi_common probit; none when the two sides are crossed or more than 25% apart). |
 | Correlation factor, with vig | parlay chance / product of the single chances - 1, straight off takeable prices. Mixes correlation with the extra margin a venue charges on parlays. |
-| Correlation factor, vig removed | Same, with the parlay devigged across every combination of its legs' outcomes (2^N price requests, 2-3 legs only) and each single devigged (probit). Blank, with the reason, when a combination is declined, a leg has no usable other side (none, crossed, or wider than 25%), or there are 4+ legs. |
+| Correlation factor, vig removed | From the venue's parlay price for every combination of the legs' outcomes (2^N price requests, 2-3 legs only): each combination's share of the total, parlay's share / product of each leg's share - 1. One price list on both sides of the ratio, so a margin spread evenly over the combinations cancels exactly. Blank, with the reason, when a combination is declined or fails (the first one stops the rest), a leg has no other side, a line is a whole number (it can push), or there are 4+ legs. ProphetX won't put a TD "NO" in a parlay, so a TD leg never gets this number. |
 | Parlay vig | Sum of every combination's chance - 1. |
 | Inside parlay | ProphetX folds its correlation charge into each leg's price inside the parlay. |
 
@@ -38,7 +38,7 @@ number), tap one side per market, press **Price**.
 | `venues/__init__.py` | `build_venues()`: the venues the page uses. Adding a venue = a module + one line here. |
 | `correlation.py` | Pure math: probit devig, correlation factor with and without vig. |
 | `pricing.py` | `price_at_venue`: fresh legs, the parlay price, the 2^N partition. |
-| `store.py` | DuckDB `$SGP_COMPARE_DB` (default `sgp_compare/sgp_compare.duckdb`), table `parlay_quotes`, APPEND one row per venue per Price click, raw venue response included. |
+| `store.py` | DuckDB `$SGP_COMPARE_DB` (default `sgp_compare/sgp_compare.duckdb`), table `parlay_quotes`, APPEND one row per venue per Price click: requested leg ids, legs whole (canonical key, venue ids, both sides' prices), tiers, partition prices, both factors with their reasons, raw venue response. Bad requests (400) write nothing; a store failure still shows the price with "not saved". |
 | `app.py`, `static/index.html` | Loopback page and JSON API (Host allowlist, JSON-only POSTs). |
 
 ## Venues
@@ -62,7 +62,9 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
 
 ## Troubleshooting
 
-- **HTTP 502 on a ProphetX read**: ProphetX unreachable or answered non-200; the
-  message carries the status and body. The cloud sandbox cannot reach ProphetX; run on the Mac.
+- **Error in the game list, or HTTP 502 from /api/legs**: ProphetX unreachable, answered
+  non-200, or sent a shape the parser does not expect; the message says which. The cloud
+  sandbox cannot reach ProphetX; run on the Mac.
+- **"no longer offered"**: the line moved between picking and pricing; reload the game.
 - **"would not price this combination"**: ProphetX returned no offers (it refuses some combinations).
 - **Vig-removed factor blank**: the reason is shown under it.

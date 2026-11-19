@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS parlay_quotes (
     away_team                VARCHAR NOT NULL,
     game_start_time          TIMESTAMPTZ NOT NULL,
     n_legs                   INTEGER NOT NULL,
+    requested_leg_ids_json   VARCHAR NOT NULL,
     legs_json                VARCHAR NOT NULL,
     best_decimal_odds        DOUBLE,
     best_max_stake           DOUBLE,
@@ -38,20 +39,24 @@ CREATE TABLE IF NOT EXISTS parlay_quotes (
     parlay_raw_chance        DOUBLE,
     independent_raw_chance   DOUBLE,
     correlation_raw          DOUBLE,
-    parlay_fair_chance       DOUBLE,
     independent_fair_chance  DOUBLE,
+    parlay_fair_chance       DOUBLE,
+    partition_independent_chance DOUBLE,
     correlation_fair         DOUBLE,
     partition_overround      DOUBLE,
+    raw_unavailable_reason   VARCHAR,
+    fair_unavailable_reason  VARCHAR,
     venue_response_json      VARCHAR
 )
 """
 
 INSERT_PARLAY_QUOTE = """
 INSERT INTO parlay_quotes (quoted_at, venue, status, detail, venue_game_id, home_team, away_team,
-    game_start_time, n_legs, legs_json, best_decimal_odds, best_max_stake, tiers_json, partition_json,
-    parlay_raw_chance, independent_raw_chance, correlation_raw, parlay_fair_chance,
-    independent_fair_chance, correlation_fair, partition_overround, venue_response_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    game_start_time, n_legs, requested_leg_ids_json, legs_json, best_decimal_odds, best_max_stake,
+    tiers_json, partition_json, parlay_raw_chance, independent_raw_chance, correlation_raw,
+    independent_fair_chance, parlay_fair_chance, partition_independent_chance, correlation_fair,
+    partition_overround, raw_unavailable_reason, fair_unavailable_reason, venue_response_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -66,21 +71,25 @@ class Store:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         return duckdb.connect(str(self.db_path))
 
-    def append_quote(self, game: Game, leg_count: int, result: VenueResult) -> None:
-        """APPEND one row to parlay_quotes."""
+    def append_quote(self, game: Game, result: VenueResult) -> None:
+        """APPEND one row to parlay_quotes. Legs are stored whole (canonical
+        key, venue ids, both sides' prices) so quotes can later be grouped by
+        market pair; the partition's cells follow correlation.partition_flips
+        order, each flipped leg being that leg's opposite_leg_id."""
         payload = result.to_json()
         report = result.report
         best = result.quote.best if result.quote else None
         row = [
             datetime.now(timezone.utc), result.venue, result.status, result.detail,
             game.venue_game_id, game.home_team, game.away_team, game.game_start_time,
-            leg_count, json.dumps(payload["legs"]),
+            len(result.requested_leg_ids), json.dumps(result.requested_leg_ids), json.dumps(payload["legs"]),
             best.decimal_odds if best else None, best.max_stake if best else None,
             json.dumps(payload["tiers"]), json.dumps(result.partition_decimal_odds),
             report.parlay_raw_chance if report else None, report.independent_raw_chance if report else None,
-            report.correlation_raw if report else None, report.parlay_fair_chance if report else None,
-            report.independent_fair_chance if report else None, report.correlation_fair if report else None,
-            report.partition_overround if report else None,
+            report.correlation_raw if report else None, report.independent_fair_chance if report else None,
+            report.parlay_fair_chance if report else None, report.partition_independent_chance if report else None,
+            report.correlation_fair if report else None, report.partition_overround if report else None,
+            report.raw_unavailable_reason if report else None, report.fair_unavailable_reason if report else None,
             json.dumps(result.quote.raw) if result.quote else None,
         ]
         with self._lock, self._connect() as con:

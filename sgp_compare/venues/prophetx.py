@@ -62,6 +62,9 @@ PERIOD_PREFIXES = (
     ("1st_quarter_", "1Q"), ("2nd_quarter_", "2Q"), ("3rd_quarter_", "3Q"), ("4th_quarter_", "4Q"),
 )
 
+# ProphetX subType -> canonical stat, where the subType reads poorly.
+STAT_ALIASES = {"to_score_a_touchdown": "anytime_td"}
+
 # Player prop market names are "<Player> <words>"; the words depend on the
 # subType. Unknown subTypes keep the whole market name as the subject.
 PLAYER_NAME_SUFFIXES = {
@@ -95,6 +98,8 @@ def _game_from_event(event: dict) -> Game | None:
     if home is None or away is None or not event.get("scheduled"):
         return None
     start = datetime.fromisoformat(event["scheduled"].replace("Z", "+00:00"))
+    if start.tzinfo is None:   # ProphetX sends UTC; a bare time must not be read as the Mac's local time
+        start = start.replace(tzinfo=timezone.utc)
     return Game(venue_game_id=str(event["id"]), home_team=home["name"], away_team=away["name"],
                 game_start_time=start.astimezone(timezone.utc))
 
@@ -123,7 +128,7 @@ def _legs_of_line(game: Game, market: dict, holder: dict, home_competitor_id: in
     """Both sides of one two-outcome line. `holder` is the marketLine, or the
     market itself for moneyline / yes-no markets."""
     outcomes = holder.get("outcomes") or []
-    if len(outcomes) != 2:
+    if len(outcomes) != 2 or not all(o.get("lineID") for o in outcomes):
         return []
     best = _best_price_by_line_id(holder.get("selections") or [])
     if not any(o.get("lineID") in best for o in outcomes):
@@ -134,7 +139,6 @@ def _legs_of_line(game: Game, market: dict, holder: dict, home_competitor_id: in
         other_price, _ = best.get(other.get("lineID"), (None, None))
         legs.append(OfferedLeg(
             leg_id=outcome["lineID"],
-            game_id=game.venue_game_id,
             market_label=market.get("name") or "",
             category=market.get("categoryName") or "",
             side_label=_side_label(game, outcome, home_competitor_id),
@@ -160,7 +164,7 @@ def _best_price_by_line_id(selections: list) -> dict[str, tuple[float, float | N
             continue
         top = ladder[0]
         odds = top.get("odds")
-        if top.get("lineID") and isinstance(odds, (int, float)) and abs(odds) >= 100:
+        if top.get("lineID") and _is_american(odds):
             best[top["lineID"]] = (float(odds), top.get("stake"))
     return best
 
@@ -207,7 +211,7 @@ def _canonical(game: Game, market: dict, outcome: dict, home_competitor_id: int 
     if sub_type in PLAYER_NAME_SUFFIXES or sub_type.startswith("player_"):
         suffix = PLAYER_NAME_SUFFIXES.get(sub_type)
         subject = name[: -len(suffix)] if suffix and name.endswith(suffix) else _strip_category(name, market)
-        player_stat = re.sub(r"^(player_)?(total_)?", "", sub_type)
+        player_stat = STAT_ALIASES.get(sub_type) or re.sub(r"^(player_)?(total_)?", "", sub_type)
         return CanonicalLeg(period, player_stat, subject, side, line if side in ("over", "under") else None)
     return CanonicalLeg(period, stat, name, side, line if side in ("over", "under") else None)
 
@@ -230,19 +234,20 @@ def parse_parlay_quote(response: dict, legs: list[OfferedLeg]) -> ParlayQuote | 
     offers = data.get("offers") or []
     if not response.get("success") or not offers:
         return None
-    tiers = []
-    for offer in offers:
-        odds = offer.get("odds")
-        if isinstance(odds, (int, float)) and abs(odds) >= 100:
-            tiers.append(ParlayTier(american_to_decimal(float(odds)), offer.get("stake")))
-    if not tiers:
+    usable = [offer for offer in offers if _is_american(offer.get("odds"))]
+    if not usable:
         return None
-    tiers.sort(key=lambda tier: tier.decimal_odds, reverse=True)
+    usable.sort(key=lambda offer: american_to_decimal(float(offer["odds"])), reverse=True)
+    tiers = tuple(ParlayTier(american_to_decimal(float(offer["odds"])), offer.get("stake")) for offer in usable)
     leg_id_of_line = {leg.venue_ref["lineId"]: leg.leg_id for leg in legs}
-    best_offer = max(offers, key=lambda o: o.get("odds") or float("-inf"))
     leg_prices = {leg_id_of_line[p["lineId"]]: float(p["odds"])
-                  for p in best_offer.get("estimatedPrices") or [] if p.get("lineId") in leg_id_of_line}
-    return ParlayQuote(tuple(tiers), leg_prices, response)
+                  for p in usable[0].get("estimatedPrices") or []
+                  if p.get("lineId") in leg_id_of_line and _is_american(p.get("odds"))}
+    return ParlayQuote(tiers, leg_prices, response)
+
+
+def _is_american(odds) -> bool:
+    return isinstance(odds, (int, float)) and not isinstance(odds, bool) and abs(odds) >= 100
 
 
 # ---------------------------------------------------------------- the venue
@@ -255,25 +260,30 @@ class ProphetXVenue:
     display_name = "ProphetX"
 
     def __init__(self, session_factory: Callable[[], Any] | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.monotonic,
+                 wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self._session_factory = session_factory or _chrome_session
         self._session = None
         self._clock = clock
+        self._wall_clock = wall_clock
         self._lock = threading.Lock()
         self._games: tuple[float, list[Game], dict[str, int]] | None = None
         self._markets: dict[str, tuple[float, dict]] = {}
 
     def list_games(self) -> list[Game]:
-        return self._read_games()[0]
+        """The cached schedule, re-checked against the clock on every call so a
+        game drops out at kickoff, not when the cache next refills."""
+        now = self._wall_clock()
+        return [game for game in self._read_games()[0] if game.game_start_time > now]
 
     def list_legs(self, game: Game, fresh: bool = False) -> list[OfferedLeg]:
         payload = self._read_markets(game.venue_game_id, fresh)
         home_id = self._read_games()[1].get(game.venue_game_id)
-        return parse_legs(game, payload, home_id)
+        return _parsed("markets", lambda: parse_legs(game, payload, home_id))
 
     def price_parlay(self, game: Game, legs: list[OfferedLeg]) -> ParlayQuote | None:
         response = self._request("POST", "/parlay/public/api/v1/user/request", json=parlay_payload(legs))
-        return parse_parlay_quote(response, legs)
+        return _parsed("parlay", lambda: parse_parlay_quote(response, legs))
 
     # -- reads
     def _read_games(self) -> tuple[list[Game], dict[str, int]]:
@@ -283,8 +293,8 @@ class ProphetXVenue:
             return cached[1], cached[2]
         payload = self._request("GET", "/trade/public/api/v1/tournaments",
                                 params={"expand": "events", "type": "highlight", "limit": 150})
-        games = parse_nfl_games(payload, datetime.now(timezone.utc))
-        home_ids = _home_competitor_ids(payload)
+        games = _parsed("tournaments", lambda: parse_nfl_games(payload, self._wall_clock()))
+        home_ids = _parsed("tournaments", lambda: _home_competitor_ids(payload))
         with self._lock:
             self._games = (self._clock(), games, home_ids)
         return games, home_ids
@@ -312,9 +322,22 @@ class ProphetXVenue:
             raise VenueTransportError(f"ProphetX {method} {path}: expected HTTP 200, got "
                                       f"{response.status_code}: {response.text[:200]}")
         try:
-            return response.json()
+            body = response.json()
         except ValueError as exc:
             raise VenueTransportError(f"ProphetX {method} {path}: response is not JSON") from exc
+        if not isinstance(body, dict):
+            raise VenueTransportError(f"ProphetX {method} {path}: expected a JSON object, got {type(body).__name__}")
+        return body
+
+
+def _parsed(what: str, parse: Callable[[], Any]) -> Any:
+    """Run a parser over a ProphetX answer; a shape it does not expect is the
+    venue answering garbage, reported as such rather than as a crash."""
+    try:
+        return parse()
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise VenueTransportError(f"ProphetX {what} answer has an unexpected shape: "
+                                  f"{type(exc).__name__}: {exc}") from exc
 
 
 def _home_competitor_ids(tournaments_payload: dict) -> dict[str, int]:

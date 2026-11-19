@@ -22,6 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import duckdb
+
 from sgp_compare.legs import Game, OfferedLeg
 from sgp_compare.pricing import price_at_venue
 from sgp_compare.store import Store
@@ -57,16 +59,26 @@ class CompareApp:
 
     def legs_payload(self, venue_name: str, game_id: str) -> dict:
         venue, game = self._venue_and_game(venue_name, game_id)
-        return {"game": _game_json(game), "legs": [_offered_leg_json(leg) for leg in venue.list_legs(game)]}
+        return {"legs": [_offered_leg_json(leg) for leg in venue.list_legs(game)]}
 
     def price(self, body: dict) -> dict:
+        """Price at the venue, then APPEND the result to parlay_quotes. A store
+        failure (e.g. another process holding the DuckDB file) still returns
+        the price, with `store_error` set, rather than throwing it away."""
+        if not isinstance(body, dict):
+            raise ValueError("expected a JSON object")
         venue, game = self._venue_and_game(str(body.get("venue") or ""), str(body.get("game_id") or ""))
         leg_ids = body.get("leg_ids")
         if not isinstance(leg_ids, list) or not all(isinstance(x, str) for x in leg_ids):
             raise ValueError("leg_ids must be a list of strings")
         result = price_at_venue(venue, game, leg_ids)
-        self.store.append_quote(game, len(leg_ids), result)
-        return {"game": _game_json(game), "results": [result.to_json()]}
+        store_error = None
+        try:
+            self.store.append_quote(game, result)
+        except duckdb.Error as exc:
+            log.exception("could not store the quote")
+            store_error = f"not saved: {type(exc).__name__}: {exc}"[:300]
+        return {"results": [result.to_json()], "store_error": store_error}
 
     def _venue_and_game(self, venue_name: str, game_id: str) -> tuple[Venue, Game]:
         venue = self.venues.get(venue_name)
@@ -74,13 +86,14 @@ class CompareApp:
             raise ValueError(f"unknown venue {venue_name!r}; expected one of {sorted(self.venues)}")
         game = next((g for g in venue.list_games() if g.venue_game_id == game_id), None)
         if game is None:
-            raise ValueError(f"game {game_id!r} is not an upcoming NFL game at {venue.display_name}")
+            raise ValueError(f"game {game_id!r} is not an upcoming NFL game at {venue.display_name} "
+                             "(it may have started); reload the games")
         return venue, game
 
 
 def _game_json(game: Game) -> dict:
-    return {"game_id": game.venue_game_id, "label": game.label, "home_team": game.home_team,
-            "away_team": game.away_team, "game_start_time": game.game_start_time.isoformat()}
+    return {"game_id": game.venue_game_id, "label": game.label,
+            "game_start_time": game.game_start_time.isoformat()}
 
 
 def _offered_leg_json(leg: OfferedLeg) -> dict:
