@@ -1,0 +1,565 @@
+{
+ "request": {
+  "betLegs": [
+   {
+    "legType": "SIMPLE_SELECTION",
+    "betRunners": [
+     {
+      "runner": {
+       "marketId": "734.196953813",
+       "selectionId": 50200
+      }
+     }
+    ]
+   },
+   {
+    "legType": "SIMPLE_SELECTION",
+    "betRunners": [
+     {
+      "runner": {
+       "marketId": "734.196953814",
+       "selectionId": 7017916
+      }
+     }
+    ]
+   },
+   {
+    "legType": "SIMPLE_SELECTION",
+    "betRunners": [
+     {
+      "runner": {
+       "marketId": "734.198475005",
+       "selectionId": 88245410
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "status": 200,
+ "response": {
+  "betCombinations": [
+   {
+    "betType": "SINGLE",
+    "legCombinations": [
+     {
+      "legType": "SIMPLE_SELECTION",
+      "runners": [
+       {
+        "marketId": "734.196953813",
+        "selectionId": 50200
+       }
+      ],
+      "outcomes": []
+     }
+    ],
+    "canPlaceEachwayBet": false,
+    "numLines": 1,
+    "betMinStake": 0.09,
+    "betMaxStake": 3509.0,
+    "averageOdds": 6.7,
+    "winAverageOdds": 6.7,
+    "winAvgOdds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 6.7
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 6.7
+     },
+     "americanDisplayOdds": {
+      "americanOdds": 570.0,
+      "americanOddsInt": 570
+     },
+     "prettyFractionalDisplayOdds": {
+      "numerator": 11,
+      "denominator": 2
+     },
+     "prettyDisplayOdds": {
+      "decimalOdds": {
+       "decimalOdds": 6.5
+      },
+      "fractionalOdds": {
+       "numerator": 11,
+       "denominator": 2
+      }
+     }
+    },
+    "applicablePromotions": [],
+    "hasCashout": true,
+    "hasEWCashout": false,
+    "isSGM": false,
+    "betMaxPayout": 5000000.0,
+    "betMinStakeIncrement": 0.01,
+    "hasBonusMoney": false,
+    "availableOptions": [],
+    "extraCharges": []
+   },
+   {
+    "betType": "SINGLE",
+    "legCombinations": [
+     {
+      "legType": "SIMPLE_SELECTION",
+      "runners": [
+       {
+        "marketId": "734.196953814",
+        "selectionId": 7017916
+       }
+      ],
+      "outcomes": []
+     }
+    ],
+    "canPlaceEachwayBet": false,
+    "numLines": 1,
+    "betMinStake": 0.09,
+    "betMaxStake": 13800.0,
+    "averageOdds": 1.87,
+    "winAverageOdds": 1.87,
+    "winAvgOdds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 1.869565217391304
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 1.87
+     },
+     "americanDisplayOdds": {
+      "americanOdds": -115.0,
+      "americanOddsInt": -115
+     },
+     "prettyFractionalDisplayOdds": {
+      "numerator": 17,
+      "denominator": 20
+     },
+     "prettyDisplayOdds": {
+      "decimalOdds": {
+       "decimalOdds": 1.85
+      },
+      "fractionalOdds": {
+       "numerator": 17,
+       "denominator": 20
+      }
+     }
+    },
+    "applicablePromotions": [],
+    "hasCashout": true,
+    "hasEWCashout": false,
+    "isSGM": false,
+    "betMaxPayout": 5000000.0,
+    "betMinStakeIncrement": 0.01,
+    "hasBonusMoney": false,
+    "availableOptions": [],
+    "extraCharges": []
+   },
+   {
+    "betType": "SINGLE",
+    "legCombinations": [
+     {
+      "legType": "SIMPLE_SELECTION",
+      "runners": [
+       {
+        "marketId": "734.198475005",
+        "selectionId": 88245410
+       }
+      ],
+      "outcomes": []
+     }
+    ],
+    "canPlaceEachwayBet": false,
+    "numLines": 1,
+    "betMinStake": 0.09,
+    "betMaxStake": 741.0,
+    "averageOdds": 3.7,
+    "winAverageOdds": 3.7,
+    "winAvgOdds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 3.7
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 3.7
+     },
+     "americanDisplayOdds": {
+      "americanOdds": 270.0,
+      "americanOddsInt": 270
+     },
+     "prettyFractionalDisplayOdds": {
+      "numerator": 13,
+      "denominator": 5
+     },
+     "prettyDisplayOdds": {
+      "decimalOdds": {
+       "decimalOdds": 3.6
+      },
+      "fractionalOdds": {
+       "numerator": 13,
+       "denominator": 5
+      }
+     }
+    },
+    "applicablePromotions": [],
+    "hasCashout": true,
+    "hasEWCashout": false,
+    "isSGM": false,
+    "betMaxPayout": 5000000.0,
+    "betMinStakeIncrement": 0.01,
+    "hasBonusMoney": false,
+    "availableOptions": [],
+    "extraCharges": []
+   },
+   {
+    "betType": "TREBLE",
+    "legCombinations": [
+     {
+      "legType": "SIMPLE_SELECTION",
+      "runners": [
+       {
+        "marketId": "734.196953813",
+        "selectionId": 50200
+       }
+      ],
+      "outcomes": []
+     },
+     {
+      "legType": "SIMPLE_SELECTION",
+      "runners": [
+       {
+        "marketId": "734.196953814",
+        "selectionId": 7017916
+       }
+      ],
+      "outcomes": []
+     },
+     {
+      "legType": "SIMPLE_SELECTION",
+      "runners": [
+       {
+        "marketId": "734.198475005",
+        "selectionId": 88245410
+       }
+      ],
+      "outcomes": []
+     }
+    ],
+    "canPlaceEachwayBet": false,
+    "numLines": 1,
+    "betMinStake": 0.09,
+    "betMaxStake": 1111.5,
+    "averageOdds": 27.41,
+    "winAverageOdds": 27.41,
+    "winAvgOdds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 27.410956719804
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 27.41
+     },
+     "americanDisplayOdds": {
+      "americanOdds": 2641.0,
+      "americanOddsInt": 2641
+     },
+     "prettyFractionalDisplayOdds": {
+      "numerator": 25,
+      "denominator": 1
+     },
+     "prettyDisplayOdds": {
+      "decimalOdds": {
+       "decimalOdds": 26.0
+      },
+      "fractionalOdds": {
+       "numerator": 25,
+       "denominator": 1
+      }
+     }
+    },
+    "applicablePromotions": [],
+    "hasCashout": true,
+    "hasEWCashout": false,
+    "combinationGroup": 1,
+    "isSGM": true,
+    "features": [
+     "SGM"
+    ],
+    "betMaxPayout": 5000000.0,
+    "betMinStakeIncrement": 0.01,
+    "hasBonusMoney": false,
+    "availableOptions": [],
+    "extraCharges": []
+   }
+  ],
+  "promotions": [],
+  "runnerOdds": [
+   {
+    "runner": {
+     "marketId": "734.196953813",
+     "selectionId": 50200
+    },
+    "runnerOptions": [],
+    "odds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 6.7
+      },
+      "fractionalOdds": {
+       "numerator": 57,
+       "denominator": 10
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 6.7
+     },
+     "fractionalDisplayOdds": {
+      "numerator": 57,
+      "denominator": 10
+     },
+     "americanDisplayOdds": {
+      "americanOdds": 570.0,
+      "americanOddsInt": 570
+     }
+    },
+    "canBeBanker": false,
+    "isBanker": false,
+    "noCombiId": 0,
+    "inplay": false,
+    "availablePriceTypes": [
+     "LIVE_PRICE"
+    ],
+    "combinationGroups": [
+     1
+    ]
+   },
+   {
+    "runner": {
+     "marketId": "734.196953814",
+     "selectionId": 7017916,
+     "handicap": 43.5
+    },
+    "runnerOptions": [],
+    "odds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 1.869565217391304
+      },
+      "fractionalOdds": {
+       "numerator": 100,
+       "denominator": 115
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 1.87
+     },
+     "fractionalDisplayOdds": {
+      "numerator": 100,
+      "denominator": 115
+     },
+     "americanDisplayOdds": {
+      "americanOdds": -115.0,
+      "americanOddsInt": -115
+     }
+    },
+    "canBeBanker": false,
+    "isBanker": false,
+    "noCombiId": 0,
+    "inplay": false,
+    "availablePriceTypes": [
+     "LIVE_PRICE"
+    ],
+    "combinationGroups": [
+     1
+    ]
+   },
+   {
+    "runner": {
+     "marketId": "734.198475005",
+     "selectionId": 88245410
+    },
+    "runnerOptions": [],
+    "odds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 3.7
+      },
+      "fractionalOdds": {
+       "numerator": 27,
+       "denominator": 10
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 3.7
+     },
+     "fractionalDisplayOdds": {
+      "numerator": 27,
+      "denominator": 10
+     },
+     "americanDisplayOdds": {
+      "americanOdds": 270.0,
+      "americanOddsInt": 270
+     }
+    },
+    "canBeBanker": false,
+    "isBanker": false,
+    "noCombiId": 0,
+    "inplay": false,
+    "availablePriceTypes": [
+     "LIVE_PRICE"
+    ],
+    "combinationGroups": [
+     1
+    ]
+   }
+  ],
+  "winRunnerOdds": [
+   {
+    "runner": {
+     "marketId": "734.196953813",
+     "selectionId": 50200
+    },
+    "runnerOptions": [],
+    "odds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 6.7
+      },
+      "fractionalOdds": {
+       "numerator": 57,
+       "denominator": 10
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 6.7
+     },
+     "fractionalDisplayOdds": {
+      "numerator": 57,
+      "denominator": 10
+     },
+     "americanDisplayOdds": {
+      "americanOdds": 570.0,
+      "americanOddsInt": 570
+     }
+    },
+    "canBeBanker": false,
+    "isBanker": false,
+    "noCombiId": 0,
+    "inplay": false,
+    "availablePriceTypes": [
+     "LIVE_PRICE"
+    ],
+    "combinationGroups": [
+     1
+    ]
+   },
+   {
+    "runner": {
+     "marketId": "734.196953814",
+     "selectionId": 7017916,
+     "handicap": 43.5
+    },
+    "runnerOptions": [],
+    "odds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 1.869565217391304
+      },
+      "fractionalOdds": {
+       "numerator": 100,
+       "denominator": 115
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 1.87
+     },
+     "fractionalDisplayOdds": {
+      "numerator": 100,
+      "denominator": 115
+     },
+     "americanDisplayOdds": {
+      "americanOdds": -115.0,
+      "americanOddsInt": -115
+     }
+    },
+    "canBeBanker": false,
+    "isBanker": false,
+    "noCombiId": 0,
+    "inplay": false,
+    "availablePriceTypes": [
+     "LIVE_PRICE"
+    ],
+    "combinationGroups": [
+     1
+    ]
+   },
+   {
+    "runner": {
+     "marketId": "734.198475005",
+     "selectionId": 88245410
+    },
+    "runnerOptions": [],
+    "odds": {
+     "trueOdds": {
+      "decimalOdds": {
+       "decimalOdds": 3.7
+      },
+      "fractionalOdds": {
+       "numerator": 27,
+       "denominator": 10
+      }
+     },
+     "decimalDisplayOdds": {
+      "decimalOdds": 3.7
+     },
+     "fractionalDisplayOdds": {
+      "numerator": 27,
+      "denominator": 10
+     },
+     "americanDisplayOdds": {
+      "americanOdds": 270.0,
+      "americanOddsInt": 270
+     }
+    },
+    "canBeBanker": false,
+    "isBanker": false,
+    "noCombiId": 0,
+    "inplay": false,
+    "availablePriceTypes": [
+     "LIVE_PRICE"
+    ],
+    "combinationGroups": [
+     1
+    ]
+   }
+  ],
+  "betFailures": [
+   {
+    "failedRunner": {
+     "marketId": "734.196953814",
+     "selectionId": 7017916
+    },
+    "failureCode": "INVALID_COMBINATION"
+   },
+   {
+    "failedRunner": {
+     "marketId": "734.198475005",
+     "selectionId": 88245410
+    },
+    "failureCode": "INVALID_COMBINATION"
+   },
+   {
+    "failedRunner": {
+     "marketId": "734.196953813",
+     "selectionId": 50200
+    },
+    "failureCode": "INVALID_COMBINATION"
+   }
+  ],
+  "legFailures": [],
+  "maxPayout": 5000000.0,
+  "respCode": "SUCCESS",
+  "hasBonusMoney": false,
+  "limits": []
+ }
+}

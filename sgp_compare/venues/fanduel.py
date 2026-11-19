@@ -46,7 +46,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sgp_compare.legs import CanonicalLeg, Game, OfferedLeg, ParlayQuote, ParlayTier
-from sgp_compare.odds import decimal_to_american
 from sgp_compare.venues.base import VenueTransportError
 
 log = logging.getLogger(__name__)
@@ -82,14 +81,16 @@ PLAYER_STATS = {   # FanDuel stat words (after PLAYER_X_[ALT_]) -> canonical sta
 PLAYER_RE = re.compile(r"^PLAYER_X_(?:(1ST|2ND|3RD|4TH)_QUARTER_)?(ALT_)?(.+?)(?:_(?:HIGH|MEDIUM|LOW))?$")
 QUARTER_OF = {"1ST": "1Q", "2ND": "2Q", "3RD": "3Q", "4TH": "4Q"}
 
-TD_SCORER_STATS = {  # yes-only player markets: one runner per player
+# Yes-only player markets, one runner per player. Stat names match ProphetX's
+# for the same bet so legs line up across venues.
+TD_SCORER_STATS = {
     "ANY_TIME_TOUCHDOWN_SCORER": ("FG", "anytime_td"),
     "ANYTIME_1ST_HALF_TD_SCORER": ("1H", "anytime_td"),
     "ANYTIME_2ND_HALF_TD_SCORER": ("2H", "anytime_td"),
-    "X_TOUCHDOWN_SCORER_QB": ("FG", "first_td"),
-    "LAST_TOUCHDOWN_SCORER": ("FG", "last_td"),
-    "TO_SCORE_2+_TOUCHDOWNS": ("FG", "two_plus_td"),
-    "TO_SCORE_3+_TOUCHDOWNS": ("FG", "three_plus_td"),
+    "X_TOUCHDOWN_SCORER_QB": ("FG", "to_score_first_touchdown"),
+    "LAST_TOUCHDOWN_SCORER": ("FG", "to_score_last_touchdown"),
+    "TO_SCORE_2+_TOUCHDOWNS": ("FG", "to_score_at_least_2_touchdowns"),
+    "TO_SCORE_3+_TOUCHDOWNS": ("FG", "to_score_at_least_3_touchdowns"),
 }
 
 
@@ -145,16 +146,14 @@ def _legs_of_market(game: Game, market: dict) -> list[OfferedLeg]:
     ids = {r["selectionId"]: leg_id(market_id, r["selectionId"], _handicap(r)) for r, _ in priced}
     odds_of = {r["selectionId"]: odds for r, odds in priced}
     canon = {r["selectionId"]: _canonical(game, market, r) for r, _ in priced}
-    opposite = _opposites(market, [r for r, _ in priced], canon)
-    is_alt = "ALT" in (market.get("marketType") or "") or (market.get("bettingType") == "ODDS"
-                                                            and len(priced) > 3)
+    opposite = _opposites([r for r, _ in priced], canon)
+    alt_market = "ALT" in (market.get("marketType") or "").upper()
     legs = []
     for runner, odds in priced:
         sel = runner["selectionId"]
         other = opposite.get(sel)
         legs.append(OfferedLeg(
             leg_id=ids[sel],
-            game_id=game.venue_game_id,
             market_label=market.get("marketName") or "",
             category=_category(market),
             side_label=_side_label(runner),
@@ -164,7 +163,7 @@ def _legs_of_market(game: Game, market: dict) -> list[OfferedLeg]:
             available_stake=None,           # FanDuel states a max stake per bet slip, not per single
             opposite_leg_id=ids.get(other) if other is not None else None,
             market_key=market_id,
-            is_main_line=not is_alt,
+            is_main_line=not (alt_market or PLAYER_LADDER_RE.match(runner.get("runnerName") or "")),
             venue_ref={"marketId": market_id, "selectionId": sel},
         ))
     return legs
@@ -175,8 +174,15 @@ def _american(runner: dict) -> float | None:
     odds = runner.get("winRunnerOdds") or {}
     decimal = ((odds.get("trueOdds") or {}).get("decimalOdds") or {}).get("decimalOdds")
     if isinstance(decimal, (int, float)) and decimal > 1.0:
-        return round(decimal_to_american(float(decimal)), 2)
+        return round(_decimal_to_american(float(decimal)), 2)
     return None
+
+
+def _decimal_to_american(decimal_odds: float) -> float:
+    """2.5 -> +150, 1.5 -> -200 (unrounded)."""
+    if decimal_odds >= 2.0:
+        return (decimal_odds - 1.0) * 100.0
+    return -100.0 / (decimal_odds - 1.0)
 
 
 def _handicap(runner: dict) -> float:
@@ -194,27 +200,28 @@ def _side_label(runner: dict) -> str:
     return name
 
 
-def _opposites(market: dict, runners: list[dict], canon: dict) -> dict[int, int]:
+def _opposites(runners: list[dict], canon: dict) -> dict[int, int]:
     """selectionId -> the other side's selectionId, when the market has one.
 
-    Two-runner markets pair with each other; alternate ladders pair "Over (x)"
-    with "Under (x)" and "Team (+x)" with "Other team (-x)". A yes-only ladder
-    ("25+ Yards", TD scorers) or a 3-way market has none."""
-    if len(runners) == 2:
-        a, b = runners
-        return {a["selectionId"]: b["selectionId"], b["selectionId"]: a["selectionId"]}
+    Pairs are found by meaning, never by runner count: Over x / Under x of the
+    same stat and subject, home / away moneylines, home -x / away +x spreads,
+    and a plain Yes / No market. A yes-only ladder ("25+ Yards", TD scorers,
+    a drive ladder that happens to list two rungs) or a 3-way market has none."""
+    flip = {"over": "under", "under": "over", "home": "away", "away": "home"}
     by_key: dict[tuple, int] = {}
     for runner in runners:
         leg = canon.get(runner["selectionId"])
-        if leg is not None and leg.line is not None and ALT_LINE_RE.match(runner.get("runnerName") or ""):
-            by_key[(leg.stat, leg.subject, leg.side, leg.line)] = runner["selectionId"]
-    flip = {"over": "under", "under": "over", "home": "away", "away": "home"}
+        if leg is not None and leg.side in flip:
+            by_key[(leg.period, leg.stat, leg.subject, leg.side, leg.line)] = runner["selectionId"]
     pairs = {}
-    for (stat, subject, side, line), sel in by_key.items():
-        other_line = -line if stat == "spread" else line
-        other = by_key.get((stat, subject, flip.get(side), other_line))
+    for (period, stat, subject, side, line), sel in by_key.items():
+        other_line = -line if stat == "spread" and line is not None else line
+        other = by_key.get((period, stat, subject, flip[side], other_line))
         if other is not None:
             pairs[sel] = other
+    names = {(r.get("runnerName") or "").lower(): r["selectionId"] for r in runners}
+    if len(runners) == 2 and set(names) == {"yes", "no"}:
+        pairs[names["yes"]], pairs[names["no"]] = names["no"], names["yes"]
     return pairs
 
 

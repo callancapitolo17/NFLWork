@@ -35,6 +35,7 @@ number), tap one side per market, press **Price**.
 | `legs.py` | `Game`, `CanonicalLeg` (venue-neutral: period, stat, subject, side, line), `OfferedLeg`, `ParlayQuote`. |
 | `venues/base.py` | The `Venue` interface: `list_games`, `list_legs`, `price_parlay`. |
 | `venues/prophetx.py` | ProphetX: anonymous public endpoints over a curl_cffi Chrome session; game lines, halves, quarters, team totals, ~290 player props per game. |
+| `venues/fanduel.py` | FanDuel: the event list, nine event-page tabs merged (SGP markets only), and `implyBets` for the parlay price; headers and FanDuel's PerimeterX token come from `mlb_sgp/scraper_fanduel_sgp.py`. |
 | `venues/__init__.py` | `build_venues()`: the venues the page uses. Adding a venue = a module + one line here. |
 | `correlation.py` | Pure math: the Correlation factor with and without vig (singles devig from `kalshi_common.fair_value.two_way_fair`). |
 | `pricing.py` | `price_at_venue`: fresh legs, the parlay price, the 2^N partition. |
@@ -47,7 +48,8 @@ number), tap one side per market, press **Price**.
 |---|---|
 | ProphetX | Live (PR 1). Parlay = `POST /parlay/public/api/v1/user/request` with stake 1, a price request only. |
 | Novig, Kalshi, Polymarket US | Next, one thread each (Novig relays DK/FD/MGM/CZR prices; Kalshi needs an RFQ). |
-| DraftKings, FanDuel, BetMGM, Caesars | After the prediction markets. |
+| FanDuel | Parlay = `implyBets` (`pricePolicy=SUGGESTED`), a bet-slip price request only; one price with FanDuel's max stake. Ladder props ("5+ Receptions") and TD scorers have no other side, so no vig-removed number. Moneyline + spread on one team is refused. |
+| DraftKings, BetMGM, Caesars | After the prediction markets. |
 
 Cross-venue pricing (one parlay priced at every venue) matches legs by
 `CanonicalLeg`; it lands with the second venue.
@@ -58,7 +60,7 @@ Cross-venue pricing (one parlay priced at every venue) matches legs by
 python3 -m pytest -q sgp_compare/tests
 ```
 
-Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
+Fixtures are trimmed copies of the 2026-11-18 ProphetX recon and the 2026-11-19 FanDuel recon (IND at HOU).
 
 ## Troubleshooting
 
@@ -67,4 +69,7 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
   sandbox cannot reach ProphetX; run on the Mac.
 - **"no longer offered"**: the line moved between picking and pricing; reload the game.
 - **"would not price this combination"**: ProphetX returned no offers (it refuses some combinations).
+- **FanDuel errors with HTTP 400/403 everywhere**: FanDuel's PerimeterX token (`FD_PX_CONTEXT` in
+  `mlb_sgp/scraper_fanduel_sgp.py`) has expired; refresh it there (it is shared with the MLB scrapers).
+  FanDuel also needs a US IP.
 - **Vig-removed factor blank**: the reason is shown under it.

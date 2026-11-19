@@ -1,0 +1,39 @@
+{
+ "attachments": {
+  "events": {
+   "36305232": {
+    "eventId": 36305232,
+    "key": "EVENT:36305232",
+    "name": "Indianapolis Colts @ Houston Texans",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "countryCode": "GB",
+    "timezone": "GMT",
+    "openDate": "2026-11-20T01:16:00.000Z",
+    "videoAvailable": true
+   },
+   "36305241": {
+    "eventId": 36305241,
+    "key": "EVENT:36305241",
+    "name": "Pittsburgh Steelers @ Philadelphia Eagles",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "countryCode": "GB",
+    "timezone": "GMT",
+    "openDate": "2026-11-22T18:01:00.000Z",
+    "videoAvailable": false
+   },
+   "36305233": {
+    "eventId": 36305233,
+    "key": "EVENT:36305233",
+    "name": "New Orleans Saints @ Chicago Bears",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "countryCode": "GB",
+    "timezone": "GMT",
+    "openDate": "2026-11-22T18:01:00.000Z",
+    "videoAvailable": false
+   }
+  }
+ }
+}
