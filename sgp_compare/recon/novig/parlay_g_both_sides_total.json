@@ -1,0 +1,31 @@
+{
+ "name": "g_both_sides_total",
+ "legs": [
+  {
+   "market": "IND @ HOU t43.5",
+   "type": "TOTAL",
+   "outcome": "Over 43.5",
+   "id": "01a1c9ea-d65c-7550-96d8-3ea563848e5b",
+   "available": 0.52
+  },
+  {
+   "market": "IND @ HOU t43.5",
+   "type": "TOTAL",
+   "outcome": "Under 43.5",
+   "id": "01a1c9ea-d65c-7550-96d8-3eb8c8c6413d",
+   "available": 0.485
+  }
+ ],
+ "request": {
+  "url": "https://api.novig.us/rfq/v2/quote/unauthenticated",
+  "json": {
+   "outcomeIds": [
+    "01a1c9ea-d65c-7550-96d8-3ea563848e5b",
+    "01a1c9ea-d65c-7550-96d8-3eb8c8c6413d"
+   ]
+  }
+ },
+ "status": 400,
+ "elapsed_s": 0.080993,
+ "response": "Invalid parlay combination."
+}

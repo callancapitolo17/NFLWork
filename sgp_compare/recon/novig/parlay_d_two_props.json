@@ -1,0 +1,35 @@
+{
+ "name": "d_two_props",
+ "legs": [
+  {
+   "market": "Nico Collins 70.5 RECEIVING_YARDS",
+   "type": "RECEIVING_YARDS",
+   "outcome": "Over 70.5",
+   "id": "01a1ea0d-bfe5-7973-a8c3-89b61c82b05d",
+   "available": 0.515
+  },
+  {
+   "market": "C.J. Stroud 257.5 PASSING_YARDS",
+   "type": "PASSING_YARDS",
+   "outcome": "Over 257.5",
+   "id": "01a1efce-0949-7743-9c05-b478c916cebc",
+   "available": 0.525
+  }
+ ],
+ "request": {
+  "url": "https://api.novig.us/rfq/v2/quote/unauthenticated",
+  "json": {
+   "outcomeIds": [
+    "01a1ea0d-bfe5-7973-a8c3-89b61c82b05d",
+    "01a1efce-0949-7743-9c05-b478c916cebc"
+   ]
+  }
+ },
+ "status": 200,
+ "elapsed_s": 3.090264,
+ "response": {
+  "price": "0.343",
+  "expiresAt": 1795056443867,
+  "serverNow": 1795056413868
+ }
+}

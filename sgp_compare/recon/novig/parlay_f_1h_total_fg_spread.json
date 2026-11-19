@@ -1,0 +1,35 @@
+{
+ "name": "f_1h_total_fg_spread",
+ "legs": [
+  {
+   "market": "IND @ HOU t21.5 1H",
+   "type": "TOTAL_1H",
+   "outcome": "Over 21.5",
+   "id": "01a1f0ad-d8bc-77d2-bd7c-70096c1ab865",
+   "available": 0.525
+  },
+  {
+   "market": "HOU -12.5",
+   "type": "SPREAD",
+   "outcome": "HOU -12.5",
+   "id": "01a1c9ea-d65b-7fe3-9fac-b58dd46b2cad",
+   "available": 0.495
+  }
+ ],
+ "request": {
+  "url": "https://api.novig.us/rfq/v2/quote/unauthenticated",
+  "json": {
+   "outcomeIds": [
+    "01a1f0ad-d8bc-77d2-bd7c-70096c1ab865",
+    "01a1c9ea-d65b-7fe3-9fac-b58dd46b2cad"
+   ]
+  }
+ },
+ "status": 200,
+ "elapsed_s": 3.103556,
+ "response": {
+  "price": "0.288",
+  "expiresAt": 1795056452272,
+  "serverNow": 1795056422273
+ }
+}

@@ -1,0 +1,35 @@
+{
+ "name": "i_away_over",
+ "legs": [
+  {
+   "market": "HOU -12.5",
+   "type": "SPREAD",
+   "outcome": "IND +12.5",
+   "id": "01a1c9ea-d65b-7fe3-9fac-b59ac6861f60",
+   "available": 0.51
+  },
+  {
+   "market": "IND @ HOU t43.5",
+   "type": "TOTAL",
+   "outcome": "Over 43.5",
+   "id": "01a1c9ea-d65c-7550-96d8-3ea563848e5b",
+   "available": 0.52
+  }
+ ],
+ "request": {
+  "url": "https://api.novig.us/rfq/v2/quote/unauthenticated",
+  "json": {
+   "outcomeIds": [
+    "01a1c9ea-d65b-7fe3-9fac-b59ac6861f60",
+    "01a1c9ea-d65c-7550-96d8-3ea563848e5b"
+   ]
+  }
+ },
+ "status": 200,
+ "elapsed_s": 3.091216,
+ "response": {
+  "price": "0.251",
+  "expiresAt": 1795056470283,
+  "serverNow": 1795056440284
+ }
+}
