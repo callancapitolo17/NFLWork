@@ -246,3 +246,13 @@ def test_three_correlated_legs_read_each_legs_own_share():
     # parlay 0.28 * 0.3 against 0.5 * 0.4 * 0.3: +40%
     assert result.report.correlation_fair == pytest.approx(0.28 / (0.5 * 0.4) - 1)
     assert result.report.partition_independent_chance == pytest.approx(0.5 * 0.4 * 0.3)
+
+
+def test_a_quote_without_a_partition_stores_sql_null(tmp_path):
+    store = Store(tmp_path / "q.duckdb")
+    cells = {key: price for key, price in ALL_CELLS.items() if key != ("a2", "b2")}
+    result = price_at_venue(FakeVenue(cells), GAME, ["a", "b"])
+    assert result.status == "priced" and result.partition_decimal_odds is None
+    store.append_quote(GAME, result)
+    with duckdb.connect(str(store.db_path)) as con:
+        assert con.execute("SELECT partition_json IS NULL FROM parlay_quotes").fetchall() == [(True,)]

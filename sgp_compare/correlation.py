@@ -37,13 +37,12 @@ import itertools
 import math
 from dataclasses import dataclass
 
-from kalshi_common.fair_value import two_way_fair
+from kalshi_common.fair_value import PARTITION_OVERROUND_PER_LEG, two_way_fair
 
 MAX_PARTITION_LEGS = 3      # 2^3 = 8 parlay requests per venue is the ceiling
-# A coherent partition's chances add to at most 100% + 25% per leg (the same
-# envelope as kalshi_common.fair_value.devig_partition); past that a cell is
-# stale or garbage and the factor would be noise.
-PARTITION_OVERROUND_PER_LEG = 0.25
+# A coherent partition's chances add to at most 100% + PARTITION_OVERROUND_PER_LEG
+# per leg (kalshi_common's devig_partition envelope); past that a cell is stale
+# or garbage and the factor would be noise.
 # A coherent two-sided single at an exchange: its two chances add to 100-125%.
 # Wider than kalshi_common's sportsbook default (100.5-120%) on both ends:
 # exchange spreads can be a cent wide, and prop ladders are often thin.
@@ -135,7 +134,7 @@ def _partition_shares(partition_decimal_odds: list[float], n_legs: int
         return None, None, total - 1.0, (f"the outcome combinations add up to {total:.1%} (100% or less), "
                                          "so the prices are crossed")
     if total > 1.0 + PARTITION_OVERROUND_PER_LEG * n_legs:
-        return None, None, total - 1.0, (f"the outcome combinations add up to {total:.0%}, more than "
+        return None, None, total - 1.0, (f"the outcome combinations add up to {total:.1%}, more than "
                                          f"{1 + PARTITION_OVERROUND_PER_LEG * n_legs:.0%}, so a price is stale or wrong")
     shares = [r / total for r in raw]
     leg_shares = [sum(share for share, cell in zip(shares, flips) if not cell[leg]) for leg in range(n_legs)]
