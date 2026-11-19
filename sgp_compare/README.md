@@ -35,7 +35,7 @@ number), tap one side per market, press **Price**.
 | `legs.py` | `Game`, `CanonicalLeg` (venue-neutral: period, stat, subject, side, line), `OfferedLeg`, `ParlayQuote`. |
 | `venues/base.py` | The `Venue` interface: `list_games`, `list_legs`, `price_parlay`. |
 | `venues/prophetx.py` | ProphetX: anonymous public endpoints over a curl_cffi Chrome session; game lines, halves, quarters, team totals, ~290 player props per game. |
-| `venues/fanduel.py` | FanDuel: the event list, nine event-page tabs merged (SGP markets only), and `implyBets` for the parlay price; headers and FanDuel's PerimeterX token come from `mlb_sgp/scraper_fanduel_sgp.py`. |
+| `venues/fanduel.py` | FanDuel: the event list, nine event-page tabs merged (SGP markets only; any tab failing fails the read), and `implyBets` for the parlay price, on at most 3 reused sessions; headers and FanDuel's PerimeterX token come from `mlb_sgp/scraper_fanduel_sgp.py`. Main and alternate lines of one bet share a `market_key`, so the alt-lines toggle groups them. |
 | `venues/__init__.py` | `build_venues()`: the venues the page uses. Adding a venue = a module + one line here. |
 | `correlation.py` | Pure math: the Correlation factor with and without vig (singles devig from `kalshi_common.fair_value.two_way_fair`). |
 | `pricing.py` | `price_at_venue`: fresh legs, the parlay price, the 2^N partition. |
@@ -64,11 +64,14 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX recon and the 2026-11-19 
 
 ## Troubleshooting
 
-- **Error in the game list, or HTTP 502 from /api/legs**: ProphetX unreachable, answered
+- **Error in the game list, or HTTP 502 from /api/legs**: the venue was unreachable, answered
   non-200, or sent a shape the parser does not expect; the message says which. The cloud
-  sandbox cannot reach ProphetX; run on the Mac.
+  sandbox cannot reach the venues; run on the Mac.
 - **"no longer offered"**: the line moved between picking and pricing; reload the game.
-- **"would not price this combination"**: ProphetX returned no offers (it refuses some combinations).
+- **"would not price this combination"**: the venue declined it (ProphetX returned no offers;
+  FanDuel answered `INVALID_SGM_COMBINATION`, e.g. a moneyline and spread on one team).
+- **"FanDuel moved ... while pricing"**: a main line changed between the leg read and the
+  parlay request; reload the game.
 - **FanDuel errors with HTTP 400/403 everywhere**: FanDuel's PerimeterX token (`FD_PX_CONTEXT` in
   `mlb_sgp/scraper_fanduel_sgp.py`) has expired; refresh it there (it is shared with the MLB scrapers).
   FanDuel also needs a US IP.

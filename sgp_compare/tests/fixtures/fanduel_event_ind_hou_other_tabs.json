@@ -1,0 +1,848 @@
+{
+ "attachments": {
+  "markets": {
+   "734.197901947": {
+    "marketId": "734.197901947",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "HOU Texans Alternate Total",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "HOME_TEAM_ALTERNATE_TOTAL",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 14159950,
+      "handicap": 0,
+      "runnerName": "Over (9.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.002
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 15778793,
+      "handicap": 0,
+      "runnerName": "Over (10.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.01
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 14159948,
+      "handicap": 0,
+      "runnerName": "Over (11.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.01
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 14159951,
+      "handicap": 0,
+      "runnerName": "Under (9.5)",
+      "result": {
+       "type": "UNDER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 31
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 15778794,
+      "handicap": 0,
+      "runnerName": "Under (10.5)",
+      "result": {
+       "type": "UNDER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 18
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901934": {
+    "marketId": "734.197901934",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "1st Half Winner",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "1ST_HALF_WINNER",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 50200,
+      "handicap": 0,
+      "runnerName": "Indianapolis Colts",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 4.3
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 179823,
+      "handicap": 0,
+      "runnerName": "Houston Texans",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.227272727272727
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901942": {
+    "marketId": "734.197901942",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "1st Half Alternate Total Points",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "FIRST_HALF_ALTERNATE_TOTAL_POINTS",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 14159950,
+      "handicap": 0,
+      "runnerName": "Over (9.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.025
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 15778793,
+      "handicap": 0,
+      "runnerName": "Over (10.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.055555555555556
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 14159948,
+      "handicap": 0,
+      "runnerName": "Over (11.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.055555555555556
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 12194316,
+      "handicap": 0,
+      "runnerName": "Over (42.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 26
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 12197173,
+      "handicap": 0,
+      "runnerName": "Over (43.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 31
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901886": {
+    "marketId": "734.197901886",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "1st Half Total Touchdowns - HOU Texans",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "1ST_HALF_TOTAL_TOUCHDOWNS_-_HOME_TEAM",
+    "sgmMarket": false,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "MOVING_HANDICAP",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 7017916,
+      "handicap": 1.5,
+      "runnerName": "Over",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.819672131147541
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 7017917,
+      "handicap": 1.5,
+      "runnerName": "Under",
+      "result": {
+       "type": "UNDER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.961538461538462
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901918": {
+    "marketId": "734.197901918",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "IND Colts - 1st Half Alt Total Points",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "AWAY_-_FIRST_HALF_ALTERNATE_TOTAL_POINTS",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 20595972,
+      "handicap": 0,
+      "runnerName": "Over (0.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.1
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 25804859,
+      "handicap": 0,
+      "runnerName": "Over (1.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.1
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 19957276,
+      "handicap": 0,
+      "runnerName": "Over (2.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.111111111111111
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 12324065,
+      "handicap": 0,
+      "runnerName": "Over (17.5)",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 18
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 20595973,
+      "handicap": 0,
+      "runnerName": "Under (0.5)",
+      "result": {
+       "type": "UNDER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 6.5
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901917": {
+    "marketId": "734.197901917",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "2nd Half Winner",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "2ND_HALF_WINNER",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 50200,
+      "handicap": 0,
+      "runnerName": "Indianapolis Colts",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 3.8
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 179823,
+      "handicap": 0,
+      "runnerName": "Houston Texans",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.285714285714286
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901949": {
+    "marketId": "734.197901949",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "2nd Half Spread",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "SECOND_HALF_HANDICAP",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "MOVING_HANDICAP",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 50200,
+      "handicap": 5.5,
+      "runnerName": "Indianapolis Colts",
+      "result": {
+       "type": "AWAY"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 2
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 179823,
+      "handicap": -5.5,
+      "runnerName": "Houston Texans",
+      "result": {
+       "type": "HOME"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.833333333333333
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901903": {
+    "marketId": "734.197901903",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "2nd Quarter Winner",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "2ND_QUARTER_WINNER",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 50200,
+      "handicap": 0,
+      "runnerName": "Indianapolis Colts",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 3.45
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 179823,
+      "handicap": 0,
+      "runnerName": "Houston Texans",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.3125
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.198188523": {
+    "marketId": "734.198188523",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "Kayshon Boutte - 1st Qtr Receiving Yds",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "PLAYER_X_1ST_QUARTER_RECEIVING_YARDS",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "MOVING_HANDICAP",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 41072109,
+      "handicap": 0.5,
+      "runnerName": "Kayshon Boutte Over",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 2.36
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 41072108,
+      "handicap": 0.5,
+      "runnerName": "Kayshon Boutte Under",
+      "result": {
+       "type": "UNDER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.549450549450549
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197906199": {
+    "marketId": "734.197906199",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "Nico Collins - Alt Receiving Yds",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "PLAYER_X_ALT_RECEIVING_YARDS_HIGH",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 40988198,
+      "handicap": 0,
+      "runnerName": "Nico Collins 25+ Yards",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.055555555555556
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 73565844,
+      "handicap": 0,
+      "runnerName": "Nico Collins 30+ Yards",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.090909090909091
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 40988202,
+      "handicap": 0,
+      "runnerName": "Nico Collins 40+ Yards",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.2
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 40988193,
+      "handicap": 0,
+      "runnerName": "Nico Collins 80+ Yards",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 2.24
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 40988196,
+      "handicap": 0,
+      "runnerName": "Nico Collins 90+ Yards",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 2.78
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197906186": {
+    "marketId": "734.197906186",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "C.J. Stroud - Passing + Rushing Yds",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "PLAYER_X_PASSING_+_RUSHING_YARDS",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "MOVING_HANDICAP",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 41158959,
+      "handicap": 271.5,
+      "runnerName": "C.J. Stroud Over",
+      "result": {
+       "type": "OVER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.884955752212389
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 41158958,
+      "handicap": 271.5,
+      "runnerName": "C.J. Stroud Under",
+      "result": {
+       "type": "UNDER"
+      },
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.884955752212389
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.197901891": {
+    "marketId": "734.197901891",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "1st Touchdown Scorer",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "X_TOUCHDOWN_SCORER_QB",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 16579799,
+      "handicap": 0,
+      "runnerName": "David Montgomery",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 5.3
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 26919599,
+      "handicap": 0,
+      "runnerName": "Nico Collins",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 7
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 16195884,
+      "handicap": 0,
+      "runnerName": "Jonathan Taylor",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 8.5
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 48221158,
+      "handicap": 0,
+      "runnerName": "Houston Defense",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 31
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 48074921,
+      "handicap": 0,
+      "runnerName": "Indianapolis Defense",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 41
+        }
+       }
+      }
+     }
+    ]
+   },
+   "734.198011932": {
+    "marketId": "734.198011932",
+    "eventTypeId": 6423,
+    "competitionId": 12282733,
+    "eventId": 36305232,
+    "marketName": "Either Player - Anytime Touchdown Scorer",
+    "marketTime": "2026-11-20T01:16:00.000Z",
+    "marketType": "EITHER_PLAYER_-_ANY_TIME_TOUCHDOWN_SCORER",
+    "sgmMarket": true,
+    "inPlay": false,
+    "numberOfWinners": 1,
+    "bettingType": "ODDS",
+    "marketStatus": "OPEN",
+    "runners": [
+     {
+      "selectionId": 101384376,
+      "handicap": 0,
+      "runnerName": "David Montgomery or Nico Collins",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.27027027027027
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 105315347,
+      "handicap": 0,
+      "runnerName": "David Montgomery or Jonathan Taylor",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.333333333333333
+        }
+       }
+      }
+     },
+     {
+      "selectionId": 102631824,
+      "handicap": 0,
+      "runnerName": "Dalton Schultz or David Montgomery",
+      "result": {},
+      "runnerStatus": "ACTIVE",
+      "winRunnerOdds": {
+       "trueOdds": {
+        "decimalOdds": {
+         "decimalOdds": 1.384615384615385
+        }
+       }
+      }
+     }
+    ]
+   }
+  }
+ }
+}
