@@ -66,6 +66,20 @@ TOTAL_ALT = {"H1": "Total Alternate - 1st Half"}
 ROLE_TO_DK = {"home": "Home", "away": "Away"}
 
 
+def league_listing_params(league_id: str) -> dict[str, str]:
+    """Query params of DK_LEAGUE_URL that list a league's events with their game lines."""
+    return {
+        "isBatchable": "false",
+        "templateVars": league_id,
+        "eventsQuery": (f"$filter=leagueId eq '{league_id}' AND clientMetadata/"
+                        f"Subcategories/any(s: s/Id eq '{DK_GAME_LINES_SUBCATEGORY}')"),
+        "marketsQuery": (f"$filter=clientMetadata/subCategoryId eq '{DK_GAME_LINES_SUBCATEGORY}' "
+                         "AND tags/all(t: t ne 'SportcastBetBuilder')"),
+        "include": "Events",
+        "entity": "events",
+    }
+
+
 def dk_team_to_abbr(dk_name: str) -> str | None:
     """'SEA Seahawks' -> 'SEA'. The nickname decides: DK's city prefix is
     ambiguous for the two LA and two NY teams."""
@@ -102,17 +116,7 @@ class DraftKingsBook:
             raise
 
     def _list_games(self) -> list[BookGame]:
-        league_id = DK_LEAGUE_IDS[self.league]
-        params = {
-            "isBatchable": "false",
-            "templateVars": league_id,
-            "eventsQuery": (f"$filter=leagueId eq '{league_id}' AND clientMetadata/"
-                            f"Subcategories/any(s: s/Id eq '{DK_GAME_LINES_SUBCATEGORY}')"),
-            "marketsQuery": (f"$filter=clientMetadata/subCategoryId eq '{DK_GAME_LINES_SUBCATEGORY}' "
-                             "AND tags/all(t: t ne 'SportcastBetBuilder')"),
-            "include": "Events",
-            "entity": "events",
-        }
+        params = league_listing_params(DK_LEAGUE_IDS[self.league])
         resp = self._get(DK_LEAGUE_URL, params=params, timeout=30)
         if resp.status_code != 200:
             raise RuntimeError(f"DK event listing returned HTTP {resp.status_code}")

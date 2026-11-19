@@ -1,0 +1,393 @@
+[
+ {
+  "case": "home ML + main Total",
+  "params": {
+   "eventId": "34118011",
+   "selections": "0ML84695444_1",
+   "marketCandidates": "3_84695444",
+   "oddsStyle": "american"
+  },
+  "response": {
+   "data": {
+    "trueOdds": 1.13333334,
+    "displayOdds": {
+     "american": "-750"
+    },
+    "calculationId": "01a1f1a5-e7ad-750a-9f20-903da9233ef5",
+    "modelCalculationId": "01a1f1a5-e7ad-7986-aa94-a9468e93c9f3",
+    "selectionsMapped": [
+     "0ML84695444_1"
+    ],
+    "selectionsNotMapped": [],
+    "compatibleMarkets": [
+     {
+      "id": "3_84695444",
+      "selections": [
+       {
+        "id": "0OU84695444O4350_1",
+        "trueOdds": 2,
+        "displayOdds": {
+         "american": "+100"
+        }
+       },
+       {
+        "id": "0OU84695444U4350_3",
+        "trueOdds": 2.14,
+        "displayOdds": {
+         "american": "+114"
+        }
+       }
+      ]
+     }
+    ],
+    "eligibleMarkets": [],
+    "combinabilityRulesHit": false
+   }
+  }
+ },
+ {
+  "case": "home -12.5 + Nico Collins rec yds O/U",
+  "params": {
+   "eventId": "34118011",
+   "selections": "0HC84695444N1250_1",
+   "marketCandidates": "389629209",
+   "oddsStyle": "american"
+  },
+  "response": {
+   "data": {
+    "trueOdds": 1.95238096,
+    "displayOdds": {
+     "american": "-105"
+    },
+    "calculationId": "01a1f1a5-e7ad-750a-9f20-903da9233ef5",
+    "modelCalculationId": "01a1f1a5-e7ad-7986-aa94-a9468e93c9f3",
+    "selectionsMapped": [
+     "0HC84695444N1250_1"
+    ],
+    "selectionsNotMapped": [],
+    "compatibleMarkets": [
+     {
+      "id": "389629209",
+      "selections": [
+       {
+        "id": "0QA389629209#2369158053_13L88808Q1-864616411Q20",
+        "trueOdds": 3.34,
+        "displayOdds": {
+         "american": "+234"
+        }
+       },
+       {
+        "id": "0QA389629209#2369158054_13L88808Q1-879420213Q20",
+        "trueOdds": 3.64,
+        "displayOdds": {
+         "american": "+264"
+        }
+       }
+      ]
+     }
+    ],
+    "eligibleMarkets": [],
+    "combinabilityRulesHit": false
+   }
+  }
+ },
+ {
+  "case": "home ML + Over 43.5 + Anytime TD",
+  "params": {
+   "eventId": "34118011",
+   "selections": "0ML84695444_1,0OU84695444O4350_1",
+   "marketCandidates": "389630297",
+   "oddsStyle": "american"
+  },
+  "response": {
+   "data": {
+    "trueOdds": 2,
+    "displayOdds": {
+     "american": "+100"
+    },
+    "calculationId": "01a1f1a5-e7ad-750a-9f20-903da9233ef5",
+    "modelCalculationId": "01a1f1a5-e7ad-7986-aa94-a9468e93c9f3",
+    "selectionsMapped": [
+     "0OU84695444O4350_1",
+     "0ML84695444_1"
+    ],
+    "selectionsNotMapped": [],
+    "compatibleMarkets": [
+     {
+      "id": "389630297",
+      "selections": [
+       {
+        "id": "0QA389630297#2367290746_13L88808Q1-1969802282Q20",
+        "trueOdds": 16,
+        "displayOdds": {
+         "american": "+1500"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290728_13L88808Q1-1148361646Q20",
+        "trueOdds": 6.25,
+        "displayOdds": {
+         "american": "+525"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290749_13L88808Q12039949580Q20",
+        "trueOdds": 46,
+        "displayOdds": {
+         "american": "+4500"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290733_13L88808Q1-1444150535Q20",
+        "trueOdds": 5.9,
+        "displayOdds": {
+         "american": "+490"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290671_14L88808Q1-214882048Q20",
+        "trueOdds": 13,
+        "displayOdds": {
+         "american": "+1200"
+        }
+       },
+       {
+        "id": "0QA389630297#2367592530_13L88808Q1-1506220356Q20",
+        "trueOdds": 45,
+        "displayOdds": {
+         "american": "+4400"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290732_13L88808Q11057552796Q20",
+        "trueOdds": 6.25,
+        "displayOdds": {
+         "american": "+525"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290751_13L88808Q11622227504Q20",
+        "trueOdds": 51,
+        "displayOdds": {
+         "american": "+5000"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290742_13L88808Q1-297522584Q20",
+        "trueOdds": 7,
+        "displayOdds": {
+         "american": "+600"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290752_13L88808Q1-542658616Q20",
+        "trueOdds": 15,
+        "displayOdds": {
+         "american": "+1400"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290670_13L88808Q11076091956Q20",
+        "trueOdds": 7.75,
+        "displayOdds": {
+         "american": "+675"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290739_13L88808Q11489584874Q20",
+        "trueOdds": 56,
+        "displayOdds": {
+         "american": "+5500"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290738_13L88808Q1-1683593135Q20",
+        "trueOdds": 22,
+        "displayOdds": {
+         "american": "+2100"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290747_13L88808Q11956512748Q20",
+        "trueOdds": 26,
+        "displayOdds": {
+         "american": "+2500"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290731_13L88808Q12038958166Q20",
+        "trueOdds": 4.85,
+        "displayOdds": {
+         "american": "+385"
+        }
+       },
+       {
+        "id": "0QA389630297#2370100597_13L88808Q1-1278315442Q20",
+        "trueOdds": 51,
+        "displayOdds": {
+         "american": "+5000"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290740_13L88808Q1611489861Q20",
+        "trueOdds": 21,
+        "displayOdds": {
+         "american": "+2000"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290735_13L88808Q1-1461677560Q20",
+        "trueOdds": 9,
+        "displayOdds": {
+         "american": "+800"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290744_13L88808Q1-348566577Q20",
+        "trueOdds": 8.5,
+        "displayOdds": {
+         "american": "+750"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290730_13L88808Q1-311451763Q20",
+        "trueOdds": 3.16,
+        "displayOdds": {
+         "american": "+216"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290743_13L88808Q11289716993Q20",
+        "trueOdds": 9,
+        "displayOdds": {
+         "american": "+800"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290748_13L88808Q1942374795Q20",
+        "trueOdds": 19,
+        "displayOdds": {
+         "american": "+1800"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290741_13L88808Q1-1720506042Q20",
+        "trueOdds": 3.88,
+        "displayOdds": {
+         "american": "+288"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290737_13L88808Q1242387080Q20",
+        "trueOdds": 8.5,
+        "displayOdds": {
+         "american": "+750"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290727_13L88808Q11759839095Q20",
+        "trueOdds": 3.4,
+        "displayOdds": {
+         "american": "+240"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290734_13L88808Q1401138925Q20",
+        "trueOdds": 7,
+        "displayOdds": {
+         "american": "+600"
+        }
+       },
+       {
+        "id": "0QA389630297#2367290745_13L88808Q11658952185Q20",
+        "trueOdds": 13,
+        "displayOdds": {
+         "american": "+1200"
+        }
+       }
+      ]
+     }
+    ],
+    "eligibleMarkets": [],
+    "combinabilityRulesHit": false
+   }
+  }
+ },
+ {
+  "case": "home ML + away ML (impossible) + Total",
+  "params": {
+   "eventId": "34118011",
+   "selections": "0ML84695444_1,0ML84695444_3",
+   "marketCandidates": "3_84695444",
+   "oddsStyle": "american"
+  },
+  "response": {
+   "data": {
+    "trueOdds": 6,
+    "displayOdds": {
+     "american": "+500"
+    },
+    "calculationId": "01a1f1a5-e7ad-750a-9f20-903da9233ef5",
+    "modelCalculationId": "01a1f1a5-e7ad-7986-aa94-a9468e93c9f3",
+    "selectionsMapped": [
+     "0ML84695444_3"
+    ],
+    "selectionsNotMapped": [
+     {
+      "selectionId": "0ML84695444_1",
+      "removalReasonCode": "IncompatibleSelections"
+     }
+    ],
+    "compatibleMarkets": [
+     {
+      "id": "3_84695444",
+      "selections": [
+       {
+        "id": "0OU84695444O4350_1",
+        "trueOdds": 10.5,
+        "displayOdds": {
+         "american": "+950"
+        }
+       },
+       {
+        "id": "0OU84695444U4350_3",
+        "trueOdds": 9.5,
+        "displayOdds": {
+         "american": "+850"
+        }
+       }
+      ]
+     }
+    ],
+    "eligibleMarkets": [],
+    "combinabilityRulesHit": false
+   }
+  }
+ },
+ {
+  "case": "home -12.5 + Spread market itself",
+  "params": {
+   "eventId": "34118011",
+   "selections": "0HC84695444N1250_1",
+   "marketCandidates": "2_84695444",
+   "oddsStyle": "american"
+  },
+  "response": {
+   "data": {
+    "trueOdds": 1.95238096,
+    "displayOdds": {
+     "american": "-105"
+    },
+    "calculationId": "01a1f1a5-e7ad-750a-9f20-903da9233ef5",
+    "modelCalculationId": "01a1f1a5-e7ad-7986-aa94-a9468e93c9f3",
+    "selectionsMapped": [
+     "0HC84695444N1250_1"
+    ],
+    "selectionsNotMapped": [],
+    "compatibleMarkets": [],
+    "eligibleMarkets": [],
+    "combinabilityRulesHit": false
+   }
+  }
+ }
+]

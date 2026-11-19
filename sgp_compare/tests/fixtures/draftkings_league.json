@@ -1,0 +1,52 @@
+{
+ "events": [
+  {
+   "id": "34118011",
+   "name": "IND Colts @ HOU Texans",
+   "startEventDate": "2026-11-20T01:15:00.0000000Z",
+   "status": "NOT_STARTED",
+   "participants": [
+    {
+     "name": "HOU Texans",
+     "venueRole": "Home"
+    },
+    {
+     "name": "IND Colts",
+     "venueRole": "Away"
+    }
+   ]
+  },
+  {
+   "id": "34118023",
+   "name": "NO Saints @ CHI Bears",
+   "startEventDate": "2026-11-22T18:00:00.0000000Z",
+   "status": "NOT_STARTED",
+   "participants": [
+    {
+     "name": "CHI Bears",
+     "venueRole": "Home"
+    },
+    {
+     "name": "NO Saints",
+     "venueRole": "Away"
+    }
+   ]
+  },
+  {
+   "id": "34118213",
+   "name": "TB Buccaneers @ DET Lions",
+   "startEventDate": "2026-11-22T18:00:00.0000000Z",
+   "status": "NOT_STARTED",
+   "participants": [
+    {
+     "name": "DET Lions",
+     "venueRole": "Home"
+    },
+    {
+     "name": "TB Buccaneers",
+     "venueRole": "Away"
+    }
+   ]
+  }
+ ]
+}

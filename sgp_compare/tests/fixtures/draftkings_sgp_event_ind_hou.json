@@ -1,0 +1,1053 @@
+{
+ "data": {
+  "events": [
+   {
+    "id": "34118011",
+    "eventName": "IND Colts @ HOU Texans",
+    "marketGroups": [
+     {
+      "id": "1307",
+      "name": "Team Totals"
+     },
+     {
+      "id": "1427",
+      "name": "TD Scorers"
+     },
+     {
+      "id": "1961",
+      "name": "Game Props"
+     },
+     {
+      "id": "1962",
+      "name": "Passing Props"
+     },
+     {
+      "id": "1963",
+      "name": "Rushing Props"
+     },
+     {
+      "id": "1964",
+      "name": "Receiving Props"
+     },
+     {
+      "id": "1966",
+      "name": "Team TD Props"
+     },
+     {
+      "id": "2110",
+      "name": "Special Teams Props"
+     },
+     {
+      "id": "2408",
+      "name": "Popular"
+     },
+     {
+      "id": "269",
+      "name": "Game Lines"
+     },
+     {
+      "id": "273",
+      "name": "Specials"
+     },
+     {
+      "id": "3075",
+      "name": "Defensive Props"
+     },
+     {
+      "id": "3816",
+      "name": "Race To"
+     },
+     {
+      "id": "3955",
+      "name": "Scoring Props"
+     },
+     {
+      "id": "4028",
+      "name": "Quarters"
+     },
+     {
+      "id": "4060",
+      "name": "Passing Yards H2H"
+     },
+     {
+      "id": "4061",
+      "name": "Receiving Yards H2H"
+     },
+     {
+      "id": "4062",
+      "name": "Rushing Yards H2H"
+     },
+     {
+      "id": "4063",
+      "name": "Quick Hits"
+     },
+     {
+      "id": "4091",
+      "name": "Halves"
+     },
+     {
+      "id": "4093",
+      "name": "Players"
+     },
+     {
+      "id": "4094",
+      "name": "Player Drive Props"
+     },
+     {
+      "id": "4565",
+      "name": "1st of Game"
+     }
+    ]
+   }
+  ],
+  "markets": [
+   {
+    "id": "389628653",
+    "name": "Nico Collins Receiving Yards",
+    "marketType": {
+     "name": "Receiving Yards Milestones"
+    },
+    "category": "AlphanumericList",
+    "tags": [
+     "SGP",
+     "PlayerProps"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "1964",
+     "2408"
+    ],
+    "participants": [],
+    "selections": [
+     {
+      "id": "0QA389628653#2367277965_13L88808Q11649361331Q20",
+      "name": "20+",
+      "outcomeType": null,
+      "points": null,
+      "milestoneValue": 20,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.04166667,
+      "participants": [],
+      "players": [
+       {
+        "name": "Nico Collins",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "−2400"
+      }
+     },
+     {
+      "id": "0QA389628653#2367278003_13L88808Q144673524Q20",
+      "name": "25+",
+      "outcomeType": null,
+      "points": null,
+      "milestoneValue": 25,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.06944445,
+      "participants": [],
+      "players": [
+       {
+        "name": "Nico Collins",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "−1440"
+      }
+     },
+     {
+      "id": "0QA389628653#2367278010_13L88808Q1628754404Q20",
+      "name": "30+",
+      "outcomeType": null,
+      "points": null,
+      "milestoneValue": 30,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.10416667,
+      "participants": [],
+      "players": [
+       {
+        "name": "Nico Collins",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "−960"
+      }
+     },
+     {
+      "id": "0QA389628653#2367278067_13L88808Q1627513418Q20",
+      "name": "40+",
+      "outcomeType": null,
+      "points": null,
+      "milestoneValue": 40,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.20491804,
+      "participants": [],
+      "players": [
+       {
+        "name": "Nico Collins",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "−488"
+      }
+     }
+    ]
+   },
+   {
+    "id": "389629209",
+    "name": "Nico Collins Receiving Yards O/U",
+    "marketType": {
+     "name": "Receiving Yards O/U"
+    },
+    "category": "OverUnderSingleLine",
+    "tags": [
+     "SGP",
+     "PlayerProps"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "1964"
+    ],
+    "participants": [],
+    "selections": [
+     {
+      "id": "0QA389629209#2369158053_13L88808Q1-864616411Q20",
+      "name": "Over",
+      "outcomeType": "Over",
+      "points": 70.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.88495576,
+      "participants": [],
+      "players": [
+       {
+        "name": "Nico Collins",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "−113"
+      }
+     },
+     {
+      "id": "0QA389629209#2369158054_13L88808Q1-879420213Q20",
+      "name": "Under",
+      "outcomeType": "Under",
+      "points": 70.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.90090091,
+      "participants": [],
+      "players": [
+       {
+        "name": "Nico Collins",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "−111"
+      }
+     }
+    ]
+   },
+   {
+    "id": "1_84695444",
+    "name": "Moneyline",
+    "marketType": {
+     "name": "Moneyline"
+    },
+    "category": "HomeAway",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "2408",
+     "269"
+    ],
+    "participants": [
+     {
+      "name": "IND Colts",
+      "venueRole": "Away"
+     },
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0ML84695444_3",
+      "name": "IND Colts",
+      "outcomeType": "Away",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 6,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+500"
+      }
+     },
+     {
+      "id": "0ML84695444_1",
+      "name": "HOU Texans",
+      "outcomeType": "Home",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.14285715,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−700"
+      }
+     }
+    ]
+   },
+   {
+    "id": "1_87276227",
+    "name": "Moneyline 1st Half",
+    "marketType": {
+     "name": "Moneyline 1st Half"
+    },
+    "category": "HomeAway",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "4091"
+    ],
+    "participants": [
+     {
+      "name": "IND Colts",
+      "venueRole": "Away"
+     },
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0ML87276227_3",
+      "name": "IND Colts",
+      "outcomeType": "Away",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 4.4,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+340"
+      }
+     },
+     {
+      "id": "0ML87276227_1",
+      "name": "HOU Texans",
+      "outcomeType": "Home",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.22727273,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−440"
+      }
+     }
+    ]
+   },
+   {
+    "id": "2_84695444",
+    "name": "Spread",
+    "marketType": {
+     "name": "Spread"
+    },
+    "category": "HomeAwayByPoints",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "2408",
+     "269"
+    ],
+    "participants": [
+     {
+      "name": "IND Colts",
+      "venueRole": "Away"
+     },
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0HC84695444P1250_3",
+      "name": "IND Colts",
+      "outcomeType": "Away",
+      "points": 12.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.89285715,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−112"
+      }
+     },
+     {
+      "id": "0HC84695444N1250_1",
+      "name": "HOU Texans",
+      "outcomeType": "Home",
+      "points": -12.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.92592593,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−108"
+      }
+     }
+    ]
+   },
+   {
+    "id": "2_87295267",
+    "name": "Spread Alternate",
+    "marketType": {
+     "name": "Spread Alternate"
+    },
+    "category": "HomeAwayByPoints",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "269"
+    ],
+    "participants": [
+     {
+      "name": "IND Colts",
+      "venueRole": "Away"
+     },
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0HC87295267N950_3",
+      "name": "IND Colts",
+      "outcomeType": "Away",
+      "points": -9.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 14,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+1300"
+      }
+     },
+     {
+      "id": "0HC87295267P950_1",
+      "name": "HOU Texans",
+      "outcomeType": "Home",
+      "points": 9.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.01,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−10000"
+      }
+     },
+     {
+      "id": "0HC87295267P950_3",
+      "name": "IND Colts",
+      "outcomeType": "Away",
+      "points": 9.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 2.2,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+120"
+      }
+     },
+     {
+      "id": "0HC87295267N950_1",
+      "name": "HOU Texans",
+      "outcomeType": "Home",
+      "points": -9.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.625,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−160"
+      }
+     }
+    ]
+   },
+   {
+    "id": "390104064",
+    "name": "1st Half (3 Way)",
+    "marketType": {
+     "name": "1st Half (3 Way)"
+    },
+    "category": "HomeTieAway",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "4091"
+    ],
+    "participants": [
+     {
+      "name": "IND Colts",
+      "venueRole": "Away"
+     },
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0QA390104064#2369430644_13L88808Q1471Q21",
+      "name": "IND Colts",
+      "outcomeType": "Away",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 4.8,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+380"
+      }
+     },
+     {
+      "id": "0QA390104064#2369430625_13L88808Q10Q22",
+      "name": "Tie",
+      "outcomeType": "Tie",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 13,
+      "participants": [],
+      "players": [],
+      "displayOdds": {
+       "american": "+1200"
+      }
+     },
+     {
+      "id": "0QA390104064#2369430518_13L88808Q1474Q20",
+      "name": "HOU Texans",
+      "outcomeType": "Home",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.30303031,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−330"
+      }
+     }
+    ]
+   },
+   {
+    "id": "3_84695444",
+    "name": "Total",
+    "marketType": {
+     "name": "Total"
+    },
+    "category": "OverUnderSingleLine",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "2408",
+     "269"
+    ],
+    "participants": [],
+    "selections": [
+     {
+      "id": "0OU84695444O4350_1",
+      "name": "Over",
+      "outcomeType": "Over",
+      "points": 43.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.84745763,
+      "participants": [],
+      "players": [],
+      "displayOdds": {
+       "american": "−118"
+      }
+     },
+     {
+      "id": "0OU84695444U4350_3",
+      "name": "Under",
+      "outcomeType": "Under",
+      "points": 43.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.98039216,
+      "participants": [],
+      "players": [],
+      "displayOdds": {
+       "american": "−102"
+      }
+     }
+    ]
+   },
+   {
+    "id": "3_87295267",
+    "name": "Total Alternate",
+    "marketType": {
+     "name": "Total Alternate"
+    },
+    "category": "OverUnderMultipleLine",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "269"
+    ],
+    "participants": [],
+    "selections": [
+     {
+      "id": "0OU87295267O4050_1",
+      "name": "Over",
+      "outcomeType": "Over",
+      "points": 40.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.54945055,
+      "participants": [],
+      "players": [],
+      "displayOdds": {
+       "american": "−182"
+      }
+     },
+     {
+      "id": "0OU87295267U4050_3",
+      "name": "Under",
+      "outcomeType": "Under",
+      "points": 40.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 2.36,
+      "participants": [],
+      "players": [],
+      "displayOdds": {
+       "american": "+136"
+      }
+     }
+    ]
+   },
+   {
+    "id": "3_87295278",
+    "name": "HOU Texans: Team Total Points - 1st Half",
+    "marketType": {
+     "name": "Team Total Points - 1st Half"
+    },
+    "category": "OverUnderSingleLine",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "4091"
+    ],
+    "participants": [
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0OU87295278O1350_1",
+      "name": "Over",
+      "outcomeType": "Over",
+      "points": 13.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.74074075,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "−135"
+      }
+     },
+     {
+      "id": "0OU87295278U1350_3",
+      "name": "Under",
+      "outcomeType": "Under",
+      "points": 13.5,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 2.05,
+      "participants": [
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+105"
+      }
+     }
+    ]
+   },
+   {
+    "id": "389630297",
+    "name": "Anytime TD Scorer",
+    "marketType": {
+     "name": "Anytime Touchdown Scorer"
+    },
+    "category": "ScorerAnytime",
+    "tags": [
+     "SGP",
+     "PlayerProps"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "1427",
+     "2408"
+    ],
+    "participants": [
+     {
+      "name": "IND Colts",
+      "venueRole": "Away"
+     },
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0QA389630297#2367290730_13L88808Q1-311451763Q20",
+      "name": "David Montgomery",
+      "outcomeType": "ToScoreAnyTime",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.83333334,
+      "participants": [],
+      "players": [
+       {
+        "name": "David Montgomery",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "−120"
+      }
+     },
+     {
+      "id": "0QA389630297#2367290727_13L88808Q11759839095Q20",
+      "name": "Nico Collins",
+      "outcomeType": "ToScoreAnyTime",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 2,
+      "participants": [],
+      "players": [
+       {
+        "name": "Nico Collins",
+        "venueRole": "HomePlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "+100"
+      }
+     },
+     {
+      "id": "0QA389630297#2367290741_13L88808Q1-1720506042Q20",
+      "name": "Jonathan Taylor",
+      "outcomeType": "ToScoreAnyTime",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 2.2,
+      "participants": [],
+      "players": [
+       {
+        "name": "Jonathan Taylor",
+        "venueRole": "AwayPlayer"
+       }
+      ],
+      "displayOdds": {
+       "american": "+120"
+      }
+     }
+    ]
+   },
+   {
+    "id": "334526074",
+    "name": "Correct Score",
+    "marketType": {
+     "name": "Correct Score"
+    },
+    "category": "OddsList",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "273"
+    ],
+    "participants": [
+     {
+      "name": "IND Colts",
+      "venueRole": "Away"
+     },
+     {
+      "name": "HOU Texans",
+      "venueRole": "Home"
+     }
+    ],
+    "selections": [
+     {
+      "id": "0QA334526074#2151551648_13L88808Q1-898201586Q20",
+      "name": "HOU Texans 23-20 IND Colts",
+      "outcomeType": null,
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 76,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       },
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+7500"
+      }
+     },
+     {
+      "id": "0QA334526074#2151551657_13L88808Q1578254851Q20",
+      "name": "HOU Texans 27-20 IND Colts",
+      "outcomeType": null,
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 76,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       },
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+7500"
+      }
+     },
+     {
+      "id": "0QA334526074#2151551678_13L88808Q1-1106669777Q20",
+      "name": "HOU Texans 20-13 IND Colts",
+      "outcomeType": null,
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 76,
+      "participants": [
+       {
+        "name": "IND Colts",
+        "venueRole": "Away"
+       },
+       {
+        "name": "HOU Texans",
+        "venueRole": "Home"
+       }
+      ],
+      "players": [],
+      "displayOdds": {
+       "american": "+7500"
+      }
+     }
+    ]
+   },
+   {
+    "id": "390104108",
+    "name": "Both Teams to Score - 1st Quarter",
+    "marketType": {
+     "name": "Both Teams to Score - 1st Quarter"
+    },
+    "category": "YesNo",
+    "tags": [
+     "SGP"
+    ],
+    "isSuspended": false,
+    "groups": [
+     "3955"
+    ],
+    "participants": [],
+    "selections": [
+     {
+      "id": "0QA390104108#2369430561_13L88808Q10Q20",
+      "name": "Yes",
+      "outcomeType": "Yes",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 2.4,
+      "participants": [],
+      "players": [],
+      "displayOdds": {
+       "american": "+140"
+      }
+     },
+     {
+      "id": "0QA390104108#2369430582_13L88808Q10Q21",
+      "name": "No",
+      "outcomeType": "No",
+      "points": null,
+      "milestoneValue": null,
+      "isDisabled": false,
+      "status": "Active",
+      "trueOdds": 1.54054055,
+      "participants": [],
+      "players": [],
+      "displayOdds": {
+       "american": "−185"
+      }
+     }
+    ]
+   }
+  ]
+ }
+}
