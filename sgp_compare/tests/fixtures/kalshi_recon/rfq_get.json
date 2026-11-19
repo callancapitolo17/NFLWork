@@ -1,0 +1,27 @@
+{
+ "rfq": {
+  "contracts_fp": "0.00",
+  "created_ts": "2026-11-19T02:44:39.233077Z",
+  "creator_id": "REDACTED",
+  "creator_user_id": "REDACTED",
+  "id": "7e01605e-2231-41de-bfc7-b821429eae79",
+  "market_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+  "mve_collection_ticker": "KXMVECROSSCATEGORY-R",
+  "mve_selected_legs": [
+   {
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "market_ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU14",
+    "side": "yes"
+   },
+   {
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "market_ticker": "KXNFLTOTAL-26NOV19INDHOU-45",
+    "side": "yes"
+   }
+  ],
+  "rest_remainder": false,
+  "status": "open",
+  "target_cost_dollars": "100.0000",
+  "updated_ts": "2026-11-19T02:44:39.233077Z"
+ }
+}

@@ -1,0 +1,78 @@
+{
+ "market": {
+  "can_close_early": true,
+  "close_time": "2026-11-22T01:15:00Z",
+  "created_time": "2026-11-17T02:48:02.871849Z",
+  "custom_strike": {
+   "Associated Events": "KXNFLSPREAD-26NOV19INDHOU,KXNFLTOTAL-26NOV19INDHOU",
+   "Associated Market Sides": "yes,yes",
+   "Associated Markets": "KXNFLSPREAD-26NOV19INDHOU-HOU14,KXNFLTOTAL-26NOV19INDHOU-45",
+   "Multivariate Event Ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX"
+  },
+  "event_ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX",
+  "exchange_index": 1,
+  "expected_expiration_time": "2026-11-20T07:15:00Z",
+  "expiration_time": "2026-11-22T01:15:00Z",
+  "expiration_value": "",
+  "last_price_dollars": "0.2440",
+  "latest_expiration_time": "2026-11-22T01:15:00Z",
+  "market_type": "binary",
+  "mve_collection_ticker": "KXMVECROSSCATEGORY-R",
+  "mve_selected_legs": [
+   {
+    "event_ticker": "KXNFLSPREAD-26NOV19INDHOU",
+    "market_ticker": "KXNFLSPREAD-26NOV19INDHOU-HOU14",
+    "side": "yes"
+   },
+   {
+    "event_ticker": "KXNFLTOTAL-26NOV19INDHOU",
+    "market_ticker": "KXNFLTOTAL-26NOV19INDHOU-45",
+    "side": "yes"
+   }
+  ],
+  "no_ask_dollars": "1.0000",
+  "no_bid_dollars": "0.0000",
+  "no_sub_title": "yes Houston wins by over 13.5 points,yes Over 44.5 points",
+  "notional_value_dollars": "1.0000",
+  "open_interest_fp": "7266.74",
+  "open_time": "2026-11-17T02:48:02Z",
+  "previous_price_dollars": "0.0000",
+  "previous_yes_ask_dollars": "0.0000",
+  "previous_yes_bid_dollars": "0.0000",
+  "price_level_structure": "center_deci_edge_centi_cent",
+  "price_ranges": [
+   {
+    "end": "0.0100",
+    "start": "0.0000",
+    "step": "0.0001"
+   },
+   {
+    "end": "0.9900",
+    "start": "0.0100",
+    "step": "0.0010"
+   },
+   {
+    "end": "1.0000",
+    "start": "0.9900",
+    "step": "0.0001"
+   }
+  ],
+  "result": "",
+  "rules_primary": "",
+  "rules_secondary": "Kalshi is not affiliated, associated, authorized, endorsed by, or in any way officially connected with the Governing League. All trademarks, logos, and brand names are the property of their respective owners.",
+  "settlement_bounds_type": "default",
+  "settlement_timer_seconds": 5,
+  "status": "active",
+  "strike_type": "custom",
+  "ticker": "KXMVECROSSCATEGORY-S2026LBCLME447PBSCVQX-NCLPRHGBP",
+  "title": "yes Houston wins by over 13.5 points,yes Over 44.5 points",
+  "updated_time": "2026-11-17T02:48:03.803164Z",
+  "volume_24h_fp": "0.00",
+  "volume_fp": "7500.20",
+  "yes_ask_dollars": "1.0000",
+  "yes_ask_size_fp": "0.00",
+  "yes_bid_dollars": "0.0000",
+  "yes_bid_size_fp": "0.00",
+  "yes_sub_title": "yes Houston wins by over 13.5 points,yes Over 44.5 points"
+ }
+}
