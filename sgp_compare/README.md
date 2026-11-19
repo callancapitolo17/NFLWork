@@ -35,6 +35,7 @@ number), tap one side per market, press **Price**.
 | `legs.py` | `Game`, `CanonicalLeg` (venue-neutral: period, stat, subject, side, line), `OfferedLeg`, `ParlayQuote`. |
 | `venues/base.py` | The `Venue` interface: `list_games`, `list_legs`, `price_parlay`. |
 | `venues/prophetx.py` | ProphetX: anonymous public endpoints over a curl_cffi Chrome session; game lines, halves, quarters, team totals, ~290 player props per game. |
+| `venues/caesars.py` | Caesars (logged out, NJ) through `mlb_sgp.caesars_client.CaesarsClient` (AWS-WAF token minted under `node`, so node must be on PATH): game lines with alt ladders, team totals, 1H/1Q, TD scorers, over-only player ladders (60+ = over 59.5). |
 | `venues/__init__.py` | `build_venues()`: the venues the page uses. Adding a venue = a module + one line here. |
 | `correlation.py` | Pure math: the Correlation factor with and without vig (singles devig from `kalshi_common.fair_value.two_way_fair`). |
 | `pricing.py` | `price_at_venue`: fresh legs, the parlay price, the 2^N partition. |
@@ -47,7 +48,8 @@ number), tap one side per market, press **Price**.
 |---|---|
 | ProphetX | Live (PR 1). Parlay = `POST /parlay/public/api/v1/user/request` with stake 1, a price request only. |
 | Novig, Kalshi, Polymarket US | Next, one thread each (Novig relays DK/FD/MGM/CZR prices; Kalshi needs an RFQ). |
-| DraftKings, FanDuel, BetMGM, Caesars | After the prediction markets. |
+| Caesars | Live. Parlay = `POST /sb/v2/bets/details` (the bet slip's price preview); no stake limit in the answer, so no tier size. Player props are over-only, so a leg with a prop never gets the vig-removed factor; its posted prop prices carry more margin than its parlay engine uses, so prop combos read low on the with-vig factor (recon 2026-11-19). |
+| DraftKings, FanDuel, BetMGM | After the prediction markets. |
 
 Cross-venue pricing (one parlay priced at every venue) matches legs by
 `CanonicalLeg`; it lands with the second venue.
@@ -58,7 +60,7 @@ Cross-venue pricing (one parlay priced at every venue) matches legs by
 python3 -m pytest -q sgp_compare/tests
 ```
 
-Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
+Fixtures are trimmed copies of the 2026-11-18 ProphetX and 2026-11-19 Caesars recons (IND at HOU).
 
 ## Troubleshooting
 
@@ -66,5 +68,6 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
   non-200, or sent a shape the parser does not expect; the message says which. The cloud
   sandbox cannot reach ProphetX; run on the Mac.
 - **"no longer offered"**: the line moved between picking and pricing; reload the game.
-- **"would not price this combination"**: ProphetX returned no offers (it refuses some combinations).
+- **"would not price this combination"**: the venue refused it (ProphetX: no offers; Caesars: an error such as two thresholds of one player ladder).
+- **Caesars error mentioning the AWS-WAF token**: the node mint failed; check `node --version` and retry.
 - **Vig-removed factor blank**: the reason is shown under it.
