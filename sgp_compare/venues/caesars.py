@@ -13,8 +13,8 @@ headers Caesars requires. Reads (state NJ):
 places a bet (placing needs a login and a separate call this module does not
 have). No DB I/O.
 
-Caesars shapes (recon 2026-11-19 on Cal's Mac, IND at HOU; captures and notes
-in sgp_compare/recon/caesars/, trimmed fixtures in tests/fixtures/):
+Caesars shapes (recon 2026-11-19 on Cal's Mac, IND at HOU; trimmed captures
+in tests/fixtures/caesars_*.json):
   * There is no "Games" tab, and an unknown tab id silently returns Featured.
     Featured listed 12 NFL games and the TD Scorer tab 13, so both are read
     and unioned by event id. The NFL competition is named "NFL"; NCAAF shares
@@ -25,7 +25,10 @@ in sgp_compare/recon/caesars/, trimmed fixtures in tests/fixtures/):
     totals appear twice, once with `movingLines.linePrices[]`: the alt ladder,
     each rung {line (home line for spreads), selections:[{selectionType, price}]}.
     An alt rung reuses the main market's selection ids; the requested `line`
-    picks the rung.
+    (the side's own line, so +7.5 for the away side of the home -7.5 rung)
+    picks the rung, and Caesars prices it itself whatever price is sent.
+    Its answer echoes the line as `requestedLine` and each leg's price in
+    `singles[]`, which is checked against the leg's listed price.
   * Player yardage / reception props are OVER-ONLY ladders: one selection per
     threshold named "|60+|", typed "over", no market line. 60+ = over 59.5.
   * TD scorer markets hold one selection per player, typed with his side;
@@ -35,16 +38,22 @@ in sgp_compare/recon/caesars/, trimmed fixtures in tests/fixtures/):
   * The parlay is response.parlays[0]: price {decimal, american}; a refused
     combination comes back HTTP 200 with parlays[0].errors and no price.
     bets/details reports no stake limit, so a tier's max_stake is None.
+  * Posted player-prop prices carry more margin than the SGP engine uses, so
+    every prop combo priced 2-7% longer than its legs multiplied, even pairs
+    that should move together. A negative with-vig Correlation factor on a
+    prop parlay here is margin, not negative correlation.
 """
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
 from sgp_compare.legs import CanonicalLeg, Game, OfferedLeg, ParlayQuote, ParlayTier
+from sgp_compare.odds import american_to_decimal
 from sgp_compare.venues.base import VenueTransportError
 
 log = logging.getLogger(__name__)
@@ -58,8 +67,15 @@ SCHEDULE_TAB_PATHS = (
 GAMES_CACHE_SEC = 300          # the schedule changes daily
 EVENT_CACHE_SEC = 20           # the leg picker; pricing always re-reads
 CENTS_PER_DOLLAR = 100
+# Caesars reprices every leg itself. A single in its answer this far (in
+# implied probability) from the price the leg was listed at means it priced
+# a different bet; seconds of drift between the read and the price request
+# move a price far less.
+MAX_SINGLE_CHANCE_GAP = 0.04
 
-PERIOD_OF_CAESARS_PERIOD = {"MATCH_INC_OT": "FG", "FIRST_HALF": "1H", "FIRST_QUARTER": "1Q"}
+# Props and team totals carry no period and are full game. A period not in
+# this map gets no canonical leg rather than being mistaken for full game.
+PERIOD_OF_CAESARS_PERIOD = {None: "FG", "MATCH_INC_OT": "FG", "FIRST_HALF": "1H", "FIRST_QUARTER": "1Q"}
 
 # Named the way the ProphetX adapter names the same bets, so legs match across venues.
 SCORER_STAT_OF_MARKET_TYPE = {
@@ -99,12 +115,22 @@ def parse_nfl_games(tabs_payloads: list[dict], now: datetime) -> list[Game]:
 
 
 def _game_from_event(event: dict) -> Game | None:
+    """None (logged) for an event without teams or with a start time that is
+    not an ISO time with an offset: one bad event must not hide the slate."""
     metadata = event.get("metadata") or {}
     home, away, start = metadata.get("homeTeamName"), metadata.get("awayTeamName"), event.get("startTime")
-    if not (event.get("id") and home and away and start):
+    if not (event.get("id") and home and away and isinstance(start, str)):
         return None
-    start_time = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
-    return Game(venue_game_id=str(event["id"]), home_team=home, away_team=away, game_start_time=start_time)
+    try:
+        start_time = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    except ValueError:
+        start_time = None
+    if start_time is None or start_time.tzinfo is None:
+        log.warning("Caesars event %s: expected an ISO startTime with an offset, got %r; skipped",
+                    event.get("id"), start)
+        return None
+    return Game(venue_game_id=str(event["id"]), home_team=home, away_team=away,
+                game_start_time=start_time.astimezone(timezone.utc))
 
 
 def parse_legs(game: Game, event: dict) -> list[OfferedLeg]:
@@ -113,8 +139,10 @@ def parse_legs(game: Game, event: dict) -> list[OfferedLeg]:
     A market listed twice (once plain, once with its alt ladder) is read once,
     from the copy with the ladder, under the group it first appears in.
     Boosts and specials (byoEligible false) are left out: Caesars will not
-    put them in a same-game parlay.
+    put them in a same-game parlay. A started game has no legs (pregame only).
     """
+    if event.get("started"):
+        return []
     competition_id = event.get("competitionId")
     legs: list[OfferedLeg] = []
     for market, category in _unique_markets(event):
@@ -147,7 +175,7 @@ class _MarketContext:
         self.competition_id = competition_id
         self.metadata = market.get("metadata") or {}
         self.type_code = self.metadata.get("marketTypeCode") or ""
-        self.period = PERIOD_OF_CAESARS_PERIOD.get(self.metadata.get("period"), "FG")
+        self.period = PERIOD_OF_CAESARS_PERIOD.get(self.metadata.get("period"))   # None = unknown
         self.label = clean_name(market.get("name"))
         self.limit_dollars = _max_bet_dollars(market)
 
@@ -164,8 +192,8 @@ def _legs_of_market(ctx: _MarketContext) -> list[OfferedLeg]:
     market_type = ctx.market.get("type")
     if market_type in ("two-way-handicap", "over-under"):
         return _legs_of_line_market(ctx)
-    if ctx.type_code == "head-to-head":
-        return _two_way_legs(ctx, _canonical_moneyline)
+    if ctx.type_code == "head-to-head" or _is_yes_no(ctx):
+        return _two_way_legs(ctx)
     if ctx.type_code in SCORER_STAT_OF_MARKET_TYPE:
         return _scorer_legs(ctx)
     if ctx.type_code.startswith(PLAYER_LADDER_PREFIX):
@@ -195,21 +223,25 @@ def _legs_of_line_market(ctx: _MarketContext) -> list[OfferedLeg]:
 def _rungs(market: dict, selection_of_type: dict, main_line: float | None) -> list[tuple[float, dict]]:
     """[(market line, {selection type: price dict})], the main line included once."""
     rungs: dict[float, dict] = {}
-    if main_line is not None:
-        rungs[main_line] = {t: s.get("price") for t, s in selection_of_type.items() if _american(s.get("price"))}
     for rung in (market.get("movingLines") or {}).get("linePrices") or []:
         line = _as_float(rung.get("line"))
-        if line is None or not rung.get("active") or line == main_line:
+        if line is None or not rung.get("active"):
             continue
         rungs[line] = {s.get("selectionType"): s.get("price") for s in rung.get("selections") or []
                        if _american(s.get("price"))}
+    if main_line is not None:
+        # The main selections' own prices are what Caesars quotes for the main
+        # line (its singles match them, not the ladder's copy of that rung).
+        main_prices = {t: s.get("price") for t, s in selection_of_type.items() if _american(s.get("price"))}
+        rungs[main_line] = {**rungs.get(main_line, {}), **main_prices}
     return sorted(rungs.items())
 
 
 def _line_leg(ctx: _MarketContext, selection_of_type: dict, market_line: float, side: str, other: str,
               price_of_type: dict, is_main: bool) -> OfferedLeg:
     selection = selection_of_type[side]
-    side_line = -market_line if side == "away" else market_line   # spread line is the home line
+    # The spread line is the home line; + 0.0 turns a pick'em's -0.0 into 0.0.
+    side_line = (-market_line if side == "away" else market_line) + 0.0
     canonical = _canonical_line(ctx, side, side_line)
     return OfferedLeg(
         leg_id=_line_leg_id(selection["id"], market_line),
@@ -238,6 +270,8 @@ def _line_side_label(ctx: _MarketContext, side: str, side_line: float) -> str:
 
 
 def _canonical_line(ctx: _MarketContext, side: str, side_line: float) -> CanonicalLeg | None:
+    if ctx.period is None:
+        return None
     if ctx.type_code == "line":
         return CanonicalLeg(ctx.period, "spread", None, side, side_line)
     if ctx.type_code == "total":
@@ -248,22 +282,29 @@ def _canonical_line(ctx: _MarketContext, side: str, side_line: float) -> Canonic
     return None
 
 
-# -- two-way markets without a number (moneyline, overtime yes/no)
+# -- two-way markets without a number (moneyline, yes/no such as overtime)
 
-def _two_way_legs(ctx: _MarketContext, canonical_of: Callable[[_MarketContext, dict], CanonicalLeg | None]
-                  ) -> list[OfferedLeg]:
-    selections = [s for s in ctx.market.get("selections") or [] if s.get("active") and _american(s.get("price"))]
+def _is_yes_no(ctx: _MarketContext) -> bool:
+    names = {clean_name(s.get("name")).lower() for s in ctx.market.get("selections") or []}
+    return names == {"yes", "no"}
+
+
+def _two_way_legs(ctx: _MarketContext) -> list[OfferedLeg]:
+    selections = _priced_selections(ctx)
     if len(selections) != 2:
         return _each_selection_legs(ctx)
     legs = []
     for selection, other in ((selections[0], selections[1]), (selections[1], selections[0])):
-        legs.append(_selection_leg(ctx, selection, canonical_of(ctx, selection), other=other))
+        legs.append(_selection_leg(ctx, selection, _canonical_two_way(ctx, selection), other=other))
     return legs
 
 
-def _canonical_moneyline(ctx: _MarketContext, selection: dict) -> CanonicalLeg | None:
+def _canonical_two_way(ctx: _MarketContext, selection: dict) -> CanonicalLeg | None:
+    """Moneylines only: a yes/no market's stat has no shared name yet."""
     side = selection.get("type")
-    return CanonicalLeg(ctx.period, "moneyline", None, side, None) if side in ("home", "away") else None
+    if ctx.period is None or ctx.type_code != "head-to-head" or side not in ("home", "away"):
+        return None
+    return CanonicalLeg(ctx.period, "moneyline", None, side, None)
 
 
 # -- one-sided markets
@@ -274,7 +315,8 @@ def _scorer_legs(ctx: _MarketContext) -> list[OfferedLeg]:
     legs = []
     for selection in _priced_selections(ctx):
         player = clean_name(selection.get("name"))
-        legs.append(_selection_leg(ctx, selection, CanonicalLeg(ctx.period, stat, player, "yes", None),
+        canonical = CanonicalLeg(ctx.period, stat, player, "yes", None) if ctx.period else None
+        legs.append(_selection_leg(ctx, selection, canonical,
                                    market_key_suffix=selection["id"] if several else None))
     return legs
 
@@ -284,12 +326,12 @@ def _player_ladder_legs(ctx: _MarketContext) -> list[OfferedLeg]:
     threshold per parlay (they share the market)."""
     ladder = ctx.type_code.removeprefix(PLAYER_LADDER_PREFIX)
     stat = PLAYER_STAT_OF_LADDER.get(ladder, ladder.replace("-", "_"))
-    player = ctx.metadata.get("player") or ctx.label
+    player = ctx.metadata.get("player")
     legs = []
     for selection in _priced_selections(ctx):
         threshold = _threshold(clean_name(selection.get("name")))
         canonical = None
-        if threshold is not None and selection.get("type") == "over":
+        if player and ctx.period and threshold is not None and selection.get("type") == "over":
             canonical = CanonicalLeg(ctx.period, stat, player, "over", threshold + LADDER_THRESHOLD_TO_LINE)
         legs.append(_selection_leg(ctx, selection, canonical))
     return sorted(legs, key=lambda leg: leg.canonical.line if leg.canonical else float("inf"))
@@ -310,7 +352,7 @@ def _each_selection_legs(ctx: _MarketContext) -> list[OfferedLeg]:
 
 
 def _canonical_outcome(ctx: _MarketContext, selection: dict) -> CanonicalLeg | None:
-    if ctx.type_code == "win-draw-win":
+    if ctx.type_code == "win-draw-win" and ctx.period:
         subject = ctx.team_of_side(selection.get("type")) or "Draw"
         return CanonicalLeg(ctx.period, "win_3way", subject, "yes", None)
     return None
@@ -381,33 +423,74 @@ def bet_details_body(legs: list[OfferedLeg]) -> dict:
 
 
 def parse_parlay_quote(response: dict, legs: list[OfferedLeg]) -> ParlayQuote | None:
-    """None when Caesars refused the combination (no parlay, errors, or a leg
-    left out). Raises VenueTransportError when the answer prices something
-    other than what was asked, such as a different line."""
-    parlays = response.get("parlays") or []
+    """None when Caesars refused the combination: an empty parlay list, or a
+    parlay carrying errors or leaving a leg out (the recorded refusal shapes).
+    Raises VenueTransportError for any other answer without a price, and
+    when the answer prices a different bet than asked (another line, or a
+    single price far from the leg's listed one)."""
+    parlays = response.get("parlays")
+    if not isinstance(parlays, list):
+        raise VenueTransportError(f"Caesars bets/details: expected a parlays list, got keys {sorted(response)[:8]}")
     if not parlays:
         return None
     parlay = parlays[0]
-    decimal_odds = (parlay.get("price") or {}).get("decimal")
-    if parlay.get("errors") or not isinstance(decimal_odds, (int, float)) or decimal_odds <= 1.0:
-        return None
     priced_legs = {leg.get("selectionId"): leg for leg in parlay.get("legs") or []}
+    if parlay.get("errors") or any(not (priced_legs.get(leg.venue_ref["selectionId"]) or {}).get("included")
+                                   for leg in legs):
+        return None
+    price = parlay.get("price") or {}
+    decimal_odds = _as_float(price.get("decimal", price.get("d")))
+    if decimal_odds is None or decimal_odds <= 1.0:
+        raise VenueTransportError(f"Caesars bets/details: parlay has no errors and no usable price: {price!r}")
     for leg in legs:
-        priced = priced_legs.get(leg.venue_ref["selectionId"])
-        if priced is None or not priced.get("included"):
-            return None
-        asked_line = leg.venue_ref.get("line")
-        if asked_line is not None and _as_float(priced.get("requestedLine")) != asked_line:
-            raise VenueTransportError(f"Caesars priced {leg.market_label} {leg.side_label} at line "
-                                      f"{priced.get('requestedLine')}, expected {asked_line:g}")
-    return ParlayQuote((ParlayTier(float(decimal_odds), None),), {}, response)
+        _check_leg_was_priced_as_asked(leg, priced_legs[leg.venue_ref["selectionId"]], response)
+    return ParlayQuote((ParlayTier(decimal_odds, None),), {}, response)
+
+
+def _check_leg_was_priced_as_asked(leg: OfferedLeg, priced_leg: dict, response: dict) -> None:
+    asked_line = leg.venue_ref.get("line")
+    if asked_line is not None and _as_float(priced_leg.get("requestedLine")) != asked_line:
+        raise VenueTransportError(f"Caesars priced {leg.market_label} {leg.side_label} at line "
+                                  f"{priced_leg.get('requestedLine')}, expected {asked_line:g}")
+    single_decimal = single_decimal_odds(response, leg.venue_ref["selectionId"])
+    if single_decimal is None or leg.american_odds is None:
+        raise VenueTransportError(f"Caesars bets/details: no single price for {leg.market_label} {leg.side_label}")
+    listed_chance = 1.0 / american_to_decimal(leg.american_odds)
+    if abs(1.0 / single_decimal - listed_chance) > MAX_SINGLE_CHANCE_GAP:
+        raise VenueTransportError(
+            f"Caesars priced {leg.market_label} {leg.side_label} alone at decimal {single_decimal:g}, "
+            f"listed at {leg.american_odds:+g}: expected within {MAX_SINGLE_CHANCE_GAP:.0%} implied chance")
+
+
+def single_decimal_odds(response: dict, selection_id: str) -> float | None:
+    """The price Caesars used for one leg, from the answer's singles[]."""
+    for single in response.get("singles") or []:
+        if single.get("selectionId") == selection_id:
+            price = single.get("price") or {}
+            decimal_odds = _as_float(price.get("decimal", price.get("d")))
+            return decimal_odds if decimal_odds and decimal_odds > 1.0 and math.isfinite(decimal_odds) else None
+    return None
 
 
 # ---------------------------------------------------------------- the venue
 
+def _parsed(what: str, parse: Callable[..., Any], *args: Any) -> Any:
+    """Run a parser; an unexpected shape becomes VenueTransportError, so the
+    page shows a Caesars error instead of failing every venue's request."""
+    try:
+        return parse(*args)
+    except VenueTransportError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise VenueTransportError(f"Caesars {what}: unexpected shape: {type(exc).__name__}: {exc}") from exc
+
+
 class CaesarsTransport(Protocol):
-    def get_json(self, path: str) -> dict | None:
-        """GET /sb/{path}; None when Caesars answers 404. Raises VenueTransportError."""
+    def get_tab(self, path: str) -> dict:
+        """GET /sb/{path}, a schedule tab. Raises VenueTransportError (a 404 too)."""
+
+    def get_event(self, event_id: str) -> dict | None:
+        """GET /sb/v4/events/{id}; None when Caesars no longer lists it. Raises VenueTransportError."""
 
     def post_bet_details(self, body: dict) -> dict:
         """POST /sb/v2/bets/details. Raises VenueTransportError."""
@@ -431,35 +514,33 @@ class CaesarsVenue:
         self._events: dict[str, tuple[float, dict | None]] = {}
 
     def list_games(self) -> list[Game]:
+        """Re-checks kickoff on every call, so a cached game drops off when it starts."""
+        now = datetime.now(timezone.utc)
         cached = self._games
-        if cached and self._clock() - cached[0] < GAMES_CACHE_SEC:
-            return cached[1]
-        payloads = [self._get(path) or {} for path in SCHEDULE_TAB_PATHS]
-        games = parse_nfl_games(payloads, datetime.now(timezone.utc))
-        self._games = (self._clock(), games)
-        return games
+        if not (cached and self._clock() - cached[0] < GAMES_CACHE_SEC):
+            with self._lock:
+                payloads = [self._transport_now().get_tab(path) for path in SCHEDULE_TAB_PATHS]
+            cached = (self._clock(), _parsed("schedule", parse_nfl_games, payloads, now))
+            self._games = cached
+        return [game for game in cached[1] if game.game_start_time > now]
 
     def list_legs(self, game: Game, fresh: bool = False) -> list[OfferedLeg]:
         event = self._read_event(game.venue_game_id, fresh)
-        return parse_legs(game, event) if event else []
+        return _parsed("markets", parse_legs, game, event) if event else []
 
     def price_parlay(self, game: Game, legs: list[OfferedLeg]) -> ParlayQuote | None:
         with self._lock:
             response = self._transport_now().post_bet_details(bet_details_body(legs))
-        return parse_parlay_quote(response, legs)
+        return _parsed("bets/details", parse_parlay_quote, response, legs)
 
     def _read_event(self, event_id: str, fresh: bool) -> dict | None:
         cached = self._events.get(event_id)
         if cached and not fresh and self._clock() - cached[0] < EVENT_CACHE_SEC:
             return cached[1]
-        payload = self._get(f"v4/events/{event_id}")
-        event = (payload.get("event") or payload) if payload else None
+        with self._lock:
+            event = self._transport_now().get_event(event_id)
         self._events[event_id] = (self._clock(), event)
         return event
-
-    def _get(self, path: str) -> dict | None:
-        with self._lock:
-            return self._transport_now().get_json(path)
 
     def _transport_now(self) -> CaesarsTransport:
         if self._transport is None:
@@ -468,21 +549,34 @@ class CaesarsVenue:
 
 
 class _LiveCaesarsTransport:
-    """mlb_sgp's CaesarsClient (token mint, headers, retry), imported only
-    when the venue first goes live so tests need neither curl_cffi nor node."""
+    """mlb_sgp's CaesarsClient, imported only when the venue first goes live
+    so tests need neither curl_cffi nor node. Its tab reader is hard-wired to
+    MLB and its price_combo keeps only the decimal (no errors, no singles), so
+    the tab GET and the price POST reuse its session, headers and retry."""
 
     def __init__(self) -> None:
         from mlb_sgp.caesars_client import CaesarsClient
         self._client = CaesarsClient(state=CAESARS_STATE)
 
-    def get_json(self, path: str) -> dict | None:
+    def get_tab(self, path: str) -> dict:
         from mlb_sgp._shared import BookTransportError
         self._ensure_token()
         try:
-            # The "structure" stage is the one where CaesarsClient returns None on a 404.
-            return self._client._get_json(f"{self._client._sb}/{path}", "structure")
+            # "events" stage: a 404 raises (the feed moved), unlike "structure".
+            payload = self._client._get_json(f"{self._client._sb}/{path}", "events")
         except BookTransportError as exc:
             raise VenueTransportError(f"Caesars GET {path}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise VenueTransportError(f"Caesars GET {path}: expected a JSON object, got {type(payload).__name__}")
+        return payload
+
+    def get_event(self, event_id: str) -> dict | None:
+        from mlb_sgp._shared import BookTransportError
+        self._ensure_token()
+        try:
+            return self._client.fetch_event(event_id)
+        except BookTransportError as exc:
+            raise VenueTransportError(f"Caesars GET event {event_id}: {exc}") from exc
 
     def post_bet_details(self, body: dict) -> dict:
         from mlb_sgp._shared import RETRY_LIVE, BookTransportError, request_with_retry
@@ -499,7 +593,10 @@ class _LiveCaesarsTransport:
         if response.status_code != 200 or not _looks_like_json(response):
             raise VenueTransportError(f"Caesars POST bets/details: expected HTTP 200 JSON, got "
                                       f"{response.status_code}: {(response.text or '')[:200]}")
-        return response.json()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise VenueTransportError(f"Caesars POST bets/details: expected a JSON object, got {type(payload).__name__}")
+        return payload
 
     def _ensure_token(self) -> None:
         if not self._client.ensure_token():

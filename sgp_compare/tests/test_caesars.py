@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 
 from sgp_compare.legs import CanonicalLeg
+from sgp_compare.odds import american_to_decimal
 from sgp_compare.venues.base import VenueTransportError
 from sgp_compare.venues.caesars import (SCHEDULE_TAB_PATHS, CaesarsVenue, bet_details_body, clean_name,
-                                        parse_legs, parse_nfl_games, parse_parlay_quote)
+                                        parse_legs, parse_nfl_games, parse_parlay_quote,
+                                        single_decimal_odds)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BEFORE_KICKOFF = datetime(2026, 11, 19, tzinfo=timezone.utc)
@@ -156,13 +158,13 @@ class FakeTransport:
     def __init__(self):
         self.gets, self.posts = [], []
 
-    def get_json(self, path):
+    def get_tab(self, path):
         self.gets.append(path)
-        if path in SCHEDULE_TAB_PATHS:
-            return load("caesars_tabs_featured.json")
-        if path == f"v4/events/{EVENT_ID}":
-            return load("caesars_event_ind_hou.json")
-        return None
+        return load("caesars_tabs_featured.json")
+
+    def get_event(self, event_id):
+        self.gets.append(f"v4/events/{event_id}")
+        return load("caesars_event_ind_hou.json")["event"] if event_id == EVENT_ID else None
 
     def post_bet_details(self, body):
         self.posts.append(body)
@@ -187,3 +189,118 @@ def test_a_pulled_game_has_no_legs(game):
     venue = CaesarsVenue(transport_factory=FakeTransport, clock=lambda: 0.0)
     pulled = type(game)("gone", game.home_team, game.away_team, game.game_start_time)
     assert venue.list_legs(pulled) == []
+
+
+# ---------------------------------------------------------------- review round 1
+
+def test_body_is_the_recorded_request_in_full(legs):
+    recorded = load("caesars_parlay_spread_over.json")
+    chosen = [legs[("Spread", "Houston Texans -12.5")], legs[("Total Points", "Over 43.5")]]
+    assert bet_details_body(chosen) == recorded["request"]
+
+
+def test_away_alt_line_is_its_own_line_and_its_single_is_read(legs):
+    recorded = load("caesars_single_alt_away.json")
+    colts = legs[("Spread", "Indianapolis Colts +7.5")]
+    assert recorded["request"]["legs"][0]["line"] == colts.venue_ref["line"] == 7.5
+    assert recorded["request"]["legs"][0]["selectionId"] == colts.venue_ref["selectionId"]
+    assert single_decimal_odds(recorded["response"], colts.venue_ref["selectionId"]) == pytest.approx(
+        american_to_decimal(colts.american_odds))
+
+
+def test_a_single_far_from_the_listed_price_is_a_different_bet(legs):
+    response = load("caesars_parlay_alt_spread_over.json")["response"]
+    alt = legs[("Spread", "Houston Texans -7.5")]
+    for single in response["singles"]:
+        if single["selectionId"] == alt.venue_ref["selectionId"]:
+            single["price"]["decimal"] = 1.9434          # the -12.5 price, not the -7.5 rung
+    with pytest.raises(VenueTransportError, match="alone at decimal"):
+        parse_parlay_quote(response, [alt, legs[("Total Points", "Over 43.5")]])
+
+
+@pytest.mark.parametrize("response", [{"errors": [{"message": "boom"}]}, {"parlays": "x"}])
+def test_an_answer_with_no_parlays_list_is_an_error(legs, response):
+    with pytest.raises(VenueTransportError, match="parlays list"):
+        parse_parlay_quote(response, [legs[("Spread", "Houston Texans -12.5")]])
+
+
+def test_a_parlay_without_errors_or_price_is_an_error_and_a_string_price_is_read(legs):
+    chosen = [legs[("Spread", "Houston Texans -12.5")], legs[("Total Points", "Over 43.5")]]
+    response = load("caesars_parlay_spread_over.json")["response"]
+    response["parlays"][0]["price"] = {"decimal": "3.45"}
+    assert parse_parlay_quote(response, chosen).best.decimal_odds == pytest.approx(3.45)
+    response["parlays"][0]["price"] = {}
+    with pytest.raises(VenueTransportError, match="no usable price"):
+        parse_parlay_quote(response, chosen)
+
+
+def test_unknown_period_gets_no_canonical_and_started_game_no_legs(game):
+    event = load("caesars_event_ind_hou.json")["event"]
+    for group in event["keyMarketGroups"]:
+        for market in group["markets"]:
+            if market["name"] == "|1st Half Spread|":
+                market["metadata"]["period"] = "SECOND_HALF"
+    parsed = {(l.market_label, l.side_label): l for l in parse_legs(game, event)}
+    assert parsed[("1st Half Spread", "Houston Texans -7")].canonical is None
+    assert parsed[("Spread", "Houston Texans -12.5")].canonical.period == "FG"
+    event["started"] = True
+    assert parse_legs(game, event) == []
+
+
+def test_overtime_is_a_two_way_yes_no(legs):
+    yes, no = legs[("Will There be Overtime?", "Yes")], legs[("Will There be Overtime?", "No")]
+    assert yes.opposite_leg_id == no.leg_id and yes.opposite_american_odds == no.american_odds
+    assert yes.canonical is None
+
+
+def test_a_ladder_without_a_player_has_no_canonical(game):
+    event = load("caesars_event_ind_hou.json")["event"]
+    for group in event["keyMarketGroups"]:
+        for market in group["markets"]:
+            market.get("metadata", {}).pop("player", None)
+    parsed = parse_legs(game, event)
+    assert all(l.canonical is None for l in parsed if l.market_label == "Nico Collins - Receiving Yards")
+
+
+def test_bad_or_naive_start_times_skip_only_that_game():
+    tabs = load("caesars_tabs_featured.json")
+    events = tabs["competitions"][0]["events"]
+    events[0]["startTime"] = "TBD"
+    events[1]["startTime"] = "2026-11-22T18:00:00"
+    assert [g.venue_game_id[:8] for g in parse_nfl_games([tabs], BEFORE_KICKOFF)] == ["b6cc2370"]
+
+
+def test_cached_games_drop_off_at_kickoff_and_caches_expire():
+    transport = FakeTransport()
+    now = [0.0]
+    venue = CaesarsVenue(transport_factory=lambda: transport, clock=lambda: now[0])
+    assert len(venue.list_games()) == 3
+    venue._games = (0.0, [g if i else type(g)(g.venue_game_id, g.home_team, g.away_team,
+                                             datetime(2020, 1, 1, tzinfo=timezone.utc))
+                          for i, g in enumerate(venue._games[1])])
+    assert len(venue.list_games()) == 2                       # the started one is gone without a re-read
+    now[0] = 301.0
+    venue.list_games()
+    assert transport.gets.count(SCHEDULE_TAB_PATHS[0]) == 2
+
+
+def test_a_parser_surprise_is_a_venue_error(game):
+    class BrokenTransport(FakeTransport):
+        def get_event(self, event_id):
+            event = load("caesars_event_ind_hou.json")["event"]
+            del event["keyMarketGroups"][0]["markets"][1]["selections"][0]["id"]   # the moneyline
+            return event
+    venue = CaesarsVenue(transport_factory=BrokenTransport, clock=lambda: 0.0)
+    with pytest.raises(VenueTransportError, match="unexpected shape"):
+        venue.list_legs(game)
+
+
+def test_pick_em_away_line_is_plus_zero(game):
+    event = load("caesars_event_ind_hou.json")["event"]
+    for group in event["keyMarketGroups"]:
+        for market in group["markets"]:
+            if market["name"] == "|1st Half Spread|":
+                market["line"] = 0.0
+    parsed = {(l.market_label, l.side_label): l for l in parse_legs(game, event)}
+    colts = parsed[("1st Half Spread", "Indianapolis Colts +0")]
+    assert str(colts.venue_ref["line"]) == "0.0"

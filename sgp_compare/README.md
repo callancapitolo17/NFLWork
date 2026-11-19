@@ -64,10 +64,12 @@ Fixtures are trimmed copies of the 2026-11-18 ProphetX and 2026-11-19 Caesars re
 
 ## Troubleshooting
 
-- **Error in the game list, or HTTP 502 from /api/legs**: ProphetX unreachable, answered
+- **Error in the game list, or HTTP 502 from /api/legs**: the venue was unreachable, answered
   non-200, or sent a shape the parser does not expect; the message says which. The cloud
-  sandbox cannot reach ProphetX; run on the Mac.
+  sandbox cannot reach the venues; run on the Mac.
+- **Caesars "priced ... alone at decimal" or "at line"**: Caesars' answer priced a different bet than the
+  leg listed (a moved or pulled line); reload the game.
 - **"no longer offered"**: the line moved between picking and pricing; reload the game.
-- **"would not price this combination"**: the venue refused it (ProphetX: no offers; Caesars: an error such as two thresholds of one player ladder).
+- **"would not price this combination"**: the venue refused it (ProphetX: no offers; Caesars: an error on the parlay, such as a leg it won't combine).
 - **Caesars error mentioning the AWS-WAF token**: the node mint failed; check `node --version` and retry.
 - **Vig-removed factor blank**: the reason is shown under it.
