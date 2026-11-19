@@ -35,6 +35,7 @@ number), tap one side per market, press **Price**.
 | `legs.py` | `Game`, `CanonicalLeg` (venue-neutral: period, stat, subject, side, line), `OfferedLeg`, `ParlayQuote`. |
 | `venues/base.py` | The `Venue` interface: `list_games`, `list_legs`, `price_parlay`. |
 | `venues/prophetx.py` | ProphetX: anonymous public endpoints over a curl_cffi Chrome session; game lines, halves, quarters, team totals, ~290 player props per game. |
+| `venues/betmgm.py` | BetMGM: the CDS JSON endpoints on `mlb_sgp.betmgm_client.BetMGMClient`'s session and accessid (no login, state `pa`); every bet-builder market (game lines, halves, quarters, team totals, player O/U, "N+" milestones, TD scorers); parlay = the `tv2Picks` bet-builder price request. |
 | `venues/__init__.py` | `build_venues()`: the venues the page uses. Adding a venue = a module + one line here. |
 | `correlation.py` | Pure math: the Correlation factor with and without vig (singles devig from `kalshi_common.fair_value.two_way_fair`). |
 | `pricing.py` | `price_at_venue`: fresh legs, the parlay price, the 2^N partition. |
@@ -47,7 +48,8 @@ number), tap one side per market, press **Price**.
 |---|---|
 | ProphetX | Live (PR 1). Parlay = `POST /parlay/public/api/v1/user/request` with stake 1, a price request only. |
 | Novig, Kalshi, Polymarket US | Next, one thread each (Novig relays DK/FD/MGM/CZR prices; Kalshi needs an RFQ). |
-| DraftKings, FanDuel, BetMGM, Caesars | After the prediction markets. |
+| BetMGM | Live. Parlay = `POST /cds-api/bettingoffer/picks` (`tv2Picks`), a price request only: one price, no stake limit. A milestone or TD-scorer leg has no other side, so its parlay gets no vig-removed factor. |
+| DraftKings, FanDuel, Caesars | After the prediction markets. |
 
 Cross-venue pricing (one parlay priced at every venue) matches legs by
 `CanonicalLeg`; it lands with the second venue.
@@ -58,13 +60,17 @@ Cross-venue pricing (one parlay priced at every venue) matches legs by
 python3 -m pytest -q sgp_compare/tests
 ```
 
-Fixtures are trimmed copies of the 2026-11-18 ProphetX recon (IND at HOU).
+Fixtures are trimmed copies of the 2026-11-18 ProphetX and BetMGM recons (IND at HOU).
 
 ## Troubleshooting
 
 - **Error in the game list, or HTTP 502 from /api/legs**: ProphetX unreachable, answered
   non-200, or sent a shape the parser does not expect; the message says which. The cloud
   sandbox cannot reach ProphetX; run on the Mac.
+- **BetMGM shows 0 legs for a game**: BetMGM builds a game's full market tree only the
+  morning before; until then it has no bet-builder markets.
+- **BetMGM error "more than 1000 football fixtures"**: the schedule outgrew
+  `SCHEDULE_MAX_PAGES`; raise it in `venues/betmgm.py`.
 - **"no longer offered"**: the line moved between picking and pricing; reload the game.
 - **"would not price this combination"**: ProphetX returned no offers (it refuses some combinations).
 - **Vig-removed factor blank**: the reason is shown under it.

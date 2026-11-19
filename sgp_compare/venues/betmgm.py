@@ -31,7 +31,6 @@ BetMGM shapes (recon 2026-11-18 on Cal's Mac, IND @ HOU, tests/fixtures/betmgm_*
 """
 from __future__ import annotations
 
-import logging
 import re
 import threading
 import time
@@ -43,8 +42,6 @@ from sgp_compare.legs import CanonicalLeg, Game, OfferedLeg, ParlayQuote, Parlay
 from sgp_compare.odds import american_to_decimal
 from sgp_compare.venues.base import VenueTransportError
 
-log = logging.getLogger(__name__)
-
 MGM_FOOTBALL_SPORT_ID = 11
 NFL_COMPETITION_NAME = "NFL"
 PRE_MATCH_STAGE = "PreMatch"
@@ -53,9 +50,14 @@ VISIBLE = "Visible"
 REQUEST_TIMEOUT_SEC = 20
 GAMES_CACHE_SEC = 300          # the schedule changes daily
 MARKETS_CACHE_SEC = 20         # the leg picker; pricing always re-reads
-MIN_PICKS = 2                  # BetMGM refuses a one-selection bet-builder request
-SCHEDULE_TAKE = 200            # football fixtures per schedule read (college fills most of it)
-ACCESSID_GATE_TEXT = "access id"   # BetMGM's 400 body when the harvested accessid went stale
+SCHEDULE_PAGE_SIZE = 200       # football fixtures per schedule page (college fills most of them)
+SCHEDULE_MAX_PAGES = 5         # 1,000 fixtures: a full college Saturday is well under that
+# The only market types whose two options are each other's other side.
+TWO_WAY_MARKET_TYPES = ("2way", "2wayHandicap", "Over/Under")
+# Error codes in a priced group that mean "BetMGM won't price this combination"
+# (recon 2026-11-18). Any other error is reported as an error, not a decline.
+DECLINE_ERROR_CODES = ("ZeroProbabilityError", "SingleSelectionRequestError")
+NOT_REDUNDANT = "NotRedundantLeg"
 
 PERIOD_OF = {
     "FullTime": "FG", "FirstHalf": "1H", "SecondHalf": "2H",
@@ -109,9 +111,7 @@ def _game_from_fixture(fixture: dict) -> Game | None:
              for p in fixture.get("participants") or []}
     home, away = teams.get("HomeTeam"), teams.get("AwayTeam")
     if not (home and away):
-        away, sep, home = _text(fixture.get("name")).partition(" @ ")
-        if not sep:
-            return None
+        return None
     start = _parse_time(fixture.get("startDate"))
     if start is None:
         return None
@@ -124,13 +124,19 @@ def parse_legs(game: Game, markets_payload: dict) -> list[OfferedLeg]:
 
     Two-option markets give two legs that point at each other; one-option
     ("Yes" milestones, player TDs) and many-option markets (first TD scorer,
-    correct score) give legs with no other side. An option that is suspended
-    is listed with no price.
+    correct score) give legs with no other side. A suspended option is listed
+    with no price; a suspended market is left out. A fixture closed for
+    betting, or one whose tree BetMGM has not built yet (it builds the full
+    tree the morning before), has no legs.
     """
     fixtures = markets_payload.get("fixtures") or []
     if not fixtures:
         return []
     fixture = fixtures[0]
+    if str(fixture["id"]) != game.venue_game_id:
+        raise ValueError(f"asked for fixture {game.venue_game_id}, BetMGM answered {fixture['id']}")
+    if fixture.get("isOpenForBetting") is False or fixture.get("stage") not in (None, PRE_MATCH_STAGE):
+        return []
     participants = {p.get("id"): p for p in fixture.get("participants") or []}
     markets = [m for m in fixture.get("optionMarkets") or []
                if m.get("isBetBuilder") and m.get("status") == VISIBLE and m.get("options")]
@@ -139,7 +145,7 @@ def parse_legs(game: Game, markets_payload: dict) -> list[OfferedLeg]:
         params = _params(market)
         options = market["options"]
         ids = [_leg_id(market, o) for o in options]
-        pair = len(options) == 2
+        pair = len(options) == 2 and params.get("MarketType") in TWO_WAY_MARKET_TYPES
         for index, option in enumerate(options):
             other = options[1 - index] if pair else None
             legs.append(OfferedLeg(
@@ -219,9 +225,9 @@ def _canonical(game: Game, market: dict, params: dict, option: dict, participant
     side = "over" if "Over" in option_types else "under" if "Under" in option_types else None
     if side is None:
         return None
-    if happening == "Point" and participant is None:
+    if happening == "Point" and sub_type is None and "FixtureParticipant" not in params:
         return CanonicalLeg(period, "total", None, side, value)
-    if happening == "Point" and participant_kind in ("HomeTeam", "AwayTeam"):
+    if happening == "Point" and sub_type is None and participant_kind in ("HomeTeam", "AwayTeam"):
         return CanonicalLeg(period, "team_total", subject, side, value)
     if participant_kind != "Player" or subject is None:
         return None
@@ -252,6 +258,9 @@ def _team_side(game: Game, team_name: str) -> str | None:
 
 
 def _american(option: dict | None) -> float | None:
+    """The option's American price. BetMGM's decimal / fractional fields can
+    differ from it by up to ~1 cent (-112 next to 1.88): they are rounded to a
+    fraction ladder, while US BetMGM shows and pays the American price."""
     if not option or option.get("status") != VISIBLE:
         return None
     american = (option.get("price") or {}).get("americanOdds")
@@ -267,15 +276,29 @@ def parlay_payload(legs: list[OfferedLeg], pick_group_id: str) -> dict:
         for leg in legs]}
 
 
-def parse_parlay_quote(response: dict) -> ParlayQuote | None:
-    """None when BetMGM declined: no group, an error (impossible combo, one
-    selection), a suspended group (it still carries odds that are not on
-    offer), or no usable odds. BetMGM gives one price and no stake limit."""
-    groups = response.get("betBuilderPricingGroups") or {}
-    if not groups:
+def parse_parlay_quote(response: dict, legs: list[OfferedLeg], pick_group_id: str) -> ParlayQuote | None:
+    """BetMGM's one price for `legs` (no stake limit), or None when it declined:
+    a known decline code (impossible combo, one selection), the group or any
+    leg suspended (a suspended group still carries odds that are not on
+    offer), or a leg BetMGM marks redundant (it would price fewer legs than
+    asked). An unknown error, or an answer that does not price exactly the
+    legs sent, raises VenueTransportError rather than reading as a decline."""
+    group = (response.get("betBuilderPricingGroups") or {}).get(pick_group_id)
+    if group is None:
+        raise VenueTransportError(f"BetMGM picks: no pricing group {pick_group_id} in the answer")
+    error = group.get("error")
+    if error:
+        if any(code in error for code in DECLINE_ERROR_CODES):
+            return None
+        raise VenueTransportError(f"BetMGM picks: {error[:200]}")
+    if group.get("suspensionState") != PRICED_STATE:
         return None
-    group = next(iter(groups.values()))
-    if group.get("error") or group.get("suspensionState") != PRICED_STATE:
+    leg_states = group["legInformation"]
+    sent = sorted(_client_leg_id(leg) for leg in legs)
+    if sorted(info["clientLegId"] for info in leg_states) != sent:
+        raise VenueTransportError(f"BetMGM picks: priced legs {[i['clientLegId'] for i in leg_states]}, sent {sent}")
+    if any(info.get("suspensionState") != PRICED_STATE or info.get("redundantState") != NOT_REDUNDANT
+           for info in leg_states):
         return None
     odds = group.get("odds") or {}
     american = odds.get("americanOdds")
@@ -287,6 +310,12 @@ def parse_parlay_quote(response: dict) -> ParlayQuote | None:
         return None
     stored = {k: v for k, v in response.items() if k != "fixturePage"}   # fixturePage repeats the whole tree
     return ParlayQuote((ParlayTier(decimal, None),), {}, stored)
+
+
+def _client_leg_id(leg: OfferedLeg) -> str:
+    """BetMGM echoes each pick back as "<fixtureId>:<optionMarketId>:<optionId>"."""
+    ref = leg.venue_ref
+    return f"{ref['fixtureId']}:{ref['optionMarketId']}:{ref['optionId']}"
 
 
 def _params(market: dict) -> dict[str, str]:
@@ -354,11 +383,9 @@ class BetMgmVenue:
         return _parsed("markets", lambda: parse_legs(game, payload))
 
     def price_parlay(self, game: Game, legs: list[OfferedLeg]) -> ParlayQuote | None:
-        if len(legs) < MIN_PICKS:
-            return None
-        body = parlay_payload(legs, str(uuid.uuid4()))
-        response = self._request("POST", "/bettingoffer/picks", json_body=body)
-        return _parsed("picks", lambda: parse_parlay_quote(response))
+        pick_group_id = str(uuid.uuid4())
+        response = self._request("POST", "/bettingoffer/picks", json_body=parlay_payload(legs, pick_group_id))
+        return _parsed("picks", lambda: parse_parlay_quote(response, legs, pick_group_id))
 
     # -- reads
     def _read_games(self) -> list[Game]:
@@ -366,14 +393,28 @@ class BetMgmVenue:
             cached = self._games
         if cached and self._clock() - cached[0] < GAMES_CACHE_SEC:
             return cached[1]
-        payload = self._request("GET", "/bettingoffer/fixtures", query=(
-            "&fixtureTypes=Standard&state=Latest&offerMapping=Filtered"
-            "&offerCategories=Gridable&fixtureCategories=Gridable"
-            f"&sportIds={MGM_FOOTBALL_SPORT_ID}&skip=0&take={SCHEDULE_TAKE}&sortBy=Tags"))
+        payload = self._read_schedule()
         games = _parsed("fixtures", lambda: parse_nfl_games(payload, self._wall_clock()))
         with self._lock:
             self._games = (self._clock(), games)
         return games
+
+    def _read_schedule(self) -> dict:
+        """Every football fixture, page by page: the query cannot filter to
+        the NFL, and a college Saturday alone can fill a page."""
+        fixtures: list = []
+        for page in range(SCHEDULE_MAX_PAGES):
+            payload = self._request("GET", "/bettingoffer/fixtures", query=(
+                "&fixtureTypes=Standard&state=Latest&offerMapping=Filtered"
+                "&offerCategories=Gridable&fixtureCategories=Gridable"
+                f"&sportIds={MGM_FOOTBALL_SPORT_ID}&skip={page * SCHEDULE_PAGE_SIZE}"
+                f"&take={SCHEDULE_PAGE_SIZE}&sortBy=Tags"))
+            page_fixtures = payload.get("fixtures") or []
+            fixtures.extend(page_fixtures)
+            if len(page_fixtures) < SCHEDULE_PAGE_SIZE:
+                return {"fixtures": fixtures}
+        raise VenueTransportError(f"BetMGM schedule: more than {SCHEDULE_MAX_PAGES * SCHEDULE_PAGE_SIZE} "
+                                  "football fixtures; NFL games could be missing")
 
     def _read_markets(self, fixture_id: str, fresh: bool) -> dict:
         with self._lock:
@@ -389,8 +430,9 @@ class BetMgmVenue:
     def _request(self, method: str, path: str, query: str = "", json_body: dict | None = None) -> dict:
         """One CDS call. A 400 "Access id ..." means the harvested id went
         stale: harvest a new one and send the call once more."""
+        from mlb_sgp.betmgm_client import _is_accessid_gate
         response = self._send(method, path, query, json_body, refresh_accessid=False)
-        if response.status_code == 400 and ACCESSID_GATE_TEXT in (response.text or "").lower():
+        if _is_accessid_gate(response):
             response = self._send(method, path, query, json_body, refresh_accessid=True)
         if response.status_code != 200:
             raise VenueTransportError(f"BetMGM {method} {path}: expected HTTP 200, got "
@@ -404,16 +446,16 @@ class BetMgmVenue:
         return body
 
     def _send(self, method: str, path: str, query: str, json_body: dict | None, refresh_accessid: bool):
-        if self._client is None:
-            self._client = self._client_factory()
-        client = self._client
         try:
+            if self._client is None:
+                self._client = self._client_factory()
+            client = self._client
             client.accessid(refresh=refresh_accessid)
             url = f"{client._base}{path}?{client._common_q()}{query}"
             if method == "GET":
                 return client.session.get(url, timeout=REQUEST_TIMEOUT_SEC)
             return client.session.post(url, json=json_body, timeout=REQUEST_TIMEOUT_SEC)
-        except Exception as exc:   # curl_cffi and the accessid harvest raise their own types
+        except Exception as exc:   # curl_cffi, the client import and the accessid harvest raise their own types
             self._client = None
             raise VenueTransportError(f"BetMGM {method} {path}: {type(exc).__name__}: {exc}") from exc
 

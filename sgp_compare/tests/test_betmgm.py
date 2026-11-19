@@ -136,38 +136,88 @@ def test_hidden_markets_are_left_out(game):
 
 # ---------------------------------------------------------------- parlay quotes
 
+def recorded_parlay(legs, name):
+    """(chosen legs, pick group id, response) of a recorded picks call."""
+    recorded = load(name)
+    group_id = recorded["request"]["tv2Picks"][0]["pickGroupId"]
+    by_ref = {(l.venue_ref["optionMarketId"], l.venue_ref["optionId"]): l for l in legs.values()}
+    chosen = [by_ref[(p["optionMarketId"], p["optionId"])] for p in recorded["request"]["tv2Picks"]]
+    return chosen, group_id, recorded
+
+
 @pytest.mark.parametrize("fixture, sides, decimal_odds", [
     ("betmgm_parlay_spread_over.json", [("Spread", "Houston Texans (-12.5)"), ("Totals", "Over 44")], 3.5),
     ("betmgm_parlay_spread_recyds.json", [("Spread", "Houston Texans (-12.5)"),
                                           ("Tank Dell - Reception Yards", "Over 35.5")], 3.2),
 ])
 def test_recorded_parlay_requests_and_answers(legs, fixture, sides, decimal_odds):
-    recorded = load(fixture)
-    chosen = [legs[side] for side in sides]
-    group_id = recorded["request"]["tv2Picks"][0]["pickGroupId"]
+    chosen, group_id, recorded = recorded_parlay(legs, fixture)
+    assert chosen == [legs[side] for side in sides]
     assert parlay_payload(chosen, group_id) == recorded["request"]
-    quote = parse_parlay_quote(recorded["response"])
+    quote = parse_parlay_quote(recorded["response"], chosen, group_id)
     assert [(round(t.decimal_odds, 4), t.max_stake) for t in quote.tiers] == [(decimal_odds, None)]
     assert quote.leg_prices_american == {}
     assert "fixturePage" not in quote.raw and "betBuilderPricingGroups" in quote.raw
 
 
-def test_anytime_td_and_moneyline_parlay_prices():
-    quote = parse_parlay_quote(load("betmgm_parlay_anytd_ml.json")["response"])
-    assert round(quote.best.decimal_odds, 4) == 11.5
+def test_anytime_td_and_moneyline_parlay_prices(game):
+    markets = load("betmgm_markets_colts_texans.json")
+    recorded = load("betmgm_parlay_anytd_ml.json")
+    group_id = recorded["request"]["tv2Picks"][0]["pickGroupId"]
+    # Ogunbowale's 1+ TD market was trimmed from the tree, so build the legs off the request.
+    chosen = [_leg_for_pick(p) for p in recorded["request"]["tv2Picks"]]
+    quote = parse_parlay_quote(recorded["response"], chosen, group_id)
+    assert [(round(t.decimal_odds, 4), t.max_stake) for t in quote.tiers] == [(11.5, None)]
+
+
+def _leg_for_pick(pick):
+    from sgp_compare.legs import OfferedLeg
+    return OfferedLeg(leg_id=f"{pick['optionMarketId']}:{pick['optionId']}", market_label="", category="",
+                      side_label="", canonical=None, american_odds=None, opposite_american_odds=None,
+                      available_stake=None, opposite_leg_id=None, market_key=str(pick["optionMarketId"]),
+                      is_main_line=False, venue_ref={"fixtureId": pick["fixtureId"],
+                                                     "optionMarketId": pick["optionMarketId"],
+                                                     "optionId": pick["optionId"]})
 
 
 @pytest.mark.parametrize("fixture", ["betmgm_parlay_over_under.json", "betmgm_parlay_single_spread.json"])
-def test_declines_are_none(fixture):
-    assert parse_parlay_quote(load(fixture)["response"]) is None
+def test_known_declines_are_none(fixture):
+    recorded = load(fixture)
+    chosen = [_leg_for_pick(p) for p in recorded["request"]["tv2Picks"]]
+    assert parse_parlay_quote(recorded["response"], chosen, recorded["request"]["tv2Picks"][0]["pickGroupId"]) is None
 
 
-def test_a_suspended_group_with_odds_is_a_decline():
-    response = load("betmgm_parlay_spread_over.json")["response"]
-    group = next(iter(response["betBuilderPricingGroups"].values()))
-    group["suspensionState"] = "MarketSuspended"
-    assert parse_parlay_quote(response) is None
-    assert parse_parlay_quote({"betBuilderPricingGroups": {}}) is None
+def spread_over(legs):
+    chosen, group_id, recorded = recorded_parlay(legs, "betmgm_parlay_spread_over.json")
+    group = recorded["response"]["betBuilderPricingGroups"][group_id]
+    return chosen, group_id, recorded["response"], group
+
+
+def test_a_suspended_group_or_leg_or_a_redundant_leg_is_a_decline(legs):
+    for edit in (lambda g: g.update(suspensionState="MarketSuspended"),
+                 lambda g: g["legInformation"][1].update(suspensionState="MarketSuspended"),
+                 lambda g: g["legInformation"][0].update(redundantState="RedundantLeg")):
+        chosen, group_id, response, group = spread_over(legs)
+        edit(group)
+        assert parse_parlay_quote(response, chosen, group_id) is None
+
+
+@pytest.mark.parametrize("edit, message", [
+    (lambda r, g: g.update(error="Status: ServiceUnavailable. ErrorCode: ProviderTimeout."), "ProviderTimeout"),
+    (lambda r, g: r["betBuilderPricingGroups"].clear(), "no pricing group"),
+    (lambda r, g: g["legInformation"].pop(), "priced legs"),
+])
+def test_an_unknown_error_or_a_different_leg_set_is_a_transport_error(legs, edit, message):
+    chosen, group_id, response, group = spread_over(legs)
+    edit(response, group)
+    with pytest.raises(VenueTransportError, match=message):
+        parse_parlay_quote(response, chosen, group_id)
+
+
+def test_the_decimal_price_is_used_when_american_is_missing(legs):
+    chosen, group_id, response, group = spread_over(legs)
+    del group["odds"]["americanOdds"]
+    assert parse_parlay_quote(response, chosen, group_id).best.decimal_odds == 3.5
 
 
 # ---------------------------------------------------------------- the live venue, on a fake client
@@ -188,6 +238,7 @@ class FakeSession:
     def __init__(self, answers):
         self.answers = answers          # url fragment -> list of FakeResponse / Exception, used in turn
         self.calls = []
+        self.all_posted = []
 
     def _answer(self, method, url):
         self.calls.append((method, url))
@@ -204,7 +255,9 @@ class FakeSession:
 
     def post(self, url, json=None, timeout=None):
         self.posted = json
-        return self._answer("POST", url)
+        self.all_posted.append(json)
+        answer = self._answer("POST", url)
+        return answer(json) if callable(answer) else answer
 
 
 class FakeClient:
@@ -222,10 +275,26 @@ class FakeClient:
         return "x-bwin-accessid=id&lang=en"
 
 
+def priced_at(decimal_odds):
+    """A picks answer that prices whatever legs were sent, in the recorded shape."""
+    def answer(body):
+        response = load("betmgm_parlay_spread_over.json")["response"]
+        group = next(iter(response["betBuilderPricingGroups"].values()))
+        group_id = body["tv2Picks"][0]["pickGroupId"]
+        group["groupId"] = group_id
+        group["odds"] = {"odds": decimal_odds}
+        template = group["legInformation"][0]
+        group["legInformation"] = [dict(template, clientLegId=f"{p['fixtureId']}:{p['optionMarketId']}:{p['optionId']}")
+                                   for p in body["tv2Picks"]]
+        response["betBuilderPricingGroups"] = {group_id: group}
+        return FakeResponse(200, response)
+    return answer
+
+
 def live_answers(**overrides):
     answers = {"sportIds=11": [FakeResponse(200, load("betmgm_fixtures_nfl.json"))],
                "fixtureIds=": [FakeResponse(200, load("betmgm_markets_colts_texans.json"))],
-               "/picks": [FakeResponse(200, load("betmgm_parlay_spread_over.json")["response"])]}
+               "/picks": [priced_at(3.5)]}
     answers.update(overrides)
     return answers
 
@@ -251,13 +320,6 @@ def test_venue_reads_games_legs_and_prices():
     assert [method for method, _ in client.session.calls] == ["GET", "GET", "POST"]
     assert [p["optionId"] for p in client.session.posted["tv2Picks"]] == [7552787, 7537006]
     assert client.session.posted["tv1Picks"] == []
-
-
-def test_a_one_leg_parlay_is_declined_without_a_request():
-    venue, client, _ = venue_with(live_answers())
-    game = next(g for g in venue.list_games() if g.venue_game_id == GAME_ID)
-    assert venue.price_parlay(game, pick(venue, game, ("Totals", "Over 44"))) is None
-    assert not any(method == "POST" for method, _ in client.session.calls)
 
 
 def test_schedule_is_cached_but_a_started_game_drops_out_at_once():
@@ -332,5 +394,111 @@ def test_the_core_prices_a_betmgm_parlay_and_its_partition():
     chosen = pick(venue, game, ("Spread", "Houston Texans (-12.5)"), ("Tank Dell - Reception Yards", "Over 35.5"))
     result = price_at_venue(venue, game, [leg.leg_id for leg in chosen])
     assert result.status == "priced" and result.quote.best.decimal_odds == 3.5
-    assert len(result.partition_decimal_odds) == 4                  # the parlay + 3 flipped combinations
-    assert sum(method == "POST" for method, _ in client.session.calls) == 4
+    assert result.partition_decimal_odds == [3.5, 3.5, 3.5, 3.5]
+    sent = {tuple(p["optionId"] for p in body["tv2Picks"]) for body in client.session.all_posted}
+    houston, colts = 7552787, 7552786                # Spread -12.5 / +12.5
+    dell_over, dell_under = 7607200, 7607201
+    assert sent == {(houston, dell_over), (houston, dell_under), (colts, dell_over), (colts, dell_under)}
+
+
+def test_off_season_and_an_unbuilt_tree_have_no_games_or_legs(game):
+    assert parse_nfl_games({"fixtures": []}, BEFORE_KICKOFF) == []
+    tree = load("betmgm_markets_colts_texans.json")
+    tree["fixtures"][0]["optionMarkets"] = []        # BetMGM builds it the morning before
+    assert parse_legs(game, tree) == []
+    assert parse_legs(game, {"fixtures": []}) == []
+
+
+def test_a_fixture_closed_for_betting_has_no_legs_and_a_wrong_fixture_is_refused(game):
+    tree = load("betmgm_markets_colts_texans.json")
+    tree["fixtures"][0]["isOpenForBetting"] = False
+    assert parse_legs(game, tree) == []
+    tree = load("betmgm_markets_colts_texans.json")
+    tree["fixtures"][0]["id"] = "6:99999"
+    with pytest.raises(ValueError, match="BetMGM answered 6:99999"):
+        parse_legs(game, tree)
+
+
+def test_a_fixture_without_home_and_away_participants_is_left_out():
+    payload = load("betmgm_fixtures_nfl.json")
+    for fixture in payload["fixtures"]:
+        fixture["participants"] = [p for p in fixture["participants"] if p["properties"].get("type") != "HomeTeam"]
+    assert parse_nfl_games(payload, BEFORE_KICKOFF) == []
+
+
+def test_a_mixed_football_schedule_keeps_only_upcoming_pre_match_nfl():
+    payload = load("betmgm_fixtures_nfl.json")
+    nfl_count = len(parse_nfl_games(payload, BEFORE_KICKOFF))
+    payload["fixtures"][1]["competition"]["name"]["value"] = "NCAA, Regular Season"
+    payload["fixtures"][2]["stage"] = "Live"
+    kept = parse_nfl_games(payload, BEFORE_KICKOFF)
+    assert len(kept) == nfl_count - 2
+    assert {payload["fixtures"][1]["id"], payload["fixtures"][2]["id"]}.isdisjoint(g.venue_game_id for g in kept)
+
+
+def test_two_options_pair_up_only_in_two_way_market_types(game):
+    tree = load("betmgm_markets_colts_texans.json")
+    spread = next(m for m in tree["fixtures"][0]["optionMarkets"] if m["id"] == 4585337)
+    for parameter in spread["parameters"]:
+        if parameter["key"] == "MarketType":
+            parameter["value"] = "SomethingNew"
+    parsed = {(l.market_label, l.side_label): l for l in parse_legs(game, tree)}
+    houston = parsed[("Spread", "Houston Texans (-12.5)")]
+    assert (houston.opposite_leg_id, houston.opposite_american_odds, houston.canonical) == (None, None, None)
+
+
+def test_a_market_without_parameters_gets_its_own_key(game):
+    tree = load("betmgm_markets_colts_texans.json")
+    for market in tree["fixtures"][0]["optionMarkets"]:
+        if market["id"] in (4585337, 4578725):     # two Spread lines
+            market["parameters"] = []
+    parsed = {(l.market_label, l.side_label): l for l in parse_legs(game, tree)}
+    assert parsed[("Spread", "Houston Texans (-12.5)")].market_key == "market:4585337"
+    assert parsed[("Spread", "Houston Texans (-10)")].market_key == "market:4578725"
+
+
+def test_a_points_milestone_or_an_unknown_team_is_not_read_as_a_total(game):
+    tree = load("betmgm_markets_colts_texans.json")
+    markets = tree["fixtures"][0]["optionMarkets"]
+    team_total = next(m for m in markets if m["id"] == 4605376)    # Houston Texans - Total Points
+    team_total["parameters"].append({"key": "MarketSubType", "type": "String", "value": "YesNo"})
+    game_total = next(m for m in markets if m["id"] == 4580209)    # Totals 44
+    game_total["parameters"].append({"key": "FixtureParticipant", "type": "Long", "value": "1"})
+    parsed = {(l.market_label, l.side_label): l for l in parse_legs(game, tree)}
+    assert parsed[("Houston Texans - Total Points (Over/Under)", "Over 27.5")].canonical is None
+    assert parsed[("Totals", "Over 44")].canonical is None
+
+
+def test_the_schedule_reads_every_page():
+    full_page = {"fixtures": [{"id": f"x{i}", "competition": {"name": {"value": "NCAA"}}} for i in range(200)]}
+    nfl = load("betmgm_fixtures_nfl.json")
+    venue, client, _ = venue_with(live_answers(**{"sportIds=11": [FakeResponse(200, full_page), FakeResponse(200, nfl)]}))
+    assert any(g.venue_game_id == GAME_ID for g in venue.list_games())
+    schedule_urls = [url for _, url in client.session.calls if "sportIds=11" in url]
+    assert ["skip=0" in schedule_urls[0], "skip=200" in schedule_urls[1]] == [True, True]
+
+
+def test_a_schedule_too_long_to_page_is_an_error_not_a_silent_cut():
+    full_page = {"fixtures": [{"id": f"x{i}", "competition": {"name": {"value": "NCAA"}}} for i in range(200)]}
+    venue, _, _ = venue_with(live_answers(**{"sportIds=11": [FakeResponse(200, full_page)]}))
+    with pytest.raises(VenueTransportError, match="more than 1000 football fixtures"):
+        venue.list_games()
+
+
+def test_a_client_that_cannot_be_built_is_a_transport_error():
+    def factory():
+        raise ImportError("No module named 'curl_cffi'")
+    venue = BetMgmVenue(client_factory=factory)
+    with pytest.raises(VenueTransportError, match="curl_cffi"):
+        venue.list_games()
+
+
+def test_a_stale_accessid_on_the_price_request_is_harvested_again_once():
+    gate = FakeResponse(400, '{"message":"Access id is not valid"}')
+    venue, client, _ = venue_with(live_answers(**{"/picks": [gate, priced_at(3.5)]}))
+    game = next(g for g in venue.list_games() if g.venue_game_id == GAME_ID)
+    chosen = pick(venue, game, ("Spread", "Houston Texans (-12.5)"), ("Totals", "Over 44"))
+    harvests_before = len(client.harvests)
+    assert venue.price_parlay(game, chosen).best.decimal_odds == 3.5
+    assert client.harvests[harvests_before:] == [False, True]
+    assert sum(method == "POST" for method, _ in client.session.calls) == 2
