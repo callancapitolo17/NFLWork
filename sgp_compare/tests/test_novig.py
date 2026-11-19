@@ -47,6 +47,8 @@ def test_games_are_the_pregame_cards_soonest_first():
 def test_started_live_and_offseason_pages_give_no_games():
     assert parse_nfl_games(load("novig_nfl_page.json"), datetime(2026, 12, 31, tzinfo=timezone.utc)) == []
     assert parse_nfl_games({"sections": []}, BEFORE_KICKOFF) == []
+    with pytest.raises(ValueError, match="expected a `sections` list"):   # a changed page is not an off-season
+        parse_nfl_games({"games": []}, BEFORE_KICKOFF)
     page = load("novig_nfl_page.json")
     for card in page["sections"][0]["content"]["components"]:
         card["eventStatus"] = "OPEN_INGAME"
@@ -100,6 +102,7 @@ def test_moneyline_totals_and_team_totals(legs):
     team_total = legs[("Indianapolis Colts Team Total", "Under 15.5")]
     assert team_total.canonical == CanonicalLeg("FG", "team_total", "Indianapolis Colts", "under", 15.5)
     assert team_total.market_key != legs[("Total", "Over 43.5")].market_key
+    assert team_total.market_key != legs[("Houston Texans Team Total", "Over 27.5")].market_key   # both can go in one parlay
 
 
 def test_first_half_lines_are_their_own_markets(legs):
@@ -139,7 +142,7 @@ def test_protected_twins_are_kept_apart_from_the_plain_market(legs):
 
 def test_locked_and_unpriced_lines_are_left_out_but_a_one_sided_line_keeps_both_sides(legs):
     labels = {market_label for market_label, _ in legs}
-    assert "Will Mallory Anytime Touchdown" not in labels                  # locked
+    assert "Will Mallory Anytime Touchdown" not in labels                  # locked, though the fixture gives it prices
     assert "Quez Watkins Anytime Touchdown (Protected)" not in labels      # nobody offers either side
     yes, no = legs[("Quez Watkins Anytime Touchdown", "YES")], legs[("Quez Watkins Anytime Touchdown", "NO")]
     assert (yes.american_odds, yes.opposite_american_odds) == (2757.14, None)
@@ -152,6 +155,35 @@ def test_closed_markets_and_an_unknown_game_give_no_legs(game):
         market["status"] = "CLOSED"
     assert parse_legs(game, markets) == []
     assert parse_legs(game, {"data": {"event": []}}) == []
+
+
+@pytest.mark.parametrize("change", [{"status": "OPEN_INGAME"}, {"event_locks": [{"id": "a-lock"}]}])
+def test_a_game_novig_has_locked_or_moved_in_game_gives_no_legs(game, change):
+    markets = load("novig_markets_ind_hou.json")
+    markets["data"]["event"][0].update(change)
+    assert parse_legs(game, markets) == []
+
+
+@pytest.mark.parametrize("market_type, strike, descriptions", [
+    ("SPREAD", -12.5, ["HOU -12.5", "IND -12.5"]),        # both sides laying the points
+    ("TOTAL", 43.5, ["Over 43.5", "Over 43.5"]),          # the same side twice
+    ("TOTAL", 43.5, ["Over 47.5", "Under 43.5"]),         # text disagrees with the strike
+    ("SPREAD", -12.5, ["HOU PK", "IND +12.5"]),           # no signed line to read
+])
+def test_a_line_whose_two_outcomes_are_not_opposite_sides_of_its_strike_is_left_out(game, market_type, strike, descriptions):
+    markets = load("novig_markets_ind_hou.json")
+    market = next(m for m in markets["data"]["event"][0]["markets"] if m["type"] == market_type and m["strike"] == strike)
+    for outcome, description in zip(market["outcomes"], descriptions):
+        outcome["description"] = description
+    ids = {outcome["id"] for outcome in market["outcomes"]}
+    assert not any(leg.leg_id in ids for leg in parse_legs(game, markets))
+
+
+def test_two_moneyline_outcomes_for_one_team_are_left_out(game):
+    markets = load("novig_markets_ind_hou.json")
+    moneyline = next(m for m in markets["data"]["event"][0]["markets"] if m["type"] == "MONEY")
+    moneyline["outcomes"][1]["competitor"] = dict(moneyline["outcomes"][0]["competitor"])
+    assert not any(leg.market_label == "Moneyline" for leg in parse_legs(game, markets))
 
 
 def test_a_spread_whose_text_disagrees_with_its_strike_or_names_an_unknown_team_is_left_out(game):
@@ -190,9 +222,10 @@ def test_recorded_parlay_requests_and_answers(legs, fixture, sides, decimal_odds
     assert quote.raw == recorded["response"]
 
 
-@pytest.mark.parametrize("response", [{"price": "0"}, {"price": "1.0"}, {"price": "abc"}, {"price": None}, {}])
-def test_a_quote_without_a_usable_price_is_an_error(response):
-    with pytest.raises((ValueError, KeyError, TypeError)):
+@pytest.mark.parametrize("response, error", [({"price": "0"}, ValueError), ({"price": "1.0"}, ValueError),
+                                             ({"price": "abc"}, ValueError), ({"price": None}, TypeError), ({}, KeyError)])
+def test_a_quote_without_a_usable_price_is_an_error(response, error):
+    with pytest.raises(error):
         parse_parlay_quote(response)
 
 
@@ -322,8 +355,16 @@ def test_the_leg_picker_is_cached_but_pricing_reads_fresh_and_games_drop_at_kick
     clock["t"] = 21.0
     venue.list_legs(game)
     assert graphql_calls() == 3
-    started, _, _ = venue_with(live_answers(), wall_time=KICKOFF)
-    assert [g.home_team for g in started.list_games()] == ["Carolina Panthers"]
+
+
+def test_a_cached_game_drops_out_at_kickoff_without_a_new_read():
+    wall = {"now": BEFORE_KICKOFF}
+    session = FakeSession(live_answers())
+    venue = NovigVenue(session_factory=lambda: session, clock=lambda: 0.0, wall_clock=lambda: wall["now"])
+    assert len(venue.list_games()) == 2
+    wall["now"] = KICKOFF
+    assert [g.home_team for g in venue.list_games()] == ["Carolina Panthers"]
+    assert len(session.calls) == 1
 
 
 def test_a_dropped_connection_gets_a_new_session_next_time():

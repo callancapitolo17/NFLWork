@@ -249,6 +249,49 @@
       ]
      },
      {
+      "is_consensus": false,
+      "id": "01a1e17e-9749-7662-99c2-ffb042e7338e",
+      "strike": 27.5,
+      "type": "TEAM_TOTAL",
+      "description": "Houston Texans 27.5 TEAM_TOTAL",
+      "status": "OPEN",
+      "volume": 2519.08,
+      "market_detail": null,
+      "re_settled_at": null,
+      "competitor": {
+       "id": "b672d5b9-0873-4b32-9441-a93672d14941",
+       "name": "Houston Texans",
+       "country": "USA",
+       "short_name": "HOU",
+       "symbol": "HOU",
+       "swish_id": "325nfl",
+       "optic_odds_id": "4DD082E9EC10",
+       "primary_color": "#03202F",
+       "secondary_color": "#A71930"
+      },
+      "market_locks": [],
+      "player": null,
+      "eventId": "01a1c9ea-d600-7e01-8c79-b7a721168527",
+      "outcomes": [
+       {
+        "id": "01a1e17e-9749-7662-99c2-ffc44e4c9d32",
+        "index": 0,
+        "description": "Over 27.5",
+        "available": 0.55,
+        "altAvailable": null,
+        "competitor": null
+       },
+       {
+        "id": "01a1e17e-9749-7662-99c2-ffdc343afb75",
+        "index": 1,
+        "description": "Under 27.5",
+        "available": 0.46,
+        "altAvailable": null,
+        "competitor": null
+       }
+      ]
+     },
+     {
       "is_consensus": true,
       "id": "01a1e176-2574-77d3-b3f3-af267d8aa5fe",
       "strike": -6.5,
@@ -716,7 +759,7 @@
         "id": "01a1e259-f46e-70d0-928b-8fbc592e271b",
         "index": 0,
         "description": "Over 0.5",
-        "available": null,
+        "available": 0.12,
         "altAvailable": null,
         "competitor": null
        },
@@ -724,7 +767,7 @@
         "id": "01a1e259-f46e-70d0-928b-8fc2dc09d3a5",
         "index": 1,
         "description": "Under 0.5",
-        "available": null,
+        "available": 0.9,
         "altAvailable": null,
         "competitor": null
        }
@@ -834,7 +877,8 @@
        }
       ]
      }
-    ]
+    ],
+    "event_locks": []
    }
   ]
  }

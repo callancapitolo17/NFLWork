@@ -86,8 +86,11 @@ SIGNED_LINE_AT_END = re.compile(r"([+-]\d+(?:\.\d+)?)\s*$")
 def parse_nfl_games(page_payload: dict, now: datetime) -> list[Game]:
     """Not-yet-started NFL games from the NFL page, soonest first. An
     off-season page ({"sections": []}) gives no games."""
+    sections = page_payload.get("sections")
+    if not isinstance(sections, list):
+        raise ValueError(f"expected a `sections` list on the NFL page, got {type(sections).__name__}")
     games = []
-    for section in page_payload.get("sections") or []:
+    for section in sections:
         content = section.get("content") or {}
         for card in content.get("components") or []:
             if card.get("type") != GAME_CARD_TYPE or card.get("eventStatus") != PREGAME_STATUS:
@@ -99,7 +102,8 @@ def parse_nfl_games(page_payload: dict, now: datetime) -> list[Game]:
 
 
 def _game_from_card(card: dict) -> Game | None:
-    home, away = card.get("homeTeam") or {}, card.get("awayTeam") or {}
+    home = card.get("homeTeam") or {}
+    away = card.get("awayTeam") or {}
     if not (card.get("eventId") and card.get("scheduledStart") and home.get("name") and away.get("name")):
         return None
     start = datetime.fromisoformat(card["scheduledStart"].replace("Z", "+00:00"))
@@ -113,15 +117,19 @@ def parse_legs(game: Game, markets_payload: dict) -> list[OfferedLeg]:
     """Every priced leg of the game's open, unlocked markets.
 
     A line where neither side has a price is left out (deep alt ladders have
-    empty tails). An unknown game id answers {"data": {"event": []}}: no legs.
+    empty tails). No legs when Novig no longer has the game ({"data": {"event":
+    []}}), has locked it, or has moved it out of pregame (a game can start
+    before its scheduled time).
     """
     events = (markets_payload.get("data") or {}).get("event") or []
     if not events:
         return []
     event = events[0]
-    teams = (event.get("game") or {})
-    home_team_id = (teams.get("homeTeam") or {}).get("id")
-    away_team_id = (teams.get("awayTeam") or {}).get("id")
+    if event.get("status") != PREGAME_STATUS or event.get("event_locks"):
+        return []
+    event_game = event.get("game") or {}
+    home_team_id = (event_game.get("homeTeam") or {}).get("id")
+    away_team_id = (event_game.get("awayTeam") or {}).get("id")
     if not home_team_id or not away_team_id or home_team_id == away_team_id:
         raise ValueError(f"expected two different team ids on the game, got {home_team_id!r} and {away_team_id!r}")
     side_of_team_id = {home_team_id: "home", away_team_id: "away"}
@@ -142,6 +150,9 @@ def _legs_of_market(game: Game, market: dict, side_of_team_id: dict[str, str]) -
         return []
     described = [_describe(game, market, outcome, side_of_team_id) for outcome in outcomes]
     if described[0] is None or described[1] is None:
+        return []
+    if not _are_opposite_sides(described[0][3], described[1][3]):
+        log.warning("Novig market %r does not list two opposite sides; left out", market.get("description"))
         return []
     legs = []
     for index, other_index in ((0, 1), (1, 0)):
@@ -164,10 +175,24 @@ def _legs_of_market(game: Game, market: dict, side_of_team_id: dict[str, str]) -
     return legs
 
 
+def _are_opposite_sides(first: CanonicalLeg | None, second: CanonicalLeg | None) -> bool:
+    """A line's two outcomes must be each other's opposite: vig removal flips
+    a leg to its other outcome, so two outcomes on one side would price the
+    same bet twice. Spread lines must also mirror (-12.5 / +12.5)."""
+    if first is None or second is None:
+        return first is None and second is None   # a market type with no canonical name: sides already read as over / under
+    if {first.side, second.side} not in ({"home", "away"}, {"over", "under"}, {"yes", "no"}):
+        return False
+    if first.stat == "spread":
+        return abs(first.line + second.line) <= LINE_TOLERANCE
+    return True
+
+
 def american_odds_of_chance(chance: Any) -> float | None:
     """Novig's `available` (0.495) as American odds (+102.02). None for a
     missing price or one outside (0, 1), which has no payout."""
-    if isinstance(chance, bool) or not isinstance(chance, (int, float)) or not 0.0 < chance < 1.0:
+    chance = _number(chance)
+    if chance is None or not 0.0 < chance < 1.0:
         return None
     if chance <= 0.5:
         return round((1.0 - chance) / chance * 100.0, 2)
@@ -182,8 +207,9 @@ def _describe(game: Game, market: dict, outcome: dict,
     market_type = market.get("type") or ""
     if market.get("player"):
         return _describe_player_prop(market, outcome)
-    period, base_type = ("1H", market_type[: -len(FIRST_HALF_SUFFIX)]) if market_type.endswith(FIRST_HALF_SUFFIX) \
-        else ("FG", market_type)
+    period, base_type = "FG", market_type
+    if market_type.endswith(FIRST_HALF_SUFFIX):
+        period, base_type = "1H", market_type[: -len(FIRST_HALF_SUFFIX)]
     period_words = "1st Half " if period == "1H" else ""
     strike = _number(market.get("strike"))
     if base_type in ("MONEY", "SPREAD"):
@@ -199,8 +225,8 @@ def _describe(game: Game, market: dict, outcome: dict,
             return None
         return (f"{period_words}Spread", GAME_LINES_CATEGORY, f"{team_name} {line:+g}",
                 CanonicalLeg(period, "spread", None, side, line), market_type)
-    side = _over_under_side(outcome)
-    if side is None or strike is None:
+    side = _over_under_side(outcome, strike)
+    if side is None:
         return None
     side_label = f"{side.capitalize()} {strike:g}"
     if base_type == "TOTAL":
@@ -237,8 +263,8 @@ def _describe_player_prop(market: dict, outcome: dict) -> tuple[str, str, str, C
                 description.upper(), CanonicalLeg("FG", FIRST_TOUCHDOWN_STAT + stat_suffix, player_name, description, None),
                 market_key)
 
-    side = _over_under_side(outcome)
-    if side is None or strike is None:
+    side = _over_under_side(outcome, strike)
+    if side is None:
         return None
     if base_type == "TOUCHDOWNS":
         # Each touchdown count is its own yes/no bet (anytime, 2+, 3+), as the other venues list it.
@@ -260,6 +286,7 @@ def _spread_line_of(outcome: dict, strike: float | None) -> float | None:
     or disagrees is refused, because a wrong sign is a different bet."""
     match = SIGNED_LINE_AT_END.search(outcome.get("description") or "")
     if match is None or strike is None:
+        log.warning("Novig spread outcome %r has no signed line to read; left out", outcome.get("description"))
         return None
     line = float(match.group(1))
     if abs(abs(line) - abs(strike)) > LINE_TOLERANCE:
@@ -269,13 +296,20 @@ def _spread_line_of(outcome: dict, strike: float | None) -> float | None:
     return line
 
 
-def _over_under_side(outcome: dict) -> str | None:
-    description = (outcome.get("description") or "").strip().lower()
-    if description.startswith("over "):
-        return "over"
-    if description.startswith("under "):
-        return "under"
-    return None
+def _over_under_side(outcome: dict, strike: float | None) -> str | None:
+    """"over" / "under" off the outcome's text ("Over 43.5"), whose number must
+    be the market's strike; None when it cannot be read or disagrees."""
+    words = (outcome.get("description") or "").strip().lower().split()
+    if strike is None or len(words) != 2 or words[0] not in ("over", "under"):
+        return None
+    try:
+        described_line = float(words[1])
+    except ValueError:
+        return None
+    if abs(described_line - strike) > LINE_TOLERANCE:
+        log.warning("Novig outcome %r disagrees with its market strike %r; left out", outcome.get("description"), strike)
+        return None
+    return words[0]
 
 
 def _number(value: Any) -> float | None:
