@@ -1,4 +1,4 @@
-"""American / decimal / probability conversions. Pure."""
+"""American -> decimal odds. Pure."""
 from __future__ import annotations
 
 import math
@@ -12,17 +12,3 @@ def american_to_decimal(american_odds: float) -> float:
         return 1.0 + american_odds / 100.0
     return 1.0 + 100.0 / -american_odds
 
-
-def decimal_to_american(decimal_odds: float) -> float:
-    """2.5 -> +150, 1.5 -> -200 (unrounded)."""
-    if not math.isfinite(decimal_odds) or decimal_odds <= 1.0:
-        raise ValueError(f"expected decimal odds > 1, got {decimal_odds!r}")
-    if decimal_odds >= 2.0:
-        return (decimal_odds - 1.0) * 100.0
-    return -100.0 / (decimal_odds - 1.0)
-
-
-def probability_to_american(probability: float) -> float:
-    if not 0.0 < probability < 1.0:
-        raise ValueError(f"expected a probability in (0, 1), got {probability!r}")
-    return decimal_to_american(1.0 / probability)
